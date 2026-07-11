@@ -1,0 +1,7 @@
+{
+  "name": "guardrails",
+  "version": "0.1.0",
+  "description": "Thin Claude Code wiring for the agent-guardrail system. All machinery lives in the guardrails-core devDependency; this plugin only wires hooks and ships the two fixer subagents and the scaffolder skill.",
+  "author": { "name": "Drew Teeter" },
+  "license": "MIT"
+}
