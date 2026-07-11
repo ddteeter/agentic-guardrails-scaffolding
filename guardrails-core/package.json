@@ -1,0 +1,26 @@
+{
+  "name": "guardrails-core",
+  "version": "0.0.0",
+  "description": "Runtime-agnostic machinery for the agent-guardrail system: verify, autofix, diff-audit, gate, and recurrence-memory for coding agents (TypeScript + Java).",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "bin": {
+    "guardrails": "./dist/cli.mjs"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs"
+    }
+  },
+  "files": [
+    "dist",
+    "semgrep"
+  ],
+  "scripts": {
+    "build": "tsup"
+  }
+}

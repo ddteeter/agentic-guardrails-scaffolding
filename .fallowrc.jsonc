@@ -1,0 +1,10 @@
+{
+  "ignorePatterns": ["dist/", "coverage/", "**/*.d.ts"],
+  // Runtime-only deps fallow can't see imported. Add per project as needed.
+  "ignoreDependencies": [],
+  "duplicates": { "threshold": 5, "minTokens": 75, "minLines": 5 },
+  // Dev-only tooling (one-shot CLI scripts) is untested by design; gating
+  // change-risk (CRAP) on never-tested code isn't meaningful. Production src/
+  // IS gated.
+  "health": { "ignore": ["scripts/**"] },
+}

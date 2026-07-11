@@ -1,0 +1,39 @@
+# https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
+#
+# The 7-day `cooldown` on every ecosystem is supply-chain defense:
+# Dependabot waits 7 days after a new version is published before opening an
+# update PR. Most malicious releases (typosquats, compromised maintainer
+# accounts, "shai hulud"-style worms) are detected and yanked from the registry
+# within a few days, so the buffer keeps the project from pulling a poisoned
+# version in the window when it's most likely to be live. The cooldown does NOT
+# apply to security advisories — Dependabot bypasses it for `dependabot-security`
+# PRs, so CVE response time isn't traded off.
+
+version: 2
+updates:
+  - package-ecosystem: 'github-actions'
+    directory: '/'
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      all-dependencies:
+        patterns:
+          - '*'
+  - package-ecosystem: 'npm'
+    directory: '/'
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
+    groups:
+      production-dependencies:
+        dependency-type: 'production'
+        patterns:
+          - '*'
+      development-dependencies:
+        dependency-type: 'development'
+        patterns:
+          - '*'
