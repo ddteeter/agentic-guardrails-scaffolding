@@ -106,6 +106,31 @@ required check, publish core + plugin, standardize thresholds — no code change
   a config knob — deferred to Phase B so the CC plugin's hardcoded paths and the
   current tests don't churn now.
 
+## Roadmap: boundary type-safety as a first-class concern
+
+Surfaced by the Phase-A review (unchecked `as` casts on loaded state). The root
+is systemic, not three one-off bugs: the scaffold ESLint config disables
+`@typescript-eslint/no-unsafe-*` and bets on "manual runtime narrowing at
+boundaries", but manual narrowing is easy to do incompletely — so the static
+net is off exactly where untrusted data enters (disk JSON: state, manifests,
+config; and external-tool output). Two tracks:
+
+- **Internal (guardrails-core, dogfooding).** Make boundary validation a uniform
+  convention, not per-site heroics. Either a small codec/guard module so
+  deserialization returns _validated_ types instead of `as`-asserted ones
+  (parse-don't-validate), and/or **re-enable `no-unsafe-*` scoped to boundary
+  modules** and satisfy them with real guards. Keep core dependency-light — hand-
+  rolled guards or a tiny validator, not `zod` in core (reserve schema libraries
+  for scaffolded target repos). The good pattern already exists (`isViolation`,
+  `isResultArray`); the work is applying it uniformly.
+- **Product (a guardrail rule class).** "Unvalidated deserialization / structural
+  `as` cast at a trust boundary" is a canonical green-but-wrong: an agent asserts
+  a shape to make `tsc` pass without proving it. The diff-auditor already rejects
+  `as any` / `as unknown as`; extend it (semgrep or a custom ESLint rule) to
+  structural casts and `JSON.parse(...) as T` at boundaries, and route it as a
+  **loose class** (§2.3) above the bottom fixer tier. The fixer already forbids
+  adding new casts, so recurrence memory surfaces repeat offenders automatically.
+
 ## Phase A status
 
 Built and tested (Vitest, strict TS → ESM): the `Violation` contract, session
