@@ -59,7 +59,13 @@ function snapshotFile(directory: string, sessionId: string): string {
 function readSnapshot(file: string): Set<string> {
   try {
     const parsed: unknown = JSON.parse(readFileSync(file, 'utf8'));
-    return new Set(Array.isArray(parsed) ? (parsed as string[]) : []);
+    // Filter to strings rather than casting — consistent with the strict
+    // validation in state-store, and keeps the baseline a true Set<string>.
+    return new Set(
+      Array.isArray(parsed)
+        ? parsed.filter((entry): entry is string => typeof entry === 'string')
+        : [],
+    );
   } catch {
     return new Set();
   }

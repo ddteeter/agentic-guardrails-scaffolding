@@ -18,6 +18,15 @@ export interface RepoConfig {
   fastFixer: string;
   thoroughFixer: string;
   distribution: 'solo' | 'team';
+  /**
+   * RESERVED — read by the CI gate and the Copilot commit-gate, both Phase B;
+   * not yet consumed. It governs whether a *failing gate on those surfaces*
+   * blocks (`block` → CI required status check / commit-gate deny) or only warns
+   * (`warn` → non-blocking CI). It deliberately does NOT gate the Claude Code
+   * Stop-loop — that loop is the flagship local feature and always runs; its
+   * safety comes from the bounded attempt counter and the `--no-verify` bypass,
+   * not from this flag. `toGateConfig` intentionally does not forward it.
+   */
   enforcement: 'warn' | 'block';
 }
 
@@ -90,6 +99,9 @@ export function loadConfig(repoRoot: string): RepoConfig {
   };
 }
 
+// Note: `enforcement` and `distribution` are intentionally not projected here —
+// they steer Phase-B surfaces (CI required-check, Copilot commit-gate), not the
+// Stop-loop decision engine. See RepoConfig.enforcement.
 export function toGateConfig(config: RepoConfig): GateConfig {
   return {
     maxAttempts: config.maxAttempts,
