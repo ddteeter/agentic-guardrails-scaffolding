@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -80,6 +80,23 @@ describe('runStopGate', () => {
     ]);
     // Attempt counter persisted.
     expect(loadSession(directory, 'sid').attempts).toBe(1);
+  });
+
+  it('tolerates non-string entries in a tampered pre-fix snapshot', async () => {
+    // The snapshot baseline is read defensively: a corrupt/tampered
+    // `<sid>.pre-fix.json` with non-string elements must be filtered, not crash.
+    const directory = stateDirectory(root);
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(
+      path.join(directory, 'sid.pre-fix.json'),
+      JSON.stringify([{}, 42, 'src/a.ts|eslint-disable|x']),
+    );
+    const exec = makeExec((line) => {
+      if (line.includes('--name-only')) return ok('');
+      return ok('');
+    });
+    const { decision } = await runStopGate(options(exec));
+    expect(decision.outcome).toBe('clean');
   });
 
   it('exits clean when verify finds nothing and resets attempts', async () => {
