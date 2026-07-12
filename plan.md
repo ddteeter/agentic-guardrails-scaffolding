@@ -78,6 +78,34 @@ only-guaranteed gate.
 `enforcement: "warn" | "block"`. The flip: commit `recurrence.json`, make CI a
 required check, publish core + plugin, standardize thresholds — no code changes.
 
+## Open questions surfaced in review (resolve in Phase B)
+
+- **Fixer subagents DO port to Copilot** (corrected — an earlier draft of this
+  note wrongly claimed Copilot had no subagent delegation). GitHub Copilot
+  custom agents (`.agent.md`, shipped Oct 2025) support a `tools` allowlist
+  (including an `agent` tool you withhold to block fan-out — the analog of
+  omitting Task), per-agent `model` selection,
+  `disable-model-invocation`/`user-invocable`, and **sub-agent orchestration**
+  (the runtime runs the agent in an isolated context and streams lifecycle
+  events to the parent; triggerable by inference, explicit instruction, or
+  programmatically). Phase-B implications:
+  - The two fixer agents get a second authoring format: CC frontmatter _and_ a
+    `.agent.md` equivalent. The `tools` allowlist and per-agent `model` (the
+    tier ladder) translate directly; scope-lock and diff-auditor are unchanged.
+  - What does _not_ port is the hard forcing mechanism. CC's `Stop` hook blocks
+    turn-end to compel the loop; Copilot `Stop` is observational (only
+    `preToolUse` blocks), so the Copilot fixer loop is triggered by the
+    commit-gate deny + `AGENTS.md`/`copilot-instructions` steering + explicit or
+    programmatic delegation — a softer loop, not a within-turn force.
+  - The per-fixer `model` (tier) is now a real cross-runtime knob; the fixer
+    _names_ are already config-driven via `guardrails.config.json`.
+- **State location on non-Claude surfaces.** State currently lives under
+  `.claude/state/guardrails/`. For the Copilot channel a runtime-neutral path
+  (e.g. `.guardrails/state/`) may be cleaner than borrowing Claude's dir.
+  `stateDirectory()` is the single chokepoint, so this is a one-function change +
+  a config knob — deferred to Phase B so the CC plugin's hardcoded paths and the
+  current tests don't churn now.
+
 ## Phase A status
 
 Built and tested (Vitest, strict TS → ESM): the `Violation` contract, session

@@ -3,6 +3,15 @@
  * `Violation[]`. Type errors are never mechanically fixable (`fixable: false`)
  * and always `error` severity. The TS error code (e.g. `TS2322`) is the stable
  * rule id.
+ *
+ * On parsing fragility (tsc has no JSON diagnostics mode): we pin the format
+ * with `--pretty false`, whose one-line `file(line,col): error TSxxxx: msg`
+ * shape has been stable across TS 3–5. We match only that shape, so unrelated
+ * lines — the trailing `Found N errors` summary and indented related-info
+ * ("'x' is declared here.") continuation lines — are skipped rather than
+ * mis-parsed. If this ever proves brittle, the robust (heavier) alternative is
+ * the TypeScript compiler API (`ts.getPreEmitDiagnostics`), which couples us to
+ * the repo's TS version and is deferred until a real break demands it.
  */
 
 import path from 'node:path';

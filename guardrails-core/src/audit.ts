@@ -10,15 +10,21 @@
  *
  * Pure over the diff text so the identical mechanism works at the Claude Code
  * stop-gate and the Copilot commit-gate.
+ *
+ * This is a single **cross-language** auditor, not a per-language one: because
+ * it scans raw added diff lines for textual escape signatures, one signature
+ * table covers both stacks — `eslint-disable`/`@ts-*`/`as any`/`.skip` (TS) and
+ * `@SuppressWarnings`/`@Disabled`/casts (Java). New stacks add signatures here;
+ * they never need a separate auditor.
  */
 
 export type AuditKind =
-  | 'eslint-disable'
-  | 'ts-suppress'
-  | 'cast-any'
-  | 'suppress-warnings'
-  | 'disabled-test'
-  | 'skipped-test';
+  | 'eslint-disable' // TS: eslint-disable[-next-line]
+  | 'ts-suppress' // TS: @ts-ignore / @ts-expect-error / @ts-nocheck
+  | 'cast-any' // TS: as any / as unknown as / <any>
+  | 'suppress-warnings' // Java: @SuppressWarnings
+  | 'disabled-test' // Java: @Disabled
+  | 'skipped-test'; // TS/JS: .skip / .only / xit / fit
 
 export interface AuditFinding {
   file: string;

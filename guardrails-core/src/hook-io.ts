@@ -78,7 +78,19 @@ export function formatStopHookOutput(
   return output;
 }
 
-/** Resolve a repo-local `node_modules/.bin` tool, else fall back to the name. */
+/**
+ * Resolve a repo-local Node tool (`node_modules/.bin/<tool>`), else fall back to
+ * the bare name on PATH. This is the **TypeScript-pack** binary resolver:
+ * eslint/tsc/knip are Node bins, and resolving `.bin` directly is more
+ * deterministic than going through `npm run` scripts (which vary per repo) and
+ * avoids `npx`'s overhead/registry check.
+ *
+ * The Java pack does *not* use this. There is no analogous single binary to
+ * resolve — the Java adapter invokes build-tool goals through the repo's
+ * wrapper (`./mvnw` / `./gradlew`, e.g. `pmd:check`, `-Dtest=ArchitectureTest`)
+ * so the tool versions are pinned by the build, which is exactly why the
+ * reviewer's instinct is right: for Java we lean on the build tool, not a bin.
+ */
 export function resolveLocalBin(repoRoot: string, tool: string): string {
   const suffix = process.platform === 'win32' ? '.cmd' : '';
   const local = path.join(repoRoot, 'node_modules', '.bin', `${tool}${suffix}`);

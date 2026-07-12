@@ -38,6 +38,19 @@ describe('parseTscOutput', () => {
     expect(parseTscOutput(out, root)[0]?.file).toBe('packages/api/src/x.ts');
   });
 
+  it('ignores indented related-information continuation lines', () => {
+    // tsc --pretty false emits related info as extra lines that do not match
+    // the `error TSxxxx` shape; they must not produce spurious violations.
+    const out = [
+      "src/a.ts(3,7): error TS2345: Argument of type 'A' is not assignable.",
+      "src/a.ts(1,1): error TS6203: 'A' is declared here.",
+      '  and is referenced above.',
+    ].join('\n');
+    const violations = parseTscOutput(out, root);
+    expect(violations.map((v) => v.ruleId)).toEqual(['TS2345', 'TS6203']);
+    expect(violations).toHaveLength(2);
+  });
+
   it('returns an empty array when there are no diagnostics', () => {
     expect(parseTscOutput('', root)).toEqual([]);
     expect(parseTscOutput('\n\n', root)).toEqual([]);

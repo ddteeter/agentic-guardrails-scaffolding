@@ -25,6 +25,11 @@ those specific violations pass re-verification — nothing more.
    any edit to a file that is not listed — do not fight it; it means you are off
    track.
 4. Return a single line summarizing what you changed. Do not narrate.
+   **If you flagged any code as possibly-live instead of deleting it (see
+   below), say so explicitly in that line** — deletion is the main agent's call,
+   and your summary is the only signal it gets to follow up. The re-verify is the
+   trusted gate, not your summary, so keep it to facts the main agent must act
+   on (what you flagged, what you couldn't fix), not a change log.
 
 ## Hard constraints — these are non-negotiable
 
