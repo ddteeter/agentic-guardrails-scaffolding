@@ -15,10 +15,11 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import process from 'node:process';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { spawnExec } from '../src/exec.js';
+import { type Exec, spawnExec } from '../src/exec.js';
 import { runStopGate } from '../src/gate.js';
 import type { GateConfig } from '../src/gate-decision.js';
 import {
@@ -29,8 +30,26 @@ import {
 
 let root: string;
 
+// Git exports GIT_DIR / GIT_WORK_TREE / GIT_INDEX_FILE into hook processes, and
+// those override `cwd`. This suite runs under the pre-push hook (via
+// `test:coverage`), so a plain `git` here would target the REAL repo instead of
+// the temp one and commit into it. Strip all GIT_* vars so every git call this
+// test makes is pinned to `root` regardless of the ambient environment.
+function isolatedGitEnvironment(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (!key.startsWith('GIT_')) {
+      env[key] = value;
+    }
+  }
+  return env;
+}
+
+const isolatedExec: Exec = (command, args, options) =>
+  spawnExec(command, args, { ...options, env: isolatedGitEnvironment() });
+
 async function git(...args: string[]): Promise<void> {
-  await spawnExec('git', args, { cwd: root });
+  await isolatedExec('git', args, { cwd: root });
 }
 
 const config: GateConfig = {
@@ -100,7 +119,7 @@ describe('end-to-end Stop gate', () => {
       repoRoot: root,
       sessionId: 'e2e',
       baseBranch: 'main',
-      exec: spawnExec,
+      exec: isolatedExec,
       config,
       resolveBin,
     });
@@ -124,7 +143,7 @@ describe('end-to-end Stop gate', () => {
       repoRoot: root,
       sessionId: 'e2e2',
       baseBranch: 'main',
-      exec: spawnExec,
+      exec: isolatedExec,
       config,
       resolveBin: (tool) => (tool === 'eslint' ? eslintStub : resolveBin()),
     });

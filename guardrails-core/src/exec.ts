@@ -15,13 +15,18 @@ export interface ExecResult {
 export type Exec = (
   command: string,
   args: string[],
-  options?: { cwd?: string },
+  options?: { cwd?: string; env?: NodeJS.ProcessEnv },
 ) => Promise<ExecResult>;
 
 export const spawnExec: Exec = (command, args, options) =>
   new Promise((resolve) => {
     const child = spawn(command, args, {
       cwd: options?.cwd,
+      // Passing `env` replaces the inherited environment. This lets a caller
+      // strip inherited git variables (GIT_DIR / GIT_WORK_TREE / GIT_INDEX_FILE)
+      // that git exports into hook processes — without it, a `git` spawned from
+      // inside a hook would target the hook's repo regardless of `cwd`.
+      ...(options?.env === undefined ? {} : { env: options.env }),
       shell: false,
     });
     let stdout = '';
