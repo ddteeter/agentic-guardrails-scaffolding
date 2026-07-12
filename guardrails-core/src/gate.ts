@@ -66,6 +66,12 @@ function readSnapshot(file: string): Set<string> {
 }
 
 async function workingDiff(options: StopGateOptions): Promise<string> {
+  // Deliberately `git diff HEAD` (uncommitted working-tree changes), NOT the
+  // baseBranch range that `verify` uses. The fixer's edits are uncommitted, so
+  // this is exactly the surface the auditor must inspect. A suppression that was
+  // committed in an earlier turn is already past this point — it would have been
+  // audited while it was uncommitted, and the Copilot commit-gate re-checks the
+  // staged diff at commit time.
   const result = await options.exec('git', ['diff', 'HEAD'], {
     cwd: options.repoRoot,
   });

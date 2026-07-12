@@ -19,7 +19,9 @@ import path from 'node:path';
 import type { Violation } from '../violation.js';
 
 // e.g. `src/foo.ts(12,5): error TS2322: Type '...' is not assignable ...`
-const DIAGNOSTIC = /^(.+?)\((\d+),\d+\): error (TS\d+): (.+)$/;
+// Greedy leading group so the match anchors on the FINAL `(line,col): error`,
+// not a `(1,2)`-shaped segment inside the path itself.
+const DIAGNOSTIC = /^(.+)\((\d+),\d+\): error (TS\d+): (.+)$/;
 
 export function parseTscOutput(
   stdout: string,

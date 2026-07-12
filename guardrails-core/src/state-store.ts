@@ -36,7 +36,7 @@ export function manifestFile(directory: string, sessionId: string): string {
   return path.join(directory, `${sessionId}.last.json`);
 }
 
-function recurrenceFile(directory: string): string {
+export function recurrenceFile(directory: string): string {
   return path.join(directory, 'recurrence.json');
 }
 
@@ -57,6 +57,17 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+/** Keep only the entries whose value is a number — drops tampered/corrupt ones. */
+function numberRecord(raw: Record<string, unknown>): Record<string, number> {
+  const result: Record<string, number> = {};
+  for (const [key, value] of Object.entries(raw)) {
+    if (typeof value === 'number') {
+      result[key] = value;
+    }
+  }
+  return result;
+}
+
 export function loadSession(
   directory: string,
   sessionId: string,
@@ -73,10 +84,12 @@ export function loadSession(
   ) {
     return createSession();
   }
+  // Validate values, not just shape: a tampered/corrupt file with a string
+  // count would make `"oops" + 1 = "oops1"` and silently break tallying.
   return {
     attempts,
-    ruleCounts: ruleCounts as Record<string, number>,
-    corrected: corrected as string[],
+    ruleCounts: numberRecord(ruleCounts),
+    corrected: corrected.filter((entry) => typeof entry === 'string'),
   };
 }
 
@@ -95,7 +108,7 @@ export function deleteSession(directory: string, sessionId: string): void {
 
 export function loadRecurrence(directory: string): RecurrenceCounts {
   const raw = readJson(recurrenceFile(directory));
-  return isRecord(raw) ? (raw as RecurrenceCounts) : {};
+  return isRecord(raw) ? numberRecord(raw) : {};
 }
 
 export function saveRecurrence(

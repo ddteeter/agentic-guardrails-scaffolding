@@ -51,6 +51,17 @@ describe('parseTscOutput', () => {
     expect(violations).toHaveLength(2);
   });
 
+  it('parses a path that itself contains a (line,col)-shaped segment', () => {
+    // Greedy match must anchor on the FINAL `(line,col): error`, not the first
+    // parenthesized group inside the path (e.g. a "Foo (1,2)" directory).
+    const out = 'src/dir (1,2)/foo.ts(3,7): error TS2322: nope.';
+    expect(parseTscOutput(out, root)[0]).toMatchObject({
+      file: 'src/dir (1,2)/foo.ts',
+      line: 3,
+      ruleId: 'TS2322',
+    });
+  });
+
   it('returns an empty array when there are no diagnostics', () => {
     expect(parseTscOutput('', root)).toEqual([]);
     expect(parseTscOutput('\n\n', root)).toEqual([]);

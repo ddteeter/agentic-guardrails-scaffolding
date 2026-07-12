@@ -59,7 +59,7 @@ state | scope-check | session-start | session-end`.
 
 ```bash
 npm install
-npm test              # vitest (110 tests)
+npm test              # vitest
 npm run lint          # eslint (strict-type-checked + unicorn + sonarjs)
 npm run build         # tsup → guardrails-core/dist/*.mjs
 npm run test:coverage && npm run check:graph   # the pre-push gate (fallow)
@@ -70,6 +70,11 @@ The `guardrails verify` CLI runs against this repo itself:
 ```bash
 node guardrails-core/dist/cli.mjs verify
 ```
+
+> **Prerequisite — clean baseline.** ESLint is diff-scoped to changed files, but
+> `tsc` type-checks the whole project (type errors are inherently cross-file). So
+> a repo must pass `guardrails verify` **before** activating the gate; on a branch
+> with pre-existing `tsc` errors, every turn would escalate on them until fixed.
 
 ## Verifying the live Claude Code loop
 

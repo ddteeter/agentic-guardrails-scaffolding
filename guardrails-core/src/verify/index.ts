@@ -1,9 +1,17 @@
 /**
- * The verify orchestrator (§2.2). Diff-scopes to the files a turn touched,
- * dispatches the TypeScript adapters, and aggregates their output into one
+ * The verify orchestrator (§2.2). Determines the TypeScript files a turn
+ * touched, dispatches the adapters, and aggregates their output into one
  * normalized `Violation[]`. Pure Node; every shell-out goes through the
  * injected `Exec`, and tool binaries are resolved through `resolveBin` so the
  * CLI can point at the repo-local `node_modules/.bin`.
+ *
+ * Scoping is per-tool: **ESLint is diff-scoped** to the changed files, but
+ * **`tsc` runs project-wide** (`-p tsconfig`) because TypeScript checking is
+ * inherently cross-file — a change in one file can surface an error in another.
+ * A consequence: `verify` assumes a clean type-check baseline. If the branch
+ * already has pre-existing `tsc` errors, every turn will escalate on them until
+ * they're fixed (see README — run `guardrails verify` clean before relying on
+ * the gate).
  */
 
 import type { Exec } from '../exec.js';

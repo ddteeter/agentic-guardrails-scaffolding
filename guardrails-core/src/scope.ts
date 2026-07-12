@@ -28,7 +28,7 @@ export function collectManifestFiles(directory: string): Set<string> {
     }
     const sessionId = name.slice(0, -'.last.json'.length);
     for (const violation of readViolations(directory, sessionId)) {
-      files.add(violation.file);
+      files.add(path.normalize(violation.file));
     }
   }
   return files;
@@ -42,5 +42,5 @@ export function isPathAllowed(
   const relative = path.isAbsolute(candidate)
     ? path.relative(repoRoot, candidate)
     : candidate;
-  return files.has(relative);
+  return files.has(path.normalize(relative));
 }

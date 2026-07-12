@@ -16,6 +16,7 @@ import {
   loadRecurrence,
   loadSession,
   readViolations,
+  recurrenceFile,
   saveRecurrence,
   saveSession,
   sessionFile,
@@ -73,6 +74,23 @@ describe('session round-trip', () => {
     writeFileSync(sessionFile(directory, 'sid1'), '{ not json');
     expect(loadSession(directory, 'sid1')).toEqual(createSession());
   });
+
+  it('drops non-number ruleCounts values and non-string corrected entries', () => {
+    // A tampered/corrupt file: `"n": "oops"` would make "oops" + 1 = "oops1".
+    writeFileSync(
+      sessionFile(directory, 'sid1'),
+      JSON.stringify({
+        attempts: 1,
+        ruleCounts: { good: 2, bad: 'oops' },
+        corrected: ['ok', 5, null],
+      }),
+    );
+    expect(loadSession(directory, 'sid1')).toEqual({
+      attempts: 1,
+      ruleCounts: { good: 2 },
+      corrected: ['ok'],
+    });
+  });
 });
 
 describe('recurrence round-trip', () => {
@@ -83,6 +101,14 @@ describe('recurrence round-trip', () => {
 
   it('returns empty counts when missing', () => {
     expect(loadRecurrence(directory)).toEqual({});
+  });
+
+  it('drops non-number values from a tampered recurrence file', () => {
+    writeFileSync(
+      recurrenceFile(directory),
+      JSON.stringify({ good: 3, bad: 'oops' }),
+    );
+    expect(loadRecurrence(directory)).toEqual({ good: 3 });
   });
 });
 

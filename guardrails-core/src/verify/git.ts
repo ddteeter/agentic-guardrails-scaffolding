@@ -8,7 +8,7 @@
 export function parseFileList(stdout: string): string[] {
   return stdout
     .split('\n')
-    .map((line) => line.trim())
+    .map((line) => line.trim().replace(/^\.\//, ''))
     .filter((line) => line.length > 0);
 }
 

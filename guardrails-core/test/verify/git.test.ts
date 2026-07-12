@@ -31,6 +31,10 @@ describe('mergeChangedFiles', () => {
       'src/c.ts',
     ]);
   });
+
+  it('de-duplicates across a stray leading ./ prefix', () => {
+    expect(mergeChangedFiles('./src/a.ts', 'src/a.ts')).toEqual(['src/a.ts']);
+  });
 });
 
 describe('isTypeScriptFile', () => {

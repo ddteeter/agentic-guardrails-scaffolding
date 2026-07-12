@@ -61,7 +61,11 @@ async function verifyCommand(deps: CliDeps): Promise<number> {
     resolveBin: binResolver(repoRoot),
   });
   printViolations(deps, violations);
-  deps.stderr(`${violations.length} violation(s).\n`);
+  deps.stderr(
+    violations.length === 0
+      ? 'guardrails: clean (0 violations).\n'
+      : `guardrails: ${violations.length} violation(s).\n`,
+  );
   return hasErrors(violations) ? 1 : 0;
 }
 
@@ -108,6 +112,11 @@ async function gateCommitCommand(deps: CliDeps): Promise<number> {
     exec: deps.exec,
     resolveBin: binResolver(repoRoot),
   });
+  // Phase-A commit gate: audits the staged diff with NO pre-fix baseline (unlike
+  // runStopGate, which snapshots so only fixer-added suppressions are flagged).
+  // Consequence: a suppression already present on the branch before this gate was
+  // wired up would be flagged on every commit. Phase B adds a baseline (against
+  // the merge-base) so the commit gate only flags newly-introduced suppressions.
   const diff = await deps.exec('git', ['diff', '--cached'], { cwd: repoRoot });
   const findings = auditDiff(diff.stdout);
   printViolations(deps, violations);

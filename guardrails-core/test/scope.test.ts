@@ -62,4 +62,15 @@ describe('isPathAllowed', () => {
   it('denies a file not in the manifest', () => {
     expect(isPathAllowed(files, '/repo', '/repo/src/b.ts')).toBe(false);
   });
+
+  it('normalizes the candidate so a `..` segment does not cause a false denial', () => {
+    expect(isPathAllowed(files, '/repo', 'src/nested/../a.ts')).toBe(true);
+  });
+});
+
+describe('collectManifestFiles normalization', () => {
+  it('stores normalized manifest paths', () => {
+    writeViolations(directory, 's1', [v('src/nested/../a.ts')]);
+    expect(collectManifestFiles(directory).has('src/a.ts')).toBe(true);
+  });
 });
