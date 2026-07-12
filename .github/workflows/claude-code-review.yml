@@ -1,0 +1,52 @@
+name: Claude Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review, reopened]
+
+# No token capabilities granted at the workflow level; the job grants its own.
+permissions: {}
+
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  claude-review:
+    # SECURITY (primary control): only run for PRs authored by the repo owner.
+    # External / fork PR authors can never trigger Claude, so a hostile PR cannot
+    # hijack Claude or the workflow token. This matters most because the repo is
+    # PUBLIC — anyone can open a PR.
+    if: github.event.pull_request.user.login == 'ddteeter'
+    runs-on: ubuntu-latest
+    # Least privilege. This is `pull_request` (NOT `pull_request_target`): on a
+    # public repo a fork PR would run in the fork's context with a read-only
+    # token and NO secrets. Combined with the owner-only gate above, this only
+    # ever runs on same-repo PRs where these scopes are intended.
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      id-token: write
+    steps:
+      - name: Checkout repository
+        # actions/checkout@v6.0.2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Run Claude Code Review
+        id: claude-review
+        # anthropics/claude-code-action@v1.0.133
+        uses: anthropics/claude-code-action@787c5a0ce96a9a6cfb050ea0c8f4c05f2447c251
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ github.token }}
+          track_progress: true
+          plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
+          plugins: 'code-review@claude-code-plugins'
+          prompt: |
+            Review this PR using the guidelines in .github/claude-review-prompt.md as additional context for your review.
+
+            /code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }}

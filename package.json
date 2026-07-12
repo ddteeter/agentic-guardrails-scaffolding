@@ -1,0 +1,55 @@
+{
+  "name": "agentic-guardrails",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Development monorepo for the agent-guardrail system (guardrails-core + Claude Code plugin).",
+  "license": "MIT",
+  "workspaces": [
+    "guardrails-core"
+  ],
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scaffoldVersion": "1.2.0",
+  "scripts": {
+    "build": "npm run build --workspace guardrails-core",
+    "lint": "eslint .",
+    "lint:fix": "eslint --fix .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p guardrails-core/tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "check:graph": "fallow --coverage coverage/coverage-final.json --fail-on-issues",
+    "check:graph:full": "fallow --coverage coverage/coverage-final.json",
+    "prepare": "husky"
+  },
+  "lint-staged": {
+    "*.{ts,tsx}": [
+      "eslint --fix",
+      "prettier --write"
+    ],
+    "*.{json,jsonc,md,yml,yaml}": [
+      "prettier --write"
+    ]
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "@types/node": "^26.1.1",
+    "@vitest/coverage-istanbul": "^4.1.10",
+    "eslint": "^9.39.5",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-sonarjs": "^4.1.0",
+    "eslint-plugin-unicorn": "^56.0.1",
+    "fallow": "3.0.0",
+    "husky": "^9.1.7",
+    "lint-staged": "^17.0.8",
+    "prettier": "^3.9.5",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.63.0",
+    "vitest": "^4.1.10"
+  }
+}
