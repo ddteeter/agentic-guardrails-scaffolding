@@ -64,13 +64,27 @@ it is now clean and the **turn ends**.
 Check `guardrails state` — `attempts` should have reset to 0 after the clean
 pass.
 
-## 4. Scope-lock — _fixer can't wander_
+## 4. Scope-lock — _fixer can't wander_ (CONFIRM this fires)
 
-While the fixer is active, its frontmatter `PreToolUse` hook runs
-`guardrails scope-check` on every Edit/Write. If it tries to edit a file **not**
-in the manifest, the edit is **denied** with a scope-lock reason. To exercise
-this, temporarily craft a manifest referencing one file and confirm an edit to a
-different file is blocked.
+While the fixer is active, its frontmatter `PreToolUse` hook (matcher
+`Read|Edit|Write`) runs `guardrails scope-check`. **Open question to settle
+here:** whether a `PreToolUse` hook defined in a _repo-local_ (non-plugin)
+`.claude/agents/*.md` frontmatter actually fires is assumed, not yet confirmed.
+This step is the confirmation — record the result in `plan.md`. If it does **not**
+fire, the scope-lock is inoperative and the fallback is the diff-auditor only (a
+real downgrade); note it and consider installing the plugin (Approach B) or a
+global-but-guarded scope-check.
+
+Two things to observe:
+
+- **Edit scope-lock:** with a manifest referencing one file, an edit to a
+  **different** file is **denied** with a scope-lock reason.
+- **Read scope-lock (Finding 3):** a fixer attempting to **read outside the
+  repo** (e.g. `~/.claude/…/memory/*.md`) is **denied**. A denied out-of-repo
+  read is also the clearest signal that frontmatter `PreToolUse` fires at all —
+  in the first live run (before this matcher existed) the thorough fixer read
+  `~/.claude` memory unimpeded, so seeing it blocked now confirms both the
+  Read-scope fix and that repo-local agent hooks work.
 
 ## 5. Diff-auditor — _fixer can't cheat_
 
