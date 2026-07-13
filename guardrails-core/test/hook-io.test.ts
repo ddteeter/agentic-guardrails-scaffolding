@@ -50,6 +50,17 @@ describe('parseHookInput', () => {
     expect(parsed.filePath).toBe('/repo/src/a.ts');
   });
 
+  it('extracts the tool name from a PreToolUse payload', () => {
+    const parsed = parseHookInput(
+      JSON.stringify({
+        cwd: '/repo',
+        tool_name: 'Read',
+        tool_input: { file_path: '/repo/a.ts' },
+      }),
+    );
+    expect(parsed.toolName).toBe('Read');
+  });
+
   it('degrades to empty fields on malformed input', () => {
     expect(parseHookInput('not json')).toEqual({});
     expect(parseHookInput('')).toEqual({});

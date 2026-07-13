@@ -8,28 +8,51 @@
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 
+// The Claude Code hook JSON schema, straight from the SDK the CLI ships. We
+// depend on these types directly (a type-only devDependency — erased at build,
+// never shipped) so our hook I/O stays provably compatible: if Claude Code
+// changes the schema, the SDK type changes and our build breaks, instead of the
+// gate silently failing to block or deny at runtime.
+import type {
+  BaseHookInput,
+  PreToolUseHookInput,
+  StopHookSpecificOutput,
+  SyncHookJSONOutput,
+} from '@anthropic-ai/claude-agent-sdk';
+
 import type { GateDecision } from './gate-decision.js';
 
+/** Our normalized (camelCase) view of the fields we read from the payload. */
 export interface HookInput {
   sessionId?: string;
   cwd?: string;
   filePath?: string;
+  toolName?: string;
 }
+
+/** The raw payload fields we read, typed against the SDK schema. */
+type RawHookPayload = Partial<
+  Pick<BaseHookInput, 'session_id' | 'cwd'> &
+    Pick<PreToolUseHookInput, 'tool_name' | 'tool_input'>
+>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 export function parseHookInput(stdin: string): HookInput {
-  let raw: unknown;
+  let parsed: unknown;
   try {
-    raw = JSON.parse(stdin);
+    parsed = JSON.parse(stdin);
   } catch {
     return {};
   }
-  if (!isRecord(raw)) {
+  if (!isRecord(parsed)) {
     return {};
   }
+  // Defensive over untrusted input: field NAMES come from the SDK types (so a
+  // rename breaks the build), values are still runtime-checked.
+  const raw = parsed as RawHookPayload;
   const input: HookInput = {};
   if (typeof raw.session_id === 'string') {
     input.sessionId = raw.session_id;
@@ -37,21 +60,20 @@ export function parseHookInput(stdin: string): HookInput {
   if (typeof raw.cwd === 'string') {
     input.cwd = raw.cwd;
   }
-  const toolInput = raw.tool_input;
-  if (isRecord(toolInput) && typeof toolInput.file_path === 'string') {
-    input.filePath = toolInput.file_path;
+  if (typeof raw.tool_name === 'string') {
+    input.toolName = raw.tool_name;
+  }
+  if (
+    isRecord(raw.tool_input) &&
+    typeof raw.tool_input.file_path === 'string'
+  ) {
+    input.filePath = raw.tool_input.file_path;
   }
   return input;
 }
 
-export interface StopHookOutput {
-  decision: 'block';
-  reason: string;
-  hookSpecificOutput?: {
-    hookEventName: 'Stop';
-    additionalContext: string;
-  };
-}
+/** Claude Code hook output — the SDK's canonical synchronous shape. */
+export type HookOutput = SyncHookJSONOutput;
 
 /**
  * Claude Code Stop-hook output. `null` means "let the turn end" (no block).
@@ -61,19 +83,20 @@ export interface StopHookOutput {
  */
 export function formatStopHookOutput(
   decision: GateDecision,
-): StopHookOutput | null {
+): HookOutput | null {
   if (!decision.block) {
     return null;
   }
-  const output: StopHookOutput = {
+  const output: HookOutput = {
     decision: 'block',
     reason: decision.message,
   };
   if (decision.additionalContext !== undefined) {
-    output.hookSpecificOutput = {
+    const stop: StopHookSpecificOutput = {
       hookEventName: 'Stop',
       additionalContext: decision.additionalContext,
     };
+    output.hookSpecificOutput = stop;
   }
   return output;
 }

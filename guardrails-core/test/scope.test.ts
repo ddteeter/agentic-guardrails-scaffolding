@@ -4,7 +4,11 @@ import path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { collectManifestFiles, isPathAllowed } from '../src/scope.js';
+import {
+  collectManifestFiles,
+  isPathAllowed,
+  isWithinRepo,
+} from '../src/scope.js';
 import { stateDirectory, writeViolations } from '../src/state-store.js';
 import type { Violation } from '../src/violation.js';
 
@@ -65,6 +69,23 @@ describe('isPathAllowed', () => {
 
   it('normalizes the candidate so a `..` segment does not cause a false denial', () => {
     expect(isPathAllowed(files, '/repo', 'src/nested/../a.ts')).toBe(true);
+  });
+});
+
+describe('isWithinRepo', () => {
+  it('accepts paths inside the repo, including node_modules', () => {
+    expect(isWithinRepo('/repo', '/repo/src/a.ts')).toBe(true);
+    expect(isWithinRepo('/repo', '/repo/node_modules/x/rule.js')).toBe(true);
+    expect(isWithinRepo('/repo', '/repo/.claude/state/g/sid.last.json')).toBe(
+      true,
+    );
+  });
+
+  it('rejects paths outside the repo (e.g. ~/.claude project memory)', () => {
+    expect(
+      isWithinRepo('/repo', '/home/u/.claude/projects/x/memory/y.md'),
+    ).toBe(false);
+    expect(isWithinRepo('/repo', '/repo-sibling/file.ts')).toBe(false);
   });
 });
 

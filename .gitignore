@@ -4,3 +4,5 @@ coverage/
 .fallow/
 *.log
 .DS_Store
+.claude/state/
+.claude/agents/

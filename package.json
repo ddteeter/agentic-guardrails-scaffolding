@@ -13,7 +13,7 @@
   },
   "scaffoldVersion": "1.2.0",
   "scripts": {
-    "build": "npm run build --workspace guardrails-core",
+    "build": "npm run build --workspace guardrails-core && node scripts/sync-agents.mjs",
     "lint": "eslint .",
     "lint:fix": "eslint --fix .",
     "format": "prettier --write .",
@@ -24,7 +24,7 @@
     "test:coverage": "vitest run --coverage",
     "check:graph": "fallow --coverage coverage/coverage-final.json --fail-on-issues",
     "check:graph:full": "fallow --coverage coverage/coverage-final.json",
-    "prepare": "husky"
+    "prepare": "husky && npm run build"
   },
   "lint-staged": {
     "*.{ts,tsx}": [
@@ -36,9 +36,11 @@
     ]
   },
   "devDependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.207",
     "@eslint/js": "^9.39.5",
     "@types/node": "^26.1.1",
     "@vitest/coverage-istanbul": "^4.1.10",
+    "@vitest/eslint-plugin": "^1.6.23",
     "eslint": "^9.39.5",
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-sonarjs": "^4.1.0",

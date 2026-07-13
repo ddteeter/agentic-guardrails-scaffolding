@@ -86,9 +86,14 @@ is documented as a manual acceptance test in
 
 ## Dogfooding
 
-After Phase A, this repo will guard its own development with its own output — the
-`scaffold-typescript-project` bootstrap tooling gives way to `guardrails`
-itself. See `plan.md` §9 and the dev notes for the pivot plan.
+This repo **self-hosts** the guardrail loop on its own development: the
+`scaffold-typescript-project` bootstrap tooling gave way to `guardrails` itself.
+`.claude/settings.json` wires `guardrails autofix` (PostToolUse) and
+`guardrails gate --mode=stop` (Stop), with the two fixer agents in
+`.claude/agents/`; the `vitest/expect-expect` house rule exercises the recurrence
+path. Husky pre-push + CI remain the hard backstops. See
+`docs/live-loop-verification.md` to run the loop, and
+`docs/superpowers/specs/2026-07-12-dogfooding-pivot-design.md` for the design.
 
 ## License
 

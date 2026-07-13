@@ -131,6 +131,45 @@ config; and external-tool output). Two tracks:
   **loose class** (§2.3) above the bottom fixer tier. The fixer already forbids
   adding new casts, so recurrence memory surfaces repeat offenders automatically.
 
+## Roadmap: fixer-loop hardening (from the dogfooding live proof)
+
+The first live run (assertionless test → escalation → correct fix) validated the
+escalation ladder but surfaced improvements. Two are implemented on the
+dogfooding branch (built-in loose-rule routing so test-integrity rules go to the
+thorough tier from attempt 1; a `Read`-matcher scope-check denying the fixer
+reads outside `repoRoot`). One remains:
+
+- **Per-cycle diff-auditing (oscillation / test-weakening).** The diff-auditor
+  is anchored to the _original_ pre-fix snapshot, so a fixer that adds an
+  assertion and a later fixer that removes it nets back to baseline on a _new_
+  file and slips through — the momentary weakening isn't flagged (it was caught
+  only because re-verify + escalation converged). Fix: audit each fixer's edit
+  against the _immediately prior_ fixer state (snapshot per cycle, not once), and
+  extend the auditor's signatures to flag _removed_ assertions (`-` lines
+  containing `expect(`/`assert`), not just _added_ suppressions. Needs its own
+  small design (per-cycle snapshot lifecycle + false-positive guard for
+  legitimate refactors).
+
+- **Fixer edit-scope: cross-file fixes** (raised in PR #4 review). The
+  scope-lock confines the fixer to the files named in the manifest, but the
+  _optimal_ fix sometimes lives elsewhere — a type error surfaced in `A.ts`
+  whose real cause is a wrong type in `B.ts`. Today that fix is **denied**, the
+  fixer can't resolve it, attempts exhaust, and it **escalates to the main
+  agent** (terminal tier, no scope-lock, full latitude) — which is the intended
+  safety fallback, but it burns attempts first. Options to consider: let the
+  manifest carry a broader `editScope` (e.g. the flagged file's local imports),
+  or let the fixer _request_ an out-of-manifest edit that the gate approves once.
+  Monorepo sibling packages are already in-scope when `repoRoot` is the workspace
+  root, so this is about genuinely cross-file (not cross-package) fixes.
+
+- **Configurable read-scope** (raised in PR #4 review). The `Read` scope-check
+  denies all out-of-repo reads. A repo might legitimately need the fixer to read
+  an external shared config or tool file. Deferred (YAGNI) — no concrete use case
+  yet, and the safe default is deny; monorepo siblings are already in-repo when
+  `repoRoot` is the workspace root. When a real case appears, add a
+  `fixerReadAllowlist: string[]` to `guardrails.config.json` (extra roots the
+  fixer may read), mirroring how `looseRules` extends the built-in defaults.
+
 ## Phase A status
 
 Built and tested (Vitest, strict TS → ESM): the `Violation` contract, session

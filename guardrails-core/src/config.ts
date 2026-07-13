@@ -9,6 +9,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
 import type { GateConfig } from './gate-decision.js';
+import { makeIsLoose } from './loose-rules.js';
 
 export interface RepoConfig {
   baseBranch: string;
@@ -17,6 +18,12 @@ export interface RepoConfig {
   graduationThreshold: number;
   fastFixer: string;
   thoroughFixer: string;
+  /**
+   * Exact rule-ids to treat as loose (route to the thorough fixer from attempt
+   * 1), *extending* the built-in default classification in `loose-rules.ts`.
+   * For house rules the built-in set doesn't know about.
+   */
+  looseRules: string[];
   distribution: 'solo' | 'team';
   /**
    * RESERVED — read by the CI gate and the Copilot commit-gate, both Phase B;
@@ -38,9 +45,16 @@ export function defaultConfig(): RepoConfig {
     graduationThreshold: 3,
     fastFixer: 'guardrail-fixer',
     thoroughFixer: 'guardrail-fixer-thorough',
+    looseRules: [],
     distribution: 'solo',
     enforcement: 'warn',
   };
+}
+
+function pickStringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((entry): entry is string => typeof entry === 'string')
+    : [];
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -88,6 +102,7 @@ export function loadConfig(repoRoot: string): RepoConfig {
     ),
     fastFixer: pickString(raw.fastFixer, defaults.fastFixer),
     thoroughFixer: pickString(raw.thoroughFixer, defaults.thoroughFixer),
+    looseRules: pickStringArray(raw.looseRules),
     distribution: pickString(raw.distribution, defaults.distribution, [
       'solo',
       'team',
@@ -109,5 +124,8 @@ export function toGateConfig(config: RepoConfig): GateConfig {
     graduationThreshold: config.graduationThreshold,
     fastFixer: config.fastFixer,
     thoroughFixer: config.thoroughFixer,
+    // Built-in loose-rule defaults, extended by the repo's exact rule-ids, so
+    // loose-class violations route to the thorough fixer from attempt 1 (§2.3).
+    isLoose: makeIsLoose(config.looseRules),
   };
 }

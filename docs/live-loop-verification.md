@@ -10,19 +10,25 @@ This document is the manual acceptance test for that last mile.
 > installed as a devDependency (in this dev repo it's a workspace, already
 > present).
 
-## 0. Install the plugin into a target repo
+## 0. Prerequisite — the loop is wired inline (no plugin install)
 
-Point Claude Code at `guardrails-plugin/` (local plugin install) so its
-`hooks/hooks.json` and the two fixer agents load. Confirm the plugin's hooks are
-active with `/hooks` — you should see `Stop`, `PostToolUse`, `SessionStart`,
-`SessionEnd` bound to `node ".../guardrails-core/dist/cli.mjs" …`.
+This repo self-hosts the guardrail loop directly in `.claude/` (no plugin
+install): `.claude/settings.json` carries the Stop / PostToolUse / SessionStart /
+SessionEnd hooks, and `.claude/agents/` holds the two fixer subagents. They load
+automatically at the start of a fresh Claude Code session — no marketplace step.
+Confirm with `/hooks` that `Stop` is bound to
+`node ".../guardrails-core/dist/cli.mjs" gate --mode=stop`.
 
-Add a minimal `guardrails.config.json` at the repo root (or accept the defaults —
-solo/warn, `main` base, thresholds 3/3):
+`guardrails.config.json` is already present (solo/warn, base `main`, thresholds
+3/3). `guardrails-core` must be built (`npm run build`) so `dist/cli.mjs` exists
+— CI/pre-push already build it.
 
-```json
-{ "baseBranch": "main", "maxAttempts": 3, "recurThreshold": 3 }
-```
+Kill-switch: to revert to plain development, comment out the `Stop` (and/or
+`PostToolUse`) entry in `.claude/settings.json`; `.claude/hooks/post-edit-lint.sh`
+remains on disk if you want the old hard-block hook back.
+
+(For an _external_ consumer repo, the equivalent is installing `guardrails-plugin/`
+so its `hooks/hooks.json` + agents load — same hooks, same CLI.)
 
 ## 1. Silent autofix (PostToolUse) — _zero context_
 
@@ -58,13 +64,30 @@ it is now clean and the **turn ends**.
 Check `guardrails state` — `attempts` should have reset to 0 after the clean
 pass.
 
-## 4. Scope-lock — _fixer can't wander_
+## 4. Scope-lock — _fixer can't wander_ (CONFIRM this fires)
 
-While the fixer is active, its frontmatter `PreToolUse` hook runs
-`guardrails scope-check` on every Edit/Write. If it tries to edit a file **not**
-in the manifest, the edit is **denied** with a scope-lock reason. To exercise
-this, temporarily craft a manifest referencing one file and confirm an edit to a
-different file is blocked.
+While the fixer is active, its frontmatter `PreToolUse` hook (matcher
+`Read|Edit|Write`) runs `guardrails scope-check`. **Not yet tested:** the first
+live run exercised delegation and escalation but never triggered a scope-lock
+denial — the fixer only edited the one file named in the manifest, and its
+out-of-repo read predated the `Read` matcher. So whether a `PreToolUse` hook
+defined in a _repo-local_ (non-plugin) `.claude/agents/*.md` frontmatter actually
+fires is still **assumed, not confirmed**. This step is the confirmation — record
+the result in `plan.md`. If it does **not** fire, the scope-lock is inoperative
+and the fallback is the diff-auditor only (a real downgrade); note it and
+consider installing the plugin as a real plugin, or a global-but-guarded
+scope-check.
+
+Two things to observe:
+
+- **Edit scope-lock:** with a manifest referencing one file, an edit to a
+  **different** file is **denied** with a scope-lock reason.
+- **Read scope-lock (Finding 3):** a fixer attempting to **read outside the
+  repo** (e.g. `~/.claude/…/memory/*.md`) is **denied**. A denied out-of-repo
+  read is also the clearest signal that frontmatter `PreToolUse` fires at all —
+  in the first live run (before this matcher existed) the thorough fixer read
+  `~/.claude` memory unimpeded, so seeing it blocked now confirms both the
+  Read-scope fix and that repo-local agent hooks work.
 
 ## 5. Diff-auditor — _fixer can't cheat_
 

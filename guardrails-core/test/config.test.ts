@@ -27,6 +27,7 @@ describe('defaultConfig', () => {
       enforcement: 'warn',
       fastFixer: 'guardrail-fixer',
       thoroughFixer: 'guardrail-fixer-thorough',
+      looseRules: [],
     });
   });
 });
@@ -66,17 +67,41 @@ describe('loadConfig', () => {
     );
     expect(loadConfig(root).maxAttempts).toBe(3);
   });
+
+  it('reads looseRules as a string array, dropping non-strings', () => {
+    writeFileSync(
+      path.join(root, 'guardrails.config.json'),
+      JSON.stringify({ looseRules: ['house/no-raw-sql', 42, null] }),
+    );
+    expect(loadConfig(root).looseRules).toEqual(['house/no-raw-sql']);
+  });
+
+  it('falls back to an empty looseRules when the value is not an array', () => {
+    writeFileSync(
+      path.join(root, 'guardrails.config.json'),
+      JSON.stringify({ looseRules: 'nope' }),
+    );
+    expect(loadConfig(root).looseRules).toEqual([]);
+  });
 });
 
 describe('toGateConfig', () => {
-  it('projects the repo config onto the gate config shape', () => {
-    const gate = toGateConfig(defaultConfig());
-    expect(gate).toEqual({
+  it('projects the core fields onto the gate config shape', () => {
+    expect(toGateConfig(defaultConfig())).toMatchObject({
       maxAttempts: 3,
       recurThreshold: 3,
       graduationThreshold: 3,
       fastFixer: 'guardrail-fixer',
       thoroughFixer: 'guardrail-fixer-thorough',
     });
+  });
+
+  it('builds an isLoose predicate from built-in defaults plus repo looseRules', () => {
+    const gate = toGateConfig({ ...defaultConfig(), looseRules: ['house/x'] });
+    expect(gate.isLoose?.({ ruleId: 'vitest/expect-expect' } as never)).toBe(
+      true,
+    );
+    expect(gate.isLoose?.({ ruleId: 'house/x' } as never)).toBe(true);
+    expect(gate.isLoose?.({ ruleId: 'no-console' } as never)).toBe(false);
   });
 });
