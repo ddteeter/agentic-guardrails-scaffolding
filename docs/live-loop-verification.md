@@ -10,7 +10,7 @@ This document is the manual acceptance test for that last mile.
 > installed as a devDependency (in this dev repo it's a workspace, already
 > present).
 
-## 0. Prerequisite — the loop is wired inline (Approach A)
+## 0. Prerequisite — the loop is wired inline (no plugin install)
 
 This repo self-hosts the guardrail loop directly in `.claude/` (no plugin
 install): `.claude/settings.json` carries the Stop / PostToolUse / SessionStart /
@@ -67,13 +67,16 @@ pass.
 ## 4. Scope-lock — _fixer can't wander_ (CONFIRM this fires)
 
 While the fixer is active, its frontmatter `PreToolUse` hook (matcher
-`Read|Edit|Write`) runs `guardrails scope-check`. **Open question to settle
-here:** whether a `PreToolUse` hook defined in a _repo-local_ (non-plugin)
-`.claude/agents/*.md` frontmatter actually fires is assumed, not yet confirmed.
-This step is the confirmation — record the result in `plan.md`. If it does **not**
-fire, the scope-lock is inoperative and the fallback is the diff-auditor only (a
-real downgrade); note it and consider installing the plugin (Approach B) or a
-global-but-guarded scope-check.
+`Read|Edit|Write`) runs `guardrails scope-check`. **Not yet tested:** the first
+live run exercised delegation and escalation but never triggered a scope-lock
+denial — the fixer only edited the one file named in the manifest, and its
+out-of-repo read predated the `Read` matcher. So whether a `PreToolUse` hook
+defined in a _repo-local_ (non-plugin) `.claude/agents/*.md` frontmatter actually
+fires is still **assumed, not confirmed**. This step is the confirmation — record
+the result in `plan.md`. If it does **not** fire, the scope-lock is inoperative
+and the fallback is the diff-auditor only (a real downgrade); note it and
+consider installing the plugin as a real plugin, or a global-but-guarded
+scope-check.
 
 Two things to observe:
 

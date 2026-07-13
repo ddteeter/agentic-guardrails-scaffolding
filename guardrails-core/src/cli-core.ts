@@ -12,6 +12,7 @@ import { runStopGate } from './gate.js';
 import {
   formatStopHookOutput,
   parseHookInput,
+  type PreToolUseDenyOutput,
   resolveLocalBin,
 } from './hook-io.js';
 import { collectManifestFiles, isPathAllowed, isWithinRepo } from './scope.js';
@@ -155,15 +156,14 @@ function stateCommand(deps: CliDeps, sessionId: string): number {
 }
 
 function denyPreToolUse(deps: CliDeps, reason: string): void {
-  deps.stdout(
-    JSON.stringify({
-      hookSpecificOutput: {
-        hookEventName: 'PreToolUse',
-        permissionDecision: 'deny',
-        permissionDecisionReason: reason,
-      },
-    }),
-  );
+  const output: PreToolUseDenyOutput = {
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'deny',
+      permissionDecisionReason: reason,
+    },
+  };
+  deps.stdout(JSON.stringify(output));
 }
 
 async function scopeCheckCommand(deps: CliDeps): Promise<void> {

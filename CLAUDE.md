@@ -61,6 +61,24 @@ hard-block hook, kept on disk if you want it back.
   it to load — and, if the change affects fixer behavior, to re-run the relevant
   step of `docs/live-loop-verification.md`.
 
+## Upgrading leveraged tools (eslint plugins, sonarjs, etc.)
+
+guardrails-core hardcodes rule-ids from third-party tools in two places, which
+can drift when you upgrade those tools. When bumping a linter/test/analysis
+dependency, **review both**:
+
+- **`guardrails-core/src/loose-rules.ts`** — the built-in loose-class list. Check
+  whether the tool **renamed or removed** any rule-id it references, and whether
+  the new version adds rules that should be classified **loose** (a green fix
+  easily not a good one — test-integrity, architecture, mutation, dead-code).
+- **`guardrails-core/src/audit.ts`** — the diff-auditor suppression signatures
+  (`eslint-disable`, `@ts-*`, `@SuppressWarnings`, `.skip`, …). Confirm the tool
+  hasn't changed the syntax of a suppression the auditor watches for.
+
+Stale entries fail silently (a loose rule routed to the wrong tier, or a
+suppression the auditor no longer recognizes), so this review is part of any
+tool upgrade — add/adjust with a test.
+
 ## Strictness (non-negotiable)
 
 - **TDD** — no production code without a failing test first.

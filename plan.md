@@ -150,6 +150,26 @@ reads outside `repoRoot`). One remains:
   small design (per-cycle snapshot lifecycle + false-positive guard for
   legitimate refactors).
 
+- **Fixer edit-scope: cross-file fixes** (raised in PR #4 review). The
+  scope-lock confines the fixer to the files named in the manifest, but the
+  _optimal_ fix sometimes lives elsewhere — a type error surfaced in `A.ts`
+  whose real cause is a wrong type in `B.ts`. Today that fix is **denied**, the
+  fixer can't resolve it, attempts exhaust, and it **escalates to the main
+  agent** (terminal tier, no scope-lock, full latitude) — which is the intended
+  safety fallback, but it burns attempts first. Options to consider: let the
+  manifest carry a broader `editScope` (e.g. the flagged file's local imports),
+  or let the fixer _request_ an out-of-manifest edit that the gate approves once.
+  Monorepo sibling packages are already in-scope when `repoRoot` is the workspace
+  root, so this is about genuinely cross-file (not cross-package) fixes.
+
+- **Configurable read-scope** (raised in PR #4 review). The `Read` scope-check
+  denies all out-of-repo reads. A repo might legitimately need the fixer to read
+  an external shared config or tool file. Deferred (YAGNI) — no concrete use case
+  yet, and the safe default is deny; monorepo siblings are already in-repo when
+  `repoRoot` is the workspace root. When a real case appears, add a
+  `fixerReadAllowlist: string[]` to `guardrails.config.json` (extra roots the
+  fixer may read), mirroring how `looseRules` extends the built-in defaults.
+
 ## Phase A status
 
 Built and tested (Vitest, strict TS → ESM): the `Violation` contract, session

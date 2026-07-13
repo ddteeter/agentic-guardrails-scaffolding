@@ -48,12 +48,29 @@ export function parseHookInput(stdin: string): HookInput {
   return input;
 }
 
+// The hook-output shapes below mirror the Claude Code hook JSON schema
+// (https://docs.claude.com/en/docs/claude-code/hooks#hook-output). There is no
+// official published TypeScript type for the CLI hook I/O to import, and
+// guardrails-core stays dependency-light (it will not pull in
+// `@anthropic-ai/claude-agent-sdk` just for a type), so these are maintained by
+// hand against the docs. Any schema drift surfaces in the manual
+// `docs/live-loop-verification.md` run (the gate would stop blocking / denying).
+
 export interface StopHookOutput {
   decision: 'block';
   reason: string;
   hookSpecificOutput?: {
     hookEventName: 'Stop';
     additionalContext: string;
+  };
+}
+
+/** PreToolUse deny output (used by the fixer scope-lock). */
+export interface PreToolUseDenyOutput {
+  hookSpecificOutput: {
+    hookEventName: 'PreToolUse';
+    permissionDecision: 'deny';
+    permissionDecisionReason: string;
   };
 }
 
