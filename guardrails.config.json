@@ -1,0 +1,8 @@
+{
+  "baseBranch": "main",
+  "maxAttempts": 3,
+  "recurThreshold": 3,
+  "graduationThreshold": 3,
+  "distribution": "solo",
+  "enforcement": "warn"
+}
