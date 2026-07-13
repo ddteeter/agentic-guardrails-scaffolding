@@ -13,7 +13,7 @@
   },
   "scaffoldVersion": "1.2.0",
   "scripts": {
-    "build": "npm run build --workspace guardrails-core",
+    "build": "npm run build --workspace guardrails-core && node scripts/sync-agents.mjs",
     "lint": "eslint .",
     "lint:fix": "eslint --fix .",
     "format": "prettier --write .",

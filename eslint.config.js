@@ -15,6 +15,7 @@ export default tseslint.config(
       '**/.fallow/',
       '**/*.config.js',
       '**/*.config.ts',
+      'scripts/**',
     ],
   },
 

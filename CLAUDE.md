@@ -49,6 +49,18 @@ missing `cli.mjs`, run `npm run build`.
 hard backstops regardless; `.claude/hooks/post-edit-lint.sh` is the old
 hard-block hook, kept on disk if you want it back.
 
+## Editing the loop (fixer agents / hooks)
+
+- **The fixer agents have ONE source of truth: `guardrails-plugin/agents/`.**
+  `.claude/agents/` is **generated** by `npm run build` (`scripts/sync-agents.mjs`)
+  and is gitignored — **never edit `.claude/agents/` directly; the next build
+  overwrites it.** Edit the plugin source, then `npm run build` to sync.
+- **Hooks and agents load at session start.** Editing the fixer agents or
+  `.claude/settings.json` does **not** take effect in the running session. After
+  such a change, **tell the developer to start a fresh Claude Code session** for
+  it to load — and, if the change affects fixer behavior, to re-run the relevant
+  step of `docs/live-loop-verification.md`.
+
 ## Strictness (non-negotiable)
 
 - **TDD** — no production code without a failing test first.
