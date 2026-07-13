@@ -1,0 +1,73 @@
+# Agent Guardrails — project guide for coding agents
+
+This repo is **guardrails-core** (an npm package that gates coding agents) AND it
+**self-hosts its own output** — the guardrail loop runs on your work here. Read
+this before editing.
+
+## You are being guarded (dogfooding)
+
+`.claude/settings.json` wires the loop into every session:
+
+- **PostToolUse → `guardrails autofix`** — silent `eslint --fix` after each edit
+  (mechanical issues are fixed before they reach you).
+- **Stop → `guardrails gate --mode=stop`** — when you try to end a turn, it runs
+  `verify` (eslint + tsc + the `vitest/expect-expect` house rule). Judgment-class
+  violations **block** the turn and hand you a terse pointer.
+
+When the Stop-gate blocks you:
+
+- **Do NOT read the manifest file.** Follow the pointer: spawn the named fixer
+  subagent (`guardrail-fixer` / `guardrail-fixer-thorough`) and give it the
+  manifest path, then try to stop again. The gate re-verifies the fix.
+- Never satisfy the gate by weakening it (suppressions, casts, `.skip`, removing
+  assertions) — the diff-auditor and re-verify will catch it.
+
+## Dogfooding mindset — findings are the point
+
+We run the guardrail on ourselves precisely to surface its rough edges. If the
+loop **misbehaves** — oscillates/loops, weakens a test (removes/loosens an
+assertion), reads outside the repo, over-reads, or false-positives — that is a
+**finding, not a nuisance**:
+
+1. Note what happened.
+2. Capture it in `plan.md` → "Roadmap: fixer-loop hardening" (or a GitHub issue).
+3. If the fix is small and in-design, do it TDD-first in `guardrails-core`.
+
+Don't silently route around a guardrail bug — that wastes the signal the whole
+milestone exists to collect.
+
+## Setup
+
+The Stop hook runs
+`node "$CLAUDE_PROJECT_DIR/node_modules/guardrails-core/dist/cli.mjs"`. `dist/`
+is gitignored, so a fresh worktree needs a build — `npm install` does it (the
+`prepare` script builds after install). If the Stop hook ever errors with a
+missing `cli.mjs`, run `npm run build`.
+
+**Kill-switch:** if the loop bricks development, comment out the `Stop` (and/or
+`PostToolUse`) entry in `.claude/settings.json`. Husky pre-push + CI remain the
+hard backstops regardless; `.claude/hooks/post-edit-lint.sh` is the old
+hard-block hook, kept on disk if you want it back.
+
+## Strictness (non-negotiable)
+
+- **TDD** — no production code without a failing test first.
+- **Fix code, don't weaken rules** — never add `eslint-disable`/`@ts-ignore`/
+  `as any`/`.skip`, delete code to quiet a checker, or raise gate thresholds to
+  make a check pass.
+- The pre-push gate (`npm run test:coverage && npm run check:graph`) and CI are
+  authoritative. Commit in small, logical steps.
+
+## Where things are / starting a new phase
+
+- `plan.md` — the design, build phases (A shipped; **B = Copilot channel** is
+  next), the solo→team flip, and the roadmap sections.
+- `docs/superpowers/specs/` + `plans/` — per-milestone design + implementation.
+- `docs/live-loop-verification.md` — how to exercise the loop live.
+- `guardrails-core/` — the machinery (strict TS → `dist/*.mjs`);
+  `guardrails-plugin/` — the CC plugin assets; the loop is wired inline into
+  `.claude/`.
+
+**Starting a phase** (e.g. Phase B): don't cold-start coding — run
+brainstorm → spec → writing-plans → execute (the superpowers flow), seeded by
+`plan.md` §7/§9-B and the "Open questions" section.

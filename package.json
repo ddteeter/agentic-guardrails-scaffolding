@@ -24,7 +24,7 @@
     "test:coverage": "vitest run --coverage",
     "check:graph": "fallow --coverage coverage/coverage-final.json --fail-on-issues",
     "check:graph:full": "fallow --coverage coverage/coverage-final.json",
-    "prepare": "husky"
+    "prepare": "husky && npm run build"
   },
   "lint-staged": {
     "*.{ts,tsx}": [
