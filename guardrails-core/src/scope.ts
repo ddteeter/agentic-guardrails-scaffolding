@@ -34,6 +34,21 @@ export function collectManifestFiles(directory: string): Set<string> {
   return files;
 }
 
+/**
+ * Read-scope guard (Finding 3 from the dogfooding proof): is `candidate` inside
+ * the repo? The fixer may read anything *within* the repo (the manifest, the
+ * files it edits, even `node_modules` rule sources — that in-repo exploration is
+ * how the thorough tier diagnoses subtle rules), but never *outside* it (e.g.
+ * the user's `~/.claude` project memory).
+ */
+export function isWithinRepo(repoRoot: string, candidate: string): boolean {
+  const relative = path.relative(repoRoot, path.resolve(repoRoot, candidate));
+  return (
+    relative === '' ||
+    (!relative.startsWith('..') && !path.isAbsolute(relative))
+  );
+}
+
 export function isPathAllowed(
   files: ReadonlySet<string>,
   repoRoot: string,

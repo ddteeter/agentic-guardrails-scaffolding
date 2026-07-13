@@ -14,7 +14,7 @@ import {
   parseHookInput,
   resolveLocalBin,
 } from './hook-io.js';
-import { collectManifestFiles, isPathAllowed } from './scope.js';
+import { collectManifestFiles, isPathAllowed, isWithinRepo } from './scope.js';
 import {
   deleteSession,
   loadRecurrence,
@@ -154,25 +154,46 @@ function stateCommand(deps: CliDeps, sessionId: string): number {
   return 0;
 }
 
+function denyPreToolUse(deps: CliDeps, reason: string): void {
+  deps.stdout(
+    JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+        permissionDecisionReason: reason,
+      },
+    }),
+  );
+}
+
 async function scopeCheckCommand(deps: CliDeps): Promise<void> {
   const input = parseHookInput(await deps.readStdin());
   const repoRoot = input.cwd ?? deps.cwd;
   if (input.filePath === undefined) {
     return;
   }
+  // Read: the fixer may read anything WITHIN the repo (manifest, edited files,
+  // even node_modules rule sources — that in-repo exploration is how the
+  // thorough tier diagnoses subtle rules), but nothing OUTSIDE it (e.g. the
+  // user's ~/.claude project memory).
+  if (input.toolName === 'Read') {
+    if (!isWithinRepo(repoRoot, input.filePath)) {
+      denyPreToolUse(
+        deps,
+        `Fixer read-scope: ${input.filePath} is outside the repository. ` +
+          `The fixer may only read files within the repo.`,
+      );
+    }
+    return;
+  }
+  // Edit/Write: only the files named in the violations manifest. No active
+  // manifest → the fixer isn't running; don't interfere.
   const files = collectManifestFiles(stateDirectory(repoRoot));
-  // No active manifest → the fixer isn't running; don't interfere.
   if (files.size > 0 && !isPathAllowed(files, repoRoot, input.filePath)) {
-    deps.stdout(
-      JSON.stringify({
-        hookSpecificOutput: {
-          hookEventName: 'PreToolUse',
-          permissionDecision: 'deny',
-          permissionDecisionReason:
-            `Fixer scope-lock: ${input.filePath} is not in the violations ` +
-            `manifest. The fixer may only edit files listed there.`,
-        },
-      }),
+    denyPreToolUse(
+      deps,
+      `Fixer scope-lock: ${input.filePath} is not in the violations ` +
+        `manifest. The fixer may only edit files listed there.`,
     );
   }
 }

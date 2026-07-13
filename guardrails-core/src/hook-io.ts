@@ -14,6 +14,7 @@ export interface HookInput {
   sessionId?: string;
   cwd?: string;
   filePath?: string;
+  toolName?: string;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -36,6 +37,9 @@ export function parseHookInput(stdin: string): HookInput {
   }
   if (typeof raw.cwd === 'string') {
     input.cwd = raw.cwd;
+  }
+  if (typeof raw.tool_name === 'string') {
+    input.toolName = raw.tool_name;
   }
   const toolInput = raw.tool_input;
   if (isRecord(toolInput) && typeof toolInput.file_path === 'string') {

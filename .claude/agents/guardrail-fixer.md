@@ -5,7 +5,7 @@ tools: Read, Edit, Write
 model: haiku
 hooks:
   PreToolUse:
-    - matcher: 'Edit|Write'
+    - matcher: 'Read|Edit|Write'
       hooks:
         - type: command
           command: node "${CLAUDE_PROJECT_DIR}/node_modules/guardrails-core/dist/cli.mjs" scope-check

@@ -131,6 +131,25 @@ config; and external-tool output). Two tracks:
   **loose class** (§2.3) above the bottom fixer tier. The fixer already forbids
   adding new casts, so recurrence memory surfaces repeat offenders automatically.
 
+## Roadmap: fixer-loop hardening (from the dogfooding live proof)
+
+The first live run (assertionless test → escalation → correct fix) validated the
+escalation ladder but surfaced improvements. Two are implemented on the
+dogfooding branch (built-in loose-rule routing so test-integrity rules go to the
+thorough tier from attempt 1; a `Read`-matcher scope-check denying the fixer
+reads outside `repoRoot`). One remains:
+
+- **Per-cycle diff-auditing (oscillation / test-weakening).** The diff-auditor
+  is anchored to the _original_ pre-fix snapshot, so a fixer that adds an
+  assertion and a later fixer that removes it nets back to baseline on a _new_
+  file and slips through — the momentary weakening isn't flagged (it was caught
+  only because re-verify + escalation converged). Fix: audit each fixer's edit
+  against the _immediately prior_ fixer state (snapshot per cycle, not once), and
+  extend the auditor's signatures to flag _removed_ assertions (`-` lines
+  containing `expect(`/`assert`), not just _added_ suppressions. Needs its own
+  small design (per-cycle snapshot lifecycle + false-positive guard for
+  legitimate refactors).
+
 ## Phase A status
 
 Built and tested (Vitest, strict TS → ESM): the `Violation` contract, session

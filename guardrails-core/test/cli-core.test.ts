@@ -125,6 +125,36 @@ describe('runCommand — scope-check', () => {
     );
     expect(out.join('')).toBe('');
   });
+
+  it('denies a Read outside the repo (e.g. ~/.claude memory)', async () => {
+    const stdin = JSON.stringify({
+      cwd: root,
+      tool_name: 'Read',
+      tool_input: { file_path: '/home/u/.claude/projects/x/memory/y.md' },
+    });
+    await runCommand(
+      'scope-check',
+      [],
+      deps({ readStdin: () => Promise.resolve(stdin) }),
+    );
+    expect(out.join('')).toContain('deny');
+  });
+
+  it('allows a Read inside the repo (incl. node_modules)', async () => {
+    const stdin = JSON.stringify({
+      cwd: root,
+      tool_name: 'Read',
+      tool_input: {
+        file_path: path.join(root, 'node_modules/some-plugin/rule.js'),
+      },
+    });
+    await runCommand(
+      'scope-check',
+      [],
+      deps({ readStdin: () => Promise.resolve(stdin) }),
+    );
+    expect(out.join('')).toBe('');
+  });
 });
 
 describe('runCommand — gate stop', () => {
