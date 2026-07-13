@@ -1,7 +1,11 @@
 {
   "ignorePatterns": ["dist/", "coverage/", "**/*.d.ts"],
-  // Runtime-only deps fallow can't see imported. Add per project as needed.
-  "ignoreDependencies": [],
+  // `@anthropic-ai/claude-agent-sdk` is a TYPE-ONLY devDependency (`import type`
+  // for the Claude Code hook schema) — erased at build, never in shipped dist,
+  // so it correctly lives in devDependencies. fallow's static import scan can't
+  // see the `import type` erasure and would flag it as an unlisted (runtime)
+  // dependency; this suppresses that false positive.
+  "ignoreDependencies": ["@anthropic-ai/claude-agent-sdk"],
   "duplicates": { "threshold": 5, "minTokens": 75, "minLines": 5 },
   // Dev-only tooling (one-shot CLI scripts) is untested by design; gating
   // change-risk (CRAP) on never-tested code isn't meaningful. Production src/

@@ -8,8 +8,21 @@
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 
+// The Claude Code hook JSON schema, straight from the SDK the CLI ships. We
+// depend on these types directly (a type-only devDependency — erased at build,
+// never shipped) so our hook I/O stays provably compatible: if Claude Code
+// changes the schema, the SDK type changes and our build breaks, instead of the
+// gate silently failing to block or deny at runtime.
+import type {
+  BaseHookInput,
+  PreToolUseHookInput,
+  StopHookSpecificOutput,
+  SyncHookJSONOutput,
+} from '@anthropic-ai/claude-agent-sdk';
+
 import type { GateDecision } from './gate-decision.js';
 
+/** Our normalized (camelCase) view of the fields we read from the payload. */
 export interface HookInput {
   sessionId?: string;
   cwd?: string;
@@ -17,20 +30,29 @@ export interface HookInput {
   toolName?: string;
 }
 
+/** The raw payload fields we read, typed against the SDK schema. */
+type RawHookPayload = Partial<
+  Pick<BaseHookInput, 'session_id' | 'cwd'> &
+    Pick<PreToolUseHookInput, 'tool_name' | 'tool_input'>
+>;
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 export function parseHookInput(stdin: string): HookInput {
-  let raw: unknown;
+  let parsed: unknown;
   try {
-    raw = JSON.parse(stdin);
+    parsed = JSON.parse(stdin);
   } catch {
     return {};
   }
-  if (!isRecord(raw)) {
+  if (!isRecord(parsed)) {
     return {};
   }
+  // Defensive over untrusted input: field NAMES come from the SDK types (so a
+  // rename breaks the build), values are still runtime-checked.
+  const raw = parsed as RawHookPayload;
   const input: HookInput = {};
   if (typeof raw.session_id === 'string') {
     input.sessionId = raw.session_id;
@@ -41,38 +63,17 @@ export function parseHookInput(stdin: string): HookInput {
   if (typeof raw.tool_name === 'string') {
     input.toolName = raw.tool_name;
   }
-  const toolInput = raw.tool_input;
-  if (isRecord(toolInput) && typeof toolInput.file_path === 'string') {
-    input.filePath = toolInput.file_path;
+  if (
+    isRecord(raw.tool_input) &&
+    typeof raw.tool_input.file_path === 'string'
+  ) {
+    input.filePath = raw.tool_input.file_path;
   }
   return input;
 }
 
-// The hook-output shapes below mirror the Claude Code hook JSON schema
-// (https://docs.claude.com/en/docs/claude-code/hooks#hook-output). There is no
-// official published TypeScript type for the CLI hook I/O to import, and
-// guardrails-core stays dependency-light (it will not pull in
-// `@anthropic-ai/claude-agent-sdk` just for a type), so these are maintained by
-// hand against the docs. Any schema drift surfaces in the manual
-// `docs/live-loop-verification.md` run (the gate would stop blocking / denying).
-
-export interface StopHookOutput {
-  decision: 'block';
-  reason: string;
-  hookSpecificOutput?: {
-    hookEventName: 'Stop';
-    additionalContext: string;
-  };
-}
-
-/** PreToolUse deny output (used by the fixer scope-lock). */
-export interface PreToolUseDenyOutput {
-  hookSpecificOutput: {
-    hookEventName: 'PreToolUse';
-    permissionDecision: 'deny';
-    permissionDecisionReason: string;
-  };
-}
+/** Claude Code hook output — the SDK's canonical synchronous shape. */
+export type HookOutput = SyncHookJSONOutput;
 
 /**
  * Claude Code Stop-hook output. `null` means "let the turn end" (no block).
@@ -82,19 +83,20 @@ export interface PreToolUseDenyOutput {
  */
 export function formatStopHookOutput(
   decision: GateDecision,
-): StopHookOutput | null {
+): HookOutput | null {
   if (!decision.block) {
     return null;
   }
-  const output: StopHookOutput = {
+  const output: HookOutput = {
     decision: 'block',
     reason: decision.message,
   };
   if (decision.additionalContext !== undefined) {
-    output.hookSpecificOutput = {
+    const stop: StopHookSpecificOutput = {
       hookEventName: 'Stop',
       additionalContext: decision.additionalContext,
     };
+    output.hookSpecificOutput = stop;
   }
   return output;
 }

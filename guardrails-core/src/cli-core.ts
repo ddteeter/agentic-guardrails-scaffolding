@@ -11,8 +11,8 @@ import type { Exec } from './exec.js';
 import { runStopGate } from './gate.js';
 import {
   formatStopHookOutput,
+  type HookOutput,
   parseHookInput,
-  type PreToolUseDenyOutput,
   resolveLocalBin,
 } from './hook-io.js';
 import { collectManifestFiles, isPathAllowed, isWithinRepo } from './scope.js';
@@ -156,7 +156,7 @@ function stateCommand(deps: CliDeps, sessionId: string): number {
 }
 
 function denyPreToolUse(deps: CliDeps, reason: string): void {
-  const output: PreToolUseDenyOutput = {
+  const output: HookOutput = {
     hookSpecificOutput: {
       hookEventName: 'PreToolUse',
       permissionDecision: 'deny',
