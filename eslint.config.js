@@ -2,6 +2,7 @@ import eslint from '@eslint/js';
 import tseslint from 'typescript-eslint';
 import unicorn from 'eslint-plugin-unicorn';
 import sonarjs from 'eslint-plugin-sonarjs';
+import vitest from 'eslint-plugin-vitest';
 import eslintConfigPrettier from 'eslint-config-prettier';
 
 export default tseslint.config(
@@ -102,12 +103,15 @@ export default tseslint.config(
     },
   },
 
-  // Test files: relax some rules where test fixtures need loose types
+  // Test files: relax some rules where fixtures need loose types, and enforce
+  // that every test actually asserts something (a judgment-class house rule).
   {
     files: ['**/test/**/*.ts', '**/*.test.ts', '**/*.spec.ts'],
+    plugins: { vitest },
     rules: {
       '@typescript-eslint/no-explicit-any': 'off',
       'sonarjs/no-duplicate-string': 'off',
+      'vitest/expect-expect': 'error',
     },
   },
 
