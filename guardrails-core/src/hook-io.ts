@@ -28,6 +28,7 @@ export interface HookInput {
   cwd?: string;
   filePath?: string;
   toolName?: string;
+  command?: string;
 }
 
 /** The raw payload fields we read, typed against the SDK schema. */
@@ -35,6 +36,21 @@ type RawHookPayload = Partial<
   Pick<BaseHookInput, 'session_id' | 'cwd'> &
     Pick<PreToolUseHookInput, 'tool_name' | 'tool_input'>
 >;
+
+/**
+ * Copilot camelCase hook payload — the fields we read. `@github/copilot-sdk`
+ * declares matching shapes (`BaseHookInput`/`PreToolUseHookInput` in
+ * `dist/types.d.ts`, with `sessionId`/`toolName`/`toolArgs`), but does not
+ * re-export them from the package root (`dist/index.d.ts`), so they aren't
+ * importable. This interface is hand-declared and local pending SDK coverage;
+ * see the Phase-B risk note in `plan.md`.
+ */
+interface CopilotHookPayload {
+  sessionId?: unknown;
+  cwd?: unknown;
+  toolName?: unknown;
+  toolArgs?: unknown;
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -51,23 +67,39 @@ export function parseHookInput(stdin: string): HookInput {
     return {};
   }
   // Defensive over untrusted input: field NAMES come from the SDK types (so a
-  // rename breaks the build), values are still runtime-checked.
-  const raw = parsed as RawHookPayload;
+  // rename breaks the build), values are still runtime-checked. Claude's
+  // snake_case is read first; Copilot's camelCase is the fallback.
+  const claude = parsed as RawHookPayload;
+  const copilot = parsed as CopilotHookPayload;
   const input: HookInput = {};
-  if (typeof raw.session_id === 'string') {
-    input.sessionId = raw.session_id;
+
+  const sessionId = claude.session_id ?? copilot.sessionId;
+  if (typeof sessionId === 'string') {
+    input.sessionId = sessionId;
   }
-  if (typeof raw.cwd === 'string') {
-    input.cwd = raw.cwd;
+  if (typeof claude.cwd === 'string') {
+    input.cwd = claude.cwd;
   }
-  if (typeof raw.tool_name === 'string') {
-    input.toolName = raw.tool_name;
+  const toolName = claude.tool_name ?? copilot.toolName;
+  if (typeof toolName === 'string') {
+    input.toolName = toolName;
   }
-  if (
-    isRecord(raw.tool_input) &&
-    typeof raw.tool_input.file_path === 'string'
-  ) {
-    input.filePath = raw.tool_input.file_path;
+
+  // Argument bag: Claude's `tool_input` or Copilot's `toolArgs`.
+  let args: Record<string, unknown> | undefined;
+  if (isRecord(claude.tool_input)) {
+    args = claude.tool_input;
+  } else if (isRecord(copilot.toolArgs)) {
+    args = copilot.toolArgs;
+  }
+  if (args) {
+    const filePath = args.file_path ?? args.path;
+    if (typeof filePath === 'string') {
+      input.filePath = filePath;
+    }
+    if (typeof args.command === 'string') {
+      input.command = args.command;
+    }
   }
   return input;
 }

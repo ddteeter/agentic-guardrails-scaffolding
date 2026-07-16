@@ -105,6 +105,11 @@ required check, publish core + plugin, standardize thresholds — no code change
   `stateDirectory()` is the single chokepoint, so this is a one-function change +
   a config knob — deferred to Phase B so the CC plugin's hardcoded paths and the
   current tests don't churn now.
+- **Copilot payload binding is local pending SDK coverage.** `@github/copilot-sdk`
+  declares `BaseHookInput`/`PreToolUseHookInput` (`sessionId`/`toolName`/
+  `toolArgs`) in `dist/types.d.ts` but does not re-export them from the package
+  root, so `hook-io.ts`'s `CopilotHookPayload` is a hand-declared local
+  interface, not an SDK `Pick` — re-bind it if/when the SDK exports these types.
 
 ## Roadmap: boundary type-safety as a first-class concern
 

@@ -65,6 +65,45 @@ describe('parseHookInput', () => {
     expect(parseHookInput('not json')).toEqual({});
     expect(parseHookInput('')).toEqual({});
   });
+
+  it('extracts fields from a Copilot camelCase preToolUse payload', () => {
+    const parsed = parseHookInput(
+      JSON.stringify({
+        sessionId: 'xyz',
+        cwd: '/repo',
+        toolName: 'bash',
+        toolArgs: { command: 'git commit -m wip' },
+      }),
+    );
+    expect(parsed).toEqual({
+      sessionId: 'xyz',
+      cwd: '/repo',
+      toolName: 'bash',
+      command: 'git commit -m wip',
+    });
+  });
+
+  it('extracts the edited path from a Copilot postToolUse payload', () => {
+    const parsed = parseHookInput(
+      JSON.stringify({
+        sessionId: 'xyz',
+        cwd: '/repo',
+        toolName: 'edit',
+        toolArgs: { path: '/repo/src/a.ts' },
+      }),
+    );
+    expect(parsed.filePath).toBe('/repo/src/a.ts');
+  });
+
+  it('reads the git command from a Claude Bash payload too', () => {
+    const parsed = parseHookInput(
+      JSON.stringify({
+        tool_name: 'Bash',
+        tool_input: { command: 'git push' },
+      }),
+    );
+    expect(parsed.command).toBe('git push');
+  });
 });
 
 describe('formatStopHookOutput', () => {
