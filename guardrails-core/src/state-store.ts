@@ -1,6 +1,6 @@
 /**
  * Persistence layer for session tally, recurrence counter, and the violations
- * manifest. All state lives under the repo's `.claude/state/guardrails/` so
+ * manifest. All state lives under the repo's `.guardrails/state/` so
  * recurrence data is per-repo and (for teams) committable.
  *
  * Every read is defensive: missing or corrupt files degrade to an empty
@@ -25,7 +25,7 @@ import {
 import { isViolation, type Violation } from './violation.js';
 
 export function stateDirectory(repoRoot: string): string {
-  return path.join(repoRoot, '.claude', 'state', 'guardrails');
+  return path.join(repoRoot, '.guardrails', 'state');
 }
 
 export function sessionFile(directory: string, sessionId: string): string {
