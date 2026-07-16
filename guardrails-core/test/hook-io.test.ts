@@ -12,6 +12,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import type { GateDecision } from '../src/gate-decision.js';
 import {
+  formatCopilotStopOutput,
+  formatPreToolUseDeny,
   formatStopHookOutput,
   parseHookInput,
   resolveLocalBin,
@@ -150,6 +152,47 @@ describe('formatStopHookOutput', () => {
       hookEventName: 'Stop',
       additionalContext: 'stop doing that',
     });
+  });
+});
+
+describe('formatPreToolUseDeny', () => {
+  it('emits the Claude hookSpecificOutput shape by default', () => {
+    expect(formatPreToolUseDeny('nope', 'claude')).toEqual({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+        permissionDecisionReason: 'nope',
+      },
+    });
+  });
+
+  it('emits the Copilot top-level shape', () => {
+    expect(formatPreToolUseDeny('nope', 'copilot')).toEqual({
+      permissionDecision: 'deny',
+      permissionDecisionReason: 'nope',
+    });
+  });
+});
+
+describe('formatCopilotStopOutput', () => {
+  const base: GateDecision = {
+    outcome: 'delegate',
+    block: true,
+    message: 'spawn the fixer',
+    nextSession: { attempts: 1, ruleCounts: {}, corrected: [] },
+    nextRecurrence: {},
+  };
+
+  it('returns null when not blocking', () => {
+    expect(
+      formatCopilotStopOutput({ ...base, outcome: 'clean', block: false }),
+    ).toBeNull();
+  });
+
+  it('folds the correction into reason (no hookSpecificOutput)', () => {
+    expect(
+      formatCopilotStopOutput({ ...base, additionalContext: 'stop that' }),
+    ).toEqual({ decision: 'block', reason: 'spawn the fixer\n\nstop that' });
   });
 });
 

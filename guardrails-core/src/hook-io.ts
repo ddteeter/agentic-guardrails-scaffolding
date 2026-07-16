@@ -138,6 +138,59 @@ export function formatStopHookOutput(
   return output;
 }
 
+export type Dialect = 'claude' | 'copilot';
+
+/**
+ * A Copilot `preToolUse` deny: `permissionDecision`/`permissionDecisionReason`
+ * live at the top level of the response, not nested under
+ * `hookSpecificOutput` the way Claude Code's `SyncHookJSONOutput` requires
+ * (its `hookSpecificOutput.PreToolUseHookSpecificOutput` is the only place the
+ * SDK type permits those fields). There is no single SDK type that admits
+ * both shapes, so `formatPreToolUseDeny` returns a union rather than forcing
+ * the Copilot shape through a cast.
+ */
+export type PreToolUseDenyOutput =
+  HookOutput | { permissionDecision: 'deny'; permissionDecisionReason: string };
+
+/** PreToolUse deny in the requested dialect. Claude nests it under
+ * hookSpecificOutput (the only shape SyncHookJSONOutput permits); Copilot
+ * wants a top-level permissionDecision, which is why the return type is a
+ * union rather than HookOutput alone. */
+export function formatPreToolUseDeny(
+  reason: string,
+  dialect: Dialect,
+): PreToolUseDenyOutput {
+  if (dialect === 'copilot') {
+    return { permissionDecision: 'deny', permissionDecisionReason: reason };
+  }
+  return {
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'deny',
+      permissionDecisionReason: reason,
+    },
+  };
+}
+
+/** Copilot agentStop block: correction folded into `reason` (Copilot has no
+ * additionalContext channel). `null` lets the turn end. This duplicates the
+ * one-liner in gate.ts's `stopHookReason` rather than importing it, to avoid
+ * a hook-io -> gate dependency (gate.ts is the higher-level module that
+ * orchestrates verify/audit/state and is expected to depend on hook-io, not
+ * the reverse). */
+export function formatCopilotStopOutput(
+  decision: GateDecision,
+): HookOutput | null {
+  if (!decision.block) {
+    return null;
+  }
+  const reason =
+    decision.additionalContext === undefined
+      ? decision.message
+      : `${decision.message}\n\n${decision.additionalContext}`;
+  return { decision: 'block', reason };
+}
+
 /**
  * Resolve a repo-local Node tool (`node_modules/.bin/<tool>`), else fall back to
  * the bare name on PATH. This is the **TypeScript-pack** binary resolver:
