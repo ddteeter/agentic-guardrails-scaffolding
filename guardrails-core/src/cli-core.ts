@@ -10,8 +10,10 @@ import { loadConfig, toGateConfig } from './config.js';
 import type { Exec } from './exec.js';
 import { runCommitGate, runStopGate } from './gate.js';
 import {
+  type Dialect,
+  formatCopilotStopOutput,
+  formatPreToolUseDeny,
   formatStopHookOutput,
-  type HookOutput,
   parseHookInput,
   resolveLocalBin,
 } from './hook-io.js';
@@ -84,7 +86,10 @@ async function autofixCommand(deps: CliDeps): Promise<number> {
   return 0;
 }
 
-async function gateStopCommand(deps: CliDeps): Promise<number> {
+async function gateStopCommand(
+  deps: CliDeps,
+  dialect: Dialect,
+): Promise<number> {
   const input = parseHookInput(await deps.readStdin());
   const repoRoot = input.cwd ?? deps.cwd;
   const sessionId = input.sessionId ?? 'default';
@@ -97,7 +102,10 @@ async function gateStopCommand(deps: CliDeps): Promise<number> {
     config: toGateConfig(config),
     resolveBin: binResolver(repoRoot),
   });
-  const output = formatStopHookOutput(decision);
+  const output =
+    dialect === 'copilot'
+      ? formatCopilotStopOutput(decision)
+      : formatStopHookOutput(decision);
   if (output) {
     deps.stdout(JSON.stringify(output));
   }
@@ -120,6 +128,44 @@ async function gateCommitCommand(deps: CliDeps): Promise<number> {
     );
   }
   return hasErrors(violations) || findings.length > 0 ? 1 : 0;
+}
+
+const SHELL_TOOLS = /^(?:bash|shell|powershell)$/i;
+const GIT_WRITE = /\bgit\s+(?:commit|push)\b/;
+
+/** `gate --mode=pretooluse`: the Copilot commit/push gate. Self-filters on the
+ * shell-tool + git-commit/push command shape rather than relying on hook
+ * matcher config, because VS Code's Copilot hook host ignores matchers — the
+ * command must gate itself regardless of how `.github/hooks` is configured. */
+async function gatePreToolUseCommand(
+  deps: CliDeps,
+  dialect: Dialect,
+): Promise<void> {
+  const input = parseHookInput(await deps.readStdin());
+  if (
+    input.toolName === undefined ||
+    !SHELL_TOOLS.test(input.toolName) ||
+    input.command === undefined ||
+    !GIT_WRITE.test(input.command)
+  ) {
+    return; // allow (silent)
+  }
+  const repoRoot = input.cwd ?? deps.cwd;
+  const config = loadConfig(repoRoot);
+  const { violations, findings, blocked } = await runCommitGate({
+    repoRoot,
+    baseBranch: config.baseBranch,
+    exec: deps.exec,
+    resolveBin: binResolver(repoRoot),
+  });
+  if (!blocked) {
+    return; // allow (silent)
+  }
+  const reason =
+    `guardrails: ${violations.length} violation(s), ` +
+    `${findings.length} added suppression(s). ` +
+    `Resolve them before committing (run 'guardrails verify').`;
+  deps.stdout(JSON.stringify(formatPreToolUseDeny(reason, dialect)));
 }
 
 async function auditCommand(deps: CliDeps): Promise<number> {
@@ -148,18 +194,14 @@ function stateCommand(deps: CliDeps, sessionId: string): number {
   return 0;
 }
 
-function denyPreToolUse(deps: CliDeps, reason: string): void {
-  const output: HookOutput = {
-    hookSpecificOutput: {
-      hookEventName: 'PreToolUse',
-      permissionDecision: 'deny',
-      permissionDecisionReason: reason,
-    },
-  };
-  deps.stdout(JSON.stringify(output));
+function denyPreToolUse(deps: CliDeps, reason: string, dialect: Dialect): void {
+  deps.stdout(JSON.stringify(formatPreToolUseDeny(reason, dialect)));
 }
 
-async function scopeCheckCommand(deps: CliDeps): Promise<void> {
+async function scopeCheckCommand(
+  deps: CliDeps,
+  dialect: Dialect,
+): Promise<void> {
   const input = parseHookInput(await deps.readStdin());
   const repoRoot = input.cwd ?? deps.cwd;
   if (input.filePath === undefined) {
@@ -175,6 +217,7 @@ async function scopeCheckCommand(deps: CliDeps): Promise<void> {
         deps,
         `Fixer read-scope: ${input.filePath} is outside the repository. ` +
           `The fixer may only read files within the repo.`,
+        dialect,
       );
     }
     return;
@@ -187,6 +230,7 @@ async function scopeCheckCommand(deps: CliDeps): Promise<void> {
       deps,
       `Fixer scope-lock: ${input.filePath} is not in the violations ` +
         `manifest. The fixer may only edit files listed there.`,
+      dialect,
     );
   }
 }
@@ -218,9 +262,17 @@ export async function runCommand(
       return autofixCommand(deps);
     }
     case 'gate': {
-      return flag(rest, 'mode') === 'commit'
-        ? gateCommitCommand(deps)
-        : gateStopCommand(deps);
+      const mode = flag(rest, 'mode');
+      const dialect: Dialect =
+        flag(rest, 'dialect') === 'copilot' ? 'copilot' : 'claude';
+      if (mode === 'commit') {
+        return gateCommitCommand(deps);
+      }
+      if (mode === 'pretooluse') {
+        await gatePreToolUseCommand(deps, dialect);
+        return 0;
+      }
+      return gateStopCommand(deps, dialect);
     }
     case 'audit': {
       return auditCommand(deps);
@@ -229,7 +281,9 @@ export async function runCommand(
       return stateCommand(deps, flag(rest, 'session') ?? 'default');
     }
     case 'scope-check': {
-      await scopeCheckCommand(deps);
+      const dialect: Dialect =
+        flag(rest, 'dialect') === 'copilot' ? 'copilot' : 'claude';
+      await scopeCheckCommand(deps, dialect);
       return 0;
     }
     case 'session-start': {
@@ -241,7 +295,7 @@ export async function runCommand(
     }
     default: {
       deps.stderr(
-        'usage: guardrails <verify|autofix|audit|gate|state|scope-check|session-start|session-end>\n',
+        'usage: guardrails <verify|autofix|audit|gate [--mode=stop|commit|pretooluse] [--dialect=copilot]|state|scope-check|session-start|session-end>\n',
       );
       return 1;
     }
