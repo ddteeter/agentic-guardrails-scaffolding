@@ -70,7 +70,7 @@ describe('parseHookInput', () => {
     const parsed = parseHookInput(
       JSON.stringify({
         sessionId: 'xyz',
-        cwd: '/repo',
+        workingDirectory: '/repo',
         toolName: 'bash',
         toolArgs: { command: 'git commit -m wip' },
       }),
@@ -83,11 +83,23 @@ describe('parseHookInput', () => {
     });
   });
 
+  it('reads cwd from Copilot workingDirectory, not just Claude cwd', () => {
+    const parsed = parseHookInput(
+      JSON.stringify({
+        sessionId: 'xyz',
+        workingDirectory: '/repo',
+        toolName: 'bash',
+        toolArgs: { command: 'echo hi' },
+      }),
+    );
+    expect(parsed.cwd).toBe('/repo');
+  });
+
   it('extracts the edited path from a Copilot postToolUse payload', () => {
     const parsed = parseHookInput(
       JSON.stringify({
         sessionId: 'xyz',
-        cwd: '/repo',
+        workingDirectory: '/repo',
         toolName: 'edit',
         toolArgs: { path: '/repo/src/a.ts' },
       }),

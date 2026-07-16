@@ -105,11 +105,19 @@ required check, publish core + plugin, standardize thresholds — no code change
   `stateDirectory()` is the single chokepoint, so this is a one-function change +
   a config knob — deferred to Phase B so the CC plugin's hardcoded paths and the
   current tests don't churn now.
-- **Copilot payload binding is local pending SDK coverage.** `@github/copilot-sdk`
-  declares `BaseHookInput`/`PreToolUseHookInput` (`sessionId`/`toolName`/
-  `toolArgs`) in `dist/types.d.ts` but does not re-export them from the package
-  root, so `hook-io.ts`'s `CopilotHookPayload` is a hand-declared local
-  interface, not an SDK `Pick` — re-bind it if/when the SDK exports these types.
+- **Copilot payload binding is local (no supported import path).**
+  `@github/copilot-sdk`'s `dist/types.d.ts` declares `BaseHookInput`
+  (`sessionId`, `workingDirectory`) and `PreToolUseHookInput`/
+  `PostToolUseHookInput` (`toolName`, `toolArgs: unknown`), but the package's
+  `exports` map exposes only `.` (→ `dist/index.d.ts`, which does not
+  re-export these types) and `./extension` — there is no supported subpath to
+  import them from. `hook-io.ts`'s `CopilotHookPayload` is therefore a
+  hand-declared local interface, not an SDK `Pick`, and `@github/copilot-sdk`
+  itself is **not** a project dependency (it was imported by nothing and only
+  pulled in native FFI deps for zero drift-safety). Re-bind
+  `CopilotHookPayload` to the SDK types if/when a future release exports them
+  via a supported path — until then, an SDK rename of `workingDirectory`/
+  `toolName`/`sessionId` won't be caught by the type checker.
 
 ## Roadmap: boundary type-safety as a first-class concern
 

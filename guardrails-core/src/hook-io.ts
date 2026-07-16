@@ -38,16 +38,20 @@ type RawHookPayload = Partial<
 >;
 
 /**
- * Copilot camelCase hook payload — the fields we read. `@github/copilot-sdk`
- * declares matching shapes (`BaseHookInput`/`PreToolUseHookInput` in
- * `dist/types.d.ts`, with `sessionId`/`toolName`/`toolArgs`), but does not
- * re-export them from the package root (`dist/index.d.ts`), so they aren't
- * importable. This interface is hand-declared and local pending SDK coverage;
- * see the Phase-B risk note in `plan.md`.
+ * Copilot camelCase hook payload — the fields we read. GitHub Copilot's real
+ * `BaseHookInput`/`PreToolUseHookInput` (`sessionId`, `workingDirectory`,
+ * `toolName`, `toolArgs: unknown`) live in `@github/copilot-sdk`'s
+ * `dist/types.d.ts`, but the package's `exports` map only exposes `.` (→
+ * `dist/index.d.ts`, which does not re-export them) and `./extension` — there
+ * is no supported subpath to import them from. `@github/copilot-sdk` is
+ * therefore *not* a devDependency here (it was imported by nothing and only
+ * pulled in native FFI deps for zero drift-safety); this interface is
+ * hand-declared and local until a future SDK release exports the hook wire
+ * types via a supported path — see the Phase-B risk note in `plan.md`.
  */
 interface CopilotHookPayload {
   sessionId?: unknown;
-  cwd?: unknown;
+  workingDirectory?: unknown;
   toolName?: unknown;
   toolArgs?: unknown;
 }
@@ -77,8 +81,9 @@ export function parseHookInput(stdin: string): HookInput {
   if (typeof sessionId === 'string') {
     input.sessionId = sessionId;
   }
-  if (typeof claude.cwd === 'string') {
-    input.cwd = claude.cwd;
+  const cwd = claude.cwd ?? copilot.workingDirectory;
+  if (typeof cwd === 'string') {
+    input.cwd = cwd;
   }
   const toolName = claude.tool_name ?? copilot.toolName;
   if (typeof toolName === 'string') {
