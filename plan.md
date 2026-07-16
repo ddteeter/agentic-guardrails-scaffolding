@@ -99,6 +99,15 @@ required check, publish core + plugin, standardize thresholds — no code change
     programmatic delegation — a softer loop, not a within-turn force.
   - The per-fixer `model` (tier) is now a real cross-runtime knob; the fixer
     _names_ are already config-driven via `guardrails.config.json`.
+  - **Copilot fixer tier-ladder pending model-id confirmation — config-only
+    flip, no code change.** `scripts/sync-agents.mjs` emits `.github/agents/*.agent.md`
+    with the `tools` allowlist and `agents: []` wired, and will write a
+    `model:` line from `RepoConfig.copilotFastModel`/`copilotThoroughModel`
+    whenever those knobs are set — but GitHub's custom-agents docs don't
+    enumerate valid `model:` identifier strings (only "inherits the default
+    model" if unset), so the knobs stay unset for now and the fixers load on
+    Copilot's default model. Once the exact ids are confirmable, set them in
+    `guardrails.config.json` and rebuild; no script or type change needed.
 - **State location on non-Claude surfaces.** State currently lives under
   `.claude/state/guardrails/`. For the Copilot channel a runtime-neutral path
   (e.g. `.guardrails/state/`) may be cleaner than borrowing Claude's dir.
