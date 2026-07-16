@@ -31,7 +31,7 @@ import {
   stateDirectory,
   writeViolations,
 } from './state-store.js';
-import type { Violation } from './violation.js';
+import { hasErrors, type Violation } from './violation.js';
 import { runVerify } from './verify/index.js';
 
 export interface StopGateOptions {
@@ -46,6 +46,19 @@ export interface StopGateOptions {
 export interface StopGateResult {
   decision: GateDecision;
   auditFindings: AuditFinding[];
+}
+
+export interface CommitGateOptions {
+  repoRoot: string;
+  baseBranch: string;
+  exec: Exec;
+  resolveBin?: (tool: string) => string;
+}
+
+export interface CommitGateResult {
+  violations: Violation[];
+  findings: AuditFinding[];
+  blocked: boolean;
 }
 
 function findingKey(finding: AuditFinding): string {
@@ -154,6 +167,49 @@ export async function runStopGate(
   }
 
   return { decision, auditFindings };
+}
+
+/** Diff of the branch vs its merge-base with the base branch, so suppressions
+ * inherited from the base branch are excluded. Falls back to the staged diff
+ * when the merge-base can't be resolved (shallow clone / missing base). */
+async function branchDiff(options: CommitGateOptions): Promise<string> {
+  const mergeBase = await options.exec(
+    'git',
+    ['merge-base', options.baseBranch, 'HEAD'],
+    { cwd: options.repoRoot },
+  );
+  const sha = mergeBase.stdout.trim();
+  if (mergeBase.code === 0 && sha) {
+    const diff = await options.exec('git', ['diff', sha], {
+      cwd: options.repoRoot,
+    });
+    return diff.stdout;
+  }
+  const staged = await options.exec('git', ['diff', '--cached'], {
+    cwd: options.repoRoot,
+  });
+  return staged.stdout;
+}
+
+/** Shared core of `gate --mode=commit`: audits the branch's cumulative diff
+ * against the merge-base with the base branch, so suppressions already on
+ * the branch (inherited from the base) don't flag on every commit — only
+ * ones introduced on the branch do. Also used by the `preToolUse` gate. */
+export async function runCommitGate(
+  options: CommitGateOptions,
+): Promise<CommitGateResult> {
+  const { violations } = await runVerify({
+    repoRoot: options.repoRoot,
+    baseBranch: options.baseBranch,
+    exec: options.exec,
+    ...(options.resolveBin ? { resolveBin: options.resolveBin } : {}),
+  });
+  const findings = auditDiff(await branchDiff(options));
+  return {
+    violations,
+    findings,
+    blocked: hasErrors(violations) || findings.length > 0,
+  };
 }
 
 /** Combine the block message and any behavioral correction for a hook reason. */

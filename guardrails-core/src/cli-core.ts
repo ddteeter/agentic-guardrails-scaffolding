@@ -8,7 +8,7 @@ import { auditDiff } from './audit.js';
 import { runAutofix } from './autofix.js';
 import { loadConfig, toGateConfig } from './config.js';
 import type { Exec } from './exec.js';
-import { runStopGate } from './gate.js';
+import { runCommitGate, runStopGate } from './gate.js';
 import {
   formatStopHookOutput,
   type HookOutput,
@@ -107,19 +107,12 @@ async function gateStopCommand(deps: CliDeps): Promise<number> {
 async function gateCommitCommand(deps: CliDeps): Promise<number> {
   const repoRoot = deps.cwd;
   const config = loadConfig(repoRoot);
-  const { violations } = await runVerify({
+  const { violations, findings } = await runCommitGate({
     repoRoot,
     baseBranch: config.baseBranch,
     exec: deps.exec,
     resolveBin: binResolver(repoRoot),
   });
-  // Phase-A commit gate: audits the staged diff with NO pre-fix baseline (unlike
-  // runStopGate, which snapshots so only fixer-added suppressions are flagged).
-  // Consequence: a suppression already present on the branch before this gate was
-  // wired up would be flagged on every commit. Phase B adds a baseline (against
-  // the merge-base) so the commit gate only flags newly-introduced suppressions.
-  const diff = await deps.exec('git', ['diff', '--cached'], { cwd: repoRoot });
-  const findings = auditDiff(diff.stdout);
   printViolations(deps, violations);
   for (const finding of findings) {
     deps.stderr(
