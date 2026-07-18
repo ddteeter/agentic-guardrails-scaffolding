@@ -60,6 +60,30 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+/** First candidate that is a string, else undefined. */
+function firstString(...candidates: readonly unknown[]): string | undefined {
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string') {
+      return candidate;
+    }
+  }
+  return undefined;
+}
+
+/** The tool-argument bag: Claude's `tool_input` or Copilot's `toolArgs`. */
+function selectArguments(
+  claude: RawHookPayload,
+  copilot: CopilotHookPayload,
+): Record<string, unknown> {
+  if (isRecord(claude.tool_input)) {
+    return claude.tool_input;
+  }
+  if (isRecord(copilot.toolArgs)) {
+    return copilot.toolArgs;
+  }
+  return {};
+}
+
 export function parseHookInput(stdin: string): HookInput {
   let parsed: unknown;
   try {
@@ -75,35 +99,22 @@ export function parseHookInput(stdin: string): HookInput {
   // snake_case is read first; Copilot's camelCase is the fallback.
   const claude = parsed as RawHookPayload;
   const copilot = parsed as CopilotHookPayload;
+  const args = selectArguments(claude, copilot);
+
+  // (field, [candidates in precedence order]) — Claude first, Copilot fallback.
+  const fields: readonly [keyof HookInput, readonly unknown[]][] = [
+    ['sessionId', [claude.session_id, copilot.sessionId]],
+    ['cwd', [claude.cwd, copilot.workingDirectory]],
+    ['toolName', [claude.tool_name, copilot.toolName]],
+    ['filePath', [args.file_path, args.path]],
+    ['command', [args.command]],
+  ];
+
   const input: HookInput = {};
-
-  const sessionId = claude.session_id ?? copilot.sessionId;
-  if (typeof sessionId === 'string') {
-    input.sessionId = sessionId;
-  }
-  const cwd = claude.cwd ?? copilot.workingDirectory;
-  if (typeof cwd === 'string') {
-    input.cwd = cwd;
-  }
-  const toolName = claude.tool_name ?? copilot.toolName;
-  if (typeof toolName === 'string') {
-    input.toolName = toolName;
-  }
-
-  // Argument bag: Claude's `tool_input` or Copilot's `toolArgs`.
-  let args: Record<string, unknown> | undefined;
-  if (isRecord(claude.tool_input)) {
-    args = claude.tool_input;
-  } else if (isRecord(copilot.toolArgs)) {
-    args = copilot.toolArgs;
-  }
-  if (args) {
-    const filePath = args.file_path ?? args.path;
-    if (typeof filePath === 'string') {
-      input.filePath = filePath;
-    }
-    if (typeof args.command === 'string') {
-      input.command = args.command;
+  for (const [key, candidates] of fields) {
+    const value = firstString(...candidates);
+    if (value !== undefined) {
+      input[key] = value;
     }
   }
   return input;
