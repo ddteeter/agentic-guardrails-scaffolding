@@ -210,7 +210,11 @@ describe('runCommand — gate pretooluse (copilot commit/push gate)', () => {
     });
     const exec = gitExec({
       'merge-base': 'BASESHA\n',
-      'diff BASESHA': '+// eslint-disable-next-line\n',
+      'diff BASESHA': [
+        '+++ b/src/a.ts',
+        '@@ -1,0 +1,1 @@',
+        '+// eslint-disable-next-line',
+      ].join('\n'),
     });
     const code = await runCommand(
       'gate',
