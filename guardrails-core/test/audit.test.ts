@@ -183,6 +183,14 @@ describe('auditDiff — mention-awareness', () => {
         auditDiff(diff('a.ts', '+  const s = `prefix as any ${x} suffix`;')),
       ).toEqual([]);
     });
+
+    it('ignores a trailing block comment merely mentioning a directive token in prose', () => {
+      expect(
+        auditDiff(
+          diff('a.ts', '+  foo(); /* mentions eslint-disable in prose */'),
+        ),
+      ).toEqual([]);
+    });
   });
 
   describe('must FLAG (real suppressions)', () => {
@@ -247,6 +255,18 @@ describe('auditDiff — mention-awareness', () => {
           diff('a.ts', '+  const y = `${cond ? (x as unknown as Y) : z}`;'),
         )[0]?.kind,
       ).toBe('cast-any');
+    });
+
+    it('flags a trailing block-comment eslint-disable directive (not comment-leading)', () => {
+      expect(
+        auditDiff(diff('a.ts', '+  foo(); /* eslint-disable */'))[0]?.kind,
+      ).toBe('eslint-disable');
+    });
+
+    it('flags a trailing block-comment @ts-ignore directive (not comment-leading)', () => {
+      expect(
+        auditDiff(diff('a.ts', '+  foo(); /* @ts-ignore */'))[0]?.kind,
+      ).toBe('ts-suppress');
     });
   });
 });

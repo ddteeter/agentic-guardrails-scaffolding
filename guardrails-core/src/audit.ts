@@ -109,9 +109,10 @@ function isAuditableSourceFile(file: string): boolean {
  * Limitation (accepted): this is a single-line lexer only. It does not track
  * `/* *\/`-style block comments that span multiple diff lines — a suppression
  * hidden inside the body of a multi-line block comment addition would not be
- * matched against `commentContent`. Directive signatures still require a
- * comment-leading token on the same line, so this only under-matches (never
- * over-matches) relative to a full lexer.
+ * matched against `commentContents`. Directive signatures still require a
+ * comment-content-leading token WITHIN a single comment on the same line
+ * (checked per-comment, not concatenated across comments), so this only
+ * under-matches (never over-matches) relative to a full lexer.
  *
  * Regex literals ARE lexed (skipped, like strings), despite the task brief's
  * simplification note that assumed no code signature appears only inside a
@@ -134,8 +135,13 @@ function isAuditableSourceFile(file: string): boolean {
  * in the surrounding template-string prose are not.
  */
 interface LineLex {
-  /** Trimmed content of a line-leading/only `//` or single-line `/* *\/` comment, if any. */
-  commentContent: string | undefined;
+  /** Trimmed content of every `//` (at most one, since it consumes the rest of
+   * the line) and single-line `/* *\/` comment on the line, in source order —
+   * leading or trailing, regardless of what precedes it. Each entry is tested
+   * against directive signatures independently (never concatenated), so a
+   * directive must start a *single* comment's content, not just appear
+   * somewhere across the line's comments. */
+  commentContents: readonly string[];
   /** The line with all string-literal and comment spans removed (the
    * remaining code characters are concatenated; position is not preserved). */
   code: string;
@@ -160,10 +166,10 @@ function scanBlockComment(text: string, index: number): BlockComment {
   return { end, content: text.slice(index + 2, contentEnd).trim() };
 }
 
-/** Lex one line into its comment content (if it starts a comment) and code-only text. */
+/** Lex one line into every comment's content (leading or trailing) and code-only text. */
 function lexLine(text: string): LineLex {
   let code = '';
-  let commentContent: string | undefined;
+  const commentContents: string[] = [];
   let index = 0;
   const length = text.length;
 
@@ -176,17 +182,15 @@ function lexLine(text: string): LineLex {
       continue;
     }
     if (text.startsWith('//', index)) {
-      commentContent = text.slice(index + 2).trim();
+      commentContents.push(text.slice(index + 2).trim());
       break;
     }
     if (text.startsWith('/*', index)) {
       const block = scanBlockComment(text, index);
-      // Only treat as the line's "leading comment" if nothing but whitespace
-      // precedes it — matches the directive brief's `/* eslint-disable */`
-      // example without misreading trailing block comments as leading ones.
-      if (commentContent === undefined && code.trim() === '') {
-        commentContent = block.content;
-      }
+      // Captured regardless of what precedes it on the line — a trailing
+      // `foo(); /* eslint-disable */` is a real ESLint directive just as much
+      // as a leading one.
+      commentContents.push(block.content);
       index = block.end;
       continue;
     }
@@ -198,7 +202,7 @@ function lexLine(text: string): LineLex {
     index += 1;
   }
 
-  return { commentContent, code };
+  return { commentContents, code };
 }
 
 /**
@@ -384,13 +388,10 @@ function skipRegexFlags(text: string, start: number): number {
 }
 
 function matchSignature(text: string): AuditKind | undefined {
-  const { commentContent, code } = lexLine(text);
+  const { commentContents, code } = lexLine(text);
   for (const signature of SIGNATURES) {
     if (signature.class === 'directive') {
-      if (
-        commentContent !== undefined &&
-        signature.pattern.test(commentContent)
-      ) {
+      if (commentContents.some((content) => signature.pattern.test(content))) {
         return signature.kind;
       }
     } else if (signature.pattern.test(code)) {

@@ -115,7 +115,7 @@ async function gateStopCommand(
 async function gateCommitCommand(deps: CliDeps): Promise<number> {
   const repoRoot = deps.cwd;
   const config = loadConfig(repoRoot);
-  const { violations, findings } = await runCommitGate({
+  const { violations, findings, blocked } = await runCommitGate({
     repoRoot,
     baseBranch: config.baseBranch,
     exec: deps.exec,
@@ -127,10 +127,13 @@ async function gateCommitCommand(deps: CliDeps): Promise<number> {
       `${finding.file}:${finding.line} added ${finding.kind}: ${finding.text}\n`,
     );
   }
-  return hasErrors(violations) || findings.length > 0 ? 1 : 0;
+  return blocked ? 1 : 0;
 }
 
 const SHELL_TOOLS = /^(?:bash|shell|powershell)$/i;
+// Requires `commit`/`push` immediately after `git`, so it won't match
+// `git -C <path> commit` — acceptable, since the git-native pre-commit hook
+// (Husky) is the hard floor that catches those commits regardless.
 const GIT_WRITE = /\bgit\s+(?:commit|push)\b/;
 
 /** `gate --mode=pretooluse`: the Copilot commit/push gate. Self-filters on the
@@ -198,6 +201,13 @@ function denyPreToolUse(deps: CliDeps, reason: string, dialect: Dialect): void {
   deps.stdout(JSON.stringify(formatPreToolUseDeny(reason, dialect)));
 }
 
+/** Read-family tool names across dialects: Claude's `Read`, Copilot's `view`. */
+const READ_TOOLS = /^(?:read|view)$/i;
+
+function isReadTool(toolName: string | undefined): boolean {
+  return toolName !== undefined && READ_TOOLS.test(toolName);
+}
+
 async function scopeCheckCommand(
   deps: CliDeps,
   dialect: Dialect,
@@ -210,8 +220,9 @@ async function scopeCheckCommand(
   // Read: the fixer may read anything WITHIN the repo (manifest, edited files,
   // even node_modules rule sources — that in-repo exploration is how the
   // thorough tier diagnoses subtle rules), but nothing OUTSIDE it (e.g. the
-  // user's ~/.claude project memory).
-  if (input.toolName === 'Read') {
+  // user's ~/.claude project memory). Covers both dialects' read tool: Claude's
+  // `Read` and Copilot's `view`.
+  if (isReadTool(input.toolName)) {
     if (!isWithinRepo(repoRoot, input.filePath)) {
       denyPreToolUse(
         deps,
@@ -249,6 +260,10 @@ function flag(rest: string[], name: string): string | undefined {
     ?.slice(prefix.length);
 }
 
+function resolveDialect(rest: string[]): Dialect {
+  return flag(rest, 'dialect') === 'copilot' ? 'copilot' : 'claude';
+}
+
 export async function runCommand(
   command: string | undefined,
   rest: string[],
@@ -263,8 +278,7 @@ export async function runCommand(
     }
     case 'gate': {
       const mode = flag(rest, 'mode');
-      const dialect: Dialect =
-        flag(rest, 'dialect') === 'copilot' ? 'copilot' : 'claude';
+      const dialect = resolveDialect(rest);
       if (mode === 'commit') {
         return gateCommitCommand(deps);
       }
@@ -281,8 +295,7 @@ export async function runCommand(
       return stateCommand(deps, flag(rest, 'session') ?? 'default');
     }
     case 'scope-check': {
-      const dialect: Dialect =
-        flag(rest, 'dialect') === 'copilot' ? 'copilot' : 'claude';
+      const dialect = resolveDialect(rest);
       await scopeCheckCommand(deps, dialect);
       return 0;
     }

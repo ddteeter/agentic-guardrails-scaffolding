@@ -155,6 +155,39 @@ describe('runCommand — scope-check', () => {
     );
     expect(out.join('')).toBe('');
   });
+
+  it('allows a Copilot `view` read inside the repo, not in the manifest', async () => {
+    // A manifest IS active (for a different file) — this is the regression
+    // case: a `view` read must not fall through to the edit-family
+    // manifest-lock, which would wrongly deny it.
+    writeViolations(stateDirectory(root), 'sid', [violation('src/allowed.ts')]);
+    const stdin = JSON.stringify({
+      workingDirectory: root,
+      toolName: 'view',
+      toolArgs: { path: path.join(root, 'src/not-in-manifest.ts') },
+    });
+    await runCommand(
+      'scope-check',
+      [],
+      deps({ readStdin: () => Promise.resolve(stdin) }),
+    );
+    expect(out.join('')).toBe('');
+  });
+
+  it('denies a Copilot `view` read outside the repo', async () => {
+    const stdin = JSON.stringify({
+      workingDirectory: root,
+      toolName: 'view',
+      toolArgs: { path: '/home/u/.claude/projects/x/memory/y.md' },
+    });
+    await runCommand(
+      'scope-check',
+      [],
+      deps({ readStdin: () => Promise.resolve(stdin) }),
+    );
+    expect(out.join('')).toContain('deny');
+    expect(out.join('')).toContain('outside the repository');
+  });
 });
 
 describe('runCommand — gate stop', () => {
