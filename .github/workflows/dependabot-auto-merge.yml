@@ -102,7 +102,7 @@ jobs:
       - name: Claude major-bump review
         if: steps.metadata.outputs.update-type == 'version-update:semver-major'
         # anthropics/claude-code-action@v1.0.133
-        uses: anthropics/claude-code-action@558b1d6cab4085c7753fe402c10bef0fbb92ac7a
+        uses: anthropics/claude-code-action@e90deca47693f9457b72f2b53c17d7c445a87342
         env:
           GH_TOKEN: ${{ github.token }}
         with:
