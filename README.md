@@ -91,7 +91,11 @@ This repo **self-hosts** the guardrail loop on its own development: the
 `.claude/settings.json` wires `guardrails autofix` (PostToolUse) and
 `guardrails gate --mode=stop` (Stop), with the two fixer agents in
 `.claude/agents/`; the `vitest/expect-expect` house rule exercises the recurrence
-path. Husky pre-push + CI remain the hard backstops. See
+path. Beneath that loop sits the tool-agnostic floor: this repo's
+`.husky/pre-commit` runs `guardrails gate --mode=commit` on every commit;
+consumer repos activate the identical check via
+`git config core.hooksPath .githooks` (see `.githooks/pre-commit`). Husky
+pre-push + CI remain the hard backstops. See
 `docs/live-loop-verification.md` to run the loop, and
 `docs/superpowers/specs/2026-07-12-dogfooding-pivot-design.md` for the design.
 

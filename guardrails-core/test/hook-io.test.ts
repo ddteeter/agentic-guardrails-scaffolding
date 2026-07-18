@@ -12,6 +12,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import type { GateDecision } from '../src/gate-decision.js';
 import {
+  formatCopilotStopOutput,
+  formatPreToolUseDeny,
   formatStopHookOutput,
   parseHookInput,
   resolveLocalBin,
@@ -65,6 +67,57 @@ describe('parseHookInput', () => {
     expect(parseHookInput('not json')).toEqual({});
     expect(parseHookInput('')).toEqual({});
   });
+
+  it('extracts fields from a Copilot camelCase preToolUse payload', () => {
+    const parsed = parseHookInput(
+      JSON.stringify({
+        sessionId: 'xyz',
+        workingDirectory: '/repo',
+        toolName: 'bash',
+        toolArgs: { command: 'git commit -m wip' },
+      }),
+    );
+    expect(parsed).toEqual({
+      sessionId: 'xyz',
+      cwd: '/repo',
+      toolName: 'bash',
+      command: 'git commit -m wip',
+    });
+  });
+
+  it('reads cwd from Copilot workingDirectory, not just Claude cwd', () => {
+    const parsed = parseHookInput(
+      JSON.stringify({
+        sessionId: 'xyz',
+        workingDirectory: '/repo',
+        toolName: 'bash',
+        toolArgs: { command: 'echo hi' },
+      }),
+    );
+    expect(parsed.cwd).toBe('/repo');
+  });
+
+  it('extracts the edited path from a Copilot postToolUse payload', () => {
+    const parsed = parseHookInput(
+      JSON.stringify({
+        sessionId: 'xyz',
+        workingDirectory: '/repo',
+        toolName: 'edit',
+        toolArgs: { path: '/repo/src/a.ts' },
+      }),
+    );
+    expect(parsed.filePath).toBe('/repo/src/a.ts');
+  });
+
+  it('reads the git command from a Claude Bash payload too', () => {
+    const parsed = parseHookInput(
+      JSON.stringify({
+        tool_name: 'Bash',
+        tool_input: { command: 'git push' },
+      }),
+    );
+    expect(parsed.command).toBe('git push');
+  });
 });
 
 describe('formatStopHookOutput', () => {
@@ -99,6 +152,47 @@ describe('formatStopHookOutput', () => {
       hookEventName: 'Stop',
       additionalContext: 'stop doing that',
     });
+  });
+});
+
+describe('formatPreToolUseDeny', () => {
+  it('emits the Claude hookSpecificOutput shape by default', () => {
+    expect(formatPreToolUseDeny('nope', 'claude')).toEqual({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+        permissionDecisionReason: 'nope',
+      },
+    });
+  });
+
+  it('emits the Copilot top-level shape', () => {
+    expect(formatPreToolUseDeny('nope', 'copilot')).toEqual({
+      permissionDecision: 'deny',
+      permissionDecisionReason: 'nope',
+    });
+  });
+});
+
+describe('formatCopilotStopOutput', () => {
+  const base: GateDecision = {
+    outcome: 'delegate',
+    block: true,
+    message: 'spawn the fixer',
+    nextSession: { attempts: 1, ruleCounts: {}, corrected: [] },
+    nextRecurrence: {},
+  };
+
+  it('returns null when not blocking', () => {
+    expect(
+      formatCopilotStopOutput({ ...base, outcome: 'clean', block: false }),
+    ).toBeNull();
+  });
+
+  it('folds the correction into reason (no hookSpecificOutput)', () => {
+    expect(
+      formatCopilotStopOutput({ ...base, additionalContext: 'stop that' }),
+    ).toEqual({ decision: 'block', reason: 'spawn the fixer\n\nstop that' });
   });
 });
 

@@ -35,6 +35,10 @@ export interface RepoConfig {
    * not from this flag. `toGateConfig` intentionally does not forward it.
    */
   enforcement: 'warn' | 'block';
+  /** Copilot model id for the fast/thorough fixer .agent.md (the tier ladder on
+   * Copilot). Unset → omit `model` so the agent loads on Copilot's default. */
+  copilotFastModel?: string;
+  copilotThoroughModel?: string;
 }
 
 export function defaultConfig(): RepoConfig {
@@ -111,6 +115,12 @@ export function loadConfig(repoRoot: string): RepoConfig {
       'warn',
       'block',
     ]),
+    ...(typeof raw.copilotFastModel === 'string'
+      ? { copilotFastModel: raw.copilotFastModel }
+      : {}),
+    ...(typeof raw.copilotThoroughModel === 'string'
+      ? { copilotThoroughModel: raw.copilotThoroughModel }
+      : {}),
   };
 }
 

@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "disableAllHooks": false,
+  "hooks": {
+    "postToolUse": [
+      {
+        "matcher": "edit|create|str_replace_editor|apply_patch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PROJECT_DIR:-.}/node_modules/guardrails-core/dist/cli.mjs\" autofix"
+          }
+        ]
+      }
+    ],
+    "preToolUse": [
+      {
+        "matcher": "bash|shell|powershell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PROJECT_DIR:-.}/node_modules/guardrails-core/dist/cli.mjs\" gate --mode=pretooluse --dialect=copilot"
+          }
+        ]
+      },
+      {
+        "matcher": "edit|create|str_replace_editor|apply_patch|view",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PROJECT_DIR:-.}/node_modules/guardrails-core/dist/cli.mjs\" scope-check --dialect=copilot"
+          }
+        ]
+      }
+    ],
+    "agentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PROJECT_DIR:-.}/node_modules/guardrails-core/dist/cli.mjs\" gate --mode=stop --dialect=copilot"
+          }
+        ]
+      }
+    ]
+  }
+}

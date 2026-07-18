@@ -49,8 +49,10 @@ const sample: Violation = {
 };
 
 describe('stateDirectory', () => {
-  it('resolves under the repo .claude/state/guardrails', () => {
-    expect(stateDirectory('/repo')).toBe('/repo/.claude/state/guardrails');
+  it('is the runtime-neutral .guardrails/state path', () => {
+    expect(stateDirectory('/repo')).toBe(
+      path.join('/repo', '.guardrails', 'state'),
+    );
   });
 });
 

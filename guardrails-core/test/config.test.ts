@@ -30,6 +30,12 @@ describe('defaultConfig', () => {
       looseRules: [],
     });
   });
+
+  it('defaults the Copilot model knobs to undefined', () => {
+    const config = defaultConfig();
+    expect(config.copilotFastModel).toBeUndefined();
+    expect(config.copilotThoroughModel).toBeUndefined();
+  });
 });
 
 describe('loadConfig', () => {
@@ -53,6 +59,29 @@ describe('loadConfig', () => {
     // Unspecified fields keep their defaults.
     expect(config.recurThreshold).toBe(3);
     expect(config.fastFixer).toBe('guardrail-fixer');
+  });
+
+  it('sets the Copilot model knobs when present as strings', () => {
+    writeFileSync(
+      path.join(root, 'guardrails.config.json'),
+      JSON.stringify({
+        copilotFastModel: 'fast-model-id',
+        copilotThoroughModel: 'thorough-model-id',
+      }),
+    );
+    const config = loadConfig(root);
+    expect(config.copilotFastModel).toBe('fast-model-id');
+    expect(config.copilotThoroughModel).toBe('thorough-model-id');
+  });
+
+  it('leaves the Copilot model knobs unset when absent or wrongly typed', () => {
+    writeFileSync(
+      path.join(root, 'guardrails.config.json'),
+      JSON.stringify({ copilotFastModel: 42 }),
+    );
+    const config = loadConfig(root);
+    expect(config.copilotFastModel).toBeUndefined();
+    expect(config.copilotThoroughModel).toBeUndefined();
   });
 
   it('ignores a corrupt config file and falls back to defaults', () => {

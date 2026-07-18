@@ -53,6 +53,12 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Agents in sync (generated .github/agents committed)
+        run: git diff --exit-code -- .github/agents
+
+      - name: Guardrails verify
+        run: node ./node_modules/guardrails-core/dist/cli.mjs verify
+
       - name: Test (with coverage)
         run: npm run test:coverage
 

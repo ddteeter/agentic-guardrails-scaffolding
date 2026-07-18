@@ -28,6 +28,7 @@ export interface HookInput {
   cwd?: string;
   filePath?: string;
   toolName?: string;
+  command?: string;
 }
 
 /** The raw payload fields we read, typed against the SDK schema. */
@@ -36,8 +37,51 @@ type RawHookPayload = Partial<
     Pick<PreToolUseHookInput, 'tool_name' | 'tool_input'>
 >;
 
+/**
+ * Copilot camelCase hook payload — the fields we read. GitHub Copilot's real
+ * `BaseHookInput`/`PreToolUseHookInput` (`sessionId`, `workingDirectory`,
+ * `toolName`, `toolArgs: unknown`) live in `@github/copilot-sdk`'s
+ * `dist/types.d.ts`, but the package's `exports` map only exposes `.` (→
+ * `dist/index.d.ts`, which does not re-export them) and `./extension` — there
+ * is no supported subpath to import them from. `@github/copilot-sdk` is
+ * therefore *not* a devDependency here (it was imported by nothing and only
+ * pulled in native FFI deps for zero drift-safety); this interface is
+ * hand-declared and local until a future SDK release exports the hook wire
+ * types via a supported path — see the Phase-B risk note in `plan.md`.
+ */
+interface CopilotHookPayload {
+  sessionId?: unknown;
+  workingDirectory?: unknown;
+  toolName?: unknown;
+  toolArgs?: unknown;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** First candidate that is a string, else undefined. */
+function firstString(...candidates: readonly unknown[]): string | undefined {
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string') {
+      return candidate;
+    }
+  }
+  return undefined;
+}
+
+/** The tool-argument bag: Claude's `tool_input` or Copilot's `toolArgs`. */
+function selectArguments(
+  claude: RawHookPayload,
+  copilot: CopilotHookPayload,
+): Record<string, unknown> {
+  if (isRecord(claude.tool_input)) {
+    return claude.tool_input;
+  }
+  if (isRecord(copilot.toolArgs)) {
+    return copilot.toolArgs;
+  }
+  return {};
 }
 
 export function parseHookInput(stdin: string): HookInput {
@@ -51,23 +95,27 @@ export function parseHookInput(stdin: string): HookInput {
     return {};
   }
   // Defensive over untrusted input: field NAMES come from the SDK types (so a
-  // rename breaks the build), values are still runtime-checked.
-  const raw = parsed as RawHookPayload;
+  // rename breaks the build), values are still runtime-checked. Claude's
+  // snake_case is read first; Copilot's camelCase is the fallback.
+  const claude = parsed as RawHookPayload;
+  const copilot = parsed as CopilotHookPayload;
+  const args = selectArguments(claude, copilot);
+
+  // (field, [candidates in precedence order]) — Claude first, Copilot fallback.
+  const fields: readonly [keyof HookInput, readonly unknown[]][] = [
+    ['sessionId', [claude.session_id, copilot.sessionId]],
+    ['cwd', [claude.cwd, copilot.workingDirectory]],
+    ['toolName', [claude.tool_name, copilot.toolName]],
+    ['filePath', [args.file_path, args.path]],
+    ['command', [args.command]],
+  ];
+
   const input: HookInput = {};
-  if (typeof raw.session_id === 'string') {
-    input.sessionId = raw.session_id;
-  }
-  if (typeof raw.cwd === 'string') {
-    input.cwd = raw.cwd;
-  }
-  if (typeof raw.tool_name === 'string') {
-    input.toolName = raw.tool_name;
-  }
-  if (
-    isRecord(raw.tool_input) &&
-    typeof raw.tool_input.file_path === 'string'
-  ) {
-    input.filePath = raw.tool_input.file_path;
+  for (const [key, candidates] of fields) {
+    const value = firstString(...candidates);
+    if (value !== undefined) {
+      input[key] = value;
+    }
   }
   return input;
 }
@@ -99,6 +147,59 @@ export function formatStopHookOutput(
     output.hookSpecificOutput = stop;
   }
   return output;
+}
+
+export type Dialect = 'claude' | 'copilot';
+
+/**
+ * A Copilot `preToolUse` deny: `permissionDecision`/`permissionDecisionReason`
+ * live at the top level of the response, not nested under
+ * `hookSpecificOutput` the way Claude Code's `SyncHookJSONOutput` requires
+ * (its `hookSpecificOutput.PreToolUseHookSpecificOutput` is the only place the
+ * SDK type permits those fields). There is no single SDK type that admits
+ * both shapes, so `formatPreToolUseDeny` returns a union rather than forcing
+ * the Copilot shape through a cast.
+ */
+export type PreToolUseDenyOutput =
+  HookOutput | { permissionDecision: 'deny'; permissionDecisionReason: string };
+
+/** PreToolUse deny in the requested dialect. Claude nests it under
+ * hookSpecificOutput (the only shape SyncHookJSONOutput permits); Copilot
+ * wants a top-level permissionDecision, which is why the return type is a
+ * union rather than HookOutput alone. */
+export function formatPreToolUseDeny(
+  reason: string,
+  dialect: Dialect,
+): PreToolUseDenyOutput {
+  if (dialect === 'copilot') {
+    return { permissionDecision: 'deny', permissionDecisionReason: reason };
+  }
+  return {
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'deny',
+      permissionDecisionReason: reason,
+    },
+  };
+}
+
+/** Copilot agentStop block: correction folded into `reason` (Copilot has no
+ * additionalContext channel). `null` lets the turn end. This duplicates the
+ * one-liner in gate.ts's `stopHookReason` rather than importing it, to avoid
+ * a hook-io -> gate dependency (gate.ts is the higher-level module that
+ * orchestrates verify/audit/state and is expected to depend on hook-io, not
+ * the reverse). */
+export function formatCopilotStopOutput(
+  decision: GateDecision,
+): HookOutput | null {
+  if (!decision.block) {
+    return null;
+  }
+  const reason =
+    decision.additionalContext === undefined
+      ? decision.message
+      : `${decision.message}\n\n${decision.additionalContext}`;
+  return { decision: 'block', reason };
 }
 
 /**

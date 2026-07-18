@@ -5,7 +5,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { type CliDeps, runCommand } from '../src/cli-core.js';
-import type { ExecResult } from '../src/exec.js';
+import type { Exec, ExecResult } from '../src/exec.js';
 import { stateDirectory, writeViolations } from '../src/state-store.js';
 import type { Violation } from '../src/violation.js';
 
@@ -155,6 +155,39 @@ describe('runCommand — scope-check', () => {
     );
     expect(out.join('')).toBe('');
   });
+
+  it('allows a Copilot `view` read inside the repo, not in the manifest', async () => {
+    // A manifest IS active (for a different file) — this is the regression
+    // case: a `view` read must not fall through to the edit-family
+    // manifest-lock, which would wrongly deny it.
+    writeViolations(stateDirectory(root), 'sid', [violation('src/allowed.ts')]);
+    const stdin = JSON.stringify({
+      workingDirectory: root,
+      toolName: 'view',
+      toolArgs: { path: path.join(root, 'src/not-in-manifest.ts') },
+    });
+    await runCommand(
+      'scope-check',
+      [],
+      deps({ readStdin: () => Promise.resolve(stdin) }),
+    );
+    expect(out.join('')).toBe('');
+  });
+
+  it('denies a Copilot `view` read outside the repo', async () => {
+    const stdin = JSON.stringify({
+      workingDirectory: root,
+      toolName: 'view',
+      toolArgs: { path: '/home/u/.claude/projects/x/memory/y.md' },
+    });
+    await runCommand(
+      'scope-check',
+      [],
+      deps({ readStdin: () => Promise.resolve(stdin) }),
+    );
+    expect(out.join('')).toContain('deny');
+    expect(out.join('')).toContain('outside the repository');
+  });
 });
 
 describe('runCommand — gate stop', () => {
@@ -183,6 +216,80 @@ describe('runCommand — gate stop', () => {
     );
     const printed: unknown = JSON.parse(out.join(''));
     expect(printed).toMatchObject({ decision: 'block' });
+  });
+});
+
+/** Canned exec for the pretooluse-gate tests: `merge-base` resolves to a sha,
+ * `diff <sha>` returns the mapped diff text, everything else is empty. */
+function gitExec(map: Record<string, string>): Exec {
+  return (command, args) => {
+    let key: string | undefined;
+    if (args[0] === 'merge-base') {
+      key = 'merge-base';
+    } else if (args.slice(0, 2).join(' ') === 'diff BASESHA') {
+      key = 'diff BASESHA';
+    }
+    const stdout = key === undefined ? '' : (map[key] ?? '');
+    return Promise.resolve(ok(stdout));
+  };
+}
+
+describe('runCommand — gate pretooluse (copilot commit/push gate)', () => {
+  it('denies a git commit when the tree is dirty (copilot dialect)', async () => {
+    const stdin = JSON.stringify({
+      toolName: 'bash',
+      toolArgs: { command: 'git commit -m wip' },
+      cwd: root,
+    });
+    const exec = gitExec({
+      'merge-base': 'BASESHA\n',
+      'diff BASESHA': [
+        '+++ b/src/a.ts',
+        '@@ -1,0 +1,1 @@',
+        '+// eslint-disable-next-line',
+      ].join('\n'),
+    });
+    const code = await runCommand(
+      'gate',
+      ['--mode=pretooluse', '--dialect=copilot'],
+      deps({ exec, readStdin: () => Promise.resolve(stdin) }),
+    );
+    expect(code).toBe(0);
+    const printed: unknown = JSON.parse(out.join(''));
+    expect(printed).toMatchObject({ permissionDecision: 'deny' });
+  });
+
+  it('stays silent for a non-git shell command', async () => {
+    const stdin = JSON.stringify({
+      toolName: 'bash',
+      toolArgs: { command: 'ls -la' },
+    });
+    const code = await runCommand(
+      'gate',
+      ['--mode=pretooluse', '--dialect=copilot'],
+      deps({ readStdin: () => Promise.resolve(stdin) }),
+    );
+    expect(code).toBe(0);
+    expect(out.join('')).toBe('');
+  });
+
+  it('stays silent on a clean commit', async () => {
+    const stdin = JSON.stringify({
+      toolName: 'bash',
+      toolArgs: { command: 'git commit -m ok' },
+      cwd: root,
+    });
+    const exec = gitExec({
+      'merge-base': 'BASESHA\n',
+      'diff BASESHA': '+const x = 1;\n',
+    });
+    const code = await runCommand(
+      'gate',
+      ['--mode=pretooluse', '--dialect=copilot'],
+      deps({ exec, readStdin: () => Promise.resolve(stdin) }),
+    );
+    expect(code).toBe(0);
+    expect(out.join('')).toBe('');
   });
 });
 

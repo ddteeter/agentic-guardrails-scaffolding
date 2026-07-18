@@ -4,5 +4,5 @@ coverage/
 .fallow/
 *.log
 .DS_Store
-.claude/state/
+.guardrails/state/
 .claude/agents/
