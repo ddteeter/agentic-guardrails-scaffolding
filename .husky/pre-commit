@@ -1,1 +1,2 @@
 npx lint-staged
+node "./node_modules/guardrails-core/dist/cli.mjs" gate --mode=commit
