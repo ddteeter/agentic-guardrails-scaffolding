@@ -234,6 +234,29 @@ core/src/audit.ts`) surfaced that it was a context-free text scan: it flagged
   the commit/pretooluse gates is deferred; it's reserved for the solo→team
   flip (Phase E), where `enforcement: "block"` becomes the team default.
 
+- **Auditor soundness: text lexer → AST (decided, roadmapped).** The auditor is
+  a hand-rolled single-line lexer + regex signatures operating on _diff
+  fragments_, not a sound parser. This has a permanent evasion ceiling for
+  **false negatives**: any construct the line-lexer can't see (multi-line spans,
+  above; unicode-escaped tokens; deliberately obfuscated formatting) can slip a
+  real suppression past it. It is adequate _today_ because the threat is a
+  weak-tier fixer adding **idiomatic** suppressions (which it catches) and it is
+  one layer in defense-in-depth (scope-locked low-privilege fixer + `verify`/tsc
+  - pre-push tests + CI + human review) — not the sole guarantee. It is also
+    JS-centric: the regex-literal lexing is unsound for Java (no regex literals;
+    `return a/b` could misparse), a latent fragility until the Phase-D Java pack.
+    **The sound path (chosen for a future phase, not Phase B):** replace the text
+    scan for TypeScript with a **TypeScript-compiler-API auditor** — reconstruct
+    the post-fix file, walk the AST for suppression comment ranges, cast nodes
+    (`AsExpression`/type-assertion), and `.skip`/`.only` calls, then intersect
+    with the diff's added-line ranges. That structurally removes the string /
+    comment / regex / template / multi-line false-positive _and_ false-negative
+    classes for TS. `typescript` is resolved from the target repo (like the
+    `eslint`/`tsc` bins today), so it adds no new dependency for TS projects; Java
+    gets its own parser with the Phase-D pack. The text auditor stays as the fast,
+    dependency-light, cross-language first pass. (Decision: Phase-B review, 2026-07;
+    the text auditor ships as the Phase-B floor, backstopped.)
+
 - **Repo-hygiene: `main` is stale in this worktree.** This worktree's `main`
   ref still sits at the initial commit, so the commit gate's merge-base diff
   (added by Phase B's baseline fix, above) spans the **entire repo history**
