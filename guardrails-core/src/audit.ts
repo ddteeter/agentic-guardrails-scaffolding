@@ -107,12 +107,21 @@ function isAuditableSourceFile(file: string): boolean {
  * Result of lexing a single source line into comment vs. code spans.
  *
  * Limitation (accepted): this is a single-line lexer only. It does not track
- * `/* *\/`-style block comments that span multiple diff lines — a suppression
- * hidden inside the body of a multi-line block comment addition would not be
- * matched against `commentContents`. Directive signatures still require a
- * comment-content-leading token WITHIN a single comment on the same line
- * (checked per-comment, not concatenated across comments), so this only
- * under-matches (never over-matches) relative to a full lexer.
+ * `/* *\/`-style block comments that span multiple diff lines — a continuation
+ * line of a multi-line block/JSDoc comment carries no comment marker, so it is
+ * lexed as bare code. This cuts BOTH ways relative to a full lexer:
+ *   - Directive-class signatures (`eslint-disable`, `@ts-*`) require a
+ *     comment-content-leading token within a single comment on the same line,
+ *     so a directive hidden in a multi-line comment body is missed —
+ *     an UNDER-match (false negative).
+ *   - Code-class signatures (the Java suppression annotations, unchecked
+ *     casts, and test-skip calls) are matched against the code span, so a
+ *     continuation line that merely MENTIONS such a token in prose (e.g.
+ *     idiomatic Javadoc, the Phase-D Java target) is misclassified as code —
+ *     an OVER-match (false positive) that blocks a turn on legitimate
+ *     documentation. This comment must therefore avoid literal code-class
+ *     token examples itself (see `scanTemplateLiteral` below). A full parser
+ *     that tracks open-comment state across lines is the real fix (roadmapped).
  *
  * Regex literals ARE lexed (skipped, like strings), despite the task brief's
  * simplification note that assumed no code signature appears only inside a

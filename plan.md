@@ -222,12 +222,17 @@ core/src/audit.ts`) surfaced that it was a context-free text scan: it flagged
   are matched only against the lexed **code portion** of a line, with a
   single-line lexer that excludes string, comment, regex, and (recursively,
   one level deep) template-interpolation spans. **Known limitations,
-  documented in `audit.ts`:** the lexer is single-line only, so a suppression
-  hidden inside the body of a `/* ... */` block or doc comment that spans
-  multiple diff lines is not matched (an accepted under-match, never an
-  over-match); and a template literal nested _inside_ another template's
-  `${...}` interpolation is skipped as an opaque string span rather than
-  recursively lexed. Also noted while auditing the commit path: **both
+  documented in `audit.ts`:** the lexer is single-line only, so multi-line
+  `/* ... */` block / JSDoc comments cut **both** ways — a directive suppression
+  hidden in a multi-line comment body is missed (under-match / false negative),
+  **and** a continuation line that merely _mentions_ a code-class token
+  (`@Disabled`, `@SuppressWarnings`, `as any`, `.skip`) in prose is lexed as
+  code and **over-matches** (false positive) — the latter is the more likely
+  trigger for Phase-D Java's idiomatic Javadoc, and blocks a turn on legitimate
+  documentation. (A template literal nested _inside_ another template's `${...}`
+  interpolation is likewise skipped as an opaque string span rather than
+  recursively lexed.) Both are structurally fixed by the roadmapped AST auditor
+  (below), which tracks open-comment state across lines. Also noted while auditing the commit path: **both
   `gate --mode=commit` and `gate --mode=pretooluse` currently hard-block
   unconditionally** on any finding — they do not yet consult
   `RepoConfig.enforcement` (`"warn"` vs `"block"`). Honoring `enforcement` on
