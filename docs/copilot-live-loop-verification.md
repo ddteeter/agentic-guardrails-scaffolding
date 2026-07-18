@@ -63,7 +63,7 @@ recurrence, escalation) aren't Claude-Code-specific.
 wiring is unchanged, so this is the plain Claude-dialect output) and blocks
 with the terse pointer:
 
-> `N guardrail violation(s) written to .guardrails/state/guardrails/<sid>.last.json.
+> `N guardrail violation(s) written to .guardrails/state/<sid>.last.json.
 Do NOT read it. Spawn the guardrail-fixer subagent and give it that path to
 fix. Then try to stop again.`
 
