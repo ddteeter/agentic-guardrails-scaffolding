@@ -169,6 +169,20 @@ describe('auditDiff — mention-awareness', () => {
         ),
       ).toEqual([]);
     });
+
+    it('ignores mention tokens in template-literal STRING text (no interpolation)', () => {
+      expect(
+        auditDiff(
+          diff('a.ts', '+  const s = `mentions as any and .skip in prose`;'),
+        ),
+      ).toEqual([]);
+    });
+
+    it('ignores `as any` in the literal portion when a sibling interpolation has no cast', () => {
+      expect(
+        auditDiff(diff('a.ts', '+  const s = `prefix as any ${x} suffix`;')),
+      ).toEqual([]);
+    });
   });
 
   describe('must FLAG (real suppressions)', () => {
@@ -219,6 +233,20 @@ describe('auditDiff — mention-awareness', () => {
       expect(auditDiff(diff('A.java', '+  @Disabled'))[0]?.kind).toBe(
         'disabled-test',
       );
+    });
+
+    it('flags a real `as any` cast hidden inside a template-literal interpolation', () => {
+      expect(
+        auditDiff(diff('a.ts', '+  const y = `${foo as any}`;'))[0]?.kind,
+      ).toBe('cast-any');
+    });
+
+    it('flags a real cast inside a nested-brace template-literal interpolation', () => {
+      expect(
+        auditDiff(
+          diff('a.ts', '+  const y = `${cond ? (x as unknown as Y) : z}`;'),
+        )[0]?.kind,
+      ).toBe('cast-any');
     });
   });
 });

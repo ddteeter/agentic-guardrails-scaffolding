@@ -126,16 +126,23 @@ function isAuditableSourceFile(file: string): boolean {
  * division idiom that would trip it, and a misclassification only causes
  * under-matching (skipping a bit more code as a "regex"), never
  * over-matching.
+ *
+ * Template literals (backtick strings) are NOT wholly opaque: literal text
+ * is a string span like any other quote, but a `${...}` interpolation is
+ * lexed as code (see `scanTemplateLiteral`/`scanInterpolation`) — a cast or
+ * suppression hidden inside an interpolation is caught, while mention tokens
+ * in the surrounding template-string prose are not.
  */
 interface LineLex {
   /** Trimmed content of a line-leading/only `//` or single-line `/* *\/` comment, if any. */
   commentContent: string | undefined;
-  /** The line with all string-literal and comment spans blanked out. */
+  /** The line with all string-literal and comment spans removed (the
+   * remaining code characters are concatenated; position is not preserved). */
   code: string;
 }
 
 function isQuoteChar(ch: string): boolean {
-  return ch === "'" || ch === '"' || ch === '`';
+  return ch === "'" || ch === '"';
 }
 
 interface BlockComment {
@@ -162,8 +169,10 @@ function lexLine(text: string): LineLex {
 
   while (index < length) {
     const ch = text.charAt(index);
-    if (isQuoteChar(ch)) {
-      index = findStringEnd(text, index, ch);
+    if (isQuoteChar(ch) || ch === '`') {
+      const span = consumeStringSpan(text, index, ch);
+      code += span.code;
+      index = span.end;
       continue;
     }
     if (text.startsWith('//', index)) {
@@ -192,6 +201,25 @@ function lexLine(text: string): LineLex {
   return { commentContent, code };
 }
 
+/**
+ * Consume a string-like span — `'`, `"`, or a template literal — starting at
+ * `index` (the quote/backtick char). A plain quote contributes no code (it's
+ * opaque, like the rest of the lexer's string handling); a template literal
+ * may contribute CODE text recovered from its `${...}` interpolations (see
+ * `scanTemplateLiteral`). Kept as one dispatch point so `lexLine`'s loop has
+ * a single branch for all string-like spans, not one per quote kind.
+ */
+function consumeStringSpan(
+  text: string,
+  index: number,
+  ch: string,
+): { end: number; code: string } {
+  if (ch === '`') {
+    return scanTemplateLiteral(text, index);
+  }
+  return { end: findStringEnd(text, index, ch), code: '' };
+}
+
 /** Find the index just past a string literal starting at `start` (the quote char). */
 function findStringEnd(text: string, start: number, quote: string): number {
   let index = start + 1;
@@ -207,6 +235,105 @@ function findStringEnd(text: string, start: number, quote: string): number {
     index += 1;
   }
   return length;
+}
+
+/**
+ * Find the index just past a template literal starting at `start` (the
+ * backtick), extracting the CODE text of any `${...}` interpolations along
+ * the way. Literal text between interpolations is a string span (like other
+ * quotes) and is excluded from the returned `code` — a mention hidden in the
+ * literal text of a template string still resolves as a mention, while a
+ * real cast or suppression hidden inside an interpolation is now visible to
+ * `matchSignature`.
+ *
+ * (Deliberately not spelling out a live `${...}` + signature example inline
+ * here: a continuation line of a multi-line `/** *\/` comment like this one is
+ * NOT recognized as a comment by the single-line lexer above — see the
+ * class doc's multi-line-block-comment limitation — so a literal example
+ * would self-flag as a `code`-class finding on every future edit to this
+ * doc comment. Dogfooding this fix against its own diff caught exactly that.)
+ */
+function scanTemplateLiteral(
+  text: string,
+  start: number,
+): { end: number; code: string } {
+  let index = start + 1;
+  const length = text.length;
+  let code = '';
+
+  while (index < length) {
+    const ch = text.charAt(index);
+    if (ch === '\\') {
+      index += 2;
+      continue;
+    }
+    if (ch === '`') {
+      return { end: index + 1, code };
+    }
+    if (ch === '$' && text.charAt(index + 1) === '{') {
+      const interpolation = scanInterpolation(text, index + 1);
+      code += interpolation.code;
+      index = interpolation.end;
+      continue;
+    }
+    index += 1;
+  }
+  return { end: length, code };
+}
+
+/**
+ * Find the index just past a `${...}` interpolation's matching closing `}`,
+ * given `braceIndex` (the index of the opening `{`). Returns the interpolation
+ * span's code text, with its own nested string-literal spans excluded (a
+ * signature token quoted as a string *inside* the interpolation is not code)
+ * and brace depth tracked (an object-literal expression inside the
+ * interpolation still resolves the interpolation's true end, rather than
+ * closing early on the object literal's own `}`).
+ *
+ * (Deliberately not spelling out a live example inline — see
+ * `scanTemplateLiteral`'s doc comment above for why: this line is a
+ * continuation of a multi-line comment, not lexed as a comment itself.)
+ *
+ * Limitation (accepted): a template literal nested *inside* an interpolation
+ * (`` `${`nested ${y}`}` ``) is skipped as an opaque string span (its own
+ * `${...}` is not recursively lexed as code) rather than fully resolved —
+ * matches the multi-line block-comment limitation above in spirit: this only
+ * under-matches (never over-matches) relative to a full lexer.
+ */
+function scanInterpolation(
+  text: string,
+  braceIndex: number,
+): { end: number; code: string } {
+  let index = braceIndex + 1;
+  const length = text.length;
+  let depth = 1;
+  let code = '';
+
+  while (index < length) {
+    const ch = text.charAt(index);
+    if (isQuoteChar(ch) || ch === '`') {
+      index = findStringEnd(text, index, ch);
+      continue;
+    }
+    if (ch === '{') {
+      depth += 1;
+      code += ch;
+      index += 1;
+      continue;
+    }
+    if (ch === '}') {
+      depth -= 1;
+      if (depth === 0) {
+        return { end: index + 1, code };
+      }
+      code += ch;
+      index += 1;
+      continue;
+    }
+    code += ch;
+    index += 1;
+  }
+  return { end: length, code };
 }
 
 /** Punctuators after which a `/` starts a regex literal, not a division. */
