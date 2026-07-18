@@ -49,6 +49,13 @@ const COPILOT_TOOLS = [
 ];
 
 // Map the CC model tier keyword → a Copilot model id from guardrails.config.json.
+// These knobs default UNSET, so the generated `.agent.md` omits `model:`. That is
+// deliberate and safe (see plan.md's "Copilot fixer tier-ladder" note): on VS Code
+// an unset model inherits the picker/session model — the THOROUGH fixer is never
+// silently downgraded — while the Copilot CLI ignores this field entirely and the
+// cloud agent uses "Auto". GitHub publishes no enumerated id list (values are
+// account-/surface-specific and drift), so hardcoding a default would be fragile.
+// A user who wants VS-Code tier-pinning sets copilotFastModel/copilotThoroughModel.
 const cfg = (() => {
   try {
     return JSON.parse(

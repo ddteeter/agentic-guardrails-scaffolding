@@ -116,16 +116,31 @@ settled fact, recorded here rather than left open.
     `.claude/` reuse.
   - The per-fixer `model` (tier) is now a real cross-runtime knob; the fixer
     _names_ are already config-driven via `guardrails.config.json`.
-  - **Copilot fixer tier-ladder remains pending model-id confirmation — a
-    config-only flip, no code change.** `scripts/sync-agents.mjs` emits
-    `.github/agents/*.agent.md` with the `tools` allowlist and `agents: []`
-    wired, and will write a `model:` line from
-    `RepoConfig.copilotFastModel`/`copilotThoroughModel` whenever those knobs
-    are set — but GitHub's custom-agents docs still don't enumerate valid
-    `model:` identifier strings (only "inherits the default model" if unset),
-    so the knobs stay unset and the fixers load on Copilot's default model.
-    Once the exact ids are confirmable, set them in `guardrails.config.json`
-    and rebuild; no script or type change needed.
+  - **Copilot fixer tier-ladder is config-gated, and `model:` is deliberately
+    unset by default — this is safe, not an oversight.** `scripts/sync-agents.mjs`
+    emits `.github/agents/*.agent.md` with the `tools` allowlist and `agents: []`
+    wired, and writes a `model:` line from
+    `RepoConfig.copilotFastModel`/`copilotThoroughModel` when those knobs are set.
+    They default UNSET because of how Copilot actually treats the field per
+    surface (GitHub docs, mid-2026):
+    - **VS Code / JetBrains / Eclipse / Xcode:** unset `model:` **inherits the
+      model selected in the picker** (the session model). So the _thorough_
+      fixer is **never silently downgraded** — it rides whatever the user
+      selected; the only cost is that the _fast_ fixer isn't pinned to a cheaper
+      tier (it also inherits). Pinning a tier requires an explicit `model:`.
+    - **Copilot CLI:** the `model:` frontmatter field is **ignored** (uses the
+      CLI's own default model); a `model:` **array even errors** the agent as
+      malformed. So a single-string value is safe (ignored) but can't pin a tier
+      there today (tracked upstream: github/copilot-cli #2133/#3070).
+    - **Cloud coding agent:** `model:` is **not honored** at all — the model
+      comes from the GitHub.com UI selection or "Auto".
+    - **No enumerated id list:** GitHub publishes none; valid values are
+      surface- and account-specific (IDE autocomplete, e.g. `Claude Opus 4.5`)
+      and drift over time — the same drift risk as the third-party rule-ids
+      (see the "Upgrading leveraged tools" note). Hardcoding a default would be
+      fragile (a wrong id can fail agent load), so the knobs stay unset and a
+      user who wants VS-Code tier-pinning sets them from their IDE's autocomplete
+      list in `guardrails.config.json` and rebuilds — no code change needed.
 - **State location on non-Claude surfaces — resolved: `.guardrails/state/`.**
   State converged on this runtime-neutral path for **both** Claude Code and
   Copilot (off the old `.claude/state/guardrails/`). `stateDirectory()` was
@@ -261,6 +276,23 @@ core/src/audit.ts`) surfaced that it was a context-free text scan: it flagged
     gets its own parser with the Phase-D pack. The text auditor stays as the fast,
     dependency-light, cross-language first pass. (Decision: Phase-B review, 2026-07;
     the text auditor ships as the Phase-B floor, backstopped.)
+
+- **Tool/language-upgrade drift guard (roadmap, raised in PR review).**
+  `guardrails-core` hardcodes third-party rule-ids/signatures in two places —
+  the loose-class list (`loose-rules.ts`) and the diff-auditor suppression
+  signatures (`audit.ts`) — plus, on the Copilot side, model identifiers (above)
+  that also drift. `CLAUDE.md`'s "Upgrading leveraged tools" section already
+  documents _which_ files to review on a linter/test/language bump, but that
+  relies on a human remembering. Mechanize it: prefer a **deterministic check**
+  over an "upgrade agent" — a test (or Dependabot-triggered CI step) that asserts
+  every rule-id referenced in `loose-rules.ts` still exists in the installed
+  plugin's rule set and that the auditor's suppression syntaxes still match the
+  tool's current output, so a rename/removal **fails the build** instead of
+  silently mis-routing or under-matching. Value grows as Phase C/D add many more
+  analyzers (knip, dependency-cruiser, semgrep, stryker, pmd, spotbugs, …), each
+  with its own hardcoded ids. A skill could complement it for the judgment part
+  (spotting newly-added rules that _should_ be classed loose), but the
+  drift-detection itself should be a gate, not advice.
 
 - **Repo-hygiene: `main` is stale in this worktree.** This worktree's `main`
   ref still sits at the initial commit, so the commit gate's merge-base diff
