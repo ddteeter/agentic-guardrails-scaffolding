@@ -1070,9 +1070,79 @@ git commit -m "feat: generate committed .github/agents Copilot fixers + CI drift
 
 ---
 
-### Task 8: Tool-agnostic floors — git pre-commit + CI verify
+### Task 8: Make the diff-auditor mention-aware (discovered during execution)
 
-The two backstops no surface can skip: a `.githooks/pre-commit` template (for consumer repos) plus the same check wired into this repo's Husky, and a CI `guardrails verify` job.
+**Why (finding):** wiring `gate --mode=commit` as a hard blocker (Task 9) surfaced a real dogfooding finding — `auditDiff` is a pure text scan that flags any added line containing a suppression token, with no awareness of context. Against this repo it false-positived on: prose (`CLAUDE.md`/`README`/`plan.md`/agent `.md` prompts), string literals in test fixtures (`'+// eslint-disable-next-line'`), and the auditor's **own** pattern definitions in `audit.ts`. The auditor genuinely adds value at the commit boundary (it catches human-added suppressions that eslint/tsc can't, since the scaffold disables `no-unsafe-*`), so the right fix is to make it precise — not to mask it with `enforcement: warn`. This task must land BEFORE Task 9 wires the gate as a blocker.
+
+**The discriminator:**
+
+- **Non-source files** never contain real suppressions → audit only recognized source extensions (`.ts .tsx .mts .cts .js .jsx .mjs .cjs .java`; extensible). Findings for any other file (`.md`, `.json`, `.yaml`, …) are dropped.
+- **Directive patterns** (`eslint-disable`, `@ts-ignore`/`@ts-expect-error`/`@ts-nocheck`) are real only when a comment's content STARTS with the token (`// eslint-disable-next-line`, `/* eslint-disable */`, `// @ts-ignore`). Rejects `// TS: eslint-disable[-next-line]`, `'eslint-disable'` strings, and `/eslint-disable/` regexes.
+- **Code patterns** (`as any`/`as unknown as`/`<any>`, `@SuppressWarnings`, `@Disabled`, `.skip`/`.only`/`xit`/…) are real only in the CODE portion of a line — strip string-literal and comment spans first, then match. Rejects `as any` inside `'...'` fixtures and inside `// ...` describing comments.
+
+**Files:**
+
+- Modify: `guardrails-core/src/audit.ts` (add a source-extension gate; split signatures into directive vs code classes; add a light single-line lexer to locate string/comment spans; apply the two matching rules)
+- Test: `guardrails-core/test/audit.test.ts` (add a mention-awareness describe block; keep every existing case green)
+
+**Interfaces:**
+
+- Consumes: nothing new.
+- Produces: `auditDiff(diffText: string): AuditFinding[]` — same signature, more precise. `AuditKind`/`AuditFinding` unchanged.
+
+- [ ] **Step 1: Write the failing corpus (must-NOT-flag)**
+
+Add a describe block with these cases (each expects `auditDiff(...)` to return `[]`). Use the existing `diff(file, addedLine)` helper in `audit.test.ts` (it builds a one-line unified diff for `file`); note the FILE arg drives the extension gate.
+
+- `diff('README.md', '+never add `eslint-disable`or`as any`or`.skip`')` → non-source.
+- `diff('audit.ts', "+  { kind: 'eslint-disable', pattern: /eslint-disable/ },")` → string + regex, no directive/code.
+- `diff('audit.ts', "+  | 'cast-any' // TS: as any / as unknown as / <any>")` → string + describing comment.
+- `diff('audit.ts', '+  | \'skipped-test\'; // TS/JS: .skip / .only / xit / fit')` → describing comment.
+- `diff('a.test.ts', "+  auditDiff(diff('a.ts', '+  const x = foo as any;'))")` → `as any` inside a string.
+- `diff('a.ts', '+  // see the eslint-disable rule referenced below')` → token mid-comment, not directive-leading.
+
+- [ ] **Step 2: Add the must-FLAG cases and run RED**
+
+Add (each expects the given `kind`), then run `npm run test -- audit` and confirm the must-NOT-flag cases FAIL (current auditor over-matches) while these still pass:
+
+- `diff('a.ts', '+  // eslint-disable-next-line no-console')` → `eslint-disable`.
+- `diff('a.ts', '+  /* eslint-disable */')` → `eslint-disable`.
+- `diff('a.ts', '+  // @ts-ignore')` → `ts-suppress`.
+- `diff('a.ts', '+  const x = foo as any;')` → `cast-any`.
+- `diff('a.ts', '+  return bar as unknown as Baz;')` → `cast-any`.
+- `diff('a.test.ts', "+  it.skip('x', () => {});")` → `skipped-test` (the `it.skip` is code; only the `'x'` is a string).
+- `diff('A.java', '+  @SuppressWarnings("unchecked")')` → `suppress-warnings`.
+- `diff('A.java', '+  @Disabled')` → `disabled-test`.
+
+- [ ] **Step 3: Implement the precise auditor**
+
+In `audit.ts`: (a) add `isAuditableSourceFile(file)` (extension allowlist) and skip signature matching when the current `+++` file is not auditable; (b) classify each signature as `directive` or `code`; (c) add a single-line scanner that returns the line's comment content (after `//` / inside `/* */`, not inside a string) and its code-only text (string + comment spans removed), handling `'`, `"`, `` ` `` with backslash escapes; (d) match `directive` signatures only against a comment whose trimmed content STARTS with the token, and `code` signatures only against the code-only text. Keep `AuditFinding.line`/`text` semantics (report the original added line trimmed). No nested ternaries (sonarjs).
+
+- [ ] **Step 4: Run GREEN + the existing suite**
+
+Run: `npm run test -- audit`
+Expected: all new must-NOT-flag and must-FLAG cases PASS, and every pre-existing `audit.test.ts` case still PASSES (e.g. the oscillation/removed-suppression tests in `gate.test.ts` that depend on `auditDiff` behavior — run `npm run test` to confirm the whole suite).
+
+- [ ] **Step 5: Dogfood check — the auditor no longer flags its own repo**
+
+Run: `npm run build && node ./node_modules/guardrails-core/dist/cli.mjs gate --mode=commit; echo "exit=$?"`
+Expected: the long false-positive list is gone. Any remaining findings are REAL suppressions — there should be none in this strict repo, so `exit=0`. If a genuine suppression is found, that is a true positive (report it); do not weaken the auditor to hide it.
+
+- [ ] **Step 6: Full check + commit**
+
+Run: `npm run typecheck && npm run lint && npm run test`
+Expected: PASS.
+
+```bash
+git add guardrails-core/src/audit.ts guardrails-core/test/audit.test.ts
+git commit -m "fix: diff-auditor flags real suppressions, not mentions (source-only, directive-at-comment-start, code-portion casts)"
+```
+
+---
+
+### Task 9: Tool-agnostic floors — git pre-commit + CI verify
+
+The two backstops no surface can skip: a `.githooks/pre-commit` template (for consumer repos) plus the same check wired into this repo's Husky, and a CI `guardrails verify` job. **Depends on Task 8** — the commit gate is now a real hard blocker, which is only safe because the auditor is mention-aware.
 
 **Files:**
 
@@ -1148,7 +1218,7 @@ git commit -m "feat: git pre-commit + CI verify floors beneath every surface"
 
 ---
 
-### Task 9: Copilot live-loop verification doc
+### Task 10: Copilot live-loop verification doc
 
 The manual acceptance script for the interactive-only first surface (VS Code via `.claude/` reuse), plus the CLI native-dialect run. Mirrors `docs/live-loop-verification.md`. Also the vehicle that closes carry-in #2 (scope-lock frontmatter firing).
 
@@ -1164,7 +1234,7 @@ Create `docs/copilot-live-loop-verification.md` covering:
 
 1. **Preconditions** — `npm install` (builds `dist/`); confirm `.claude/` wiring present; VS Code with Copilot agent mode (hooks Preview enabled); for the CLI section, Copilot CLI installed with `.github/hooks/guardrails.json` on the branch.
 2. **VS Code loop (primary):** in a Copilot agent-mode session, introduce an assertionless test (`vitest/expect-expect`), let the agent finish a turn → confirm the `Stop`/`agentStop` gate **blocks** with the terse pointer → the agent spawns `guardrail-fixer` → the fix re-verifies clean. Then trip the rule across 3 turns → observe the recurrence correction. Force an unfixable case → observe escalation to the main agent.
-3. **Scope-lock proof (closes carry-in #2):** during a fixer run, direct it to read a file **outside the repo** (e.g. `~/.claude/…`) → confirm the `scope-check` `PreToolUse` hook **denies** it. The denied out-of-repo read is the confirming signal. Record PASS/FAIL in `plan.md` (Task 10).
+3. **Scope-lock proof (closes carry-in #2):** during a fixer run, direct it to read a file **outside the repo** (e.g. `~/.claude/…`) → confirm the `scope-check` `PreToolUse` hook **denies** it. The denied out-of-repo read is the confirming signal. Record PASS/FAIL in `plan.md` (Task 11).
 4. **CLI loop (native dialect):** repeat the assertionless-test loop through Copilot CLI, driven by `.github/hooks/guardrails.json`; confirm `gate --mode=pretooluse` denies a `git commit` while dirty.
 5. **Cloud (deferred):** note the default-branch requirement and that live cloud proof is out of scope this phase.
 
@@ -1177,7 +1247,7 @@ git commit -m "docs: Copilot live-loop verification script (VS Code + CLI)"
 
 ---
 
-### Task 10: Update `plan.md` (corrections + status)
+### Task 11: Update `plan.md` (corrections + status)
 
 Fold the phase's factual corrections and status into the self-describing plan.
 
@@ -1201,7 +1271,11 @@ Add the outcome of the Task 9 scope-lock proof (PASS = the out-of-repo read was 
 
 - [ ] **Step 4: Update phase status**
 
-Mark Phase B's build-phase line and add a short "Phase B status" note listing what shipped (dual-dialect hook I/O, `gate --mode=pretooluse`, merge-base commit baseline, `.github/hooks` + `.github/agents`, git + CI floors, `.guardrails/state/`).
+Mark Phase B's build-phase line and add a short "Phase B status" note listing what shipped (dual-dialect hook I/O, `gate --mode=pretooluse`, merge-base commit baseline, mention-aware diff-auditor, `.github/hooks` + `.github/agents`, git + CI floors, `.guardrails/state/`).
+
+- [ ] **Step 5b: Record the diff-auditor finding + resolution**
+
+Add to the "Roadmap: fixer-loop hardening" (or a new roadmap subsection) the diff-auditor finding surfaced this phase and how it was resolved: the auditor was a context-free text scan that flagged suppression-token _mentions_ (prose, string literals, its own pattern source); Phase B made it mention-aware (source-file gate; directive-at-comment-start; code-patterns matched against the code portion only). Note the remaining known limitation (multi-line block comments are not lexed across lines) and the separate **repo-hygiene item**: this worktree's `main` ref sits at the initial commit, so the commit gate's merge-base diff spans the whole repo — advancing `main` to the true integration base would both narrow the gate's scope and speed up `verify`.
 
 - [ ] **Step 5: Commit**
 
