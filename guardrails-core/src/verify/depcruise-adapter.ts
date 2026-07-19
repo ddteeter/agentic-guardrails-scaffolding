@@ -41,7 +41,10 @@ function isDepcruiseReport(
         typeof v === 'object' &&
         v !== null &&
         typeof (v as DepcruiseViolation).from === 'string' &&
-        typeof (v as { rule?: { name?: unknown } }).rule?.name === 'string',
+        typeof (v as DepcruiseViolation).to === 'string' &&
+        typeof (v as { rule?: { name?: unknown } }).rule?.name === 'string' &&
+        typeof (v as { rule?: { severity?: unknown } }).rule?.severity ===
+          'string',
     )
   );
 }
