@@ -1,5 +1,15 @@
 {
-  "ignorePatterns": ["dist/", "coverage/", "**/*.d.ts"],
+  // Self-contained knip drift-probe fixture (guardrails-core/test/drift/
+  // registry.test.ts) — a deliberately-unused-export fixture the drift probe
+  // spawns knip against directly; not reachable from any real entry point, so
+  // it reads as dead code to fallow's whole-graph scan. Excluded the same way
+  // it's excluded from knip.json/tsconfig.json/eslint.config.js.
+  "ignorePatterns": [
+    "dist/",
+    "coverage/",
+    "**/*.d.ts",
+    "guardrails-core/test/drift/knip-fixture/**",
+  ],
   // `@anthropic-ai/claude-agent-sdk` is a TYPE-ONLY devDependency (`import type`
   // for the Claude Code hook schema) — erased at build, never in shipped dist,
   // so it correctly lives in devDependencies. fallow's static import scan can't

@@ -21,5 +21,8 @@
   ],
   "scripts": {
     "build": "tsup"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.5"
   }
 }

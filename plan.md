@@ -277,7 +277,7 @@ core/src/audit.ts`) surfaced that it was a context-free text scan: it flagged
     dependency-light, cross-language first pass. (Decision: Phase-B review, 2026-07;
     the text auditor ships as the Phase-B floor, backstopped.)
 
-- **Tool/language-upgrade drift guard (roadmap, raised in PR review).**
+- **Tool/language-upgrade drift guard (first cut shipped, Phase C piece 1).**
   `guardrails-core` hardcodes third-party rule-ids/signatures in two places —
   the loose-class list (`loose-rules.ts`) and the diff-auditor suppression
   signatures (`audit.ts`) — plus, on the Copilot side, model identifiers (above)
@@ -292,7 +292,20 @@ core/src/audit.ts`) surfaced that it was a context-free text scan: it flagged
   analyzers (knip, dependency-cruiser, semgrep, stryker, pmd, spotbugs, …), each
   with its own hardcoded ids. A skill could complement it for the judgment part
   (spotting newly-added rules that _should_ be classed loose), but the
-  drift-detection itself should be a gate, not advice.
+  drift-detection itself should be a gate, not advice. **Shipped:** knip issue
+  types + the resolvable eslint-family loose ids now have an id-existence probe
+  (`src/drift-guard.ts` + `test/drift/`, see the Phase C status below);
+  `audit.ts`'s suppression-signature drift is the documented next registry
+  entry.
+
+- **Drift-guard finding: `no-assertionless-test` resolves to no installed
+  plugin.** `loose-rules.ts` `LOOSE_RULE_NAMES` lists `no-assertionless-test`,
+  but no installed ESLint plugin provides it (checked while building the
+  drift-guard). Likewise `boundaries/` has no installed plugin. Both are
+  excluded from the drift-guard's asserted set and documented as
+  forward-declared in `test/drift/registry.test.ts`; move them into `knownIds`
+  when their plugins land. Harmless today (a loose name matching nothing never
+  classifies anything), but recorded so the entries aren't mistaken for live.
 
 - **Repo-hygiene: `main` is stale in this worktree.** This worktree's `main`
   ref still sits at the initial commit, so the commit gate's merge-base diff
@@ -374,3 +387,68 @@ but not yet run (see carry-in #2 above). What shipped:
 - **`.guardrails/state/`** — state converged onto this runtime-neutral
   directory for both Claude Code and Copilot (see the "State location"
   resolution above).
+
+## Phase C status (in progress)
+
+- **Piece 1 — knip + drift-guard (shipped).** knip runs at the commit/ci rungs
+  via a new `VerifyOptions.profile` seam; a `parseKnipJson` adapter maps its
+  output to `Violation[]` (`fixable: false` — knip `--fix` deletes code). The
+  drift-guard (`src/drift-guard.ts` + `test/drift/`) asserts the knip issue
+  types and the resolvable eslint-family loose ids still exist upstream.
+  Design: `docs/superpowers/specs/2026-07-18-phase-c-knip-drift-guard-design.md`.
+  - **Dormant loose-class (by design):** knip is loose-classed but runs only on
+    the block-only commit rung, so that thorough-tier routing is inert until the
+    throttled Stop tier (option B) lands. Do NOT read the `knip/` loose entry as
+    live behavior yet.
+
+### Phase C piece 1 — execution findings
+
+- **Drift-guard finding: `no-assertionless-test` resolves to no installed
+  plugin.** `loose-rules.ts` `LOOSE_RULE_NAMES` lists `no-assertionless-test`,
+  but no installed ESLint plugin provides it (checked while building the
+  drift-guard). Likewise `boundaries/` has no installed plugin. Both are
+  excluded from the drift-guard's asserted set and documented as
+  forward-declared in `test/drift/registry.test.ts`; move them into `knownIds`
+  when their plugins land. Harmless today (a loose name matching nothing never
+  classifies anything), but recorded so the entries aren't mistaken for live.
+  (Also recorded under "Roadmap: fixer-loop hardening" above.)
+- **Plan code must be validated against the target repo's own linter.** The
+  plan's `parseKnipJson` tripped `sonarjs/cognitive-complexity` (23 > 15) and
+  `unicorn/prevent-abbreviations` when written as drafted; fixed by decomposing
+  into helpers and renaming (fix the code, not the rule). Separately,
+  `@typescript-eslint/no-unnecessary-boolean-literal-compare` autofixes
+  `x === false` → `!x` for a boolean field, so exact-literal assertions like
+  `fixable === false` aren't achievable in-repo (use `!x`; pin the exact
+  literal via object-equality assertions instead).
+- **A knip fixture under a workspace's test glob pollutes the main analysis.**
+  The drift-probe fixture at `guardrails-core/test/drift/knip-fixture/` (which
+  needs a deliberately-unused export) was swept into guardrails-core's
+  `test/**/*.ts` scope and had to be excluded from FOUR configs —
+  `knip.json` (`ignore`), `guardrails-core/tsconfig.json` (`exclude`), root
+  `eslint.config.js` (`ignores`), and (found only when Task 5 ran the pre-push
+  gate for the first time since Task 4 — the gate runs at push, not per-commit,
+  so this slipped Tasks 1–4 unnoticed) root `.fallowrc.jsonc`
+  (`ignorePatterns`) — all scoped to `test/drift/knip-fixture/**`.
+- **knip's bin isn't on PATH under vitest.** The drift probe had to spawn the
+  absolute `node_modules/.bin/knip` path (computed from the test's location),
+  not a bare `knip`.
+- **A workspace-scoped test importing a root-hoisted devDependency reads as
+  "unlisted" to fallow.** `guardrails-core/test/drift/registry.test.ts` imports
+  `@eslint/js` directly (to introspect real rule ids for the eslint-family
+  probe) but only the root `package.json` declared it; npm workspace hoisting
+  made it resolve fine at runtime, masking the gap until the whole-graph
+  pre-push gate (which is workspace-aware) flagged it. Fixed by declaring
+  `@eslint/js` in `guardrails-core/package.json` directly rather than relying
+  on hoisting — same "declare in the workspace that actually uses it" lesson
+  as the fixture-exclusion finding above.
+- **Zero-`.ts` commits skipping knip was reclassified from "minor follow-up"
+  to a real bug, and fixed.** `runVerify` originally early-returned when no
+  changed `.ts` files were found, before the knip dispatch — so a
+  `package.json`-only (e.g. Dependabot) change skipped knip at every rung,
+  including the CI backstop, silently exempting knip's dependency-hygiene
+  issue types (`dependencies`, `devDependencies`, `unlisted`, `unresolved`,
+  `binaries`). A whole-branch review caught that knip is whole-graph and needs
+  no changed-file list, so gating it on a diff-scoped precondition was wrong.
+  Fixed by reordering `runVerify`: knip now runs whenever `profile !== 'stop'`,
+  independent of `files.length`; only ESLint/tsc stay gated on changed `.ts`
+  files.

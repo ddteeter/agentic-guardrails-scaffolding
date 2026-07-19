@@ -130,6 +130,7 @@ export async function runStopGate(
     repoRoot,
     baseBranch,
     exec,
+    profile: 'stop' as const,
     ...(options.resolveBin ? { resolveBin: options.resolveBin } : {}),
   };
   const { violations } = await runVerify(verifyOptions);
@@ -202,6 +203,7 @@ export async function runCommitGate(
     repoRoot: options.repoRoot,
     baseBranch: options.baseBranch,
     exec: options.exec,
+    profile: 'commit',
     ...(options.resolveBin ? { resolveBin: options.resolveBin } : {}),
   });
   const findings = auditDiff(await branchDiff(options));

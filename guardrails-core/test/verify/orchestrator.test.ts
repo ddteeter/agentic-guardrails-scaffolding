@@ -20,6 +20,27 @@ const eslintJson = JSON.stringify([
 
 const tscOut = "src/new.ts(2,1): error TS2304: Cannot find name 'oops'.";
 
+const knipJson = JSON.stringify({
+  issues: [
+    {
+      file: 'src/dead.ts',
+      files: [{ name: 'src/dead.ts' }],
+      exports: [],
+      types: [],
+      dependencies: [],
+      devDependencies: [],
+      optionalPeerDependencies: [],
+      unlisted: [],
+      unresolved: [],
+      binaries: [],
+      duplicates: [],
+      enumMembers: [],
+      namespaceMembers: [],
+      catalog: [],
+    },
+  ],
+});
+
 interface Call {
   command: string;
   args: string[];
@@ -49,6 +70,9 @@ function fakeExec(overrides: Record<string, ExecResult> = {}): {
     }
     if (command === 'tsc' || args.includes('tsc')) {
       return Promise.resolve(ok(tscOut));
+    }
+    if (command === 'knip' || args.includes('knip')) {
+      return Promise.resolve(ok(knipJson));
     }
     return Promise.resolve(ok(''));
   };
@@ -100,6 +124,75 @@ describe('runVerify', () => {
     });
     expect(violations).toEqual([]);
     // Neither linter should have run.
+    expect(
+      noTs.calls.some((c) => c.command === 'eslint' || c.command === 'tsc'),
+    ).toBe(false);
+  });
+
+  it('runs knip and includes its violations at the commit profile', async () => {
+    const { exec, calls } = fakeExec();
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      profile: 'commit',
+    });
+    expect(violations.map((v) => v.ruleId)).toContain('knip/files');
+    expect(
+      calls.some((c) => c.command === 'knip' || c.args.includes('knip')),
+    ).toBe(true);
+  });
+
+  it('does NOT run knip at the stop profile (default)', async () => {
+    const { exec, calls } = fakeExec();
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec, // no profile → defaults to 'stop'
+    });
+    expect(violations.map((v) => v.ruleId)).not.toContain('knip/files');
+    expect(
+      calls.some((c) => c.command === 'knip' || c.args.includes('knip')),
+    ).toBe(false);
+  });
+
+  it('runs knip at the ci profile', async () => {
+    const { exec, calls } = fakeExec();
+    await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      profile: 'ci',
+    });
+    expect(
+      calls.some((c) => c.command === 'knip' || c.args.includes('knip')),
+    ).toBe(true);
+  });
+
+  it('still runs knip at the commit profile when zero TS files changed (whole-graph, not diff-scoped)', async () => {
+    const noTs = fakeExec({
+      'git diff --name-only --diff-filter=ACM main': {
+        stdout: 'README.md\ndocs/guide.md',
+        stderr: '',
+        code: 0,
+      },
+      'git ls-files --others --exclude-standard': {
+        stdout: '',
+        stderr: '',
+        code: 0,
+      },
+    });
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec: noTs.exec,
+      profile: 'commit',
+    });
+    expect(
+      noTs.calls.some((c) => c.command === 'knip' || c.args.includes('knip')),
+    ).toBe(true);
+    expect(violations.map((v) => v.ruleId)).toContain('knip/files');
+    // eslint/tsc should still be skipped since there are no changed TS files.
     expect(
       noTs.calls.some((c) => c.command === 'eslint' || c.command === 'tsc'),
     ).toBe(false);
