@@ -41,6 +41,22 @@ const knipJson = JSON.stringify({
   ],
 });
 
+const depcruiseJson = JSON.stringify({
+  summary: {
+    violations: [
+      {
+        from: 'guardrails-core/src/scope.ts',
+        to: 'node:child_process',
+        rule: { name: 'exec-seam', severity: 'error' },
+      },
+    ],
+    error: 1,
+    warn: 0,
+    info: 0,
+  },
+  modules: [],
+});
+
 interface Call {
   command: string;
   args: string[];
@@ -73,6 +89,9 @@ function fakeExec(overrides: Record<string, ExecResult> = {}): {
     }
     if (command === 'knip' || args.includes('knip')) {
       return Promise.resolve(ok(knipJson));
+    }
+    if (command === 'depcruise' || args.includes('depcruise')) {
+      return Promise.resolve(ok(depcruiseJson));
     }
     return Promise.resolve(ok(''));
   };
@@ -196,5 +215,86 @@ describe('runVerify', () => {
     expect(
       noTs.calls.some((c) => c.command === 'eslint' || c.command === 'tsc'),
     ).toBe(false);
+  });
+
+  it('runs dependency-cruiser and includes its violations at the commit profile', async () => {
+    const { exec, calls } = fakeExec();
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      profile: 'commit',
+    });
+    expect(violations.map((v) => v.ruleId)).toContain(
+      'dependency-cruiser/exec-seam',
+    );
+    expect(
+      calls.some(
+        (c) => c.command === 'depcruise' || c.args.includes('depcruise'),
+      ),
+    ).toBe(true);
+  });
+
+  it('invokes dependency-cruiser layout-generically (no repo-specific target, no pinned config)', async () => {
+    // Guards the consumer-repo value prop: guardrails-core ships into other
+    // repos, so runDepcruise must not hardcode this monorepo's own layout.
+    const { exec, calls } = fakeExec();
+    await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      profile: 'commit',
+    });
+    const depcruiseCall = calls.find(
+      (c) => c.command === 'depcruise' || c.args.includes('depcruise'),
+    );
+    expect(depcruiseCall?.args).toEqual(['--output-type', 'json', '.']);
+    // No repo-specific path, and DC auto-detects the consumer's own config
+    // (mirroring runKnip) rather than pinning a filename via `--config`.
+    expect(depcruiseCall?.args).not.toContain('guardrails-core/src');
+    expect(depcruiseCall?.args).not.toContain('--config');
+  });
+
+  it('does NOT run dependency-cruiser at the stop profile', async () => {
+    const { exec, calls } = fakeExec();
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+    });
+    expect(violations.map((v) => v.ruleId)).not.toContain(
+      'dependency-cruiser/exec-seam',
+    );
+    expect(
+      calls.some(
+        (c) => c.command === 'depcruise' || c.args.includes('depcruise'),
+      ),
+    ).toBe(false);
+  });
+
+  it('runs dependency-cruiser at the commit profile even when zero TS files changed', async () => {
+    const noTs = fakeExec({
+      'git diff --name-only --diff-filter=ACM main': {
+        stdout: 'README.md',
+        stderr: '',
+        code: 0,
+      },
+      'git ls-files --others --exclude-standard': {
+        stdout: '',
+        stderr: '',
+        code: 0,
+      },
+    });
+    await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec: noTs.exec,
+      profile: 'commit',
+    });
+    expect(
+      noTs.calls.some(
+        (c) => c.command === 'depcruise' || c.args.includes('depcruise'),
+      ),
+    ).toBe(true);
   });
 });

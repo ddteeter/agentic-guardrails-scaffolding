@@ -24,6 +24,7 @@
     "test:coverage": "vitest run --coverage",
     "check:graph": "fallow --coverage coverage/coverage-final.json --fail-on-issues",
     "check:graph:full": "fallow --coverage coverage/coverage-final.json",
+    "depcruise": "depcruise --output-type err .",
     "prepare": "husky && npm run build"
   },
   "lint-staged": {
@@ -41,6 +42,7 @@
     "@types/node": "^26.1.1",
     "@vitest/coverage-istanbul": "^4.1.10",
     "@vitest/eslint-plugin": "^1.6.23",
+    "dependency-cruiser": "^18.1.0",
     "eslint": "^9.39.5",
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-sonarjs": "^4.1.0",

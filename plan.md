@@ -452,3 +452,75 @@ but not yet run (see carry-in #2 above). What shipped:
   Fixed by reordering `runVerify`: knip now runs whenever `profile !== 'stop'`,
   independent of `files.length`; only ESLint/tsc stay gated on changed `.ts`
   files.
+
+- **Piece 2 — dependency-cruiser + analyzer registry (shipped).**
+  dependency-cruiser runs at the commit/ci rungs via a new min-rung analyzer
+  registry in `verify/index.ts` (the `if (profile !== 'stop')` knip branch is now
+  a `const ANALYZERS` table; knip + dependency-cruiser are `minRung: 'commit'`
+  entries, run serially; ESLint/tsc stay the diff-scoped special case outside the
+  table). A `.dependency-cruiser.cjs` declares three teeth-having rules —
+  `no-circular`, `not-to-test-from-src`, and `exec-seam` (only `src/exec.ts` may
+  import `node:child_process`, enforcing the injected-Exec invariant). A
+  `parseDepcruiseJson` adapter maps `--output-type json` to `Violation[]`
+  (`fixable: false` — dependency-cruiser has no safe autofix). The drift-guard
+  gained a third probe over dependency-cruiser's config-condition keywords +
+  severity enum (its rule names are ours, so not a drift target). Orphan/unresolved
+  rules were deliberately left off — fallow + knip own dead-code. Design:
+  `docs/superpowers/specs/2026-07-19-phase-c-dependency-cruiser-design.md`.
+  - **Dormant loose-class (by design):** dependency-cruiser is loose-classed but
+    runs only on the block-only commit rung, so thorough-tier routing stays inert
+    until the throttled Stop tier (option B) lands — identical to knip.
+  - **Registry revisit deferred to semgrep:** the min-rung table models only
+    `minRung`, not a diff-scope policy. semgrep (first diff-scopable / possibly
+    stop-rung analyzer) and stryker (CI-only) are the trigger to re-evaluate
+    whether it must graduate to a fuller per-analyzer abstraction, and to
+    reconsider parallel execution under a measured commit-gate budget.
+
+### Phase C piece 2 — execution findings
+
+- **The drift probe went validator-based, not schema-import or fixture (the
+  design's "resolved at implementation" open item).** dependency-cruiser 18 ships
+  **no consumable JSON schema** (only a precompiled ajv validator with no attached
+  `.schema`), and its `exports` map throws `ERR_PACKAGE_PATH_NOT_EXPORTED` on
+  subpath `require`/`import` — so the design's preferred schema-introspection probe
+  is impossible. But DC's config validator is **strict** (`additionalProperties:
+false`, enforced severity enum), so the probe feeds a minimal config per keyword
+  (`circular`, `path`, `pathNot`, `dependencyTypes`) + per severity to DC's own
+  validator (imported by computed internal path, mirroring the eslint.config.js
+  import) and asks which still validate. This is **fixture-free** — strictly better
+  than the design's fixture fallback, which would have re-incurred piece 1's
+  "fixture pollutes four configs" problem.
+- **DC's tsConfig path must be absolute in `.dependency-cruiser.cjs`.** A relative
+  `tsConfig.fileName` trips a dependency-cruiser + TypeScript `extends`-resolution
+  path-doubling bug (the tsconfig path shares the `guardrails-core` segment with
+  DC's computed basePath → TS5083/TS18003, depcruise exits 1 with 0 modules cruised
+  before any rule runs). Fixed with `resolve(__dirname, 'guardrails-core/tsconfig.json')`.
+  Verified against dependency-cruiser 18.1.0 + typescript 5.9.3.
+- **The hand-authored `.dependency-cruiser.cjs` breaks typed ESLint.** It lives
+  outside any tsconfig, so ESLint's project service can't parse it — added to the
+  global `ignores` in `eslint.config.js` alongside the existing `*.config.js/ts`
+  entries (a tool config, same class), required for the `npm run lint` clean
+  baseline.
+- **`noUncheckedIndexedAccess` bit the adapter's tests, and vitest hid it.**
+  Plan-example test code used `const [v] = parseDepcruiseJson(...); v.prop`, which
+  is `TS18048` under the repo's `noUncheckedIndexedAccess` — but vitest (esbuild, no
+  typecheck) passed it green, so `npm test` alone missed it; only `npm run typecheck`
+  / CI caught it. Reworked to whole-array matchers (`toContainEqual`) like the
+  knip-adapter tests. Lesson: pre-validate plan code against `tsc`, not just eslint.
+- **`.guardrails/state/` gitignore is root-anchored.** The nested
+  `guardrails-core/.guardrails/state/` written by gate runs isn't matched, so it
+  could be accidentally committed — a candidate follow-up (broaden the pattern).
+- **Analyzer invocations must be consumer-generic, not repo-coupled (PR review
+  finding).** The first cut of `runDepcruise` hardcoded `--config
+.dependency-cruiser.cjs` and the target `guardrails-core/src` — this monorepo's
+  own layout. But the machinery ships into consumer repos where `repoRoot =
+deps.cwd` (the consumer's dir), so depcruise would `ERROR: Can't open
+'guardrails-core/src'` and break the gate for every consumer — the analyzer's
+  primary product use case, silently defeated in dogfooding-only testing. Fixed
+  by mirroring `runKnip`: no `--config` (DC auto-detects the consumer's own
+  config) and target `.` (the consumer's config matchers + excludes scope it),
+  guarded by an orchestrator test asserting the argv carries no repo-specific
+  path. **General lesson for the remaining analyzers (semgrep, stryker): the CLI
+  invocation must be config-agnostic + layout-generic; dogfooding on this repo
+  alone won't surface a this-repo-path assumption — add a "no repo-specific argv"
+  test per analyzer.**
