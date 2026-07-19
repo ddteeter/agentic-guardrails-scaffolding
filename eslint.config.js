@@ -16,6 +16,10 @@ export default tseslint.config(
       '**/*.config.js',
       '**/*.config.ts',
       'scripts/**',
+      // Self-contained knip drift-probe fixture (guardrails-core/test/drift/
+      // registry.test.ts) — its own standalone project, deliberately outside
+      // guardrails-core's tsconfig, so ESLint's typed linting can't parse it.
+      'guardrails-core/test/drift/knip-fixture/**',
     ],
   },
 
