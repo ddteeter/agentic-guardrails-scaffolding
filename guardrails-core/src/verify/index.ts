@@ -29,8 +29,8 @@ export interface VerifyOptions {
   packageId?: string;
   tsconfig?: string;
   resolveBin?: (tool: string) => string;
-  /** Cadence rung. Heavy whole-graph analyzers (knip) run only at commit/ci;
-   *  the per-turn stop gate stays fast. Defaults to 'stop'. */
+  /** Cadence rung. Heavy whole-graph analyzers (knip, dependency-cruiser) run
+   *  only at commit/ci; the per-turn stop gate stays fast. Defaults to 'stop'. */
   profile?: 'stop' | 'commit' | 'ci';
 }
 
