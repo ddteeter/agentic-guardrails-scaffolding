@@ -18,6 +18,7 @@ import type { Exec } from '../exec.js';
 import type { Violation } from '../violation.js';
 import { parseEslintJson } from './eslint-adapter.js';
 import { isTypeScriptFile, mergeChangedFiles } from './git.js';
+import { parseKnipJson } from './knip-adapter.js';
 import { parseTscOutput } from './tsc-adapter.js';
 
 export interface VerifyOptions {
@@ -27,6 +28,9 @@ export interface VerifyOptions {
   packageId?: string;
   tsconfig?: string;
   resolveBin?: (tool: string) => string;
+  /** Cadence rung. Heavy whole-graph analyzers (knip) run only at commit/ci;
+   *  the per-turn stop gate stays fast. Defaults to 'stop'. */
+  profile?: 'stop' | 'commit' | 'ci';
 }
 
 export interface VerifyResult {
@@ -76,6 +80,17 @@ export async function runVerify(options: VerifyOptions): Promise<VerifyResult> {
     { cwd: repoRoot },
   );
   violations.push(...parseTscOutput(tsc.stdout, repoRoot, packageId));
+
+  // knip is whole-graph (not diff-scoped) and seconds-scale, so it runs only at
+  // the commit/ci rungs — never on the per-turn stop gate. It assumes a
+  // knip-clean baseline, like tsc (see this file's header).
+  const profile = options.profile ?? 'stop';
+  if (profile !== 'stop') {
+    const knip = await exec(resolveBin('knip'), ['--reporter', 'json'], {
+      cwd: repoRoot,
+    });
+    violations.push(...parseKnipJson(knip.stdout, repoRoot, packageId));
+  }
 
   return { violations };
 }

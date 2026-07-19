@@ -61,6 +61,7 @@ async function verifyCommand(deps: CliDeps): Promise<number> {
     repoRoot,
     baseBranch: config.baseBranch,
     exec: deps.exec,
+    profile: 'ci',
     resolveBin: binResolver(repoRoot),
   });
   printViolations(deps, violations);
