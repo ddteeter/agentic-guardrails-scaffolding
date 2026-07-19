@@ -86,6 +86,13 @@ Stale entries fail silently (a loose rule routed to the wrong tier, or a
 suppression the auditor no longer recognizes), so this review is part of any
 tool upgrade — add/adjust with a test.
 
+The **id-existence half of this review is now mechanized**: the drift-guard
+(`guardrails-core/test/drift/registry.test.ts`) fails the build if a hardcoded
+loose id or knip issue type no longer exists upstream. You must still review the
+**judgment half** — whether an upgrade added rules that _should_ be classed loose
+(`loose-rules.ts`) or changed a suppression syntax the auditor watches
+(`audit.ts`); the guard checks existence, not completeness.
+
 ## Strictness (non-negotiable)
 
 - **TDD** — no production code without a failing test first.

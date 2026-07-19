@@ -76,6 +76,11 @@ node guardrails-core/dist/cli.mjs verify
 > a repo must pass `guardrails verify` **before** activating the gate; on a branch
 > with pre-existing `tsc` errors, every turn would escalate on them until fixed.
 
+knip runs at the **commit and CI rungs only** (never the per-turn Stop gate) and
+is whole-graph, so — like tsc — it assumes a **knip-clean baseline**. Run
+`npx knip` clean before relying on the commit gate; pre-existing dead code will
+otherwise block every commit until removed.
+
 ## Verifying the live Claude Code loop
 
 The headless tests prove verify → gate → delegate → audit → re-verify →
