@@ -21,7 +21,18 @@ const eslintConfigUrl = pathToFileURL(
   path.join(repoRoot, 'eslint.config.js'),
 ).href;
 
-/** knip probe: run real knip against the fixture, collect issue-type keys. */
+/**
+ * knip probe: run real knip against the fixture, collect issue-type keys.
+ *
+ * This relies on a knip output invariant: every issue object carries the FULL
+ * set of issue-type keys (all present, empty arrays for types with no finding) —
+ * NOT only the types that fired. That's why the fixture only needs to trigger a
+ * single issue type (one unused `export`) to expose all nine `knownIds` as keys;
+ * verified against knip 6.27.0, which emits 13 keys on a single-`exports` issue.
+ * If a future knip drops empty keys, this probe would report the untriggered
+ * types as "missing" and the drift test would fail — which is the correct signal
+ * to revisit (extend the fixture to organically trigger each asserted type).
+ */
 async function knipIssueTypes(): Promise<Set<string>> {
   const { stdout } = await spawnExec(knipBin, ['--reporter', 'json'], {
     cwd: knipFixture,
