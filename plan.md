@@ -510,3 +510,17 @@ false`, enforced severity enum), so the probe feeds a minimal config per keyword
 - **`.guardrails/state/` gitignore is root-anchored.** The nested
   `guardrails-core/.guardrails/state/` written by gate runs isn't matched, so it
   could be accidentally committed — a candidate follow-up (broaden the pattern).
+- **Analyzer invocations must be consumer-generic, not repo-coupled (PR review
+  finding).** The first cut of `runDepcruise` hardcoded `--config
+.dependency-cruiser.cjs` and the target `guardrails-core/src` — this monorepo's
+  own layout. But the machinery ships into consumer repos where `repoRoot =
+deps.cwd` (the consumer's dir), so depcruise would `ERROR: Can't open
+'guardrails-core/src'` and break the gate for every consumer — the analyzer's
+  primary product use case, silently defeated in dogfooding-only testing. Fixed
+  by mirroring `runKnip`: no `--config` (DC auto-detects the consumer's own
+  config) and target `.` (the consumer's config matchers + excludes scope it),
+  guarded by an orchestrator test asserting the argv carries no repo-specific
+  path. **General lesson for the remaining analyzers (semgrep, stryker): the CLI
+  invocation must be config-agnostic + layout-generic; dogfooding on this repo
+  alone won't surface a this-repo-path assumption — add a "no repo-specific argv"
+  test per analyzer.**
