@@ -335,12 +335,51 @@ function isEntryArray(value: unknown): value is KnipEntry[] {
   return (
     Array.isArray(value) &&
     value.every(
-      (e) =>
-        typeof e === 'object' &&
-        e !== null &&
-        typeof (e as KnipEntry).name === 'string',
+      (entry) =>
+        typeof entry === 'object' &&
+        entry !== null &&
+        typeof (entry as KnipEntry).name === 'string',
     )
   );
+}
+
+/** Map one knip issue-type entry to a normalized violation. */
+function toViolation(
+  issueType: string,
+  label: string,
+  entry: KnipEntry,
+  file: string,
+  packageId?: string,
+): Violation {
+  const message =
+    issueType === 'files' ? 'Unused file' : `Unused ${label}: ${entry.name}`;
+  return {
+    ruleId: `knip/${issueType}`,
+    file,
+    message,
+    severity: 'error',
+    fixable: false,
+    tool: 'knip',
+    ...(typeof entry.line === 'number' ? { line: entry.line } : {}),
+    ...(packageId === undefined ? {} : { package: packageId }),
+  };
+}
+
+/** Expand one file's issue object into its mapped violations. */
+function violationsForIssue(issue: KnipIssue, packageId?: string): Violation[] {
+  const violations: Violation[] = [];
+  for (const [issueType, label] of Object.entries(MAPPED_ISSUE_TYPES)) {
+    const entries = issue[issueType];
+    if (!isEntryArray(entries)) {
+      continue;
+    }
+    for (const entry of entries) {
+      violations.push(
+        toViolation(issueType, label, entry, issue.file, packageId),
+      );
+    }
+  }
+  return violations;
 }
 
 export function parseKnipJson(
@@ -357,36 +396,18 @@ export function parseKnipJson(
   if (!isKnipReport(parsed)) {
     return [];
   }
-
-  const violations: Violation[] = [];
-  for (const issue of parsed.issues) {
-    for (const [issueType, label] of Object.entries(MAPPED_ISSUE_TYPES)) {
-      const entries = issue[issueType];
-      if (!isEntryArray(entries)) {
-        continue;
-      }
-      for (const entry of entries) {
-        const message =
-          issueType === 'files'
-            ? 'Unused file'
-            : `Unused ${label}: ${entry.name}`;
-        const violation: Violation = {
-          ruleId: `knip/${issueType}`,
-          file: issue.file,
-          message,
-          severity: 'error',
-          fixable: false,
-          tool: 'knip',
-          ...(typeof entry.line === 'number' ? { line: entry.line } : {}),
-          ...(packageId === undefined ? {} : { package: packageId }),
-        };
-        violations.push(violation);
-      }
-    }
-  }
-  return violations;
+  return parsed.issues.flatMap((issue) => violationsForIssue(issue, packageId));
 }
 ```
+
+> **Plan correction (applied during execution):** the original single-function
+> version of `parseKnipJson` tripped this repo's own house rules —
+> `sonarjs/cognitive-complexity` (23 > 15, from the triple-nested loop) and
+> `unicorn/prevent-abbreviations` (the `e` param). Fixed the code, not the rules:
+> extracted `toViolation` + `violationsForIssue` helpers and renamed `e` →
+> `entry`. Behavior and the test suite are unchanged. (Dogfooding finding: plan
+> code should be validated against the target repo's linter — recorded in
+> `plan.md`.)
 
 - [ ] **Step 4: Run the test to verify it passes**
 
