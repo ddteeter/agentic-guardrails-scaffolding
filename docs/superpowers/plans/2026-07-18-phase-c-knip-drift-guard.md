@@ -254,7 +254,10 @@ describe('parseKnipJson', () => {
 
   it('never marks a knip violation fixable', () => {
     const violations = parseKnipJson(stdout, root);
-    expect(violations.every((v) => v.fixable === false)).toBe(true);
+    // `!v.fixable`, not `=== false`: `fixable` is a required boolean, so the
+    // repo's no-unnecessary-boolean-literal-compare rule autofixes `=== false`
+    // → `!`. The exact `fixable: false` literal is pinned by toContainEqual above.
+    expect(violations.every((v) => !v.fixable)).toBe(true);
   });
 
   it('threads packageId onto every violation when given', () => {

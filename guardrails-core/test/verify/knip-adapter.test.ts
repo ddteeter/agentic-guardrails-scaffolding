@@ -90,6 +90,10 @@ describe('parseKnipJson', () => {
 
   it('never marks a knip violation fixable', () => {
     const violations = parseKnipJson(stdout, root);
+    // `!v.fixable`, not `=== false`: `fixable` is a required `boolean`, so the
+    // repo's no-unnecessary-boolean-literal-compare rule autofixes `=== false`
+    // → `!`, and for a boolean the two are equivalent. The exact `fixable: false`
+    // literal is pinned by the `toContainEqual` cases above.
     expect(violations.every((v) => !v.fixable)).toBe(true);
   });
 
