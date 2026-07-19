@@ -81,15 +81,15 @@ async function runDepcruise(
   resolveBin: (tool: string) => string,
 ): Promise<Violation[]> {
   const { exec, repoRoot, packageId } = options;
+  // Config-agnostic and layout-generic, exactly as runKnip: no `--config` (DC
+  // auto-detects the consumer repo's own `.dependency-cruiser.{cjs,js,json}` /
+  // `package.json#dependency-cruiser`) and no hardcoded target (cruise `.` from
+  // repoRoot; the consumer's config `forbidden[].from/to` matchers + `exclude`/
+  // `doNotFollow` do the scoping). A repo-specific target here would silently
+  // break — a consumer repo has no `guardrails-core/src` directory.
   const result = await exec(
     resolveBin('depcruise'),
-    [
-      '--config',
-      '.dependency-cruiser.cjs',
-      '--output-type',
-      'json',
-      'guardrails-core/src',
-    ],
+    ['--output-type', 'json', '.'],
     { cwd: repoRoot },
   );
   return parseDepcruiseJson(result.stdout, repoRoot, packageId);

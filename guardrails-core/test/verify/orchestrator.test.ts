@@ -235,6 +235,26 @@ describe('runVerify', () => {
     ).toBe(true);
   });
 
+  it('invokes dependency-cruiser layout-generically (no repo-specific target, no pinned config)', async () => {
+    // Guards the consumer-repo value prop: guardrails-core ships into other
+    // repos, so runDepcruise must not hardcode this monorepo's own layout.
+    const { exec, calls } = fakeExec();
+    await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      profile: 'commit',
+    });
+    const depcruiseCall = calls.find(
+      (c) => c.command === 'depcruise' || c.args.includes('depcruise'),
+    );
+    expect(depcruiseCall?.args).toEqual(['--output-type', 'json', '.']);
+    // No repo-specific path, and DC auto-detects the consumer's own config
+    // (mirroring runKnip) rather than pinning a filename via `--config`.
+    expect(depcruiseCall?.args).not.toContain('guardrails-core/src');
+    expect(depcruiseCall?.args).not.toContain('--config');
+  });
+
   it('does NOT run dependency-cruiser at the stop profile', async () => {
     const { exec, calls } = fakeExec();
     const { violations } = await runVerify({

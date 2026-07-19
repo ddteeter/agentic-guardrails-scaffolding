@@ -38,12 +38,17 @@ const circular = JSON.stringify({
   modules: [],
 });
 
-const infoSeverity = JSON.stringify({
+const warnAndInfoSeverities = JSON.stringify({
   summary: {
     violations: [
       {
         from: 'guardrails-core/src/x.ts',
         to: 'guardrails-core/src/y.ts',
+        rule: { name: 'a-warning', severity: 'warn' },
+      },
+      {
+        from: 'guardrails-core/src/p.ts',
+        to: 'guardrails-core/src/q.ts',
         rule: { name: 'some-advice', severity: 'info' },
       },
     ],
@@ -118,12 +123,17 @@ describe('parseDepcruiseJson', () => {
     ).toBe(true);
   });
 
-  it('maps info/warn severities to warn', () => {
-    const violations = parseDepcruiseJson(infoSeverity, '/repo');
-    expect(violations).toHaveLength(1);
+  it('maps both warn and info severities to warn', () => {
+    const violations = parseDepcruiseJson(warnAndInfoSeverities, '/repo');
+    expect(violations).toHaveLength(2);
     expect(violations.every((violation) => violation.severity === 'warn')).toBe(
       true,
     );
+    // Both source severities are exercised, not just one.
+    expect(violations.map((violation) => violation.ruleId)).toEqual([
+      'dependency-cruiser/a-warning',
+      'dependency-cruiser/some-advice',
+    ]);
   });
 
   it('drops ignore-severity violations, keeping only reportable ones', () => {
