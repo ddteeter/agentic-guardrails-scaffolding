@@ -56,14 +56,35 @@ async function changedTypeScriptFiles(
   );
 }
 
-export async function runVerify(options: VerifyOptions): Promise<VerifyResult> {
-  const files = await changedTypeScriptFiles(options);
-  if (files.length === 0) {
-    return { violations: [] };
-  }
-
+/** knip is whole-graph (not diff-scoped) and seconds-scale, so it runs only at
+ *  the commit/ci rungs — never on the per-turn stop gate — but independent of
+ *  whether any `.ts` file changed (a dependency-only change, e.g. a
+ *  `package.json` bump, still needs the dependency-hygiene checks). It
+ *  assumes a knip-clean baseline, like tsc (see this file's header). */
+async function runKnip(
+  options: VerifyOptions,
+  resolveBin: (tool: string) => string,
+): Promise<Violation[]> {
   const { exec, repoRoot, packageId } = options;
-  const resolveBin = options.resolveBin ?? ((tool) => tool);
+  const profile = options.profile ?? 'stop';
+  if (profile === 'stop') {
+    return [];
+  }
+  const knip = await exec(resolveBin('knip'), ['--reporter', 'json'], {
+    cwd: repoRoot,
+  });
+  return parseKnipJson(knip.stdout, repoRoot, packageId);
+}
+
+async function runEslintAndTsc(
+  options: VerifyOptions,
+  resolveBin: (tool: string) => string,
+  files: string[],
+): Promise<Violation[]> {
+  if (files.length === 0) {
+    return [];
+  }
+  const { exec, repoRoot, packageId } = options;
   const tsconfig = options.tsconfig ?? 'tsconfig.json';
   const violations: Violation[] = [];
 
@@ -81,16 +102,15 @@ export async function runVerify(options: VerifyOptions): Promise<VerifyResult> {
   );
   violations.push(...parseTscOutput(tsc.stdout, repoRoot, packageId));
 
-  // knip is whole-graph (not diff-scoped) and seconds-scale, so it runs only at
-  // the commit/ci rungs — never on the per-turn stop gate. It assumes a
-  // knip-clean baseline, like tsc (see this file's header).
-  const profile = options.profile ?? 'stop';
-  if (profile !== 'stop') {
-    const knip = await exec(resolveBin('knip'), ['--reporter', 'json'], {
-      cwd: repoRoot,
-    });
-    violations.push(...parseKnipJson(knip.stdout, repoRoot, packageId));
-  }
+  return violations;
+}
 
-  return { violations };
+export async function runVerify(options: VerifyOptions): Promise<VerifyResult> {
+  const files = await changedTypeScriptFiles(options);
+  const resolveBin = options.resolveBin ?? ((tool) => tool);
+
+  const knipViolations = await runKnip(options, resolveBin);
+  const eslintTscViolations = await runEslintAndTsc(options, resolveBin, files);
+
+  return { violations: [...knipViolations, ...eslintTscViolations] };
 }

@@ -168,4 +168,33 @@ describe('runVerify', () => {
       calls.some((c) => c.command === 'knip' || c.args.includes('knip')),
     ).toBe(true);
   });
+
+  it('still runs knip at the commit profile when zero TS files changed (whole-graph, not diff-scoped)', async () => {
+    const noTs = fakeExec({
+      'git diff --name-only --diff-filter=ACM main': {
+        stdout: 'README.md\ndocs/guide.md',
+        stderr: '',
+        code: 0,
+      },
+      'git ls-files --others --exclude-standard': {
+        stdout: '',
+        stderr: '',
+        code: 0,
+      },
+    });
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec: noTs.exec,
+      profile: 'commit',
+    });
+    expect(
+      noTs.calls.some((c) => c.command === 'knip' || c.args.includes('knip')),
+    ).toBe(true);
+    expect(violations.map((v) => v.ruleId)).toContain('knip/files');
+    // eslint/tsc should still be skipped since there are no changed TS files.
+    expect(
+      noTs.calls.some((c) => c.command === 'eslint' || c.command === 'tsc'),
+    ).toBe(false);
+  });
 });

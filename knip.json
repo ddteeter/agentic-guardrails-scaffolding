@@ -3,6 +3,9 @@
   "workspaces": {
     "guardrails-core": {
       "project": ["src/**/*.ts", "test/**/*.ts"],
+      // Self-contained knip drift-probe fixture, excluded the same way it's
+      // excluded from tsconfig.json/eslint.config.js/.fallowrc.jsonc — keep
+      // the four exclusions in sync.
       "ignore": ["test/drift/knip-fixture/**"]
     }
   }
