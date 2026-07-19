@@ -441,8 +441,14 @@ but not yet run (see carry-in #2 above). What shipped:
   `@eslint/js` in `guardrails-core/package.json` directly rather than relying
   on hoisting — same "declare in the workspace that actually uses it" lesson
   as the fixture-exclusion finding above.
-- **Zero-`.ts` commits skip knip at commit/ci by design.** `runVerify`
-  early-returns when no changed `.ts` files, so a docs-only or
-  `package.json`-only commit won't run knip — acceptable (dead code arises
-  from `.ts` edits), but a `package.json`-only dependency change won't be
-  caught until the next `.ts`-touching commit. Minor follow-up, not a defect.
+- **Zero-`.ts` commits skipping knip was reclassified from "minor follow-up"
+  to a real bug, and fixed.** `runVerify` originally early-returned when no
+  changed `.ts` files were found, before the knip dispatch — so a
+  `package.json`-only (e.g. Dependabot) change skipped knip at every rung,
+  including the CI backstop, silently exempting knip's dependency-hygiene
+  issue types (`dependencies`, `devDependencies`, `unlisted`, `unresolved`,
+  `binaries`). A whole-branch review caught that knip is whole-graph and needs
+  no changed-file list, so gating it on a diff-scoped precondition was wrong.
+  Fixed by reordering `runVerify`: knip now runs whenever `profile !== 'stop'`,
+  independent of `files.length`; only ESLint/tsc stay gated on changed `.ts`
+  files.
