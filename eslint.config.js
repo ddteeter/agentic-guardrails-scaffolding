@@ -15,6 +15,10 @@ export default tseslint.config(
       '**/.fallow/',
       '**/*.config.js',
       '**/*.config.ts',
+      // dependency-cruiser's hand-authored CommonJS config — a tool config like
+      // the *.config.js/ts above, outside any tsconfig, so typed linting can't
+      // parse it.
+      '.dependency-cruiser.cjs',
       'scripts/**',
       // Self-contained knip drift-probe fixture (guardrails-core/test/drift/
       // registry.test.ts) — its own standalone project, deliberately outside
