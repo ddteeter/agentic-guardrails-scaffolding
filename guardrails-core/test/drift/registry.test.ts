@@ -20,6 +20,20 @@ const knipBin = path.join(repoRoot, 'node_modules', '.bin', 'knip');
 const eslintConfigUrl = pathToFileURL(
   path.join(repoRoot, 'eslint.config.js'),
 ).href;
+// dependency-cruiser's config validator is an internal file, not a public
+// export (its `exports` map blocks subpath require/import of it), so it's
+// loaded the same computed-path + `pathToFileURL` way as `eslint.config.js`
+// above.
+const depcruiseValidatorUrl = pathToFileURL(
+  path.join(
+    repoRoot,
+    'node_modules',
+    'dependency-cruiser',
+    'src',
+    'schema',
+    'configuration.validate.mjs',
+  ),
+).href;
 
 /**
  * knip probe: run real knip against the fixture, collect issue-type keys.
@@ -72,6 +86,83 @@ async function eslintRuleIds(): Promise<Set<string>> {
   return ids;
 }
 
+/**
+ * dependency-cruiser probe: the rule-condition keywords and severity values our
+ * `.dependency-cruiser.cjs` + depcruise-adapter depend on. Rule *names* are ours
+ * (authored in the config), so they are NOT the drift target — what UPSTREAM owns
+ * and can rename on upgrade is the condition vocabulary. DC 18 ships no consumable
+ * JSON schema, but its config validator uses `additionalProperties: false`, so a
+ * minimal config using a keyword validates ONLY while DC still accepts that keyword.
+ * (Imports DC's internal validator by computed path — DC exposes no public API for
+ * this; if a future DC moves the file, this import fails, which is itself a correct
+ * "revisit on upgrade" drift signal.)
+ */
+async function depcruiseVocabulary(): Promise<Set<string>> {
+  const { default: validate } = (await import(depcruiseValidatorUrl)) as {
+    default: (config: unknown) => boolean;
+  };
+
+  const accepted = new Set<string>();
+
+  // Each keyword gets a minimal config that is valid ONLY if DC still accepts it.
+  const keywordConfigs: Record<string, unknown> = {
+    circular: {
+      forbidden: [
+        { name: 'probe', severity: 'error', from: {}, to: { circular: true } },
+      ],
+    },
+    path: {
+      forbidden: [
+        {
+          name: 'probe',
+          severity: 'error',
+          from: { path: 'x' },
+          to: { path: 'y' },
+        },
+      ],
+    },
+    pathNot: {
+      forbidden: [
+        {
+          name: 'probe',
+          severity: 'error',
+          from: { path: 'x', pathNot: 'z' },
+          to: { path: 'y' },
+        },
+      ],
+    },
+    dependencyTypes: {
+      forbidden: [
+        {
+          name: 'probe',
+          severity: 'error',
+          from: {},
+          to: { path: 'y', dependencyTypes: ['core'] },
+        },
+      ],
+    },
+  };
+  for (const [keyword, config] of Object.entries(keywordConfigs)) {
+    if (validate(config)) {
+      accepted.add(keyword);
+    }
+  }
+
+  // Severity enum values the adapter maps.
+  for (const severity of ['error', 'warn', 'info']) {
+    const config = {
+      forbidden: [
+        { name: 'probe', severity, from: {}, to: { circular: true } },
+      ],
+    };
+    if (validate(config)) {
+      accepted.add(severity);
+    }
+  }
+
+  return accepted;
+}
+
 const entries: DriftEntry[] = [
   {
     tool: 'knip',
@@ -106,6 +197,22 @@ const entries: DriftEntry[] = [
     ],
     probe: eslintRuleIds,
     hint: 'a loose rule id in guardrails-core/src/loose-rules.ts no longer exists in its plugin — reconcile after the tool upgrade',
+  },
+  {
+    tool: 'dependency-cruiser',
+    // Condition keywords our .dependency-cruiser.cjs rules use + severities the
+    // adapter maps. NOT rule names (those are ours). See depcruiseVocabulary above.
+    knownIds: [
+      'circular',
+      'path',
+      'pathNot',
+      'dependencyTypes',
+      'error',
+      'warn',
+      'info',
+    ],
+    probe: depcruiseVocabulary,
+    hint: 'dependency-cruiser renamed/removed a rule-condition keyword or severity (its config validator now rejects the probe config) — reconcile .dependency-cruiser.cjs and guardrails-core/src/verify/depcruise-adapter.ts',
   },
 ];
 
