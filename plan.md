@@ -222,6 +222,27 @@ dogfooding branch (built-in loose-rule routing so test-integrity rules go to the
 thorough tier from attempt 1; a `Read`-matcher scope-check denying the fixer
 reads outside `repoRoot`). One remains:
 
+- **State dir is cwd-relative, not git-root-relative — recurrence ledger
+  fragments (found Phase C piece 3, unfixed).** There is **no git-root
+  resolution anywhere in `src`**: `cli.ts` sets `cwd: process.cwd()` and every
+  handler computes `repoRoot = input.cwd ?? deps.cwd`, so
+  `stateDirectory(repoRoot)` resolves to `<cwd>/.guardrails/state`. Operating the
+  same repo from different working directories — a subdir session, a manual
+  `guardrails` CLI run, a drifted cwd — therefore writes to **different**
+  `.guardrails/state/` dirs, so `recurrence.json` (the repeat-offender ledger
+  that drives loose-routing/graduation) silently **fragments and undercounts**.
+  Two facets: (1) **correctness** — recurrence is keyed to the invocation
+  directory rather than the repo; (2) **hygiene** — `.gitignore`'s
+  `.guardrails/state/` is a mid-separator (root-anchored) pattern, so nested
+  `.guardrails/` dirs from non-root cwds escape it and can be accidentally
+  committed (confirmed: `git status` showed a stray
+  `guardrails-core/src/.guardrails/` as untracked). **Fix direction:** resolve
+  `repoRoot` to the git toplevel (`git rev-parse --show-toplevel`, through the
+  injected `exec`) rather than trusting cwd, so all state anchors at the true
+  root regardless of invocation directory; this also subsumes the previously-noted
+  "broaden the root-anchored gitignore" follow-up (Phase C piece 2 findings). TDD
+  a `resolveRepoRoot(exec, cwd)` seam with a fake exec.
+
 - **Diff-auditor was mention-blind, not suppression-blind — resolved in Phase
   B.** Dogfooding the auditor against its own diff (see `guardrails-
 core/src/audit.ts`) surfaced that it was a context-free text scan: it flagged
