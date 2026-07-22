@@ -213,6 +213,24 @@ config; and external-tool output). Two tracks:
   structural casts and `JSON.parse(...) as T` at boundaries, and route it as a
   **loose class** (§2.3) above the bottom fixer tier. The fixer already forbids
   adding new casts, so recurrence memory surfaces repeat offenders automatically.
+  - **Update (Phase C piece 3 — resolved: this is NOT lint-gateable).** The
+    lint-rule route above was investigated and rejected. The upstream rule that
+    already implements it — `@typescript-eslint/no-unsafe-type-assertion` — cannot
+    distinguish "cast then validate" from "cast and trust": it flags every narrowing
+    assertion, including the sanctioned parse-don't-validate guard idiom (proven on
+    this repo — 23 findings, ~all safe guard/generic casts). Narrowing it to the
+    syntactic `JSON.parse(x) as T` form trades those false positives for false
+    negatives (misses the two-line `const p = JSON.parse(x); p as T` form). There is
+    no reliable **and** complete lint gate; the property needs dataflow the linter
+    lacks. **The reliable, by-construction fix is a runtime validator**
+    (`schema.parse(JSON.parse(x))` — zod/valibot/typia — returns a typed value with
+    no cast to detect). So this concern is **a recommendation, not a gate**: the
+    Phase E scaffolder's shipped template should adopt a validator at trust
+    boundaries, and fixer/scaffold guidance should point boundary casts there rather
+    than at deletion. The diff-auditor's existing `as any` / `as unknown as`
+    rejection stays (that pattern _is_ reliably detectable — it's the explicit
+    escape hatch, not the laundering cast). Full investigation:
+    `docs/superpowers/specs/2026-07-21-phase-c-boundary-cast-rule-design.md`.
 
 ## Roadmap: fixer-loop hardening (from the dogfooding live proof)
 
@@ -545,3 +563,51 @@ deps.cwd` (the consumer's dir), so depcruise would `ERROR: Can't open
   invocation must be config-agnostic + layout-generic; dogfooding on this repo
   alone won't surface a this-repo-path assumption — add a "no repo-specific argv"
   test per analyzer.**
+
+- **Piece 3 — the "semgrep slot" resolved to a recommendation, not an analyzer
+  (no enforcement code shipped).** Investigation retired both candidate tools and
+  concluded the boundary-cast concern is **not reliably lint-gateable**; the fix is
+  by-construction (a runtime validator), deferred to Phase E. Design + full
+  investigation:
+  `docs/superpowers/specs/2026-07-21-phase-c-boundary-cast-rule-design.md`.
+  - **semgrep is unusable as a pack analyzer:** not npm-installable (no first-party
+    npm package, no standalone binaries — pip/Docker only, so no reproducible Node
+    pin); its cross-file/interprocedural taint is **Pro-only** (free-tier taint is
+    single-function); its registry rules are **non-redistributable** (Semgrep Rules
+    License), so guardrails-core can't bundle packs; and it's ~1.3–1.7s/scan vs the
+    ~1.0s serial commit budget. **ast-grep** (npm-native, ~0.01s, MIT) is
+    structurally sound but **analytically shallow** (no types/dataflow/taint/registry)
+    — no more than the type-aware ESLint we already run. All verified empirically
+    (semgrep 1.170.0, `@ast-grep/cli` 0.44.1 installed and tested).
+  - **The rule already exists upstream:** the concrete boundary-cast rule the slot
+    was for (`plan.md` §"Boundary type-safety") ships as
+    `@typescript-eslint/no-unsafe-type-assertion` (type-aware, off-by-default, ts-eslint
+    v8.15.0+). So there was never a tool to add — only the question of enabling +
+    loose-classifying it.
+  - **Dogfood finding — the rule is not a reliable gate.** Enabling it (`npm run lint`)
+    produced **23 errors, ~all on the sanctioned parse-don't-validate idiom**
+    (`(x as KnipIssue).field` inside type guards; `value as Record<string, unknown>`
+    preambles; generic `value as T`; test scaffolding). The rule **cannot distinguish
+    "cast then validate" from "cast and trust"** — it flags every narrowing assertion,
+    including the standard safe way to author a TS type guard — and this repo forbids
+    `eslint-disable`, so a clean enable is unreachable. Three independent confirmations
+    that no reliable **and complete** lint gate exists: the dogfood flood; the research
+    (the ecosystem uses runtime validators, not linters, for exactly this reason); and
+    the false-pos/false-neg trap (narrowing the rule to the syntactic `JSON.parse(x) as
+T` form is clean here but misses the two-line `const p = JSON.parse(x); p as T`
+    form — the property depends on dataflow the linter can't follow).
+  - **Also surfaced: verify against the real gate, not a hand-scoped probe.** The
+    design's initial "clean baseline" was a false negative from a probe config lacking
+    the real gate's TypeScript program, so the type-aware rule silently under-reported.
+    Same class as piece 2's "vitest hid the tsc error." The enable + loose-classify +
+    drift changes were implemented TDD-first, then **reverted** once the real gate
+    surfaced the flood — shipping half an unreliable gate's machinery (a
+    classification that implies "enable this rule") is worse than shipping nothing.
+  - **Redirect (Phase-E-owned):** the boundary-safety concern moves to a
+    **runtime-validator recommendation** — the scaffolder's shipped template should
+    adopt a validator (zod/valibot/typia) at trust boundaries so the safe pattern
+    exists by construction (`schema.parse(JSON.parse(x))` produces no cast and needs no
+    detection), and fixer/scaffold guidance should point boundary casts there rather
+    than at deletion. See §"Boundary type-safety" (product track).
+  - **Registry-graduation revisit re-deferred from semgrep to stryker** (the min-rung
+    table is untouched; stryker is the remaining Phase-C analyzer and the real trigger).
