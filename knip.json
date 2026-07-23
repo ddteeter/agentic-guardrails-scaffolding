@@ -1,12 +1,17 @@
 {
   "$schema": "https://unpkg.com/knip@6/schema.json",
+  "ignoreDependencies": [
+    "@stryker-mutator/core",
+    "@stryker-mutator/vitest-runner"
+  ],
   "workspaces": {
     "guardrails-core": {
       "project": ["src/**/*.ts", "test/**/*.ts"],
       // Self-contained knip drift-probe fixture, excluded the same way it's
       // excluded from tsconfig.json/eslint.config.js/.fallowrc.jsonc — keep
       // the four exclusions in sync.
-      "ignore": ["test/drift/knip-fixture/**"]
+      "ignore": ["test/drift/knip-fixture/**"],
+      "ignoreDependencies": ["mutation-testing-report-schema"]
     }
   }
 }

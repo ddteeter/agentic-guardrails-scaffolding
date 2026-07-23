@@ -23,6 +23,7 @@
     "build": "tsup"
   },
   "devDependencies": {
-    "@eslint/js": "^9.39.5"
+    "@eslint/js": "^9.39.5",
+    "mutation-testing-report-schema": "^3.7.3"
   }
 }
