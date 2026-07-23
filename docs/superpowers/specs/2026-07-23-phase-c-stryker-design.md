@@ -103,10 +103,17 @@ Stryker is the first analyzer that is **both diff-scoped and carries a min-rung*
 
 | analyzer                 | scope             | rung       |
 | ------------------------ | ----------------- | ---------- |
-| ESLint                   | changed-files     | every rung |
-| tsc                      | whole-project     | every rung |
+| ESLint                   | changed-files     | stop       |
+| tsc                      | changed-files     | stop       |
 | knip, dependency-cruiser | whole-project     | commit     |
 | **stryker**              | **changed-files** | **commit** |
+
+`scope` models the **run-trigger**: `changed-files` = run only when the turn changed ≥1 TS
+file (preserving today's "no `.ts` changed → skip ESLint/tsc"); `whole-project` = run
+whenever the rung is active (knip/DC run even on a `package.json`-only change). Among
+`changed-files` analyzers, ESLint and stryker **diff-scope their work** to the file list;
+tsc uses the list only as the trigger, then type-checks the whole project (`-p tsconfig`) —
+receiving the list doesn't oblige a run to use it.
 
 The current `ANALYZERS` table models only `minRung`; ESLint/tsc are a hardcoded
 diff-scoped special-case outside it. Stryker doesn't fit either slot — which is exactly
@@ -128,8 +135,8 @@ interface Analyzer {
 }
 ```
 
-ESLint and tsc fold into the table as entries (`eslint`: `changed-files`; `tsc`:
-`whole-project`, min-rung `stop`), removing the `runEslintAndTsc` special-case. `runVerify`
+ESLint and tsc fold into the table as entries (both `changed-files`, min-rung `stop`),
+removing the `runEslintAndTsc` special-case. `runVerify`
 becomes one uniform loop: for each analyzer at or above the active rung, run it, passing
 the changed-file list. A `changed-files` analyzer that finds no changed files returns `[]`
 early (preserving today's "no `.ts` changed → skip ESLint/tsc" behavior); `whole-project`
