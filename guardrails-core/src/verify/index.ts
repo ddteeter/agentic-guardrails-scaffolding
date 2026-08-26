@@ -5,13 +5,23 @@
  * injected `Exec`, and tool binaries are resolved through `resolveBin` so the
  * CLI can point at the repo-local `node_modules/.bin`.
  *
- * Scoping is per-tool: **ESLint is diff-scoped** to the changed files, but
- * **`tsc` runs project-wide** (`-p tsconfig`) because TypeScript checking is
- * inherently cross-file — a change in one file can surface an error in another.
- * A consequence: `verify` assumes a clean type-check baseline. If the branch
- * already has pre-existing `tsc` errors, every turn will escalate on them until
- * they're fixed (see README — run `guardrails verify` clean before relying on
- * the gate).
+ * Every analyzer declares a `scope` (see `ANALYZERS`); run-trigger and
+ * check-extent are independent axes:
+ *
+ * - **`changed-files`** — runs only when the turn touched >=1 TS file. **ESLint**
+ *   is genuinely diff-scoped: it receives the file list and lints only those.
+ *   **`tsc` is changed-files-_triggered_ but whole-project-_checked_**
+ *   (`-p tsconfig`), because TypeScript checking is inherently cross-file — a
+ *   change in one file can surface an error in another.
+ * - **`whole-project`** — runs whenever the rung is active, regardless of which
+ *   files changed. knip and dependency-cruiser are whole-graph, and a
+ *   dependency-only change (e.g. a `package.json` bump) still needs their
+ *   hygiene checks.
+ *
+ * A consequence of the whole-project checks: `verify` assumes a clean baseline.
+ * If the branch already has pre-existing `tsc` / knip / dependency-cruiser
+ * errors, every turn will escalate on them until they're fixed (see README —
+ * run `guardrails verify` clean before relying on the gate).
  */
 
 import type { Exec } from '../exec.js';
@@ -95,57 +105,72 @@ async function runDepcruise(
   return parseDepcruiseJson(result.stdout, repoRoot, packageId);
 }
 
-async function runEslintAndTsc(
+async function runEslint(
   options: VerifyOptions,
   resolveBin: (tool: string) => string,
   files: string[],
 ): Promise<Violation[]> {
-  if (files.length === 0) {
-    return [];
-  }
   const { exec, repoRoot, packageId } = options;
-  const tsconfig = options.tsconfig ?? 'tsconfig.json';
-  const violations: Violation[] = [];
-
   const eslint = await exec(
     resolveBin('eslint'),
     ['--format', 'json', '--no-warn-ignored', ...files],
     { cwd: repoRoot },
   );
-  violations.push(...parseEslintJson(eslint.stdout, repoRoot, packageId));
+  return parseEslintJson(eslint.stdout, repoRoot, packageId);
+}
 
+/** `tsc` is changed-files-TRIGGERED but whole-project-CHECKED: it takes no file
+ *  list (`-p tsconfig`), so a change in one file can surface an error in
+ *  another. It assumes a clean type-check baseline (see this file's header). */
+async function runTsc(
+  options: VerifyOptions,
+  resolveBin: (tool: string) => string,
+): Promise<Violation[]> {
+  const { exec, repoRoot, packageId } = options;
+  const tsconfig = options.tsconfig ?? 'tsconfig.json';
   const tsc = await exec(
     resolveBin('tsc'),
     ['--noEmit', '--pretty', 'false', '-p', tsconfig],
     { cwd: repoRoot },
   );
-  violations.push(...parseTscOutput(tsc.stdout, repoRoot, packageId));
-
-  return violations;
+  return parseTscOutput(tsc.stdout, repoRoot, packageId);
 }
 
 type Rung = NonNullable<VerifyOptions['profile']>;
 const RUNG_ORDER: Record<Rung, number> = { stop: 0, commit: 1, ci: 2 };
 
+type Scope = 'whole-project' | 'changed-files';
+
 interface Analyzer {
   tool: string;
   minRung: Rung;
+  /** Run-trigger: 'changed-files' runs only when the turn changed >=1 TS file
+   *  (and receives the list); 'whole-project' runs whenever the rung is active. */
+  scope: Scope;
   run: (
     options: VerifyOptions,
     resolveBin: (tool: string) => string,
+    files: string[],
   ) => Promise<Violation[]>;
 }
 
-/** Whole-graph analyzers, each gated by its minimum cadence rung. ESLint/tsc are
- *  NOT here — they are diff-scoped (gated on changed files, run at every rung),
- *  so they stay the special case in runVerify below. When semgrep (the first
- *  diff-scopable / possibly stop-rung analyzer) and stryker (CI-only) arrive,
- *  re-evaluate whether minRung alone suffices or this table must graduate to a
- *  fuller per-analyzer abstraction (bin + adapter + diff-scope policy), and
- *  reconsider parallel execution under a measured commit-gate budget. */
+/** The full analyzer registry, each entry gated by a minimum cadence rung and a
+ *  run-trigger scope. Entries run serially in listed order, and that order is
+ *  the order violations appear in the aggregated result. Adding an analyzer is
+ *  a table entry plus its runner — no branching in `runVerify`.
+ *
+ *  Still open (deferred once more, now with a measurement in hand): running the
+ *  commit-rung entries in parallel under a measured commit-gate budget. */
 const ANALYZERS: Analyzer[] = [
-  { tool: 'knip', minRung: 'commit', run: runKnip },
-  { tool: 'dependency-cruiser', minRung: 'commit', run: runDepcruise },
+  { tool: 'eslint', minRung: 'stop', scope: 'changed-files', run: runEslint },
+  { tool: 'tsc', minRung: 'stop', scope: 'changed-files', run: runTsc },
+  { tool: 'knip', minRung: 'commit', scope: 'whole-project', run: runKnip },
+  {
+    tool: 'dependency-cruiser',
+    minRung: 'commit',
+    scope: 'whole-project',
+    run: runDepcruise,
+  },
 ];
 
 export async function runVerify(options: VerifyOptions): Promise<VerifyResult> {
@@ -155,10 +180,13 @@ export async function runVerify(options: VerifyOptions): Promise<VerifyResult> {
 
   const violations: Violation[] = [];
   for (const analyzer of ANALYZERS) {
-    if (RUNG_ORDER[profile] >= RUNG_ORDER[analyzer.minRung]) {
-      violations.push(...(await analyzer.run(options, resolveBin)));
+    if (RUNG_ORDER[profile] < RUNG_ORDER[analyzer.minRung]) {
+      continue;
     }
+    if (analyzer.scope === 'changed-files' && files.length === 0) {
+      continue;
+    }
+    violations.push(...(await analyzer.run(options, resolveBin, files)));
   }
-  violations.push(...(await runEslintAndTsc(options, resolveBin, files)));
   return { violations };
 }

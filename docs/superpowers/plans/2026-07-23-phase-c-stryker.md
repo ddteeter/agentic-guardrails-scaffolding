@@ -521,23 +521,13 @@ interface Analyzer {
 
 const ANALYZERS: Analyzer[] = [
   { tool: 'eslint', minRung: 'stop', scope: 'changed-files', run: runEslint },
-  {
-    tool: 'tsc',
-    minRung: 'stop',
-    scope: 'changed-files',
-    run: (o, r) => runTsc(o, r),
-  },
-  {
-    tool: 'knip',
-    minRung: 'commit',
-    scope: 'whole-project',
-    run: (o, r) => runKnip(o, r),
-  },
+  { tool: 'tsc', minRung: 'stop', scope: 'changed-files', run: runTsc },
+  { tool: 'knip', minRung: 'commit', scope: 'whole-project', run: runKnip },
   {
     tool: 'dependency-cruiser',
     minRung: 'commit',
     scope: 'whole-project',
-    run: (o, r) => runDepcruise(o, r),
+    run: runDepcruise,
   },
 ];
 ```
@@ -582,6 +572,15 @@ Expected: no errors.
 git add guardrails-core/src/verify/index.ts guardrails-core/test/verify/orchestrator.test.ts
 git commit -m "refactor(verify): graduate ANALYZERS to a scope policy; fold eslint/tsc into the table"
 ```
+
+**Correction (found while executing):** the plan wrapped the narrower runners as
+`run: (o, r) => runTsc(o, r)` to fit the three-parameter `Analyzer.run` signature. That is
+both unnecessary and unlintable here — TypeScript already accepts a function with _fewer_
+parameters where more are expected, and the single-letter parameters `o`/`r` trip
+`unicorn/prevent-abbreviations` (its allowlist is `args, env, fn, img, params, props, ref,
+src, str`). Registered the functions directly instead (`run: runTsc`); `npm run typecheck`
+and `npm run lint` both pass, confirming the wrappers bought nothing. The code block above
+is corrected in place.
 
 ---
 

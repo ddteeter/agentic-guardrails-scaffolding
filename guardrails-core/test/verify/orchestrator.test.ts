@@ -298,3 +298,31 @@ describe('runVerify', () => {
     ).toBe(true);
   });
 });
+
+describe('runVerify scope policy', () => {
+  it('skips changed-files analyzers (eslint/tsc) when no .ts changed, runs whole-project (knip) at commit', async () => {
+    const { exec, calls } = fakeExec({
+      'git diff --name-only --diff-filter=ACM main': {
+        stdout: 'README.md\n',
+        stderr: '',
+        code: 0,
+      },
+      'git ls-files --others --exclude-standard': {
+        stdout: '',
+        stderr: '',
+        code: 0,
+      },
+    });
+    await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      profile: 'commit',
+    });
+    const ran = (tool: string) =>
+      calls.some((call) => call.command === tool || call.args.includes(tool));
+    expect(ran('eslint')).toBe(false);
+    expect(ran('tsc')).toBe(false);
+    expect(ran('knip')).toBe(true); // whole-project runs even with no .ts changed
+  });
+});
