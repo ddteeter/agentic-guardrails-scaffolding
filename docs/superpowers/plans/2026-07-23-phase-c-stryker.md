@@ -172,7 +172,9 @@ const report = JSON.stringify({
 
 describe('parseStrykerJson', () => {
   it('emits one violation per Survived mutant in a changed file', () => {
-    const result = parseStrykerJson(report, ['src/changed.ts'], undefined);
+    // No packageId argument: the exact-object match below asserts the
+    // emitted violation carries no `package` key.
+    const result = parseStrykerJson(report, ['src/changed.ts']);
     expect(result).toContainEqual({
       ruleId: 'stryker/survived',
       file: 'src/changed.ts',
@@ -344,6 +346,15 @@ Expected: no errors.
 git add guardrails-core/src/verify/stryker-adapter.ts guardrails-core/test/verify/stryker-adapter.test.ts
 git commit -m "feat(verify): parseStrykerJson — survived mutants in changed files -> Violation[]"
 ```
+
+**Correction (found while executing):** the first test originally passed an explicit
+`undefined` third argument, which trips `sonarjs/no-undefined-argument` ("Remove this
+redundant 'undefined'"). The repo's `unicorn/no-useless-undefined` is configured with
+`checkArguments: false`, but **sonarjs enforces the same thing independently** — a config
+relaxation on one plugin does not imply the other. Fixed by omitting the argument (the
+exact-object `toContainEqual` already asserts no `package` key is emitted). Third instance
+of the recorded "validate plan code against the repo's own linter before committing to it"
+lesson; the code block above has been corrected in place.
 
 ---
 
