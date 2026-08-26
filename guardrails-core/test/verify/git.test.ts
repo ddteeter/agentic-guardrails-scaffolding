@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  isTestFile,
   isTypeScriptFile,
   mergeChangedFiles,
   parseFileList,
@@ -47,5 +48,15 @@ describe('isTypeScriptFile', () => {
     expect(isTypeScriptFile('src/a.d.ts')).toBe(false);
     expect(isTypeScriptFile('README.md')).toBe(false);
     expect(isTypeScriptFile('src/a.js')).toBe(false);
+  });
+});
+
+describe('isTestFile', () => {
+  it('flags test and spec files, not production sources', () => {
+    expect(isTestFile('src/foo.test.ts')).toBe(true);
+    expect(isTestFile('src/foo.spec.tsx')).toBe(true);
+    expect(isTestFile('test/bar.test.ts')).toBe(true);
+    expect(isTestFile('src/foo.ts')).toBe(false);
+    expect(isTestFile('src/testing.ts')).toBe(false);
   });
 });

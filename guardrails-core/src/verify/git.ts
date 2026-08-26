@@ -24,3 +24,7 @@ export function mergeChangedFiles(
 export function isTypeScriptFile(file: string): boolean {
   return /\.tsx?$/.test(file) && !file.endsWith('.d.ts');
 }
+
+export function isTestFile(file: string): boolean {
+  return /\.(test|spec)\.tsx?$/.test(file);
+}
