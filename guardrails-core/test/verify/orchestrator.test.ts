@@ -326,3 +326,96 @@ describe('runVerify scope policy', () => {
     expect(ran('knip')).toBe(true); // whole-project runs even with no .ts changed
   });
 });
+
+describe('runStryker', () => {
+  const strykerReport = JSON.stringify({
+    schemaVersion: '1.0',
+    thresholds: { high: 80, low: 60 },
+    files: {
+      'guardrails-core/src/foo.ts': {
+        language: 'typescript',
+        source: '',
+        mutants: [
+          {
+            id: '1',
+            mutatorName: 'ConditionalExpression',
+            status: 'Survived',
+            location: {
+              start: { line: 7, column: 1 },
+              end: { line: 7, column: 4 },
+            },
+          },
+        ],
+      },
+    },
+  });
+
+  it('mutates changed production files, is consumer-generic, and maps survivors', async () => {
+    const { exec, calls } = fakeExec({
+      'git diff --name-only --diff-filter=ACM main': {
+        stdout:
+          'guardrails-core/src/foo.ts\nguardrails-core/test/foo.test.ts\n',
+        stderr: '',
+        code: 0,
+      },
+      'git ls-files --others --exclude-standard': {
+        stdout: '',
+        stderr: '',
+        code: 0,
+      },
+    });
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      profile: 'commit',
+      resolveBin: (tool) => tool,
+      readFile: () => Promise.resolve(strykerReport),
+    });
+
+    const strykerCall = calls.find((call) => call.command === 'stryker');
+    expect(strykerCall).toBeDefined();
+    const args = strykerCall?.args ?? [];
+    // diff-scoped to the production file, test file excluded
+    expect(args).toContain('--mutate');
+    expect(args).toContain('guardrails-core/src/foo.ts');
+    expect(args.join(' ')).not.toContain('foo.test.ts');
+    // incremental + machine-readable json
+    expect(args).toContain('--incremental');
+    expect(args).toContain('--reporters');
+    // consumer-generic: no config flag, no absolute/repo-specific path
+    expect(args).not.toContain('--configFile');
+    expect(args.every((argument) => !argument.startsWith('/'))).toBe(true);
+    // survivor mapped
+    expect(violations).toContainEqual(
+      expect.objectContaining({
+        ruleId: 'stryker/survived',
+        file: 'guardrails-core/src/foo.ts',
+        line: 7,
+      }),
+    );
+  });
+
+  it('returns no stryker violations when only test files changed', async () => {
+    const { exec, calls } = fakeExec({
+      'git diff --name-only --diff-filter=ACM main': {
+        stdout: 'guardrails-core/test/foo.test.ts\n',
+        stderr: '',
+        code: 0,
+      },
+      'git ls-files --others --exclude-standard': {
+        stdout: '',
+        stderr: '',
+        code: 0,
+      },
+    });
+    await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      profile: 'commit',
+      readFile: () => Promise.resolve('{}'),
+    });
+    expect(calls.some((call) => call.command === 'stryker')).toBe(false);
+  });
+});

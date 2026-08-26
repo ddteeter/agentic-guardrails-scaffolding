@@ -659,7 +659,7 @@ describe('runStryker', () => {
     expect(args).toContain('--reporters');
     // consumer-generic: no config flag, no absolute/repo-specific path
     expect(args).not.toContain('--configFile');
-    expect(args.every((a) => !a.startsWith('/'))).toBe(true);
+    expect(args.every((argument) => !argument.startsWith('/'))).toBe(true);
     // survivor mapped
     expect(violations).toContainEqual(
       expect.objectContaining({
@@ -795,6 +795,10 @@ Expected: all pass; no lint errors (watch `runStryker` cognitive-complexity — 
 git add guardrails-core/src/verify/index.ts guardrails-core/test/verify/orchestrator.test.ts
 git commit -m "feat(verify): runStryker — diff-scoped, incremental, consumer-generic mutation analyzer"
 ```
+
+**Correction (found while executing):** the callback parameter must be spelled
+`argument` — `unicorn/prevent-abbreviations` allowlists `args` (plural) but **not** `arg`,
+so the obvious shortening fails lint. Code block corrected in place.
 
 ---
 

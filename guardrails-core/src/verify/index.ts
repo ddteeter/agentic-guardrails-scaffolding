@@ -24,12 +24,16 @@
  * run `guardrails verify` clean before relying on the gate).
  */
 
+import { readFile as fsReadFile } from 'node:fs/promises';
+import path from 'node:path';
+
 import type { Exec } from '../exec.js';
 import type { Violation } from '../violation.js';
 import { parseDepcruiseJson } from './depcruise-adapter.js';
 import { parseEslintJson } from './eslint-adapter.js';
-import { isTypeScriptFile, mergeChangedFiles } from './git.js';
+import { isTestFile, isTypeScriptFile, mergeChangedFiles } from './git.js';
 import { parseKnipJson } from './knip-adapter.js';
+import { parseStrykerJson } from './stryker-adapter.js';
 import { parseTscOutput } from './tsc-adapter.js';
 
 export interface VerifyOptions {
@@ -42,6 +46,9 @@ export interface VerifyOptions {
   /** Cadence rung. Heavy whole-graph analyzers (knip, dependency-cruiser) run
    *  only at commit/ci; the per-turn stop gate stays fast. Defaults to 'stop'. */
   profile?: 'stop' | 'commit' | 'ci';
+  /** File reader seam (stryker writes its JSON report to disk, not stdout).
+   *  Defaults to node:fs/promises readFile; injected in tests. */
+  readFile?: (filePath: string) => Promise<string>;
 }
 
 export interface VerifyResult {
@@ -136,6 +143,51 @@ async function runTsc(
   return parseTscOutput(tsc.stdout, repoRoot, packageId);
 }
 
+/** stryker is diff-scoped (changed production files) and CI/commit-only (mutation
+ *  testing reruns the suite per mutant). Consumer-generic: no `--configFile` (stryker
+ *  auto-detects the consumer's stryker.conf.json), the `--mutate` list is the
+ *  consumer's own changed files. Forces `--reporters json` and reads stryker's default
+ *  report path (reports/mutation/mutation.json). A missing/failed report yields [] —
+ *  a stryker crash must not falsely block the gate. */
+async function runStryker(
+  options: VerifyOptions,
+  resolveBin: (tool: string) => string,
+  files: string[],
+): Promise<Violation[]> {
+  const production = files.filter(
+    (file) => isTypeScriptFile(file) && !isTestFile(file),
+  );
+  if (production.length === 0) {
+    return [];
+  }
+  const { exec, repoRoot, packageId } = options;
+  const readFile =
+    options.readFile ?? ((filePath) => fsReadFile(filePath, 'utf8'));
+
+  await exec(
+    resolveBin('stryker'),
+    [
+      'run',
+      '--incremental',
+      '--reporters',
+      'json',
+      '--mutate',
+      production.join(','),
+    ],
+    { cwd: repoRoot },
+  );
+
+  let report: string;
+  try {
+    report = await readFile(
+      path.join(repoRoot, 'reports', 'mutation', 'mutation.json'),
+    );
+  } catch {
+    return [];
+  }
+  return parseStrykerJson(report, production, packageId);
+}
+
 type Rung = NonNullable<VerifyOptions['profile']>;
 const RUNG_ORDER: Record<Rung, number> = { stop: 0, commit: 1, ci: 2 };
 
@@ -170,6 +222,12 @@ const ANALYZERS: Analyzer[] = [
     minRung: 'commit',
     scope: 'whole-project',
     run: runDepcruise,
+  },
+  {
+    tool: 'stryker',
+    minRung: 'commit',
+    scope: 'changed-files',
+    run: runStryker,
   },
 ];
 
