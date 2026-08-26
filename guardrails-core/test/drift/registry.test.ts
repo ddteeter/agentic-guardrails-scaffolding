@@ -1,4 +1,6 @@
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { createRequire } from 'node:module';
+import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import { describe, expect, it } from 'vitest';
@@ -163,6 +165,39 @@ async function depcruiseVocabulary(): Promise<Set<string>> {
   return accepted;
 }
 
+/**
+ * stryker probe: the MutantStatus enum the stryker adapter classifies on
+ * (stryker-adapter.ts keys on `status`, emitting only on 'Survived' and treating
+ * 'Killed'/'Timeout'/'NoCoverage' as non-violations). The enum is upstream-owned
+ * and read from the schema package's PUBLIC subpath export — no fixture, no
+ * internal-file bypass. `mutatorName` is free-form (not an enum) so it's not a probe target.
+ */
+async function strykerStatuses(): Promise<Set<string>> {
+  const schemaPath = createRequire(import.meta.url).resolve(
+    'mutation-testing-report-schema/mutation-testing-report-schema.json',
+  );
+  const schema = JSON.parse(await readFile(schemaPath, 'utf8')) as unknown;
+  const found = new Set<string>();
+  const walk = (node: unknown): void => {
+    if (typeof node !== 'object' || node === null) {
+      return;
+    }
+    const en = (node as { enum?: unknown }).enum;
+    if (Array.isArray(en) && en.includes('Survived')) {
+      for (const value of en) {
+        if (typeof value === 'string') {
+          found.add(value);
+        }
+      }
+    }
+    for (const value of Object.values(node)) {
+      walk(value);
+    }
+  };
+  walk(schema);
+  return found;
+}
+
 const entries: DriftEntry[] = [
   {
     tool: 'knip',
@@ -213,6 +248,13 @@ const entries: DriftEntry[] = [
     ],
     probe: depcruiseVocabulary,
     hint: 'dependency-cruiser renamed/removed a rule-condition keyword or severity (its config validator now rejects the probe config) — reconcile .dependency-cruiser.cjs and guardrails-core/src/verify/depcruise-adapter.ts',
+  },
+  {
+    tool: 'stryker',
+    // Statuses the stryker adapter classifies on (guardrails-core/src/verify/stryker-adapter.ts).
+    knownIds: ['Survived', 'Killed', 'Timeout', 'NoCoverage'],
+    probe: strykerStatuses,
+    hint: 'stryker/mutation-testing-report-schema renamed/removed a MutantStatus — reconcile guardrails-core/src/verify/stryker-adapter.ts',
   },
 ];
 

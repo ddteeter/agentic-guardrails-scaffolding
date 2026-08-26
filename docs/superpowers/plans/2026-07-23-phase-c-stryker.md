@@ -893,6 +893,15 @@ git add guardrails-core/test/drift/registry.test.ts knip.json .fallowrc.jsonc
 git commit -m "test(drift): fourth probe — guard the stryker MutantStatus enum via the public schema subpath"
 ```
 
+**Outcome (Step 3, the conditional branch fired):** removing the ignores proved that
+**neither knip nor fallow can follow a `require.resolve` string argument** — both flagged
+`mutation-testing-report-schema` as unused even though the probe genuinely resolves it.
+Both entries were restored and **reclassified from STOPGAP to PERMANENT**, with comments
+recording that the removal was actually attempted (not assumed) and naming the file that
+uses the package. The spec's "prefer confirming the import over ignoring" preference is
+therefore unreachable here without changing the probe to a static JSON import — noted as
+the condition that would let both entries be deleted. Carry to Task 8.
+
 ---
 
 ### Task 7: Dogfood config — `stryker.conf.json`, audit.ts exclusion, knip reconcile, real gate

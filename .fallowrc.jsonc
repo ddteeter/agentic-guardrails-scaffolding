@@ -22,11 +22,12 @@
   // (`@stryker-mutator/core` needs no entry: fallow already resolves it via its
   // `stryker` bin, unlike knip, which needs it ignored explicitly.)
   //
-  // STOPGAP: `mutation-testing-report-schema` is unused until Phase C piece 4
-  // Task 6 adds a drift probe that imports it via
-  // require.resolve('mutation-testing-report-schema/mutation-testing-report-schema.json').
-  // Task 6 MUST remove this entry AND knip.json's matching one, then confirm
-  // both tools detect the real import.
+  // `mutation-testing-report-schema` IS used — test/drift/registry.test.ts
+  // resolves its public subpath via `createRequire(import.meta.url).resolve(...)`
+  // to read the MutantStatus enum. Neither fallow nor knip can statically follow
+  // a require.resolve string argument, so both report it unused; verified by
+  // removing this entry (fallow then flags it) rather than assumed. Keep in sync
+  // with knip.json's matching entry.
   "ignoreDependencies": [
     "@anthropic-ai/claude-agent-sdk",
     "@stryker-mutator/vitest-runner",
