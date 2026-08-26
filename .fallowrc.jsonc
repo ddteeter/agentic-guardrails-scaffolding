@@ -15,7 +15,23 @@
   // so it correctly lives in devDependencies. fallow's static import scan can't
   // see the `import type` erasure and would flag it as an unlisted (runtime)
   // dependency; this suppresses that false positive.
-  "ignoreDependencies": ["@anthropic-ai/claude-agent-sdk"],
+  //
+  // `@stryker-mutator/vitest-runner` is a stryker PLUGIN — stryker loads it by
+  // name from its own config (`testRunner: "vitest"`), so no source file ever
+  // imports it. Permanent ignore, mirroring knip.json's stryker entry.
+  // (`@stryker-mutator/core` needs no entry: fallow already resolves it via its
+  // `stryker` bin, unlike knip, which needs it ignored explicitly.)
+  //
+  // STOPGAP: `mutation-testing-report-schema` is unused until Phase C piece 4
+  // Task 6 adds a drift probe that imports it via
+  // require.resolve('mutation-testing-report-schema/mutation-testing-report-schema.json').
+  // Task 6 MUST remove this entry AND knip.json's matching one, then confirm
+  // both tools detect the real import.
+  "ignoreDependencies": [
+    "@anthropic-ai/claude-agent-sdk",
+    "@stryker-mutator/vitest-runner",
+    "mutation-testing-report-schema",
+  ],
   "duplicates": { "threshold": 5, "minTokens": 75, "minLines": 5 },
   // Dev-only tooling (one-shot CLI scripts) is untested by design; gating
   // change-risk (CRAP) on never-tested code isn't meaningful. Production src/

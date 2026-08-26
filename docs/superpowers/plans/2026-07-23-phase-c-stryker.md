@@ -83,6 +83,16 @@ git add package.json guardrails-core/package.json package-lock.json .gitignore
 git commit -m "build: add stryker + vitest-runner + report-schema devDeps, gitignore artifacts"
 ```
 
+**Correction (found when the branch was first pushed):** Task 1 taught **knip** about the
+two new unused devDependencies but not **fallow**, whose whole-graph dead-dependency check
+runs only in the `pre-push` gate — so the miss stayed invisible across both Task-1 commits
+and blocked the first `git push`. `@stryker-mutator/vitest-runner` and
+`mutation-testing-report-schema` were added to `.fallowrc.jsonc`'s `ignoreDependencies`
+(permanent and stopgap respectively; `@stryker-mutator/core` needs no entry — fallow
+resolves it via its `stryker` bin). This is a second instance of piece 1's
+"the gate runs at push, not per-commit, so it slipped earlier tasks unnoticed" finding:
+**a new devDependency must be reconciled against knip AND fallow in the same task that adds it.**
+
 ---
 
 ### Task 2: `parseStrykerJson` adapter
@@ -851,15 +861,21 @@ Add the fourth entry to the `entries` array:
 Run: `npm test -- drift`
 Expected: PASS — the four asserted statuses exist in the installed schema (verified this session: enum is `Killed | Survived | NoCoverage | CompileError | RuntimeError | Timeout | Ignored | Pending`).
 
-- [ ] **Step 3: Typecheck + lint the test file**
+- [ ] **Step 3: Remove the Task-1 knip + fallow stopgaps and confirm both see the real import**
+
+Task 1 added a temporary `ignoreDependencies: ["mutation-testing-report-schema"]` to the `guardrails-core` workspace in `knip.json` (the package was unused until this task's probe imports it via `require.resolve`, and the pre-commit gate runs whole-project knip). Now that the probe imports it, **remove that workspace-level `ignoreDependencies` entry** (and its stopgap comment) from `knip.json`, then run `npx knip` and confirm it stays clean (0 issues) — proving knip detects the `require.resolve('mutation-testing-report-schema/...')` usage. If (and only if) knip still flags the package as unused, restore the entry with a comment explaining knip cannot see the `require.resolve` import, per the spec's "prefer confirming the import over ignoring" guidance. Do **not** touch the root-level `ignoreDependencies` for the `@stryker-mutator/*` binaries — those are a permanent, correct ignore (CLI-invoked via resolveBin).
+
+`.fallowrc.jsonc` carries the **same stopgap** for `mutation-testing-report-schema` (added after Task 1's push was blocked — see the Task-1 correction below). Remove it there too, then run `npm run test:coverage && npm run check:graph` and confirm fallow stays clean. Do **not** remove fallow's `@stryker-mutator/vitest-runner` entry — that plugin is loaded by name from stryker's config and is never imported, so it is a permanent ignore.
+
+- [ ] **Step 4: Typecheck + lint the test file**
 
 Run: `npm run typecheck && npx eslint guardrails-core/test/drift/registry.test.ts`
 Expected: no errors.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-git add guardrails-core/test/drift/registry.test.ts
+git add guardrails-core/test/drift/registry.test.ts knip.json .fallowrc.jsonc
 git commit -m "test(drift): fourth probe — guard the stryker MutantStatus enum via the public schema subpath"
 ```
 
