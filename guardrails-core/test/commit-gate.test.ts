@@ -26,12 +26,50 @@ const ADDED_DISABLE = [
   '+// eslint-disable-next-line',
 ].join('\n');
 
+const SANCTIONED_DISABLE = [
+  'diff --git a/src/a.ts b/src/a.ts',
+  '--- a/src/a.ts',
+  '+++ b/src/a.ts',
+  '@@ -1,0 +1,1 @@',
+  '+// Stryker disable all',
+].join('\n');
+
 describe('runCommitGate', () => {
   it('flags a suppression introduced on the branch (merge-base diff)', async () => {
     const result = await runCommitGate({
       repoRoot: '/repo',
       baseBranch: 'main',
       exec: fakeExec(ADDED_DISABLE),
+    });
+    expect(result.findings).toHaveLength(1);
+    expect(result.blocked).toBe(true);
+  });
+
+  it('exempts a reviewed suppression listed in sanctionedSuppressions', async () => {
+    // The branch introduces a deliberate, human-reviewed mutation exclusion.
+    // Without the allowlist this re-flags on EVERY later commit (the commit
+    // gate has no per-loop snapshot baseline), wedging the branch.
+    const result = await runCommitGate({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec: fakeExec(SANCTIONED_DISABLE),
+      sanctionedSuppressions: [
+        'src/a.ts|mutation-suppress|// Stryker disable all',
+      ],
+    });
+    expect(result.findings).toHaveLength(0);
+    expect(result.blocked).toBe(false);
+  });
+
+  it('still flags the same directive in a file the allowlist does not cover', async () => {
+    // The key is file-scoped, so a sanction on src/a.ts grants nothing to b.ts.
+    const result = await runCommitGate({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec: fakeExec(SANCTIONED_DISABLE.replaceAll('src/a.ts', 'src/b.ts')),
+      sanctionedSuppressions: [
+        'src/a.ts|mutation-suppress|// Stryker disable all',
+      ],
     });
     expect(result.findings).toHaveLength(1);
     expect(result.blocked).toBe(true);

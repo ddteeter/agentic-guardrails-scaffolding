@@ -24,6 +24,15 @@ export interface RepoConfig {
    * For house rules the built-in set doesn't know about.
    */
   looseRules: string[];
+  /**
+   * Reviewed, checked-in escape hatch for the diff-auditor: exact
+   * `file|kind|text` keys of suppressions a human has deliberately sanctioned
+   * (e.g. a mutation-exclusion around a hand-written lexer). ONLY the commit
+   * gate consults it — the Stop gate has a tighter, per-fix-loop snapshot
+   * baseline, so a fixer still cannot add one mid-loop. Empty by default:
+   * every entry is a deliberate, reviewable line in `guardrails.config.json`.
+   */
+  sanctionedSuppressions: string[];
   distribution: 'solo' | 'team';
   /**
    * RESERVED — read by the CI gate and the Copilot commit-gate, both Phase B;
@@ -50,6 +59,7 @@ export function defaultConfig(): RepoConfig {
     fastFixer: 'guardrail-fixer',
     thoroughFixer: 'guardrail-fixer-thorough',
     looseRules: [],
+    sanctionedSuppressions: [],
     distribution: 'solo',
     enforcement: 'warn',
   };
@@ -107,6 +117,7 @@ export function loadConfig(repoRoot: string): RepoConfig {
     fastFixer: pickString(raw.fastFixer, defaults.fastFixer),
     thoroughFixer: pickString(raw.thoroughFixer, defaults.thoroughFixer),
     looseRules: pickStringArray(raw.looseRules),
+    sanctionedSuppressions: pickStringArray(raw.sanctionedSuppressions),
     distribution: pickString(raw.distribution, defaults.distribution, [
       'solo',
       'team',

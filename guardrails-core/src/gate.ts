@@ -53,6 +53,8 @@ export interface CommitGateOptions {
   baseBranch: string;
   exec: Exec;
   resolveBin?: (tool: string) => string;
+  /** Reviewed `file|kind|text` keys to exempt (RepoConfig.sanctionedSuppressions). */
+  sanctionedSuppressions?: readonly string[];
 }
 
 export interface CommitGateResult {
@@ -206,7 +208,18 @@ export async function runCommitGate(
     profile: 'commit',
     ...(options.resolveBin ? { resolveBin: options.resolveBin } : {}),
   });
-  const findings = auditDiff(await branchDiff(options));
+  // The commit gate audits the branch's CUMULATIVE diff and has no per-loop
+  // snapshot baseline (unlike runStopGate), so a deliberately-sanctioned
+  // suppression introduced on this branch would re-flag on every subsequent
+  // commit — permanently wedging the branch. The allowlist is that baseline:
+  // explicit, checked-in, and reviewable, in the same spirit as the commented
+  // knip/fallow ignore entries. It is NOT applied to the Stop gate, whose
+  // snapshot already distinguishes fixer-added suppressions from pre-existing
+  // ones — so this cannot become a fixer escape hatch.
+  const sanctioned = new Set(options.sanctionedSuppressions ?? []);
+  const findings = auditDiff(await branchDiff(options)).filter(
+    (finding) => !sanctioned.has(findingKey(finding)),
+  );
   return {
     violations,
     findings,

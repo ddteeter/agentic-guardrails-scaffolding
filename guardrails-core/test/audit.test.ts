@@ -36,6 +36,32 @@ describe('auditDiff', () => {
     );
   });
 
+  it('flags a newly-added Stryker mutation-suppression directive', () => {
+    // stryker's `// Stryker disable` is a gate-weakening directive in the same
+    // class as eslint-disable: it silences a stryker/survived violation instead
+    // of strengthening the test that let the mutant live.
+    expect(auditDiff(diff('a.ts', '+// Stryker disable all'))[0]?.kind).toBe(
+      'mutation-suppress',
+    );
+    expect(
+      auditDiff(diff('a.ts', '+  // Stryker disable next-line'))[0]?.kind,
+    ).toBe('mutation-suppress');
+    expect(auditDiff(diff('a.ts', '+// Stryker restore all'))[0]?.kind).toBe(
+      'mutation-suppress',
+    );
+  });
+
+  it('does not flag a Stryker directive merely mentioned in prose or a string', () => {
+    // Mention-aware, like the other directive signatures: the directive must
+    // LEAD a comment's content, and string spans are lexed out as non-comment.
+    expect(
+      auditDiff(diff('a.ts', '+  // we removed the Stryker disable comment')),
+    ).toEqual([]);
+    expect(
+      auditDiff(diff('a.ts', "+  const marker = '// Stryker disable all';")),
+    ).toEqual([]);
+  });
+
   it('flags an added `as any` cast', () => {
     expect(auditDiff(diff('a.ts', '+  const x = foo as any;'))[0]?.kind).toBe(
       'cast-any',

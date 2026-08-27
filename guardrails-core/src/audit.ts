@@ -24,7 +24,8 @@ export type AuditKind =
   | 'cast-any' // TS: as any / as unknown as / <any>
   | 'suppress-warnings' // Java: @SuppressWarnings
   | 'disabled-test' // Java: @Disabled
-  | 'skipped-test'; // TS/JS: .skip / .only / xit / fit
+  | 'skipped-test' // TS/JS: .skip / .only / xit / fit
+  | 'mutation-suppress'; // TS/JS: // Stryker disable | restore
 
 export interface AuditFinding {
   file: string;
@@ -76,6 +77,16 @@ const SIGNATURES: readonly Signature[] = [
     class: 'code',
     pattern:
       /\b(?:x(?:it|describe|test)|f(?:it|describe)|(?:it|test|describe|context|suite)\.(?:skip|only))\b/,
+  },
+  // stryker's mutation-suppression directives. `directive` class, so a mention
+  // in prose ("we removed the Stryker disable comment") doesn't flag — only a
+  // comment that LEADS with the directive does. `restore` is included because a
+  // bare restore is meaningless without a matching disable: flagging both keeps
+  // the pair reviewable as one sanctioned region.
+  {
+    kind: 'mutation-suppress',
+    class: 'directive',
+    pattern: /^Stryker\s+(?:disable|restore)\b/,
   },
 ];
 

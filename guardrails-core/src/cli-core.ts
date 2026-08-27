@@ -121,6 +121,7 @@ async function gateCommitCommand(deps: CliDeps): Promise<number> {
     baseBranch: config.baseBranch,
     exec: deps.exec,
     resolveBin: binResolver(repoRoot),
+    sanctionedSuppressions: config.sanctionedSuppressions,
   });
   printViolations(deps, violations);
   for (const finding of findings) {
@@ -161,6 +162,7 @@ async function gatePreToolUseCommand(
     baseBranch: config.baseBranch,
     exec: deps.exec,
     resolveBin: binResolver(repoRoot),
+    sanctionedSuppressions: config.sanctionedSuppressions,
   });
   if (!blocked) {
     return; // allow (silent)
