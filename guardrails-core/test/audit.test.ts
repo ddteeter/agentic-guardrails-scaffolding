@@ -296,3 +296,137 @@ describe('auditDiff — mention-awareness', () => {
     });
   });
 });
+
+/** A diff with a hand-written hunk header, for line-accounting assertions. */
+function diffWithHeader(file: string, header: string, body: string): string {
+  return [
+    `diff --git a/${file} b/${file}`,
+    `--- a/${file}`,
+    `+++ b/${file}`,
+    header,
+    body,
+  ].join('\n');
+}
+
+describe('auditDiff mutation-hardening', () => {
+  it('requires a directive to LEAD its comment, not merely appear in it', () => {
+    // Kills the `^`-anchor mutant on the @ts- signature: without the anchor a
+    // comment that only discusses the directive would flag.
+    expect(auditDiff(diff('a.ts', '+  // see @ts-ignore for details'))).toEqual(
+      [],
+    );
+  });
+
+  it('matches cast signatures across multiple spaces', () => {
+    // Kills the `\s+` -> `\s` mutants: one-space-only patterns miss these.
+    expect(auditDiff(diff('a.ts', '+  const x = foo as  any;'))[0]?.kind).toBe(
+      'cast-any',
+    );
+    expect(
+      auditDiff(diff('a.ts', '+  const x = foo as  unknown as Bar;'))[0]?.kind,
+    ).toBe('cast-any');
+    expect(
+      auditDiff(diff('a.ts', '+  const x = foo as unknown  as Bar;'))[0]?.kind,
+    ).toBe('cast-any');
+    expect(auditDiff(diff('a.ts', '+  // Stryker  disable all'))[0]?.kind).toBe(
+      'mutation-suppress',
+    );
+  });
+
+  it('treats a file with no extension as non-auditable', () => {
+    // Kills the `return false` -> `return true` mutant in isAuditableSourceFile.
+    expect(
+      auditDiff(diff('Makefile', '+  // eslint-disable-next-line no-console')),
+    ).toEqual([]);
+  });
+
+  it('parses hunk headers whose counts are omitted or multi-digit', () => {
+    // Kills the four HUNK_HEADER regex mutants: making either `,count` group
+    // required, or narrowing `\d+` to a single digit, stops the header matching
+    // and the reported line number drifts.
+    const omitted = auditDiff(
+      diffWithHeader('a.ts', '@@ -1 +7 @@', '+// @ts-ignore'),
+    );
+    expect(omitted[0]?.line).toBe(7);
+
+    const multiDigit = auditDiff(
+      diffWithHeader('a.ts', '@@ -1,12 +7,12 @@', '+// @ts-ignore'),
+    );
+    expect(multiDigit[0]?.line).toBe(7);
+  });
+
+  it('trims trailing whitespace from the header path', () => {
+    // Kills the `.trim()`-removal mutant in headerPath.
+    const findings = auditDiff(
+      [
+        'diff --git a/src/a.ts b/src/a.ts',
+        '--- a/src/a.ts',
+        '+++ b/src/a.ts   ',
+        '@@ -1,0 +1,1 @@',
+        '+// @ts-ignore',
+      ].join('\n'),
+    );
+    expect(findings[0]?.file).toBe('src/a.ts');
+  });
+
+  it('strips the a//b/ prefix only at the start of the header path', () => {
+    // Kills the `^`-anchor mutant in headerPath's replace: an unanchored
+    // pattern would eat an `a/` segment in the middle of the path.
+    const findings = auditDiff(
+      [
+        'diff --git src/a/x.ts src/a/x.ts',
+        '--- src/a/x.ts',
+        '+++ src/a/x.ts',
+        '@@ -1,0 +1,1 @@',
+        '+// @ts-ignore',
+      ].join('\n'),
+    );
+    expect(findings[0]?.file).toBe('src/a/x.ts');
+  });
+
+  it('records the finding text trimmed', () => {
+    // Kills the `text.trim()` -> `text` mutant.
+    const findings = auditDiff(diff('a.ts', '+  // @ts-ignore   '));
+    expect(findings[0]?.text).toBe('// @ts-ignore');
+  });
+
+  it('advances the line counter across added and context lines', () => {
+    // Kills `newLine += 1` -> `-= 1` (added lines) and the
+    // `!raw.startsWith('-')` -> `endsWith('-')` mutant (context lines).
+    const findings = auditDiff(
+      diffWithHeader(
+        'a.ts',
+        '@@ -1,0 +1,4 @@',
+        ['+// @ts-ignore', ' const untouched = 1;', '+// @ts-nocheck'].join(
+          '\n',
+        ),
+      ),
+    );
+    expect(findings.map((finding) => finding.line)).toEqual([1, 3]);
+  });
+
+  it('only treats a hunk header as one when it starts the line', () => {
+    // Kills the `^`-anchor mutant on HUNK_HEADER: an unanchored pattern would
+    // read a hunk header out of a CONTEXT line that merely quotes one (e.g. a
+    // test fixture containing diff text) and reset the line counter to it.
+    const findings = auditDiff(
+      diffWithHeader(
+        'a.ts',
+        '@@ -1,0 +1,2 @@',
+        [" const quoted = '@@ -1,0 +9,1 @@';", '+// @ts-ignore'].join('\n'),
+      ),
+    );
+    expect(findings[0]?.line).toBe(2);
+  });
+
+  it('does not let removed lines advance the line counter', () => {
+    const findings = auditDiff(
+      diffWithHeader(
+        'a.ts',
+        '@@ -1,2 +1,2 @@',
+        ['-const gone = 1;', '+// @ts-ignore'].join('\n'),
+      ),
+    );
+    expect(findings[0]?.line).toBe(1);
+  });
+});

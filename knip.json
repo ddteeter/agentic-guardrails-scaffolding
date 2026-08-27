@@ -1,12 +1,5 @@
 {
   "$schema": "https://unpkg.com/knip@6/schema.json",
-  // Stryker's CLI binaries are invoked dynamically via resolveBin and cannot be
-  // statically detected by knip, so they remain a permanent ignore (same pattern
-  // as other resolveBin-invoked tools like eslint, prettier, etc.).
-  "ignoreDependencies": [
-    "@stryker-mutator/core",
-    "@stryker-mutator/vitest-runner"
-  ],
   "workspaces": {
     "guardrails-core": {
       "project": ["src/**/*.ts", "test/**/*.ts"],

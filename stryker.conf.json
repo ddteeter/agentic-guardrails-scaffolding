@@ -1,0 +1,13 @@
+{
+  "$schema": "./node_modules/@stryker-mutator/core/schema/stryker-schema.json",
+  "testRunner": "vitest",
+  "reporters": ["json"],
+  "incremental": true,
+  "mutate": [
+    "guardrails-core/src/**/*.ts",
+    "!guardrails-core/src/**/*.test.ts"
+  ],
+  "mutator": {
+    "excludedMutations": ["StringLiteral"]
+  }
+}

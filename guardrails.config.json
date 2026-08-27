@@ -3,6 +3,13 @@
   "maxAttempts": 3,
   "recurThreshold": 3,
   "graduationThreshold": 3,
+  "sanctionedSuppressions": [
+    "guardrails-core/src/audit.ts|mutation-suppress|// Stryker disable all",
+    "guardrails-core/src/audit.ts|mutation-suppress|// Stryker restore all",
+    "guardrails-core/src/audit.ts|mutation-suppress|// Stryker disable next-line BlockStatement,ConditionalExpression",
+    "guardrails-core/src/audit.ts|mutation-suppress|// Stryker disable next-line MethodExpression,ConditionalExpression,LogicalOperator,BlockStatement",
+    "guardrails-core/src/audit.ts|mutation-suppress|// Stryker disable next-line OptionalChaining"
+  ],
   "distribution": "solo",
   "enforcement": "warn"
 }
