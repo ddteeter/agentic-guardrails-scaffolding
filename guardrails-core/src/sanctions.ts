@@ -6,9 +6,14 @@
  * a newly-requested exemption.
  *
  * It is deliberately enforced in **CI, not at the commit gate**. The PR is where
- * a human actually signs off, so merging the PR *is* the approval — no
- * honour-system `approvedBy` field, which an agent could simply write for
- * itself. Locally the agent may add an entry and commit; it cannot merge.
+ * a human actually signs off, so merging the PR *is* the approval. Locally the
+ * agent may add an entry and commit; it cannot merge.
+ *
+ * An `approvedBy` provenance field was built and then removed on purpose. Local
+ * git identity is writable by whatever is running — and is frequently a bot or a
+ * placeholder (this repo's own worktree reads `Test <test@example.com>`), so the
+ * field recorded a name that proved nothing and looked like a guarantee. The
+ * `reason` text plus PR review carry the whole load instead.
  *
  * Comparing keys rather than diff lines also keeps the check precise:
  * reformatting the file, editing a `reason`, or REMOVING an entry are all
