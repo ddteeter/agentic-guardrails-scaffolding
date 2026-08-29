@@ -1,7 +1,8 @@
-# Phase C, piece 5 — workspaces / affected-package attribution — Design
+# Phase C, piece 6 — workspaces / affected-package attribution — Design
 
-The last piece of Phase C. Turns on the monorepo half of the contract that has
-been declared since Phase A but never wired.
+The last piece of Phase C, after piece 5 (analyzer presence). Turns on the
+monorepo half of the contract that has been declared since Phase A but never
+wired.
 
 ## 0. TL;DR
 
@@ -13,9 +14,8 @@ been declared since Phase A but never wired.
   a different risk profile, and it cannot be validated here — see §6.
 - **Hybrid resolution.** Declared workspace members when the root `package.json`
   declares `workspaces`; nearest-ancestor `package.json` otherwise.
-- **`picomatch` as a BUNDLED devDependency** for glob matching. It has zero
-  transitive dependencies, and tsup inlines it, so consumers still install
-  `guardrails-core` with an empty dependency tree.
+- **No new dependency.** Workspace-glob matching is hand-rolled against a small,
+  explicitly-scoped subset; `guardrails-core` keeps its empty dependency tree.
 - **The dead `packageId` seam is deleted** from all five adapters.
 
 ## 1. The problem
@@ -86,14 +86,12 @@ Deliberate. It would mean a YAML dependency or a fragile hand-parse, and pnpm
 packages all carry a `package.json`, so the fallback already resolves them
 correctly. The same reasoning retires `@manypkg/get-packages` (§3).
 
-## 3. Dependency decision
+## 3. Dependency decision: none
 
-`guardrails-core` currently ships **zero runtime dependencies** — it installs into
-a consumer repo with no transitive supply chain. That property is worth
-protecting, particularly for a security-adjacent tool whose Dependabot config
-already imposes a 7-day supply-chain cooldown.
+`guardrails-core` ships **zero runtime dependencies** and stays that way.
 
-Surveyed empirically (versions and trees as published, checked this session):
+Five libraries were surveyed empirically (versions and trees as published,
+checked this session):
 
 | Library                  | License | Tree                                                                     |
 | ------------------------ | ------- | ------------------------------------------------------------------------ |
@@ -101,39 +99,55 @@ Surveyed empirically (versions and trees as published, checked this session):
 | `@npmcli/map-workspaces` | ISC     | 4 direct (`glob`, `minimatch`, …); npm-only, no pnpm                     |
 | `find-workspaces`        | MIT     | 3 direct (`fast-glob`, `yaml`, …); still 0.x                             |
 | `workspace-tools`        | MIT     | 6 direct (`js-yaml`, `git-url-parse`, …)                                 |
-| **`picomatch`**          | MIT     | **zero**                                                                 |
+| `picomatch`              | MIT     | zero                                                                     |
 
-**Chosen: `picomatch`, as a devDependency.** It removes the only genuinely tricky
-part — glob semantics — while the parts we keep (reading a JSON field, walking up
-a directory tree) are a few lines each. It is the matcher underneath `fast-glob`,
-`micromatch` and Vite.
-
-`@manypkg/get-packages` was rejected despite better package-manager coverage,
-because **it does not remove the fallback**: it handles package-manager
-workspaces, not nx/turbo/plain-folder monorepos, so that path still has to be
-written and tested. Its one advantage over the fallback — parsing
-`pnpm-workspace.yaml` — buys nothing the fallback does not already do. It costs
+`@manypkg/get-packages` was rejected despite the best package-manager coverage:
+**it does not remove the fallback**, because it handles package-manager
+workspaces, not nx/turbo/plain-folder monorepos — so that path still has to be
+written and tested either way. Its one advantage over the fallback, parsing
+`pnpm-workspace.yaml`, buys nothing the fallback does not already do. It costs
 the most and deletes the least.
 
-### Bundling (verified empirically)
+`picomatch` (zero transitive deps) was the runner-up and was rejected on the
+**polyglot** argument. guardrails-core targets Java repos from Phase D, where a
+self-contained artifact is far easier to justify than a dependency tree — and
+where the usual defence of a _declared_ dependency, that it is visible to the
+consumer's `npm audit` and Dependabot, buys nothing at all. Bundling it instead
+(verified viable, see below) would have kept the install tree empty but carries an
+MIT attribution obligation, pins the bundled version to our release cadence, and
+introduces a `dependencies`-vs-`devDependencies` subtlety every contributor must
+understand — to save roughly fifteen lines.
 
-`guardrails-core/tsup.config.ts` sets no `noExternal`, and tsup externalizes only
-`dependencies`/`peerDependencies`. Verified this session with a throwaway probe:
-importing the existing devDependency `@eslint/js` from `src` and building inlined
-its source into `dist/index.mjs`, with no external import emitted. So a
-devDependency reaches consumers as bundled code and **`dependencies` stays
-empty**.
+### Scope of the hand-rolled matcher (explicit non-goal)
 
-Two consequences:
+We are not implementing globbing. We are implementing **npm workspace glob
+syntax**, a small bounded subset:
 
-- picomatch's unusually narrow `engines` (`^22||^24||>=26`, excluding odd-numbered
-  Node lines) affects only our own dev install, never a consumer's. The repo pins
-  Node 24 via `.nvmrc` and CI, which the range includes. Note `engine-strict=true`
-  in `.npmrc` makes a mismatch a hard error, so a contributor on a non-LTS Node
-  will need to follow `.nvmrc` — as they already should.
-- Bundling MIT code carries an **attribution obligation**. Implementation must
-  confirm the license notice survives into `dist`, and add it explicitly if
-  esbuild's legal-comments handling drops it.
+- `*` — one path segment
+- `**` — any number of segments
+- a leading `!` — negation, applied after the positive matches
+- literal segments otherwise
+
+Anything beyond that (character classes, braces, extglobs, `?`) is an **explicit
+non-goal**. If a consumer's workspace declaration needs it, the resolver treats
+the pattern as non-matching rather than guessing, and the fallback still
+attributes the file.
+
+The residual risk is a subtly-wrong matcher that passes hollow tests. That is
+precisely the failure mutation testing catches, and this pack now runs it: the
+matcher is a small pure function with exhaustive tests, gated at zero surviving
+mutants. Attribution also degrades rather than throws (§2), so a miss costs a
+missing `package` key, never a failed gate.
+
+### Bundling (verified, unused)
+
+Recorded because it was proven and may be wanted later. `tsup.config.ts` sets no
+`noExternal`, and tsup externalizes only `dependencies`/`peerDependencies`. A
+throwaway probe this session imported the existing devDependency `@eslint/js`
+from `src` and built: its source was inlined into `dist/index.mjs` with no
+external import emitted. So a devDependency **can** be shipped as bundled code
+with `dependencies` left empty. Note nothing is bundled today — `@eslint/js` is
+imported only by the drift-guard test, never by `src`.
 
 ## 4. Attribution
 
@@ -176,6 +190,8 @@ measure against would be speculative work validated by nothing.
 Temp-directory fixtures, in the style of `config.test.ts` and `scope.test.ts`:
 
 - declared globs (`packages/*`), `**`, and `!` negation
+- a pattern using unsupported syntax (braces, character classes): treated as
+  non-matching, with the fallback still attributing the file
 - yarn's `{ packages: [...] }` object form
 - the stray-manifest case — a nested `package.json` that is not a declared member
 - fallback mode with no `workspaces` declaration
