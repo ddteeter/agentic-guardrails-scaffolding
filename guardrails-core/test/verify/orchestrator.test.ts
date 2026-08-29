@@ -1,3 +1,7 @@
+import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+
 import { describe, expect, it } from 'vitest';
 
 import type { Exec, ExecResult } from '../../src/exec.js';
@@ -60,6 +64,7 @@ const depcruiseJson = JSON.stringify({
 interface Call {
   command: string;
   args: string[];
+  options: { cwd?: string } | undefined;
 }
 
 /** A fake exec that records calls and dispatches canned output by command. */
@@ -69,8 +74,8 @@ function fakeExec(overrides: Record<string, ExecResult> = {}): {
 } {
   const calls: Call[] = [];
   const ok = (stdout: string): ExecResult => ({ stdout, stderr: '', code: 0 });
-  const exec: Exec = (command, args) => {
-    calls.push({ command, args });
+  const exec: Exec = (command, args, options) => {
+    calls.push({ command, args, options });
     const key = [command, ...args].join(' ');
     if (overrides[key]) {
       return Promise.resolve(overrides[key]);
@@ -417,5 +422,170 @@ describe('runStryker', () => {
       readFile: () => Promise.resolve('{}'),
     });
     expect(calls.some((call) => call.command === 'stryker')).toBe(false);
+  });
+});
+
+describe('runVerify analyzer invocation contract', () => {
+  it('runs every analyzer from repoRoot', async () => {
+    // Kills the `{ cwd: repoRoot }` -> `{}` mutants. A dropped cwd would make
+    // each tool resolve against the process cwd instead of the consumer repo —
+    // the same class of consumer-genericity break the piece-2 review caught.
+    const { exec, calls } = fakeExec();
+    await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      profile: 'commit',
+      readFile: () => Promise.resolve('{}'),
+    });
+    expect(calls.length).toBeGreaterThan(0);
+    expect(calls.every((call) => call.options?.cwd === '/repo')).toBe(true);
+  });
+
+  it('passes the documented argv to knip and tsc', async () => {
+    // Kills the `[...]` -> `[]` argv mutants: an empty argv silently changes
+    // knip's reporter (breaking the JSON adapter) and drops tsc's project flag.
+    const { exec, calls } = fakeExec();
+    await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      profile: 'commit',
+      readFile: () => Promise.resolve('{}'),
+    });
+    const argvFor = (tool: string): string[] =>
+      calls.find((call) => call.command === tool)?.args ?? [];
+    expect(argvFor('knip')).toEqual(['--reporter', 'json']);
+    expect(argvFor('tsc')).toEqual([
+      '--noEmit',
+      '--pretty',
+      'false',
+      '-p',
+      'tsconfig.json',
+    ]);
+  });
+
+  it('honours an explicit tsconfig and defaults when it is absent', async () => {
+    // Kills the `options.tsconfig ?? 'tsconfig.json'` -> `&&` mutant.
+    const custom = fakeExec();
+    await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec: custom.exec,
+      tsconfig: 'packages/core/tsconfig.json',
+    });
+    expect(custom.calls.find((call) => call.command === 'tsc')?.args).toContain(
+      'packages/core/tsconfig.json',
+    );
+  });
+
+  it('returns no violations when stryker has nothing to mutate', async () => {
+    // Kills the `return []` -> non-empty mutant on runStryker's early exit.
+    const { exec } = fakeExec({
+      'git diff --name-only --diff-filter=ACM main': {
+        stdout: 'guardrails-core/test/foo.test.ts\n',
+        stderr: '',
+        code: 0,
+      },
+      'git ls-files --others --exclude-standard': {
+        stdout: '',
+        stderr: '',
+        code: 0,
+      },
+    });
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      profile: 'commit',
+      readFile: () => Promise.resolve('{}'),
+    });
+    expect(violations.filter((v) => v.tool === 'stryker')).toEqual([]);
+    // ...and every emitted violation is a real Violation, not a bare value: a
+    // `tool`-filtered assertion alone silently drops non-objects.
+    expect(violations.every((v) => Object.hasOwn(v, 'ruleId'))).toBe(true);
+  });
+
+  it('yields no stryker violations when the report cannot be read', async () => {
+    // Kills the catch-block and `return []` mutants on the missing-report path:
+    // a stryker crash must not fabricate or drop violations.
+    const { exec } = fakeExec({
+      'git diff --name-only --diff-filter=ACM main': {
+        stdout: 'guardrails-core/src/foo.ts\n',
+        stderr: '',
+        code: 0,
+      },
+      'git ls-files --others --exclude-standard': {
+        stdout: '',
+        stderr: '',
+        code: 0,
+      },
+    });
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      profile: 'commit',
+      readFile: () => Promise.reject(new Error('ENOENT')),
+    });
+    expect(violations.filter((v) => v.tool === 'stryker')).toEqual([]);
+    expect(violations.every((v) => Object.hasOwn(v, 'ruleId'))).toBe(true);
+  });
+});
+
+describe('runVerify default readFile seam', () => {
+  it('reads stryker’s report from disk when no readFile is injected', async () => {
+    // Kills the default-arrow mutant on the `options.readFile ?? ...` fallback:
+    // with `() => undefined` the real filesystem path is never exercised, and
+    // every test above injects a reader, so nothing else covers it.
+    const repoRoot = await mkdtemp(path.join(tmpdir(), 'guardrails-stryker-'));
+    await mkdir(path.join(repoRoot, 'reports', 'mutation'), {
+      recursive: true,
+    });
+    await writeFile(
+      path.join(repoRoot, 'reports', 'mutation', 'mutation.json'),
+      JSON.stringify({
+        files: {
+          'src/foo.ts': {
+            mutants: [
+              {
+                id: '1',
+                mutatorName: 'ArithmeticOperator',
+                status: 'Survived',
+                location: { start: { line: 42, column: 1 } },
+              },
+            ],
+          },
+        },
+      }),
+      'utf8',
+    );
+
+    const { exec } = fakeExec({
+      'git diff --name-only --diff-filter=ACM main': {
+        stdout: 'src/foo.ts\n',
+        stderr: '',
+        code: 0,
+      },
+      'git ls-files --others --exclude-standard': {
+        stdout: '',
+        stderr: '',
+        code: 0,
+      },
+    });
+    const { violations } = await runVerify({
+      repoRoot,
+      baseBranch: 'main',
+      exec,
+      profile: 'commit',
+      // deliberately no readFile: exercise the node:fs/promises default
+    });
+    expect(violations).toContainEqual(
+      expect.objectContaining({
+        ruleId: 'stryker/survived',
+        file: 'src/foo.ts',
+        line: 42,
+      }),
+    );
   });
 });

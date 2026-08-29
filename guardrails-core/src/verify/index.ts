@@ -177,6 +177,11 @@ async function runStryker(
     { cwd: repoRoot },
   );
 
+  // Equivalent mutants: emptying either block leaves `report` undefined, and
+  // parseStrykerJson's own JSON.parse guard then returns [] — the same result.
+  // A range directive is required: `disable next-line` only attaches to a
+  // statement-LEADING comment, which a `} catch {` line does not have.
+  // Stryker disable BlockStatement
   let report: string;
   try {
     report = await readFile(
@@ -185,6 +190,7 @@ async function runStryker(
   } catch {
     return [];
   }
+  // Stryker restore BlockStatement
   return parseStrykerJson(report, production, packageId);
 }
 
