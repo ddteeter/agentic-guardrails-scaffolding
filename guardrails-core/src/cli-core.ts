@@ -271,16 +271,6 @@ async function scopeCheckCommand(
   if (input.filePath === undefined) {
     return;
   }
-  // BOTH scopes hang off an active manifest. A non-empty manifest means the gate
-  // delegated and a fixer is working; an empty one means it isn't, and the hook
-  // must not interfere with ordinary work. The read scope used to skip this
-  // check, which was safe only while the hook was unwired for Claude Code —
-  // session-wide, it would have confined the MAIN agent's reads too (its
-  // ~/.claude memory, the scratchpad, sibling repos).
-  const files = collectManifestFiles(stateDirectory(repoRoot));
-  if (files.size === 0) {
-    return;
-  }
   // Read: the fixer may read anything WITHIN the repo (manifest, edited files,
   // even node_modules rule sources — that in-repo exploration is how the
   // thorough tier diagnoses subtle rules), but nothing OUTSIDE it (e.g. the
@@ -297,8 +287,10 @@ async function scopeCheckCommand(
     }
     return;
   }
-  // Edit/Write: only the files named in the violations manifest.
-  if (!isPathAllowed(files, repoRoot, input.filePath)) {
+  // Edit/Write: only the files named in the violations manifest. No active
+  // manifest → the fixer isn't running; don't interfere.
+  const files = collectManifestFiles(stateDirectory(repoRoot));
+  if (files.size > 0 && !isPathAllowed(files, repoRoot, input.filePath)) {
     denyPreToolUse(
       deps,
       `Fixer scope-lock: ${input.filePath} is not in the violations ` +

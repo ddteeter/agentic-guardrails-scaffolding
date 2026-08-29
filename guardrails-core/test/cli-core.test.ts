@@ -139,7 +139,6 @@ describe('runCommand — scope-check', () => {
   });
 
   it('denies a Read outside the repo (e.g. ~/.claude memory)', async () => {
-    writeViolations(stateDirectory(root), 'default', [violation('src/a.ts')]);
     const stdin = JSON.stringify({
       cwd: root,
       tool_name: 'Read',
@@ -188,7 +187,6 @@ describe('runCommand — scope-check', () => {
   });
 
   it('denies a Copilot `view` read outside the repo', async () => {
-    writeViolations(stateDirectory(root), 'default', [violation('src/a.ts')]);
     const stdin = JSON.stringify({
       workingDirectory: root,
       toolName: 'view',
@@ -452,11 +450,6 @@ function scopeStdin(toolName: unknown, filePath: unknown): string {
   return JSON.stringify({ toolName, toolArgs: { path: filePath }, cwd: root });
 }
 
-/** The scope-lock only engages while a fix loop is active (non-empty manifest). */
-function withActiveManifest(): void {
-  writeViolations(stateDirectory(root), 'default', [violation('src/a.ts')]);
-}
-
 async function runScopeCheck(stdin: string): Promise<string> {
   await runCommand(
     'scope-check',
@@ -491,33 +484,23 @@ function failingVerifyExec(): Exec {
 
 describe('scope-check trigger conditions', () => {
   it('treats only exact read-tool names as reads', async () => {
-    withActiveManifest();
-    // Kills the READ_TOOLS anchor mutants. Both branches deny an out-of-repo
-    // path while a fix loop is active, so the discriminator is WHICH rule
-    // fired: an unanchored pattern would misclassify these as reads.
-    expect(await runScopeCheck(scopeStdin('my-read', OUTSIDE_PATH))).toContain(
-      'scope-lock',
-    );
-    out.length = 0;
-    expect(
-      await runScopeCheck(scopeStdin('read-only', OUTSIDE_PATH)),
-    ).toContain('scope-lock');
+    // Kills the READ_TOOLS anchor mutants. An unanchored pattern would classify
+    // `my-read` / `read-only` as reads and deny them for being outside the repo,
+    // when they are edit-family tools that an empty manifest must let through.
+    expect(await runScopeCheck(scopeStdin('my-read', OUTSIDE_PATH))).toBe('');
+    expect(await runScopeCheck(scopeStdin('read-only', OUTSIDE_PATH))).toBe('');
   });
 
   it('does not treat an arbitrary defined tool name as a read', async () => {
-    withActiveManifest();
     // Kills `toolName !== undefined && ...` -> `||` (and -> true): an edit tool
-    // would be read-classified, reporting the read-scope rule instead.
-    const denied = await runScopeCheck(scopeStdin('edit', OUTSIDE_PATH));
-    expect(denied).toContain('scope-lock');
-    expect(denied).not.toContain('read-scope');
+    // would be read-classified and denied for an out-of-repo path.
+    expect(await runScopeCheck(scopeStdin('edit', OUTSIDE_PATH))).toBe('');
   });
 
   it('still denies a genuine out-of-repo read', async () => {
-    withActiveManifest();
-    const denied = await runScopeCheck(scopeStdin('Read', OUTSIDE_PATH));
-    expect(denied).toContain('deny');
-    expect(denied).toContain('read-scope');
+    expect(await runScopeCheck(scopeStdin('Read', OUTSIDE_PATH))).toContain(
+      'deny',
+    );
   });
 
   it('returns early when no filePath is supplied', async () => {
@@ -525,13 +508,6 @@ describe('scope-check trigger conditions', () => {
     // undefined into the path checks.
     writeViolations(stateDirectory(root), 'default', [violation('src/a.ts')]);
     expect(await runScopeCheck(scopeStdin('edit', undefined))).toBe('');
-  });
-
-  it('does not confine reads when no fix loop is active', async () => {
-    // The hook is wired session-wide, so with no manifest it must leave the
-    // MAIN agent alone — its memory, scratchpad and sibling repos all live
-    // outside the repository.
-    expect(await runScopeCheck(scopeStdin('Read', OUTSIDE_PATH))).toBe('');
   });
 
   it('allows any edit when no manifest is active', async () => {
