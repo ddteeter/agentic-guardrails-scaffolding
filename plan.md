@@ -760,6 +760,45 @@ T` form is clean here but misses the two-line `const p = JSON.parse(x); p as T`
   forcing a decomposition into `hasRequiredFields`/`hasValidOptionalFields`. Both
   gates caught real problems in one change.
 
+### Dogfooding finding: our own git-simulating tests escaped under mutation
+
+**Scope: this repo's test design. Not a product concern.** Recorded because it
+cost two recovery cycles and the mechanism is non-obvious, not because consumers
+inherit anything.
+
+`end-to-end.test.ts` builds a real git repo in a temp directory and runs
+`init`/`add`/`commit` against it, to exercise the gate end to end. That is a
+specialised thing to do, and it collides with mutation testing: the test's
+isolation rested on `options.cwd` and `options.env`, both honoured inside
+`src/exec.ts` — which the mutation gate mutates. Stryker's sandbox sits at
+`.stryker-tmp/` inside the repo, so a mutant dropping `cwd` let git discovery
+walk up to the real `.git`. A run committed the temp fixture's tree onto the
+branch: 122 files deleted, `src/seed.ts` added. Recovered with `git reset`;
+nothing lost, never pushed.
+
+Two things worth remembering:
+
+- **Killing the mutant does not undo its side effect.** Those `cwd` mutants were
+  already being killed by `exec.ts`'s own tests. The damage lands while stryker
+  _evaluates_ the mutant, before it is reported dead. Coverage cannot prevent
+  this; only making the side effect impossible can.
+- **`--git-dir`/`--work-tree` do not override `GIT_INDEX_FILE`.** Pinning the
+  calls in argv was the obvious fix and it is insufficient on its own: under a
+  git hook the environment carries an absolute `GIT_INDEX_FILE` (notably
+  `git commit -a` points it at `.git/index.lock`), every descendant inherits it,
+  and the env-dropping mutant falls back to that inheritance. Verified in
+  isolated temp repos: a fully argv-pinned `git add` aimed at repo B rewrote
+  repo A's index. That is also the better explanation of the incident signature —
+  mass deletion plus one added file is what an index rewrite looks like.
+
+**Fix (test-file only, so the mutation engine cannot reach it):** scrub `GIT_*`
+from the test worker's own `process.env` at module scope — closing the
+inheritance channel argv cannot reach — and keep the argv pinning, which covers
+the disjoint `cwd`-dropping mutants.
+
+Related note for `crushing-mutants`: a test's containment must not live in code
+the mutation engine mutates. Cheap to say; not worth shipped machinery.
+
 ### Sanctions — the diff-auditor's escape hatch (shipped in piece 4)
 
 `sanctionedSuppressions` exists because mutation testing produces
