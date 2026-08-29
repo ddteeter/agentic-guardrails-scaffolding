@@ -384,3 +384,35 @@ describe('runCommitGate mutation-hardening', () => {
     );
   });
 });
+
+describe('manifest guidance', () => {
+  it('carries the mutation doc path into the manifest the fixer reads', async () => {
+    // The fixer reads the manifest into its own context on every surface, so a
+    // pointer here reaches it without any per-runtime instruction file.
+    const exec = makeExec((line) => {
+      if (line.includes('--name-only')) return ok('src/foo.ts');
+      if (line.includes('--others')) return ok('');
+      if (line.includes('eslint'))
+        return ok(
+          JSON.stringify([
+            {
+              filePath: path.join(root, 'src/foo.ts'),
+              messages: [
+                {
+                  ruleId: 'no-console',
+                  severity: 2,
+                  message: 'Unexpected console.',
+                  line: 2,
+                },
+              ],
+            },
+          ]),
+        );
+      return ok('');
+    });
+    await runStopGate(options(exec));
+    const written = readViolations(stateDirectory(root), 'sid');
+    // eslint violations get no guidance key; the manifest stays terse.
+    expect(written.every((v) => !Object.hasOwn(v, 'guidance'))).toBe(true);
+  });
+});

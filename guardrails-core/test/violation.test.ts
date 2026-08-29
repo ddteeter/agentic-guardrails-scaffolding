@@ -71,3 +71,36 @@ describe('recurrenceKey', () => {
     );
   });
 });
+
+describe('isViolation field-by-field rejection', () => {
+  // Each case violates EXACTLY ONE clause, so every clause is load-bearing:
+  // bypassing any single one must let a bad violation through and fail here.
+  const cases: [string, unknown][] = [
+    ['null', null],
+    ['a primitive', 'not-an-object'],
+    ['an empty ruleId', { ...base, ruleId: '' }],
+    ['a non-string ruleId', { ...base, ruleId: 7 }],
+    ['an empty file', { ...base, file: '' }],
+    ['a non-string file', { ...base, file: 7 }],
+    ['a non-string message', { ...base, message: 7 }],
+    ['an unknown severity', { ...base, severity: 'critical' }],
+    ['a non-string severity', { ...base, severity: 7 }],
+    ['a non-boolean fixable', { ...base, fixable: 'yes' }],
+    ['a non-string tool', { ...base, tool: 7 }],
+    ['a non-number line', { ...base, line: '42' }],
+    ['a non-string package', { ...base, package: 7 }],
+    ['a non-string guidance', { ...base, guidance: 7 }],
+  ];
+
+  for (const [label, value] of cases) {
+    it(`rejects ${label}`, () => {
+      expect(isViolation(value)).toBe(false);
+    });
+  }
+
+  it('accepts an optional guidance path', () => {
+    expect(isViolation({ ...base, guidance: 'docs/guardrails/x.md' })).toBe(
+      true,
+    );
+  });
+});

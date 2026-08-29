@@ -25,45 +25,61 @@ export interface Violation {
   tool: string;
   /** Workspace/module id in monorepos; `undefined` in single-repo layouts. */
   package?: string;
+  /**
+   * Repo-relative path to guidance for this violation class, when one exists.
+   * Carried ON the violation so it survives into the manifest the fixer reads —
+   * that is the only channel every runtime shares. Instruction files, skills and
+   * index docs are all per-surface and cooperative; this is neither.
+   */
+  guidance?: string;
 }
 
 const SEVERITIES = new Set<Severity>(['error', 'warn']);
 
 function isSeverity(value: unknown): value is Severity {
+  // Equivalent mutant on the typeof half: SEVERITIES holds only the strings
+  // 'error' and 'warn', so `has(x)` can only be true when x IS a string.
+  // Stryker disable next-line ConditionalExpression
   return typeof value === 'string' && SEVERITIES.has(value as Severity);
+}
+
+function isNonEmptyString(value: unknown): boolean {
+  return typeof value === 'string' && value.length > 0;
+}
+
+/** The always-present string fields. `ruleId`/`file` must also be non-empty —
+ *  an empty id would collapse distinct rules into one recurrence bucket. */
+function hasRequiredFields(v: Record<string, unknown>): boolean {
+  return (
+    isNonEmptyString(v.ruleId) &&
+    isNonEmptyString(v.file) &&
+    typeof v.message === 'string' &&
+    typeof v.tool === 'string' &&
+    typeof v.fixable === 'boolean' &&
+    isSeverity(v.severity)
+  );
+}
+
+/** Optional fields: absent is fine, present-but-wrongly-typed is not. */
+function hasValidOptionalFields(v: Record<string, unknown>): boolean {
+  return (
+    (v.line === undefined || typeof v.line === 'number') &&
+    (v.package === undefined || typeof v.package === 'string') &&
+    (v.guidance === undefined || typeof v.guidance === 'string')
+  );
 }
 
 /** Runtime validator — a type guard for a single violation. */
 export function isViolation(value: unknown): value is Violation {
+  // Equivalent mutant on the typeof half: `value === null` still catches null,
+  // and a primitive that slips past is rejected field-by-field below
+  // ('str'.ruleId is undefined).
+  // Stryker disable next-line ConditionalExpression
   if (typeof value !== 'object' || value === null) {
     return false;
   }
   const v = value as Record<string, unknown>;
-  if (typeof v.ruleId !== 'string' || v.ruleId.length === 0) {
-    return false;
-  }
-  if (typeof v.file !== 'string' || v.file.length === 0) {
-    return false;
-  }
-  if (typeof v.message !== 'string') {
-    return false;
-  }
-  if (!isSeverity(v.severity)) {
-    return false;
-  }
-  if (typeof v.fixable !== 'boolean') {
-    return false;
-  }
-  if (typeof v.tool !== 'string') {
-    return false;
-  }
-  if (v.line !== undefined && typeof v.line !== 'number') {
-    return false;
-  }
-  if (v.package !== undefined && typeof v.package !== 'string') {
-    return false;
-  }
-  return true;
+  return hasRequiredFields(v) && hasValidOptionalFields(v);
 }
 
 /** `verify` exits non-zero when any error-severity violation exists. */

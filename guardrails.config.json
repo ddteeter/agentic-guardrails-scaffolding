@@ -75,6 +75,10 @@
     {
       "key": "guardrails-core/src/cli-core.ts|mutation-suppress|// Stryker disable next-line ArrayDeclaration",
       "reason": "Proven-equivalent mutant; equivalence argument recorded at the site. newlySanctioned compares by key, so a placeholder default entry maps to an undefined key that no real entry can match - every head entry still reads as newly requested, exactly as with an empty list."
+    },
+    {
+      "key": "guardrails-core/src/violation.ts|mutation-suppress|// Stryker disable next-line ConditionalExpression",
+      "reason": "Proven-equivalent mutants; arguments recorded at both sites. isSeverity: SEVERITIES holds only the strings 'error'/'warn', so has(x) implies x is a string. isViolation: the surviving `value === null` half still catches null, and a primitive is rejected field-by-field below. Approved individually after review."
     }
   ],
   "distribution": "solo",

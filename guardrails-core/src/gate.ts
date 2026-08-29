@@ -17,6 +17,7 @@ import path from 'node:path';
 
 import { auditDiff, type AuditFinding } from './audit.js';
 import type { Exec } from './exec.js';
+import { withGuidance } from './guidance.js';
 import {
   decideGate,
   type GateConfig,
@@ -143,10 +144,12 @@ export async function runStopGate(
     ...(options.resolveBin ? { resolveBin: options.resolveBin } : {}),
   };
   const { violations } = await runVerify(verifyOptions);
-  const combined = [
+  // Guidance rides on the violation so it reaches the fixer through the
+  // manifest — the one channel every runtime reads.
+  const combined = withGuidance([
     ...violations,
     ...auditFindings.map((finding) => toViolation(finding)),
-  ];
+  ]);
 
   writeViolations(directory, sessionId, combined);
   const manifestPath = path.relative(
@@ -230,10 +233,11 @@ export async function runCommitGate(
   const findings = auditDiff(await branchDiff(options)).filter(
     (finding) => !sanctioned.has(findingKey(finding)),
   );
+  const guided = withGuidance(violations);
   return {
-    violations,
+    violations: guided,
     findings,
-    blocked: hasErrors(violations) || findings.length > 0,
+    blocked: hasErrors(guided) || findings.length > 0,
   };
 }
 

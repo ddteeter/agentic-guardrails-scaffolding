@@ -56,6 +56,12 @@ jobs:
       - name: Agents in sync (generated .github/agents committed)
         run: git diff --exit-code -- .github/agents
 
+      # The skill docs and the Copilot index are generated from
+      # guardrails-plugin/skills/ and COMMITTED, because Copilot has no skill
+      # mechanism and its cloud agent reads from the default branch.
+      - name: Skill docs in sync (generated docs committed)
+        run: git diff --exit-code -- docs/guardrails .github/copilot-instructions.md
+
       - name: Guardrails verify
         run: node ./node_modules/guardrails-core/dist/cli.mjs verify
 
