@@ -32,6 +32,7 @@ interface Violation {
   fixable: boolean; // true → silent PostToolUse autofix class
   tool: string; // "eslint" | "tsc" | "knip" | ... | "guardrails"
   package?: string; // workspace/module id in monorepos
+  guidance?: string; // repo-relative doc for this class (Phase C piece 4)
 }
 ```
 
@@ -75,7 +76,9 @@ full enforcement matrix and per-surface research grounding.
   git pre-commit + CI. Shipped (headless); see "Phase B status" below. ← _this
   branch_
 - **C — TS pack complete + workspaces** (knip, dependency-cruiser, semgrep,
-  stryker in CI; affected-package scoping).
+  stryker in CI; affected-package scoping). Analyzers done: knip (piece 1),
+  dependency-cruiser (piece 2), semgrep retired as a no-go (piece 3), stryker
+  (piece 4). **Remaining: workspaces / affected-package scoping.**
 - **D — Java pack + polyglot** (spotless, pmd, error-prone/nullaway, spotbugs,
   ArchUnit, pitest/descartes; Maven/Gradle report adapters).
 - **E — Scaffolder + team-flip** (detection/plan/confirm/idempotency skill;
@@ -611,3 +614,199 @@ T` form is clean here but misses the two-line `const p = JSON.parse(x); p as T`
     than at deletion. See §"Boundary type-safety" (product track).
   - **Registry-graduation revisit re-deferred from semgrep to stryker** (the min-rung
     table is untouched; stryker is the remaining Phase-C analyzer and the real trigger).
+
+- **Piece 4 — stryker (shipped).** A diff-scoped, incremental, **commit-rung,
+  blocking** mutation gate: any surviving mutant in changed production code is a
+  `stryker/survived` violation routed to the thorough fixer. `runStryker` shells
+  out consumer-generically (no `--configFile`; `--mutate` is the consumer's own
+  changed files) and reads stryker's default report path through a new
+  `VerifyOptions.readFile` seam; `parseStrykerJson` maps the
+  `mutation-testing-elements` report to `Violation[]` (`fixable: false` — the fix
+  is a judgment, never a silent autofix). Drift probe #4 guards the `MutantStatus`
+  enum via the schema package's public subpath. Design:
+  `docs/superpowers/specs/2026-07-23-phase-c-stryker-design.md`.
+  - **Registry graduation resolved** (twice deferred, at dependency-cruiser and
+    again at semgrep). `ANALYZERS` now models a `scope` run-trigger
+    (`changed-files` | `whole-project`) alongside `minRung`, and ESLint/tsc fold
+    into the table — `runVerify` is one uniform loop with no special case. Note
+    `tsc` is changed-files-_triggered_ but whole-project-_checked_. Violation
+    order changed to eslint, tsc, knip, DC, stryker (no test asserted the old
+    order). **Parallel execution is still deferred** — but now measurable rather
+    than speculative.
+  - **Three unplanned additions** landed with it, each recorded below: the
+    sanctions approval flow, the ask-first instruction, and guidance delivery +
+    the `crushing-mutants` skill.
+
+### Phase C piece 4 — execution findings
+
+- **`--mutate` is FILE-granular — the design's biggest correction.**
+  "Zero-tolerance on changed code" assumed you pay only for code you wrote. You
+  don't: touching one line of a file bills you every survivor in it. This
+  branch's 7 changed production files carried **140 pre-existing survivors**;
+  adding a single field to `config.ts` billed 14, and one line to `cli-core.ts`
+  billed 47. They were all killed by explicit choice (see below), but for a
+  **consumer repo adopting guardrails this is an adoption cliff** — day one is
+  hundreds of survivors in files they have not touched. The fix is an **adoption
+  ramp**, not permanent tolerance: baseline on adopt → drive to zero file by file
+  → zero-tolerance forever. Phase-E-owned. (The retrofit tax is one-time: under
+  the gate from day one, survivors appear two or three at a time, while the
+  author still has context — which is also why file-granularity stops mattering
+  once every file is clean.)
+- **The unique value is catching VACUOUS tests — confirmed three times, twice
+  against code written in the same session.** `stryker-adapter.ts`'s original
+  four tests passed _for the wrong reason_: every guard fails open to `[]`, so
+  `expect(parse(malformed)).toEqual([])` is green even if the guard is entirely
+  broken. The fix is to **pair the malformed input with a valid one**, so a
+  wrongly-_accepting_ guard emits the valid item and the assertion fails — that
+  single change killed 37 survivors. Two more of the same class: a
+  `.filter(v => v.tool === 'stryker')` assertion silently dropped a mutant's junk
+  return, and a TTL fixture milliseconds old passed under a mutant that shrank the
+  TTL to milliseconds. **Nothing else in the pack can catch these** — coverage ran
+  the line, `vitest/expect-expect` saw an assertion. Rule of thumb now in the
+  skill: **always ship a positive control** alongside a "must not fire" assertion.
+- **~19% of survivors are equivalent, and that tax is permanent** — 26 of them,
+  at a consistent rate across all seven files, in five recurring families: a
+  redundant `typeof` half subsumed by the check below it; a `catch` that falls
+  through to the same result; state reset unconditionally right after the mutated
+  branch; optional chaining behind a type guard that makes it unreachable; a
+  placeholder in a container only ever probed by exact key. Unlike the 140, this
+  does **not** shrink with adoption — it recurs on new code forever, and proving
+  equivalence produces no test.
+- **Directive placement is a real constraint, and it shapes production code.**
+  `// Stryker disable next-line` only attaches to a **statement-leading** comment
+  — not above a `} else if` or a `} catch {`. `audit.ts`'s metadata branch was
+  restructured into an early `continue` purely to give a directive an anchor;
+  elsewhere a `disable`/`restore` **range** was required. Always **re-run to
+  confirm the directive attached**: one that silently failed leaves the mutant
+  `Survived`, not `Ignored`. Use **mutator-scoped** directives
+  (`disable next-line ConditionalExpression`), never blanket ones, which discard
+  real coverage on the same line.
+- **Early runs were nondeterministic** — identical code gave 19 Survived / 10
+  Timeout, then 15 / 14. A timeout counts as detected while a survivor is a
+  violation, so the _blocking gate itself was flaky_. It resolved once the
+  borderline mutants were killed (killing converts both statuses to `Killed`), so
+  driving a file to zero also stabilises it — but a partially-hardened file can
+  block one commit and pass the next.
+- **In-source region exclusion works better than the plan predicted.** The plan
+  expected mutator-exclusion to cut `audit.ts` by only ~31%; the in-source region
+  directive moved **all 233** hand-written-lexer mutants to `Ignored` while the
+  behavioural half stayed mutated. `audit.ts` finished at **0 survivors / 84
+  killed**. Whole-repo absolute mutation thresholds remain arbitrary; diff-scoped
+  zero-tolerance is the principled, in-work-cycle model.
+- **The gate had never actually run.** `node_modules/guardrails-core/dist` was the
+  build from the previous session for this entire piece — every "gate passed"
+  until Task 7 ran the _stale_ CLI, without stryker, the scope policy, or any new
+  auditor signature. `dist/` is gitignored, so **any phase that changes machinery
+  must rebuild before trusting the gate**; nothing detects the staleness.
+- **knip/fallow reconciliation — three distinct lessons.** (1) Task 1 taught knip
+  about the new devDependencies but not fallow, whose dead-dependency check runs
+  only at **pre-push**; the gap surfaced as a blocked push several commits later.
+  **A new devDependency must be reconciled against knip AND fallow in the same
+  task.** (2) **Neither tool can follow a `require.resolve` string argument** — the
+  Task-6 stopgaps were reclassified PERMANENT only after empirically attempting
+  removal (knip then flagged the package), which is the standard to hold. (3) Once
+  `stryker.conf.json` existed, knip's stryker plugin detected the CLI binaries and
+  reported the root `ignoreDependencies` as **stale** — removable, and removed.
+  Stale-ignore hygiene is mechanized for knip; it is **not** for
+  `sanctionedSuppressions` (open item below).
+- **Plan code vs the repo's own lint, three more instances.**
+  `sonarjs/no-undefined-argument` rejects a trailing explicit `undefined` even
+  though `unicorn/no-useless-undefined` is configured with `checkArguments: false`
+  — **a relaxation on one plugin does not imply the other**. `arg` is not in
+  `prevent-abbreviations`' allowlist although `args` is. And the plan's
+  `run: (o, r) => runTsc(o, r)` wrappers were both unnecessary (TypeScript accepts
+  a function with _fewer_ parameters) and unlintable (`o`/`r`).
+- **Adding one optional contract field cascaded.** `Violation.guidance` pulled
+  `isViolation` into the changed set, exposing 11 survivors in a validator nothing
+  had tested clause-by-clause (now table-driven: each case violates exactly one
+  clause). The added clause then pushed it over the cognitive-complexity gate,
+  forcing a decomposition into `hasRequiredFields`/`hasValidOptionalFields`. Both
+  gates caught real problems in one change.
+
+### Sanctions — the diff-auditor's escape hatch (shipped in piece 4)
+
+`sanctionedSuppressions` exists because mutation testing produces
+provably-equivalent mutants that no test can kill. It is the only way past the
+diff-auditor, so granting one is itself controlled.
+
+- **Every entry carries a `reason`, and parsing FAILS CLOSED** — an entry missing
+  a key or a non-blank justification is dropped, so an unjustified exemption
+  simply does not apply and the gate keeps blocking. A bare key is unreviewable:
+  a reviewer cannot tell a proven-equivalent mutant from "the agent got stuck".
+- **`guardrails sanctions-check` (CI-only) is the enforcement.** It compares the
+  sanction **key set** against the branch's merge-base and fails on any newly-
+  requested exemption, so approval is a human reviewing and merging the PR.
+  Enforced in CI rather than at the commit gate deliberately: the PR is where
+  sign-off actually happens, and local work stays unblocked. Comparing keys (not
+  diff lines) keeps it precise — reformatting, rewording a `reason`, or REMOVING
+  an entry are legitimate edits that must not trip it.
+  - A first cut put a `self-sanction` signature in the **line-based auditor at the
+    commit gate**. It was replaced: too blunt (any reformat tripped it) and it
+    deadlocked the very branch that introduced it, since merge-base diffs are
+    cumulative.
+- **An `approvedBy` provenance field was built and then removed.** Local git
+  identity is writable by whatever is running and is frequently a bot or a
+  placeholder — this repo's own worktree reads `Test <test@example.com>` — so it
+  recorded a name that proved nothing while looking like a guarantee. The
+  rejection is documented at the seam in `src/sanctions.ts` so it is not rebuilt.
+- **The agent must ASK before proposing one** (`CLAUDE.md`): the exact key, why it
+  is unavoidable, and what stops being checked. Cooperative and skippable — CI is
+  what makes it stick — but it catches a _wrong_ exemption while the context is
+  live. The fixer subagents cannot reach the policy file at all (scope-lock), so
+  the instruction targets the **main agent**, the only thing that can grant itself
+  an exemption.
+- **Open — the required-check deadlock.** If `sanctions-check` is made a
+  _required_ status check (which the team-mode flip prescribes), it blocks the
+  merge that constitutes approval. Needs a label- or review-based pass signal.
+- **Open — no stale-sanction detection.** Exception lists only grow. This piece
+  already produced one stale entry (a `git.ts` sanction added defensively before
+  the file reached zero without needing it), caught by hand. knip does this for
+  its own ignores; sanctions have no equivalent.
+
+### Guidance delivery — getting method to the fixer (shipped in piece 4)
+
+Mutation triage is procedural knowledge an agent does not derive, and the failure
+mode of not having it is reaching for a suppression. Three layers, because no
+single one reaches every runtime:
+
+1. **The violation carries it.** `Violation.guidance` is set by a rule-id prefix
+   registry as the gate writes the manifest. The manifest is the **one channel
+   every runtime already reads**, so this needs no instruction file and no agent
+   cooperation — unlike skills, index docs and instruction files, which are all
+   per-surface and voluntary.
+2. **Skills also emit as committed docs + a Copilot index.** `sync-agents.mjs`
+   writes `docs/guardrails/<name>.md` and a marked block in
+   `.github/copilot-instructions.md` naming each doc **with its trigger**
+   (progressive disclosure — load only what applies). Committed and CI
+   drift-guarded, because Copilot's cloud agent reads the default branch. Content
+   outside the markers survives a rebuild.
+3. **The thorough fixer names both routes** — the skill where the runtime has
+   skills, the doc path where it does not.
+
+- **`crushing-mutants`** is the first skill: killable-vs-equivalent triage, the
+  vacuous-assertion traps and the pairing trick, which input defeats each mutator,
+  the equivalence families, mutator-scoped directives and their placement rule,
+  the ~19% calibration, and the exemption flow.
+- **Where to apply this next: mirror `loose-rules.ts`.** "Loose" already means the
+  check does not pin the fix, which is exactly when method is needed. **knip** is
+  the strongest next candidate (the wrong fix is deleting live code — dynamic
+  imports, undeclared entry points), then **dependency-cruiser** (the wrong fix is
+  adding a config exception). **ESLint is a poor fit** — guidance would be
+  per-rule across thousands, each already documented behind its id. Write a doc
+  only where the method is **earned**; thin guidance consumes fixer context and
+  teaches nothing, and unlike the drift-guard nothing mechanically checks prose.
+- **Open — Copilot has no skill mechanism.** The emitted doc + index is the
+  workaround; the scaffolder owns writing both into a consumer repo (Phase E).
+
+### Correction to the Phase B notes
+
+The `PreToolUse` scope-check is declared in **each fixer agent's frontmatter** for
+Claude Code, not in the session-level plugin hooks — and that is correct. A
+session-level hook would confine the **main** agent too (its `~/.claude` memory,
+scratchpad, sibling repos), including during escalation when the main agent is
+the one fixing. This was mis-diagnosed as a gap during piece 4, "fixed", and
+reverted; a wiring drift-guard now pins the real invariant. Phase B's own
+research already implied it: per-agent `hooks` frontmatter is **VS-Code-Preview
+only and unconfirmed on Copilot CLI/cloud**, which is precisely why
+`.github/hooks/guardrails.json` wires the same check session-wide for Copilot —
+richest-per-surface, not an inconsistency.
