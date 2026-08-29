@@ -4,24 +4,78 @@
   "recurThreshold": 3,
   "graduationThreshold": 3,
   "sanctionedSuppressions": [
-    "guardrails-core/src/audit.ts|mutation-suppress|// Stryker disable all",
-    "guardrails-core/src/audit.ts|mutation-suppress|// Stryker restore all",
-    "guardrails-core/src/audit.ts|mutation-suppress|// Stryker disable next-line BlockStatement,ConditionalExpression",
-    "guardrails-core/src/audit.ts|mutation-suppress|// Stryker disable next-line MethodExpression,ConditionalExpression,LogicalOperator,BlockStatement",
-    "guardrails-core/src/audit.ts|mutation-suppress|// Stryker disable next-line OptionalChaining",
-    "guardrails-core/src/verify/stryker-adapter.ts|mutation-suppress|// Stryker disable next-line ConditionalExpression",
-    "guardrails-core/src/verify/stryker-adapter.ts|mutation-suppress|// Stryker disable BlockStatement",
-    "guardrails-core/src/verify/stryker-adapter.ts|mutation-suppress|// Stryker restore BlockStatement",
-    "guardrails-core/src/verify/git.ts|mutation-suppress|// Stryker disable next-line ConditionalExpression",
-    "guardrails-core/src/verify/index.ts|mutation-suppress|// Stryker disable BlockStatement",
-    "guardrails-core/src/verify/index.ts|mutation-suppress|// Stryker restore BlockStatement",
-    "guardrails-core/src/config.ts|mutation-suppress|// Stryker disable next-line ConditionalExpression",
-    "guardrails-core/src/config.ts|mutation-suppress|// Stryker disable BlockStatement",
-    "guardrails-core/src/config.ts|mutation-suppress|// Stryker restore BlockStatement",
-    "guardrails-core/src/gate.ts|mutation-suppress|// Stryker disable ConditionalExpression,MethodExpression,ArrayDeclaration",
-    "guardrails-core/src/gate.ts|mutation-suppress|// Stryker restore ConditionalExpression,MethodExpression,ArrayDeclaration",
-    "guardrails-core/src/gate.ts|mutation-suppress|// Stryker disable next-line ArrayDeclaration",
-    "guardrails-core/src/cli-core.ts|mutation-suppress|// Stryker disable next-line ConditionalExpression"
+    {
+      "key": "guardrails-core/src/audit.ts|mutation-suppress|// Stryker disable all",
+      "reason": "Hand-written tokenizer region (isQuoteChar -> skipRegexFlags): 233 mutation-dense, low-defect-ROI mutants whose real coverage is the behavioural suppression-detection tests. Scoped to the lexer; the diff logic below stays mutated. See docs/superpowers/specs/2026-07-23-phase-c-stryker-design.md section 7."
+    },
+    {
+      "key": "guardrails-core/src/audit.ts|mutation-suppress|// Stryker restore all",
+      "reason": "Closes the lexer-region exclusion above."
+    },
+    {
+      "key": "guardrails-core/src/audit.ts|mutation-suppress|// Stryker disable next-line BlockStatement,ConditionalExpression",
+      "reason": "Proven-equivalent mutant(s); equivalence argument recorded at the site. Without the no-extension guard, file.slice(-1) is a single character, which can never equal a multi-character extension like \".ts\"."
+    },
+    {
+      "key": "guardrails-core/src/audit.ts|mutation-suppress|// Stryker disable next-line MethodExpression,ConditionalExpression,LogicalOperator,BlockStatement",
+      "reason": "Proven-equivalent mutant(s); equivalence argument recorded at the site. Skipping the diff-metadata branch only changes newLine BEFORE the next @@ header, and a hunk header unconditionally resets newLine."
+    },
+    {
+      "key": "guardrails-core/src/audit.ts|mutation-suppress|// Stryker disable next-line OptionalChaining",
+      "reason": "Proven-equivalent mutant(s); equivalence argument recorded at the site. The HUNK_HEADER.test() branch condition guarantees exec() matches, so ?. cannot short-circuit; it also cannot be removed, since exec is typed RegExpExecArray | null."
+    },
+    {
+      "key": "guardrails-core/src/verify/stryker-adapter.ts|mutation-suppress|// Stryker disable next-line ConditionalExpression",
+      "reason": "Proven-equivalent mutant(s); equivalence argument recorded at the site. The typeof-object halves of the report/mutant guards are subsumed by the field checks below them: a primitive that slips through is rejected anyway."
+    },
+    {
+      "key": "guardrails-core/src/verify/stryker-adapter.ts|mutation-suppress|// Stryker disable BlockStatement",
+      "reason": "Proven-equivalent mutant(s); equivalence argument recorded at the site. Emptying the JSON.parse try/catch leaves parsed undefined, which isReport rejects - the function still returns []."
+    },
+    {
+      "key": "guardrails-core/src/verify/stryker-adapter.ts|mutation-suppress|// Stryker restore BlockStatement",
+      "reason": "Closes the try/catch exclusion above."
+    },
+    {
+      "key": "guardrails-core/src/verify/index.ts|mutation-suppress|// Stryker disable BlockStatement",
+      "reason": "Proven-equivalent mutant(s); equivalence argument recorded at the site. Emptying the report-read try/catch leaves report undefined; parseStrykerJson's own JSON.parse guard then returns [] regardless."
+    },
+    {
+      "key": "guardrails-core/src/verify/index.ts|mutation-suppress|// Stryker restore BlockStatement",
+      "reason": "Closes the try/catch exclusion above."
+    },
+    {
+      "key": "guardrails-core/src/config.ts|mutation-suppress|// Stryker disable next-line ConditionalExpression",
+      "reason": "Proven-equivalent mutant(s); equivalence argument recorded at the site. Covers isRecord and pickNumber: Number.isFinite does not coerce, and a primitive raw config falls through to per-field defaults - the same result as rejecting it."
+    },
+    {
+      "key": "guardrails-core/src/config.ts|mutation-suppress|// Stryker disable BlockStatement",
+      "reason": "Proven-equivalent mutant(s); equivalence argument recorded at the site. Emptying the config-read try/catch leaves raw undefined, which isRecord rejects - loadConfig still returns defaults."
+    },
+    {
+      "key": "guardrails-core/src/config.ts|mutation-suppress|// Stryker restore BlockStatement",
+      "reason": "Closes the try/catch exclusion above."
+    },
+    {
+      "key": "guardrails-core/src/gate.ts|mutation-suppress|// Stryker disable ConditionalExpression,MethodExpression,ArrayDeclaration",
+      "reason": "Proven-equivalent mutant(s); equivalence argument recorded at the site. The snapshot baseline is only ever probed with real string keys, so a non-string entry can never match; and .filter on a non-array throws into the catch that returns the same empty Set."
+    },
+    {
+      "key": "guardrails-core/src/gate.ts|mutation-suppress|// Stryker restore ConditionalExpression,MethodExpression,ArrayDeclaration",
+      "reason": "Closes the readSnapshot exclusion above."
+    },
+    {
+      "key": "guardrails-core/src/gate.ts|mutation-suppress|// Stryker disable next-line ArrayDeclaration",
+      "reason": "Proven-equivalent mutant(s); equivalence argument recorded at the site. The sanctioned Set is only probed with real file|kind|text finding keys, so a placeholder default entry can never match."
+    },
+    {
+      "key": "guardrails-core/src/cli-core.ts|mutation-suppress|// Stryker disable next-line ConditionalExpression",
+      "reason": "Proven-equivalent mutant(s); equivalence argument recorded at the site. Bypassing a \"=== undefined\" clause still returns early: the regex test on the next line stringifies undefined to \"undefined\", which matches no anchored pattern."
+    },
+    {
+      "key": "guardrails-core/src/cli-core.ts|mutation-suppress|// Stryker disable next-line ArrayDeclaration",
+      "reason": "Proven-equivalent mutant; equivalence argument recorded at the site. newlySanctioned compares by key, so a placeholder default entry maps to an undefined key that no real entry can match - every head entry still reads as newly requested, exactly as with an empty list."
+    }
   ],
   "distribution": "solo",
   "enforcement": "warn"

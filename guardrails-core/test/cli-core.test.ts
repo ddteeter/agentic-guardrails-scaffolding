@@ -785,3 +785,208 @@ describe('cli-core final hardening', () => {
     expect(errors.join('')).toContain('added eslint-disable');
   });
 });
+
+describe('sanctioned suppressions reach the commit gate', () => {
+  it('exempts a finding whose key is sanctioned in the policy file', async () => {
+    // Kills the `(sanction) => sanction.key` -> `() => undefined` mutants: a
+    // list of undefined keys exempts nothing, so the gate would still block.
+    writeFileSync(
+      path.join(root, 'guardrails.config.json'),
+      JSON.stringify({
+        sanctionedSuppressions: [
+          {
+            key: 'src/a.ts|eslint-disable|// eslint-disable-next-line',
+            reason: 'reviewed and approved for this fixture',
+          },
+        ],
+      }),
+    );
+    const exec = gitExec({
+      'merge-base': 'BASESHA\n',
+      'diff BASESHA': [
+        '+++ b/src/a.ts',
+        '@@ -1,0 +1,1 @@',
+        '+// eslint-disable-next-line',
+      ].join('\n'),
+    });
+    expect(await runCommand('gate', ['--mode=commit'], deps({ exec }))).toBe(0);
+  });
+
+  it('also forwards sanctions from the pretooluse gate', async () => {
+    // The pretooluse path maps the list independently of --mode=commit; kills
+    // the second `(sanction) => sanction.key` -> `() => undefined` mutant.
+    writeFileSync(
+      path.join(root, 'guardrails.config.json'),
+      JSON.stringify({
+        sanctionedSuppressions: [
+          {
+            key: 'src/a.ts|eslint-disable|// eslint-disable-next-line',
+            reason: 'reviewed and approved for this fixture',
+          },
+        ],
+      }),
+    );
+    const exec = gitExec({
+      'merge-base': 'BASESHA\n',
+      'diff BASESHA': [
+        '+++ b/src/a.ts',
+        '@@ -1,0 +1,1 @@',
+        '+// eslint-disable-next-line',
+      ].join('\n'),
+    });
+    await runCommand(
+      'gate',
+      ['--mode=pretooluse', '--dialect=copilot'],
+      deps({
+        exec,
+        readStdin: () =>
+          Promise.resolve(preToolUseStdin('bash', 'git commit -m x')),
+      }),
+    );
+    expect(out.join('')).toBe('');
+  });
+});
+
+/** git fake for sanctions-check: merge-base resolves, `git show` returns the
+ *  base revision of the policy file. Records calls for argv/cwd assertions. */
+function sanctionsExec(
+  baseConfig: string | null,
+  mergeBase: ExecResult = ok('BASESHA\n'),
+  showCode = 0,
+): { exec: Exec; calls: { args: string[]; cwd: string | undefined }[] } {
+  const calls: { args: string[]; cwd: string | undefined }[] = [];
+  const exec: Exec = (command, args, execOptions) => {
+    calls.push({ args, cwd: execOptions?.cwd });
+    if (args[0] === 'merge-base') return Promise.resolve(mergeBase);
+    if (args[0] === 'show') {
+      return Promise.resolve(
+        baseConfig === null
+          ? { stdout: '', stderr: 'does not exist', code: 128 }
+          : { stdout: baseConfig, stderr: '', code: showCode },
+      );
+    }
+    return Promise.resolve(ok(''));
+  };
+  return { exec, calls };
+}
+
+function writeRepoConfig(sanctions: unknown[]): void {
+  writeFileSync(
+    path.join(root, 'guardrails.config.json'),
+    JSON.stringify({ sanctionedSuppressions: sanctions }),
+  );
+}
+
+const REVIEWED = { key: 'a.ts|cast-any|x', reason: 'proven equivalent' };
+const REQUESTED = { key: 'b.ts|cast-any|y', reason: 'newly requested' };
+
+describe('runCommand — sanctions-check (CI approval gate)', () => {
+  it('passes when the branch adds no new exemption', async () => {
+    writeRepoConfig([REVIEWED]);
+    const base = JSON.stringify({ sanctionedSuppressions: [REVIEWED] });
+    expect(
+      await runCommand(
+        'sanctions-check',
+        [],
+        deps({ exec: sanctionsExec(base).exec }),
+      ),
+    ).toBe(0);
+    expect(errors.join('')).toContain('no new diff-auditor exemptions');
+  });
+
+  it('fails and names each newly-requested exemption', async () => {
+    writeRepoConfig([REVIEWED, REQUESTED]);
+    const base = JSON.stringify({ sanctionedSuppressions: [REVIEWED] });
+    expect(
+      await runCommand(
+        'sanctions-check',
+        [],
+        deps({ exec: sanctionsExec(base).exec }),
+      ),
+    ).toBe(1);
+    const printed = errors.join('');
+    expect(printed).toContain('b.ts|cast-any|y');
+    expect(printed).toContain('newly requested');
+    expect(printed).toContain('require human approval');
+    // The already-approved entry must not be re-reported.
+    expect(printed).not.toContain('a.ts|cast-any|x');
+  });
+
+  it('treats every entry as new when the base has no policy file', async () => {
+    writeRepoConfig([REVIEWED]);
+    expect(
+      await runCommand(
+        'sanctions-check',
+        [],
+        deps({ exec: sanctionsExec(null).exec }),
+      ),
+    ).toBe(1);
+  });
+
+  it('ignores an unjustified entry, which never takes effect anyway', async () => {
+    // No reason => dropped by loadConfig => not an exemption => nothing to approve.
+    writeRepoConfig([{ key: 'c.ts|cast-any|z' }]);
+    const base = JSON.stringify({ sanctionedSuppressions: [] });
+    expect(
+      await runCommand(
+        'sanctions-check',
+        [],
+        deps({ exec: sanctionsExec(base).exec }),
+      ),
+    ).toBe(0);
+  });
+});
+
+describe('sanctions-check git plumbing', () => {
+  it('resolves the merge-base and reads the policy file at that revision', async () => {
+    // Kills the argv/cwd/trim mutants: a lost `.trim()` yields the ref
+    // "BASESHA\n:guardrails.config.json", and a dropped cwd reads the wrong repo.
+    writeRepoConfig([REVIEWED]);
+    const base = JSON.stringify({ sanctionedSuppressions: [REVIEWED] });
+    const { exec, calls } = sanctionsExec(base);
+    await runCommand('sanctions-check', [], deps({ exec }));
+    const mergeBaseCall = calls.find((call) => call.args[0] === 'merge-base');
+    const showCall = calls.find((call) => call.args[0] === 'show');
+    expect(mergeBaseCall?.args).toEqual(['merge-base', 'main', 'HEAD']);
+    expect(mergeBaseCall?.cwd).toBe(root);
+    expect(showCall?.args).toEqual(['show', 'BASESHA:guardrails.config.json']);
+    expect(showCall?.cwd).toBe(root);
+  });
+
+  it('falls back to the base branch when merge-base fails or is empty', async () => {
+    // Kills the `code === 0 && sha` conditional/logical/equality mutants: each
+    // would use a bogus (or empty) ref instead of the branch name.
+    writeRepoConfig([REVIEWED]);
+    const base = JSON.stringify({ sanctionedSuppressions: [REVIEWED] });
+
+    const failed = sanctionsExec(base, {
+      stdout: 'noise\n',
+      stderr: '',
+      code: 1,
+    });
+    await runCommand('sanctions-check', [], deps({ exec: failed.exec }));
+    expect(failed.calls.find((call) => call.args[0] === 'show')?.args).toEqual([
+      'show',
+      'main:guardrails.config.json',
+    ]);
+
+    const empty = sanctionsExec(base, ok('   \n'));
+    await runCommand('sanctions-check', [], deps({ exec: empty.exec }));
+    expect(empty.calls.find((call) => call.args[0] === 'show')?.args).toEqual([
+      'show',
+      'main:guardrails.config.json',
+    ]);
+  });
+
+  it('ignores the base file contents when git show fails', async () => {
+    // Kills `base.code === 0 ? parse : []` -> true. A failed `git show` may
+    // still print to stdout; trusting it would silently approve an exemption.
+    writeRepoConfig([REVIEWED]);
+    const { exec } = sanctionsExec(
+      JSON.stringify({ sanctionedSuppressions: [REVIEWED] }),
+      ok('BASESHA\n'),
+      128,
+    );
+    expect(await runCommand('sanctions-check', [], deps({ exec }))).toBe(1);
+  });
+});

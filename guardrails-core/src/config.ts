@@ -11,6 +11,14 @@ import path from 'node:path';
 import type { GateConfig } from './gate-decision.js';
 import { makeIsLoose } from './loose-rules.js';
 
+/** One reviewed diff-auditor exemption: the finding key plus why it is allowed. */
+export interface SanctionedSuppression {
+  /** Exact `file|kind|text` finding key this exempts. */
+  key: string;
+  /** Human-readable justification; blank or missing drops the entry. */
+  reason: string;
+}
+
 export interface RepoConfig {
   baseBranch: string;
   maxAttempts: number;
@@ -29,10 +37,15 @@ export interface RepoConfig {
    * `file|kind|text` keys of suppressions a human has deliberately sanctioned
    * (e.g. a mutation-exclusion around a hand-written lexer). ONLY the commit
    * gate consults it — the Stop gate has a tighter, per-fix-loop snapshot
-   * baseline, so a fixer still cannot add one mid-loop. Empty by default:
-   * every entry is a deliberate, reviewable line in `guardrails.config.json`.
+   * baseline, so a fixer still cannot add one mid-loop. Empty by default.
+   *
+   * Every entry carries a written `reason`: a bare key is unreviewable, and a
+   * reviewer cannot tell a proven-equivalent mutant from "the agent got stuck".
+   * Entries missing a key or a non-blank reason are DROPPED — failing closed, so
+   * an unjustified exemption simply does not apply. Adding an entry is itself
+   * audited (`guardrails/self-sanction`) and cannot be self-granted.
    */
-  sanctionedSuppressions: string[];
+  sanctionedSuppressions: SanctionedSuppression[];
   distribution: 'solo' | 'team';
   /**
    * RESERVED — read by the CI gate and the Copilot commit-gate, both Phase B;
@@ -63,6 +76,42 @@ export function defaultConfig(): RepoConfig {
     distribution: 'solo',
     enforcement: 'warn',
   };
+}
+
+/**
+ * Parse a `guardrails.config.json` TEXT into its sanction list, defensively.
+ * Shared by `loadConfig` and the CI sanctions check, which reads the base
+ * revision of the file out of git rather than off disk.
+ */
+export function parseSanctionsJson(text: string): SanctionedSuppression[] {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    return [];
+  }
+  return isRecord(raw) ? pickSanctions(raw.sanctionedSuppressions) : [];
+}
+
+function pickSanctions(value: unknown): SanctionedSuppression[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const sanctions: SanctionedSuppression[] = [];
+  for (const entry of value) {
+    if (!isRecord(entry)) {
+      continue;
+    }
+    const { key, reason } = entry;
+    if (
+      typeof key === 'string' &&
+      typeof reason === 'string' &&
+      reason.trim()
+    ) {
+      sanctions.push({ key, reason });
+    }
+  }
+  return sanctions;
 }
 
 function pickStringArray(value: unknown): string[] {
@@ -130,7 +179,7 @@ export function loadConfig(repoRoot: string): RepoConfig {
     fastFixer: pickString(raw.fastFixer, defaults.fastFixer),
     thoroughFixer: pickString(raw.thoroughFixer, defaults.thoroughFixer),
     looseRules: pickStringArray(raw.looseRules),
-    sanctionedSuppressions: pickStringArray(raw.sanctionedSuppressions),
+    sanctionedSuppressions: pickSanctions(raw.sanctionedSuppressions),
     distribution: pickString(raw.distribution, defaults.distribution, [
       'solo',
       'team',

@@ -187,12 +187,30 @@ describe('loadConfig mutation-hardening', () => {
     expect(Object.hasOwn(config, 'copilotFastModel')).toBe(false);
   });
 
-  it('reads sanctionedSuppressions and drops non-string entries', () => {
+  it('yields an empty sanction list when the field is not an array', () => {
+    writeConfig(JSON.stringify({ sanctionedSuppressions: 'nope' }));
+    expect(loadConfig(root).sanctionedSuppressions).toEqual([]);
+  });
+
+  it('reads sanctionedSuppressions and requires a justification per entry', () => {
+    // Fails CLOSED: an entry without a written reason is DROPPED, so the
+    // exemption simply does not apply and the gate keeps blocking. A reviewer
+    // must be able to read WHY each exemption exists.
     writeConfig(
-      JSON.stringify({ sanctionedSuppressions: ['a.ts|cast-any|x', 7, null] }),
+      JSON.stringify({
+        sanctionedSuppressions: [
+          { key: 'a.ts|cast-any|x', reason: 'proven equivalent mutant' },
+          { key: 'b.ts|cast-any|y' },
+          { key: 'c.ts|cast-any|z', reason: '   ' },
+          'd.ts|cast-any|w',
+          { reason: 'no key' },
+          7,
+          null,
+        ],
+      }),
     );
     expect(loadConfig(root).sanctionedSuppressions).toEqual([
-      'a.ts|cast-any|x',
+      { key: 'a.ts|cast-any|x', reason: 'proven equivalent mutant' },
     ]);
   });
 });

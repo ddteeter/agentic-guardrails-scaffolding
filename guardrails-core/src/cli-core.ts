@@ -6,9 +6,10 @@
 
 import { auditDiff } from './audit.js';
 import { runAutofix } from './autofix.js';
-import { loadConfig, toGateConfig } from './config.js';
+import { loadConfig, parseSanctionsJson, toGateConfig } from './config.js';
 import type { Exec } from './exec.js';
 import { runCommitGate, runStopGate } from './gate.js';
+import { newlySanctioned, toSanctionViolations } from './sanctions.js';
 import {
   type Dialect,
   formatCopilotStopOutput,
@@ -121,7 +122,9 @@ async function gateCommitCommand(deps: CliDeps): Promise<number> {
     baseBranch: config.baseBranch,
     exec: deps.exec,
     resolveBin: binResolver(repoRoot),
-    sanctionedSuppressions: config.sanctionedSuppressions,
+    sanctionedSuppressions: config.sanctionedSuppressions.map(
+      (sanction) => sanction.key,
+    ),
   });
   printViolations(deps, violations);
   for (const finding of findings) {
@@ -167,7 +170,9 @@ async function gatePreToolUseCommand(
     baseBranch: config.baseBranch,
     exec: deps.exec,
     resolveBin: binResolver(repoRoot),
-    sanctionedSuppressions: config.sanctionedSuppressions,
+    sanctionedSuppressions: config.sanctionedSuppressions.map(
+      (sanction) => sanction.key,
+    ),
   });
   if (!blocked) {
     return; // allow (silent)
@@ -177,6 +182,44 @@ async function gatePreToolUseCommand(
     `${findings.length} added suppression(s). ` +
     `Resolve them before committing (run 'guardrails verify').`;
   deps.stdout(JSON.stringify(formatPreToolUseDeny(reason, dialect)));
+}
+
+const CONFIG_FILE = 'guardrails.config.json';
+
+/** `sanctions-check`: CI-only approval gate for the diff-auditor's escape hatch.
+ * Compares the sanction key set against the branch's merge-base and fails on any
+ * newly-requested exemption, so a human must approve it by merging the PR. It
+ * deliberately does NOT run at the commit gate — see src/sanctions.ts. */
+async function sanctionsCheckCommand(deps: CliDeps): Promise<number> {
+  const config = loadConfig(deps.cwd);
+  const mergeBase = await deps.exec(
+    'git',
+    ['merge-base', config.baseBranch, 'HEAD'],
+    { cwd: deps.cwd },
+  );
+  const sha = mergeBase.stdout.trim();
+  const ref = mergeBase.code === 0 && sha ? sha : config.baseBranch;
+  const base = await deps.exec('git', ['show', `${ref}:${CONFIG_FILE}`], {
+    cwd: deps.cwd,
+  });
+  // A missing base file (first adoption of guardrails) means nothing is known
+  // yet, so every entry on the branch reads as newly requested.
+  // Equivalent mutant on the `[]` default: `newlySanctioned` compares by key, so
+  // a placeholder entry maps to an undefined key that no real entry can match —
+  // every head entry still reads as newly requested, exactly as with [].
+  // Stryker disable next-line ArrayDeclaration
+  const known = base.code === 0 ? parseSanctionsJson(base.stdout) : [];
+  const violations = toSanctionViolations(
+    newlySanctioned(known, config.sanctionedSuppressions),
+    CONFIG_FILE,
+  );
+  printViolations(deps, violations);
+  deps.stderr(
+    violations.length === 0
+      ? 'guardrails: no new diff-auditor exemptions requested.\n'
+      : `guardrails: ${violations.length} new exemption(s) require human approval before merge.\n`,
+  );
+  return violations.length === 0 ? 0 : 1;
 }
 
 async function auditCommand(deps: CliDeps): Promise<number> {
@@ -301,6 +344,9 @@ export async function runCommand(
     }
     case 'audit': {
       return auditCommand(deps);
+    }
+    case 'sanctions-check': {
+      return sanctionsCheckCommand(deps);
     }
     case 'state': {
       return stateCommand(deps, flag(rest, 'session') ?? 'default');

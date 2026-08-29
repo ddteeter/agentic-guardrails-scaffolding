@@ -59,6 +59,15 @@ jobs:
       - name: Guardrails verify
         run: node ./node_modules/guardrails-core/dist/cli.mjs verify
 
+      # Approval gate for the diff-auditor's ONLY escape hatch. Any
+      # `sanctionedSuppressions` key added relative to the merge-base fails here,
+      # so a new exemption cannot be self-granted by an agent — approving it means
+      # a human reviewed and merged this PR. Enforced in CI rather than at the
+      # commit gate on purpose: the PR is where that human sign-off actually
+      # happens. Needs the full history fetched above for `git merge-base`.
+      - name: Guardrails sanctions approval
+        run: node ./node_modules/guardrails-core/dist/cli.mjs sanctions-check
+
       - name: Test (with coverage)
         run: npm run test:coverage
 
