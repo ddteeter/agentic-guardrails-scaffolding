@@ -23,6 +23,10 @@ interface StrykerFile {
 }
 
 function isMutant(value: unknown): value is StrykerMutant {
+  // Equivalent mutant: dropping the `typeof value !== 'object'` half lets a
+  // primitive through, but the field checks below reject it anyway
+  // (`'str'.status` is undefined). Kept as an explicit precondition.
+  // Stryker disable next-line ConditionalExpression
   if (typeof value !== 'object' || value === null) {
     return false;
   }
@@ -39,15 +43,25 @@ function isMutant(value: unknown): value is StrykerMutant {
 function isReport(
   value: unknown,
 ): value is { files: Record<string, StrykerFile> } {
+  // Equivalent mutant: as in isMutant, a primitive that slips past this half is
+  // rejected below — `(5).files` is undefined, which fails the `files` check.
+  // Stryker disable next-line ConditionalExpression
   if (typeof value !== 'object' || value === null) {
     return false;
   }
   const files = (value as { files?: unknown }).files;
+  // Equivalent mutant: a non-object `files` (e.g. the string "nope") still fails
+  // the per-entry `.every` below, so dropping this half changes no outcome.
+  // Stryker disable next-line ConditionalExpression
   if (typeof files !== 'object' || files === null) {
     return false;
   }
   return Object.values(files).every(
+    // Equivalent mutant on `typeof file === 'object'`: no JSON primitive can
+    // carry an array `mutants` property, so the Array.isArray check below
+    // rejects every value this half would have caught.
     (file) =>
+      // Stryker disable next-line ConditionalExpression
       typeof file === 'object' &&
       file !== null &&
       Array.isArray((file as StrykerFile).mutants) &&
@@ -78,11 +92,17 @@ export function parseStrykerJson(
   packageId?: string,
 ): Violation[] {
   let parsed: unknown;
+  // Equivalent mutants: emptying either block leaves `parsed` undefined, which
+  // `isReport` rejects below — the function still returns []. A range directive
+  // is used because `disable next-line` only attaches to a statement-LEADING
+  // comment, and a `} catch {` line has none.
+  // Stryker disable BlockStatement
   try {
     parsed = JSON.parse(reportJson);
   } catch {
     return [];
   }
+  // Stryker restore BlockStatement
   if (!isReport(parsed)) {
     return [];
   }

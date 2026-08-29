@@ -60,3 +60,23 @@ describe('isTestFile', () => {
     expect(isTestFile('src/testing.ts')).toBe(false);
   });
 });
+
+describe('git helpers mutation-hardening', () => {
+  it('trims each entry and strips only a leading ./', () => {
+    // Kills the dropped `.trim().replace()` chain: without it the padded entry
+    // keeps its spaces and the whitespace-only line survives the length filter.
+    expect(parseFileList('  src/a.ts  \n   \n./src/b.ts')).toEqual([
+      'src/a.ts',
+      'src/b.ts',
+    ]);
+    // Kills the `^` anchor mutant: unanchored, this would rewrite the interior
+    // `./` segment into `docs/guide.md`.
+    expect(parseFileList('docs/./guide.md')).toEqual(['docs/./guide.md']);
+  });
+
+  it('anchors the TypeScript extension at end-of-name', () => {
+    // Kills the `$` anchor mutants: unanchored, a suffixed backup file matches.
+    expect(isTypeScriptFile('src/a.ts.bak')).toBe(false);
+    expect(isTestFile('src/a.test.ts.bak')).toBe(false);
+  });
+});

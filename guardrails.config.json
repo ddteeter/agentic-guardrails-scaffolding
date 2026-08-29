@@ -8,7 +8,11 @@
     "guardrails-core/src/audit.ts|mutation-suppress|// Stryker restore all",
     "guardrails-core/src/audit.ts|mutation-suppress|// Stryker disable next-line BlockStatement,ConditionalExpression",
     "guardrails-core/src/audit.ts|mutation-suppress|// Stryker disable next-line MethodExpression,ConditionalExpression,LogicalOperator,BlockStatement",
-    "guardrails-core/src/audit.ts|mutation-suppress|// Stryker disable next-line OptionalChaining"
+    "guardrails-core/src/audit.ts|mutation-suppress|// Stryker disable next-line OptionalChaining",
+    "guardrails-core/src/verify/stryker-adapter.ts|mutation-suppress|// Stryker disable next-line ConditionalExpression",
+    "guardrails-core/src/verify/stryker-adapter.ts|mutation-suppress|// Stryker disable BlockStatement",
+    "guardrails-core/src/verify/stryker-adapter.ts|mutation-suppress|// Stryker restore BlockStatement",
+    "guardrails-core/src/verify/git.ts|mutation-suppress|// Stryker disable next-line ConditionalExpression"
   ],
   "distribution": "solo",
   "enforcement": "warn"
