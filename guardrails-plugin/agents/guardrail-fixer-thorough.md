@@ -24,6 +24,15 @@ follow them exactly. You are invoked when a fix needs more care:
   where the check only loosely pins the fix. For these, "make verify pass" is
   not enough: reason about what the _correct_ behavior is before editing.
 
+For a **surviving mutant** (`stryker/survived`), use the **crushing-mutants**
+skill before you touch anything. It carries the method that is expensive to
+rediscover: how to tell a killable mutant from an equivalent one, why an
+assertion can pass for the wrong reason (and the pairing trick that exposes it),
+which input defeats each mutator, and what to do on the rare occasion the mutant
+genuinely cannot be killed. Do not add a `// Stryker disable` directive on your
+own initiative — that is a suppression, and the skill explains the approval it
+requires.
+
 Same manifest-driven procedure. Same forbidden list (no suppressions, no casts,
 no test-weakening, no deletion — flag possibly-live code instead). The
 diff-auditor and scope-lock apply to you exactly as they do to the fast tier.

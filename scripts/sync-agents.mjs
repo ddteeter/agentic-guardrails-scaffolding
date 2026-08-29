@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Sync the fixer agents from the plugin (the single source of truth) into
-// .claude/agents/, so this repo's dogfooded loop uses the same definitions with
+// Sync the fixer agents AND skills from the plugin (the single source of truth)
+// into .claude/, so this repo's dogfooded loop uses the same definitions with
 // no dual maintenance. Runs as part of `npm run build` (and therefore `prepare`,
 // pre-push, and CI). `.claude/agents/` is generated and gitignored — never edit
 // it directly; edit guardrails-plugin/agents/ and rebuild.
@@ -11,6 +11,8 @@
 // .github/agents`) keeps the committed output in sync with the source.
 import {
   copyFileSync,
+  cpSync,
+  existsSync,
   mkdirSync,
   readdirSync,
   readFileSync,
@@ -35,6 +37,28 @@ for (const file of agents) {
 }
 console.log(
   `synced ${agents.length} agent(s): guardrails-plugin/agents → .claude/agents`,
+);
+
+// Skills ship with the plugin too, and the dogfooded loop should see the same
+// ones a consumer gets. Copied wholesale (a skill is a directory: SKILL.md plus
+// any references), same clear-first rule as the agents above so a renamed or
+// deleted skill cannot leave a stale generated copy behind.
+const skillsFrom = path.join(root, 'guardrails-plugin', 'skills');
+const skillsTo = path.join(root, '.claude', 'skills');
+rmSync(skillsTo, { recursive: true, force: true });
+let skillCount = 0;
+if (existsSync(skillsFrom)) {
+  mkdirSync(skillsTo, { recursive: true });
+  for (const entry of readdirSync(skillsFrom, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    cpSync(path.join(skillsFrom, entry.name), path.join(skillsTo, entry.name), {
+      recursive: true,
+    });
+    skillCount += 1;
+  }
+}
+console.log(
+  `synced ${skillCount} skill(s): guardrails-plugin/skills → .claude/skills`,
 );
 
 // Copilot fixer tool allowlist (Copilot tool names, NOT Claude's). Read+edit
