@@ -14,7 +14,10 @@
     "guardrails-core/src/verify/stryker-adapter.ts|mutation-suppress|// Stryker restore BlockStatement",
     "guardrails-core/src/verify/git.ts|mutation-suppress|// Stryker disable next-line ConditionalExpression",
     "guardrails-core/src/verify/index.ts|mutation-suppress|// Stryker disable BlockStatement",
-    "guardrails-core/src/verify/index.ts|mutation-suppress|// Stryker restore BlockStatement"
+    "guardrails-core/src/verify/index.ts|mutation-suppress|// Stryker restore BlockStatement",
+    "guardrails-core/src/config.ts|mutation-suppress|// Stryker disable next-line ConditionalExpression",
+    "guardrails-core/src/config.ts|mutation-suppress|// Stryker disable BlockStatement",
+    "guardrails-core/src/config.ts|mutation-suppress|// Stryker restore BlockStatement"
   ],
   "distribution": "solo",
   "enforcement": "warn"

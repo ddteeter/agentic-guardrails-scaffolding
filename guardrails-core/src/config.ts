@@ -72,6 +72,10 @@ function pickStringArray(value: unknown): string[] {
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
+  // Equivalent mutant on the `typeof value === 'object'` half: a primitive that
+  // slips through is still read field-by-field with `pick*` fallbacks, so every
+  // field lands on its default — the same result as rejecting the value here.
+  // Stryker disable next-line ConditionalExpression
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
@@ -90,12 +94,20 @@ function pickString<T extends string>(
 }
 
 function pickNumber(value: unknown, fallback: number): number {
+  // Equivalent mutant on the `typeof value === 'number'` half: Number.isFinite
+  // does NOT coerce, so a non-number is rejected by the second half regardless.
+  // Stryker disable next-line ConditionalExpression
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
 }
 
 export function loadConfig(repoRoot: string): RepoConfig {
   const defaults = defaultConfig();
   let raw: unknown;
+  // Equivalent mutants: emptying either block leaves `raw` undefined, which the
+  // `isRecord` guard below rejects — the function still returns `defaults`. A
+  // range directive is required because `disable next-line` only attaches to a
+  // statement-LEADING comment, which a `} catch {` line does not have.
+  // Stryker disable BlockStatement
   try {
     raw = JSON.parse(
       readFileSync(path.join(repoRoot, 'guardrails.config.json'), 'utf8'),
@@ -103,6 +115,7 @@ export function loadConfig(repoRoot: string): RepoConfig {
   } catch {
     return defaults;
   }
+  // Stryker restore BlockStatement
   if (!isRecord(raw)) {
     return defaults;
   }

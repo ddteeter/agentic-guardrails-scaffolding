@@ -134,3 +134,65 @@ describe('toGateConfig', () => {
     expect(gate.isLoose?.({ ruleId: 'no-console' } as never)).toBe(false);
   });
 });
+
+/** Write a repo config file into the per-test temp root. */
+function writeConfig(contents: string): void {
+  writeFileSync(path.join(root, 'guardrails.config.json'), contents);
+}
+
+describe('loadConfig mutation-hardening', () => {
+  it('defaults sanctionedSuppressions to an empty list', () => {
+    expect(defaultConfig().sanctionedSuppressions).toEqual([]);
+  });
+
+  it('rejects a top-level value that is not a plain object', () => {
+    // Kills the isRecord mutants: arrays and null are objects to `typeof`, and
+    // a bypassed guard would dereference them.
+    writeConfig('null');
+    expect(loadConfig(root)).toEqual(defaultConfig());
+    writeConfig('[1,2,3]');
+    expect(loadConfig(root)).toEqual(defaultConfig());
+    writeConfig('"a string"');
+    expect(loadConfig(root)).toEqual(defaultConfig());
+  });
+
+  it('falls back when an enum-valued field is outside its allowed set', () => {
+    // Kills the `allowed && !allowed.includes(...)` mutant and the
+    // `['solo','team']` -> `[]` mutant (an empty allowlist rejects everything).
+    writeConfig(JSON.stringify({ distribution: 'enterprise' }));
+    expect(loadConfig(root).distribution).toBe('solo');
+    writeConfig(JSON.stringify({ enforcement: 'shout' }));
+    expect(loadConfig(root).enforcement).toBe('warn');
+    // ...while a legitimate non-default value IS honoured.
+    writeConfig(JSON.stringify({ distribution: 'team', enforcement: 'block' }));
+    expect(loadConfig(root)).toMatchObject({
+      distribution: 'team',
+      enforcement: 'block',
+    });
+  });
+
+  it('rejects non-finite and non-number thresholds', () => {
+    // Kills the `typeof === 'number' && Number.isFinite(...)` mutants.
+    writeConfig(JSON.stringify({ maxAttempts: '5' }));
+    expect(loadConfig(root).maxAttempts).toBe(3);
+    writeConfig('{"maxAttempts": 1e999}'); // JSON for Infinity
+    expect(loadConfig(root).maxAttempts).toBe(3);
+  });
+
+  it('omits the optional copilot model keys when absent or wrongly typed', () => {
+    // Kills the `typeof raw.copilotThoroughModel === 'string'` -> true mutant.
+    writeConfig(JSON.stringify({ copilotThoroughModel: 42 }));
+    const config = loadConfig(root);
+    expect(Object.hasOwn(config, 'copilotThoroughModel')).toBe(false);
+    expect(Object.hasOwn(config, 'copilotFastModel')).toBe(false);
+  });
+
+  it('reads sanctionedSuppressions and drops non-string entries', () => {
+    writeConfig(
+      JSON.stringify({ sanctionedSuppressions: ['a.ts|cast-any|x', 7, null] }),
+    );
+    expect(loadConfig(root).sanctionedSuppressions).toEqual([
+      'a.ts|cast-any|x',
+    ]);
+  });
+});
