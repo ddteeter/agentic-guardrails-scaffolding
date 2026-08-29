@@ -60,3 +60,58 @@ describe('spawnExec', () => {
     expect(result.stderr.length).toBeGreaterThan(0);
   });
 });
+
+describe('spawn failure is distinguishable from a failing run', () => {
+  it('flags spawnFailed when the binary does not exist', async () => {
+    // A missing analyzer must not look like a clean one. Exit code cannot carry
+    // this: eslint exits 1 on findings and tsc exits non-zero on type errors, so
+    // non-zero is the NORMAL case.
+    const result = await spawnExec('guardrails-no-such-binary-xyz', [
+      '--version',
+    ]);
+    expect(result.spawnFailed).toBe(true);
+    expect(result.stdout).toBe('');
+  });
+
+  it('does NOT flag spawnFailed for a process that ran and exited non-zero', async () => {
+    const result = await spawnExec(process.execPath, ['-e', 'process.exit(3)']);
+    expect(result.code).toBe(3);
+    expect(result.spawnFailed).toBeUndefined();
+  });
+
+  it('does NOT flag spawnFailed for a successful run', async () => {
+    const result = await spawnExec(process.execPath, [
+      '-e',
+      'console.log("ok")',
+    ]);
+    expect(result.code).toBe(0);
+    expect(result.stdout.trim()).toBe('ok');
+    expect(result.spawnFailed).toBeUndefined();
+  });
+});
+
+describe('env replacement', () => {
+  it('passes an explicit env through, replacing the inherited one', () => {
+    // Load-bearing: hooks run with GIT_DIR / GIT_WORK_TREE / GIT_INDEX_FILE
+    // exported into the environment, and a `git` spawned from inside a hook
+    // would target the HOOK's repo regardless of cwd unless they are stripped.
+    return expect(
+      spawnExec(
+        process.execPath,
+        ['-e', 'console.log(process.env.GUARDRAILS_PROBE)'],
+        {
+          env: { GUARDRAILS_PROBE: 'replaced' },
+        },
+      ).then((result) => result.stdout.trim()),
+    ).resolves.toBe('replaced');
+  });
+
+  it('inherits the parent environment when no env is given', () => {
+    return expect(
+      spawnExec(process.execPath, [
+        '-e',
+        'console.log(process.env.PATH === undefined ? "stripped" : "inherited")',
+      ]).then((result) => result.stdout.trim()),
+    ).resolves.toBe('inherited');
+  });
+});

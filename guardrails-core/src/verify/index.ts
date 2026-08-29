@@ -201,6 +201,9 @@ type Scope = 'whole-project' | 'changed-files';
 
 interface Analyzer {
   tool: string;
+  /** npm package providing the binary — named in the missing-analyzer message
+   *  and kept in sync with peerDependencies by a test. */
+  provider: string;
   minRung: Rung;
   /** Run-trigger: 'changed-files' runs only when the turn changed >=1 TS file
    *  (and receives the list); 'whole-project' runs whenever the rung is active. */
@@ -220,29 +223,96 @@ interface Analyzer {
  *  Still open (deferred once more, now with a measurement in hand): running the
  *  commit-rung entries in parallel under a measured commit-gate budget. */
 const ANALYZERS: Analyzer[] = [
-  { tool: 'eslint', minRung: 'stop', scope: 'changed-files', run: runEslint },
-  { tool: 'tsc', minRung: 'stop', scope: 'changed-files', run: runTsc },
-  { tool: 'knip', minRung: 'commit', scope: 'whole-project', run: runKnip },
+  {
+    tool: 'eslint',
+    provider: 'eslint',
+    minRung: 'stop',
+    scope: 'changed-files',
+    run: runEslint,
+  },
+  {
+    tool: 'tsc',
+    provider: 'typescript',
+    minRung: 'stop',
+    scope: 'changed-files',
+    run: runTsc,
+  },
+  {
+    tool: 'knip',
+    provider: 'knip',
+    minRung: 'commit',
+    scope: 'whole-project',
+    run: runKnip,
+  },
   {
     tool: 'dependency-cruiser',
+    provider: 'dependency-cruiser',
     minRung: 'commit',
     scope: 'whole-project',
     run: runDepcruise,
   },
   {
     tool: 'stryker',
+    provider: '@stryker-mutator/core',
     minRung: 'commit',
     scope: 'changed-files',
     run: runStryker,
   },
 ];
 
+/** The npm packages a consumer repo must provide. Exported so a test can hold it
+ *  against guardrails-core's peerDependencies — an analyzer added without its
+ *  declaration would surface as a runtime error instead of an install warning. */
+export const ANALYZER_PROVIDERS: readonly string[] = ANALYZERS.map(
+  (analyzer) => analyzer.provider,
+);
+
+/**
+ * A guard that could not RUN must never look like a guard that passed. Exit code
+ * cannot carry that distinction — eslint exits 1 on findings, tsc on type errors
+ * — so `spawnExec` flags the could-not-start case and this wrapper records which
+ * commands hit it. See plan.md "Roadmap: analyzer opt-in" for making a pack tool
+ * optional rather than required.
+ */
+function trackSpawnFailures(exec: Exec): { exec: Exec; failures: string[] } {
+  const failures: string[] = [];
+  const tracked: Exec = async (command, args, execOptions) => {
+    const result = await exec(command, args, execOptions);
+    if (result.spawnFailed === true) {
+      failures.push(command);
+    }
+    return result;
+  };
+  return { exec: tracked, failures };
+}
+
+function missingToolViolation(tool: string, provider: string): Violation {
+  return {
+    ruleId: 'guardrails/analyzer-missing',
+    file: 'package.json',
+    message:
+      `${tool} could not be started — it is not installed in this repo, so its ` +
+      `checks did NOT run. Install it: \`npm install --save-dev ${provider}\`. ` +
+      `A missing analyzer is a failed gate, not a clean one.`,
+    severity: 'error',
+    fixable: false,
+    tool: 'guardrails',
+  };
+}
+
 export async function runVerify(options: VerifyOptions): Promise<VerifyResult> {
-  const files = await changedTypeScriptFiles(options);
+  const { exec, failures } = trackSpawnFailures(options.exec);
+  const tracked = { ...options, exec };
+  const files = await changedTypeScriptFiles(tracked);
   const resolveBin = options.resolveBin ?? ((tool) => tool);
   const profile = options.profile ?? 'stop';
 
   const violations: Violation[] = [];
+  // git failing to start is catastrophic and was equally silent: no changed
+  // files means every diff-scoped analyzer is skipped, and the gate passes.
+  if (failures.length > 0) {
+    violations.push(missingToolViolation('git', 'git'));
+  }
   for (const analyzer of ANALYZERS) {
     if (RUNG_ORDER[profile] < RUNG_ORDER[analyzer.minRung]) {
       continue;
@@ -250,7 +320,11 @@ export async function runVerify(options: VerifyOptions): Promise<VerifyResult> {
     if (analyzer.scope === 'changed-files' && files.length === 0) {
       continue;
     }
-    violations.push(...(await analyzer.run(options, resolveBin, files)));
+    const before = failures.length;
+    violations.push(...(await analyzer.run(tracked, resolveBin, files)));
+    if (failures.length > before) {
+      violations.push(missingToolViolation(analyzer.tool, analyzer.provider));
+    }
   }
   return { violations };
 }

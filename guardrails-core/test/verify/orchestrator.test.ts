@@ -589,3 +589,88 @@ describe('runVerify default readFile seam', () => {
     );
   });
 });
+
+/** An Exec where the named commands cannot be spawned at all. */
+function execMissing(missing: readonly string[]): Exec {
+  const { exec } = fakeExec();
+  return (command, args, options) => {
+    if (missing.some((name) => command.includes(name))) {
+      return Promise.resolve({
+        stdout: '',
+        stderr: `spawn ${command} ENOENT`,
+        code: 1,
+        spawnFailed: true as const,
+      });
+    }
+    return exec(command, args, options);
+  };
+}
+
+describe('missing analyzers fail CLOSED', () => {
+  it('reports every pack tool that could not be started', async () => {
+    // Before this, a repo with none of the tools installed got an empty
+    // violation list and a green gate: absence was indistinguishable from clean.
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec: execMissing(['eslint', 'tsc', 'knip', 'depcruise', 'stryker']),
+      profile: 'ci',
+      readFile: () => Promise.resolve('{}'),
+    });
+    const missing = violations.filter(
+      (v) => v.ruleId === 'guardrails/analyzer-missing',
+    );
+    expect(missing.map((v) => v.message).join(' ')).toContain('eslint');
+    expect(missing).toHaveLength(5);
+    expect(missing.every((v) => v.severity === 'error' && !v.fixable)).toBe(
+      true,
+    );
+  });
+
+  it('flags only the missing tool and still runs the others', async () => {
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec: execMissing(['knip']),
+      profile: 'ci',
+      readFile: () => Promise.resolve('{}'),
+    });
+    const missing = violations.filter(
+      (v) => v.ruleId === 'guardrails/analyzer-missing',
+    );
+    expect(missing).toHaveLength(1);
+    expect(missing[0]?.message).toContain('knip');
+    // ...and the analyzers that DID run still reported their findings.
+    expect(violations.map((v) => v.ruleId)).toContain('no-console');
+  });
+
+  it('does not flag a tool that ran and exited non-zero with findings', async () => {
+    // eslint exits 1 when it finds problems; tsc exits non-zero on type errors.
+    // A non-zero code is the NORMAL case and must never read as absence.
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec: fakeExec().exec,
+      profile: 'ci',
+      readFile: () => Promise.resolve('{}'),
+    });
+    expect(
+      violations.some((v) => v.ruleId === 'guardrails/analyzer-missing'),
+    ).toBe(false);
+    expect(violations.map((v) => v.ruleId)).toContain('no-console');
+  });
+
+  it('reports git itself when it cannot be started', async () => {
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec: execMissing(['git']),
+      profile: 'stop',
+    });
+    const missing = violations.filter(
+      (v) => v.ruleId === 'guardrails/analyzer-missing',
+    );
+    expect(missing).toHaveLength(1);
+    expect(missing[0]?.message).toContain('git');
+  });
+});

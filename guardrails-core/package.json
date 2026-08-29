@@ -25,5 +25,29 @@
   "devDependencies": {
     "@eslint/js": "^9.39.5",
     "mutation-testing-report-schema": "^3.7.3"
+  },
+  "peerDependencies": {
+    "eslint": ">=9",
+    "typescript": ">=5",
+    "knip": ">=6",
+    "dependency-cruiser": ">=18",
+    "@stryker-mutator/core": ">=9"
+  },
+  "peerDependenciesMeta": {
+    "eslint": {
+      "optional": true
+    },
+    "typescript": {
+      "optional": true
+    },
+    "knip": {
+      "optional": true
+    },
+    "dependency-cruiser": {
+      "optional": true
+    },
+    "@stryker-mutator/core": {
+      "optional": true
+    }
   }
 }
