@@ -76,11 +76,18 @@ function readSnapshot(file: string): Set<string> {
     const parsed: unknown = JSON.parse(readFileSync(file, 'utf8'));
     // Filter to strings rather than casting — consistent with the strict
     // validation in state-store, and keeps the baseline a true Set<string>.
+    //
+    // Equivalent mutants on this expression: the baseline is only ever probed
+    // with `.has(<string key>)`, so a non-string entry that survives the filter
+    // can never match; and calling `.filter` on a non-array throws straight into
+    // the catch below, which returns the same empty Set.
+    // Stryker disable ConditionalExpression,MethodExpression,ArrayDeclaration
     return new Set(
       Array.isArray(parsed)
         ? parsed.filter((entry): entry is string => typeof entry === 'string')
         : [],
     );
+    // Stryker restore ConditionalExpression,MethodExpression,ArrayDeclaration
   } catch {
     return new Set();
   }
@@ -216,6 +223,9 @@ export async function runCommitGate(
   // knip/fallow ignore entries. It is NOT applied to the Stop gate, whose
   // snapshot already distinguishes fixer-added suppressions from pre-existing
   // ones — so this cannot become a fixer escape hatch.
+  // Equivalent mutant on the `[]` default: the set is only probed with real
+  // `file|kind|text` finding keys, so a placeholder entry can never match.
+  // Stryker disable next-line ArrayDeclaration
   const sanctioned = new Set(options.sanctionedSuppressions ?? []);
   const findings = auditDiff(await branchDiff(options)).filter(
     (finding) => !sanctioned.has(findingKey(finding)),
