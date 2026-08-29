@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -314,5 +314,356 @@ describe('runCommand — unknown', () => {
   it('prints usage and returns 1', async () => {
     expect(await runCommand('bogus', [], deps())).toBe(1);
     expect(errors.join('')).toContain('usage:');
+  });
+});
+
+/** stdin payload for the pretooluse gate. */
+function preToolUseStdin(toolName: unknown, command: unknown): string {
+  return JSON.stringify({ toolName, toolArgs: { command }, cwd: root });
+}
+
+/** An exec whose branch diff always carries a suppression, so the gate DENIES
+ *  whenever it actually runs — making "did the gate fire?" observable. */
+function dirtyExec(): Exec {
+  return gitExec({
+    'merge-base': 'BASESHA\n',
+    'diff BASESHA': [
+      '+++ b/src/a.ts',
+      '@@ -1,0 +1,1 @@',
+      '+// eslint-disable-next-line',
+    ].join('\n'),
+  });
+}
+
+async function runPreToolUse(stdin: string): Promise<string> {
+  await runCommand(
+    'gate',
+    ['--mode=pretooluse', '--dialect=copilot'],
+    deps({ exec: dirtyExec(), readStdin: () => Promise.resolve(stdin) }),
+  );
+  return out.join('');
+}
+
+describe('pretooluse gate trigger conditions', () => {
+  it('fires only for an exact shell tool name, case-insensitively', async () => {
+    // Kills the SHELL_TOOLS anchor mutants: unanchored, any tool whose name
+    // merely CONTAINS "bash" would be gated.
+    expect(
+      await runPreToolUse(preToolUseStdin('BASH', 'git commit -m x')),
+    ).toContain('deny');
+    out.length = 0;
+    expect(
+      await runPreToolUse(preToolUseStdin('run-bash-task', 'git commit -m x')),
+    ).toBe('');
+  });
+
+  it('matches git commit/push on word boundaries and any spacing', async () => {
+    // Kills the GIT_WRITE mutants: `\s+` -> `\s` misses double spaces, and a
+    // dropped `\b` would match `legit commit` or `git commits-are-fun`.
+    expect(await runPreToolUse(preToolUseStdin('bash', 'git push'))).toContain(
+      'deny',
+    );
+    out.length = 0;
+    expect(
+      await runPreToolUse(preToolUseStdin('bash', 'git  commit -m x')),
+    ).toContain('deny');
+    out.length = 0;
+    expect(
+      await runPreToolUse(preToolUseStdin('bash', 'legit commit -m x')),
+    ).toBe('');
+    out.length = 0;
+    expect(
+      await runPreToolUse(preToolUseStdin('bash', 'git commits-are-fun')),
+    ).toBe('');
+  });
+
+  it('stays silent when toolName or command is absent', async () => {
+    // Kills the `=== undefined` equality mutants and the `||` -> `&&` chain
+    // mutants, which would let a non-matching invocation reach the gate.
+    expect(await runPreToolUse(preToolUseStdin(undefined, 'git commit'))).toBe(
+      '',
+    );
+    out.length = 0;
+    expect(await runPreToolUse(preToolUseStdin('bash', undefined))).toBe('');
+    out.length = 0;
+    // A shell command that is not a git write must not reach the gate even
+    // though the tree is dirty.
+    expect(await runPreToolUse(preToolUseStdin('bash', 'ls -la'))).toBe('');
+  });
+});
+
+describe('cli-core wiring', () => {
+  it('prints ? for a violation with no line number', async () => {
+    // Kills `violation.line ?? '?'` -> `&&`. ESLint can report a message with
+    // no line (a whole-file parse failure), and the printer must not emit
+    // `src/a.ts:undefined`.
+    const lineless = JSON.stringify([
+      {
+        filePath: path.join(root, 'src/a.ts'),
+        messages: [
+          { ruleId: 'no-console', severity: 2, message: 'Unexpected console.' },
+        ],
+      },
+    ]);
+    const exec: Exec = (command, args) =>
+      Promise.resolve(ok(args.includes('--name-only') ? 'src/a.ts' : lineless));
+    await runCommand('verify', [], deps({ exec }));
+    expect(errors.join('')).toContain('src/a.ts:?');
+  });
+
+  it('resolves tool binaries against the repo-local node_modules', async () => {
+    // Kills the binResolver block removal, which silently degrades every tool
+    // lookup to a bare PATH name — the repo-local pin is how the gate avoids
+    // running whatever version happens to be on PATH.
+    mkdirSync(path.join(root, 'node_modules', '.bin'), { recursive: true });
+    writeFileSync(path.join(root, 'node_modules', '.bin', 'eslint'), '');
+    const seen: string[] = [];
+    const exec: Exec = (command, args) => {
+      seen.push(command);
+      return Promise.resolve(
+        ok(args.includes('--name-only') ? 'src/a.ts' : ''),
+      );
+    };
+    await runCommand('verify', [], deps({ exec }));
+    expect(seen.some((command) => command.includes('node_modules'))).toBe(true);
+  });
+});
+
+const OUTSIDE_PATH = path.join(tmpdir(), 'outside-the-repo.ts');
+
+/** stdin payload for the scope-check hook. */
+function scopeStdin(toolName: unknown, filePath: unknown): string {
+  // filePath rides in toolArgs.path (parseHookInput reads tool_input.file_path
+  // / toolArgs.path), NOT at the top level.
+  return JSON.stringify({ toolName, toolArgs: { path: filePath }, cwd: root });
+}
+
+async function runScopeCheck(stdin: string): Promise<string> {
+  await runCommand(
+    'scope-check',
+    [],
+    deps({ readStdin: () => Promise.resolve(stdin) }),
+  );
+  return out.join('');
+}
+
+/** An exec that fails verify, so the stop gate produces a blocking decision. */
+function failingVerifyExec(): Exec {
+  const eslintJson = JSON.stringify([
+    {
+      filePath: path.join(root, 'src/foo.ts'),
+      messages: [
+        {
+          ruleId: 'no-console',
+          severity: 2,
+          message: 'Unexpected console.',
+          line: 2,
+        },
+      ],
+    },
+  ]);
+  return (command, args) => {
+    const line = [command, ...args].join(' ');
+    if (line.includes('--name-only')) return Promise.resolve(ok('src/foo.ts'));
+    if (line.includes('eslint')) return Promise.resolve(ok(eslintJson));
+    return Promise.resolve(ok(''));
+  };
+}
+
+describe('scope-check trigger conditions', () => {
+  it('treats only exact read-tool names as reads', async () => {
+    // Kills the READ_TOOLS anchor mutants. An unanchored pattern would classify
+    // `my-read` / `read-only` as reads and deny them for being outside the repo,
+    // when they are edit-family tools that an empty manifest must let through.
+    expect(await runScopeCheck(scopeStdin('my-read', OUTSIDE_PATH))).toBe('');
+    expect(await runScopeCheck(scopeStdin('read-only', OUTSIDE_PATH))).toBe('');
+  });
+
+  it('does not treat an arbitrary defined tool name as a read', async () => {
+    // Kills `toolName !== undefined && ...` -> `||` (and -> true): an edit tool
+    // would be read-classified and denied for an out-of-repo path.
+    expect(await runScopeCheck(scopeStdin('edit', OUTSIDE_PATH))).toBe('');
+  });
+
+  it('still denies a genuine out-of-repo read', async () => {
+    expect(await runScopeCheck(scopeStdin('Read', OUTSIDE_PATH))).toContain(
+      'deny',
+    );
+  });
+
+  it('returns early when no filePath is supplied', async () => {
+    // Kills `input.filePath === undefined` -> false: continuing would pass
+    // undefined into the path checks.
+    writeViolations(stateDirectory(root), 'default', [violation('src/a.ts')]);
+    expect(await runScopeCheck(scopeStdin('edit', undefined))).toBe('');
+  });
+
+  it('allows any edit when no manifest is active', async () => {
+    // Kills `files.size > 0` -> `>= 0` / true: with no manifest the fixer is not
+    // running, and the scope-lock must not interfere.
+    expect(
+      await runScopeCheck(scopeStdin('edit', path.join(root, 'src/a.ts'))),
+    ).toBe('');
+  });
+});
+
+describe('cli-core defaults and dialects', () => {
+  it('falls back to deps.cwd and the default session when stdin omits them', async () => {
+    // Kills the `input.cwd ?? deps.cwd` / `?? 'default'` -> `&&` mutants across
+    // the stop, pretooluse, scope-check and session-end paths: with `&&` the
+    // repoRoot becomes undefined and the path helpers throw.
+    expect(
+      await runCommand(
+        'gate',
+        ['--mode=stop'],
+        deps({ readStdin: () => Promise.resolve('{}') }),
+      ),
+    ).toBe(0);
+    expect(
+      await runCommand(
+        'gate',
+        ['--mode=pretooluse'],
+        deps({
+          readStdin: () =>
+            Promise.resolve(
+              JSON.stringify({
+                toolName: 'bash',
+                toolArgs: { command: 'git commit -m x' },
+              }),
+            ),
+        }),
+      ),
+    ).toBe(0);
+    await runCommand(
+      'scope-check',
+      [],
+      deps({
+        readStdin: () =>
+          Promise.resolve(
+            JSON.stringify({ toolName: 'edit', filePath: 'a.ts' }),
+          ),
+      }),
+    );
+    expect(
+      await runCommand(
+        'session-end',
+        [],
+        deps({ readStdin: () => Promise.resolve('{}') }),
+      ),
+    ).toBe(0);
+    expect(await runCommand('state', [], deps())).toBe(0);
+  });
+
+  it('prints nothing when the stop gate produces no hook output', async () => {
+    // Kills `if (output)` -> true, which would print `undefined`.
+    const code = await runCommand(
+      'gate',
+      ['--mode=stop'],
+      deps({ readStdin: () => Promise.resolve(JSON.stringify({ cwd: root })) }),
+    );
+    expect(code).toBe(0);
+    expect(out.join('')).toBe('');
+  });
+});
+
+describe('verify and audit exit codes', () => {
+  it('reports the clean message only when there are no violations', async () => {
+    // Kills the `violations.length === 0` conditional/equality mutants.
+    await runCommand('verify', [], deps());
+    expect(errors.join('')).toContain('clean (0 violations)');
+    errors.length = 0;
+    await runCommand('verify', [], deps({ exec: failingVerifyExec() }));
+    expect(errors.join('')).toContain('1 violation(s)');
+    expect(errors.join('')).not.toContain('clean (0 violations)');
+  });
+
+  it('audits the working diff from cwd and exits per findings', async () => {
+    // Kills the audit argv/cwd mutants and `findings.length > 0` -> true/>=0.
+    const calls: { args: string[]; cwd: string | undefined }[] = [];
+    const auditExec =
+      (diff: string): Exec =>
+      (command, args, execOptions) => {
+        calls.push({ args, cwd: execOptions?.cwd });
+        return Promise.resolve(ok(diff));
+      };
+    expect(await runCommand('audit', [], deps({ exec: auditExec('') }))).toBe(
+      0,
+    );
+    expect(calls[0]?.args).toEqual(['diff', 'HEAD']);
+    expect(calls[0]?.cwd).toBe(root);
+
+    const dirty = [
+      '+++ b/src/a.ts',
+      '@@ -1,0 +1,1 @@',
+      '+// eslint-disable-next-line',
+    ].join('\n');
+    expect(
+      await runCommand('audit', [], deps({ exec: auditExec(dirty) })),
+    ).toBe(1);
+  });
+});
+
+describe('cli-core residual hardening', () => {
+  it('anchors the shell-tool name at BOTH ends', async () => {
+    // Kills the two SHELL_TOOLS anchor mutants individually: `bash-task`
+    // starts with bash, `run-bash` ends with it — neither may gate.
+    expect(
+      await runPreToolUse(preToolUseStdin('bash-task', 'git commit')),
+    ).toBe('');
+    out.length = 0;
+    expect(await runPreToolUse(preToolUseStdin('run-bash', 'git commit'))).toBe(
+      '',
+    );
+  });
+
+  it('scope-locks an edit to the manifest, using deps.cwd when stdin omits it', async () => {
+    // Kills `toolName !== undefined && READ_TOOLS.test(...)` -> true (an edit
+    // treated as a read would be allowed anywhere in-repo) and the
+    // `input.cwd ?? deps.cwd` -> `&&` mutant (a lost repoRoot finds no manifest,
+    // so the scope-lock silently disengages).
+    writeViolations(stateDirectory(root), 'default', [violation('src/a.ts')]);
+    await runCommand(
+      'scope-check',
+      [],
+      deps({
+        readStdin: () =>
+          Promise.resolve(
+            JSON.stringify({
+              toolName: 'edit',
+              toolArgs: { path: path.join(root, 'src/b.ts') },
+            }),
+          ),
+      }),
+    );
+    expect(out.join('')).toContain('deny');
+  });
+
+  it('routes --mode=commit to the commit gate', async () => {
+    // Kills `mode === 'commit'` -> false, which would fall through to the stop
+    // gate and never block a dirty commit.
+    const exec = gitExec({
+      'merge-base': 'BASESHA\n',
+      'diff BASESHA': [
+        '+++ b/src/a.ts',
+        '@@ -1,0 +1,1 @@',
+        '+// eslint-disable-next-line',
+      ].join('\n'),
+    });
+    expect(await runCommand('gate', ['--mode=commit'], deps({ exec }))).toBe(1);
+  });
+
+  it('defaults the session id for state and session-end', async () => {
+    // Kills the `flag(rest,'session') ?? 'default'` and
+    // `input.sessionId ?? 'default'` -> `&&` mutants.
+    writeViolations(stateDirectory(root), 'default', [violation('src/a.ts')]);
+    expect(await runCommand('state', [], deps())).toBe(0);
+    expect(out.join('')).toContain('session');
+    expect(
+      await runCommand(
+        'session-end',
+        [],
+        deps({ readStdin: () => Promise.resolve('{}') }),
+      ),
+    ).toBe(0);
   });
 });
