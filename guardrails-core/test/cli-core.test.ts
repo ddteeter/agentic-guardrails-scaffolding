@@ -1,4 +1,11 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -6,7 +13,12 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { type CliDeps, runCommand } from '../src/cli-core.js';
 import type { Exec, ExecResult } from '../src/exec.js';
-import { stateDirectory, writeViolations } from '../src/state-store.js';
+import {
+  loadSession,
+  sessionFile,
+  stateDirectory,
+  writeViolations,
+} from '../src/state-store.js';
 import type { Violation } from '../src/violation.js';
 
 let root: string;
@@ -665,5 +677,111 @@ describe('cli-core residual hardening', () => {
         deps({ readStdin: () => Promise.resolve('{}') }),
       ),
     ).toBe(0);
+  });
+});
+
+/** Run the stop gate `times` times against a failing verify, returning the last
+ *  stdout. Three runs cross the default recurrence threshold, which is the only
+ *  condition under which the two dialects' payloads differ. */
+async function primeStopGate(
+  times: number,
+  dialectArguments: string[],
+): Promise<string> {
+  const stdin = JSON.stringify({ cwd: root, sessionId: 'sid' });
+  let last = '';
+  for (let run = 0; run < times; run += 1) {
+    out.length = 0;
+    await runCommand(
+      'gate',
+      ['--mode=stop', ...dialectArguments],
+      deps({
+        exec: failingVerifyExec(),
+        readStdin: () => Promise.resolve(stdin),
+      }),
+    );
+    last = out.join('');
+  }
+  return last;
+}
+
+describe('cli-core final hardening', () => {
+  it('sweeps sessions older than the TTL and keeps fresh ones', async () => {
+    // Kills the four SESSION_TTL_MS arithmetic mutants (each shrinks the TTL to
+    // milliseconds, sweeping everything) and the `case 'session-start'` block
+    // removal (which sweeps nothing).
+    const directory = stateDirectory(root);
+    mkdirSync(directory, { recursive: true });
+    const stale = sessionFile(directory, 'stale');
+    const fresh = sessionFile(directory, 'fresh');
+    writeFileSync(stale, '{}');
+    writeFileSync(fresh, '{}');
+    const eightDaysAgo = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
+    utimesSync(stale, eightDaysAgo, eightDaysAgo);
+    // The fresh file must be meaningfully old (but under the TTL), otherwise a
+    // mutant that shrinks the TTL to milliseconds still keeps a just-created
+    // file and the assertion below passes vacuously.
+    const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    utimesSync(fresh, oneDayAgo, oneDayAgo);
+
+    expect(await runCommand('session-start', [], deps())).toBe(0);
+    expect(existsSync(stale)).toBe(false);
+    expect(existsSync(fresh)).toBe(true);
+  });
+
+  it('emits dialect-specific stop payloads once a rule crosses recurrence', async () => {
+    // Kills the `dialect === 'copilot'` mutants and the dialect resolution
+    // default. The two formatters are byte-identical UNTIL additionalContext is
+    // present, which only happens on the run that crosses recurThreshold.
+    const copilot = await primeStopGate(3, ['--dialect=copilot']);
+    rmSync(stateDirectory(root), { recursive: true, force: true });
+    const claude = await primeStopGate(3, []);
+
+    expect(copilot).not.toBe('');
+    expect(claude).not.toBe('');
+    // Claude carries additionalContext in hookSpecificOutput; Copilot inlines
+    // it into `reason` because its hook host has no such field.
+    expect(claude).toContain('hookSpecificOutput');
+    expect(copilot).not.toContain('hookSpecificOutput');
+  });
+
+  it('defaults the session id to "default" across stop, state and session-end', async () => {
+    // Kills the `?? 'default'` -> `&&` mutants, which route reads and writes to
+    // an `undefined.json` session instead.
+    const directory = stateDirectory(root);
+    await runCommand(
+      'gate',
+      ['--mode=stop'],
+      deps({
+        exec: failingVerifyExec(),
+        readStdin: () => Promise.resolve(JSON.stringify({ cwd: root })),
+      }),
+    );
+    expect(loadSession(directory, 'default').attempts).toBe(1);
+
+    out.length = 0;
+    await runCommand('state', [], deps());
+    expect(out.join('')).toContain('"attempts": 1');
+
+    await runCommand(
+      'session-end',
+      [],
+      deps({ readStdin: () => Promise.resolve('{}') }),
+    );
+    expect(existsSync(sessionFile(directory, 'default'))).toBe(false);
+  });
+
+  it('prints each added suppression found by the commit gate', async () => {
+    // Kills the findings-loop block removal: the gate would block with no
+    // explanation of WHICH suppression tripped it.
+    const exec = gitExec({
+      'merge-base': 'BASESHA\n',
+      'diff BASESHA': [
+        '+++ b/src/a.ts',
+        '@@ -1,0 +1,1 @@',
+        '+// eslint-disable-next-line',
+      ].join('\n'),
+    });
+    expect(await runCommand('gate', ['--mode=commit'], deps({ exec }))).toBe(1);
+    expect(errors.join('')).toContain('added eslint-disable');
   });
 });

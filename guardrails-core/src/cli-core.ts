@@ -148,8 +148,13 @@ async function gatePreToolUseCommand(
 ): Promise<void> {
   const input = parseHookInput(await deps.readStdin());
   if (
+    // Equivalent mutants on the two `=== undefined` clauses: bypassing either
+    // still returns early, because the regex test on the very next line
+    // stringifies `undefined` to "undefined", which matches neither pattern.
+    // Stryker disable next-line ConditionalExpression
     input.toolName === undefined ||
     !SHELL_TOOLS.test(input.toolName) ||
+    // Stryker disable next-line ConditionalExpression
     input.command === undefined ||
     !GIT_WRITE.test(input.command)
   ) {
@@ -208,6 +213,9 @@ function denyPreToolUse(deps: CliDeps, reason: string, dialect: Dialect): void {
 const READ_TOOLS = /^(?:read|view)$/i;
 
 function isReadTool(toolName: string | undefined): boolean {
+  // Equivalent mutant on the `!== undefined` half: READ_TOOLS.test(undefined)
+  // tests the string "undefined", which the anchored pattern rejects anyway.
+  // Stryker disable next-line ConditionalExpression
   return toolName !== undefined && READ_TOOLS.test(toolName);
 }
 
