@@ -4,7 +4,7 @@
  * `cli.ts` is a thin bootstrap that supplies the real dependencies.
  */
 
-import { auditDiff } from './audit.js';
+import { auditDiff, type AuditFinding } from './audit.js';
 import { runAutofix } from './autofix.js';
 import {
   loadConfig,
@@ -63,6 +63,28 @@ function printViolations(
     );
   }
 }
+
+/** The stderr detail the two `enforcement`-governed gates share: every
+ *  violation, then every added suppression the diff-auditor found. */
+function printGateDetail(
+  deps: CliDeps,
+  violations: readonly Violation[],
+  findings: readonly AuditFinding[],
+): void {
+  printViolations(deps, violations);
+  for (const finding of findings) {
+    deps.stderr(
+      `${finding.file}:${finding.line} added ${finding.kind}: ${finding.text}\n`,
+    );
+  }
+}
+
+/** Said outright on both `warn` paths: a zero exit (or a silent allow) must
+ *  never be mistakable for a clean gate, and the reader is told exactly which
+ *  setting makes it enforce. */
+const NOT_BLOCKING_NOTE =
+  'guardrails: not blocking (enforcement: warn). Set "enforcement": ' +
+  '"block" in guardrails.config.json to make this gate enforce.\n';
 
 async function verifyCommand(deps: CliDeps): Promise<number> {
   const repoRoot = deps.cwd;
@@ -145,12 +167,7 @@ async function gateCommitCommand(deps: CliDeps): Promise<number> {
     sanctionedSuppressions: config.sanctionedSuppressions,
     analyzers: config.analyzers,
   });
-  printViolations(deps, violations);
-  for (const finding of findings) {
-    deps.stderr(
-      `${finding.file}:${finding.line} added ${finding.kind}: ${finding.text}\n`,
-    );
-  }
+  printGateDetail(deps, violations, findings);
   if (!blocked) {
     return 0;
   }
@@ -159,10 +176,7 @@ async function gateCommitCommand(deps: CliDeps): Promise<number> {
   // `warn` the findings are still printed in full above — a zero exit must never
   // be mistakable for a clean gate, so it is stated outright.
   if (config.enforcement === 'warn') {
-    deps.stderr(
-      'guardrails: not blocking (enforcement: warn). Set "enforcement": ' +
-        '"block" in guardrails.config.json to make this gate enforce.\n',
-    );
+    deps.stderr(NOT_BLOCKING_NOTE);
     return 0;
   }
   return 1;
@@ -216,9 +230,13 @@ async function gatePreToolUseCommand(
   // Under `warn` the gate reports and allows. stderr rather than a deny payload,
   // because both hook dialects treat a deny payload as the block itself — there
   // is no "allow, but say this" channel — and stderr still surfaces in the
-  // transcript.
+  // transcript. It prints the same detail its commit-gate sibling does: counts
+  // alone on a hook that then allows the commit through are exactly what makes
+  // a warn read as a pass.
   if (config.enforcement === 'warn') {
-    deps.stderr(`${reason} not blocking (enforcement: warn).\n`);
+    printGateDetail(deps, violations, findings);
+    deps.stderr(`${reason}\n`);
+    deps.stderr(NOT_BLOCKING_NOTE);
     return;
   }
   deps.stdout(JSON.stringify(formatPreToolUseDeny(reason, dialect)));

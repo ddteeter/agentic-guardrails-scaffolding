@@ -1272,7 +1272,15 @@ describe('gate --mode=pretooluse enforcement', () => {
       ['--mode=pretooluse'],
       blockingPreToolUseDeps('warn'),
     );
+    // A deny payload IS the block in both hook dialects, so there is no
+    // allow-with-message channel: stdout must stay empty.
     expect(out.join('')).toBe('');
-    expect(errors.join('')).toContain('not blocking (enforcement: warn)');
+    const output = errors.join('');
+    expect(output).toContain('not blocking (enforcement: warn)');
+    // Counts alone would leave a zero-exit hook mistakable for a clean gate, so
+    // this path prints the same per-violation detail its commit-gate sibling
+    // does, and the same pointer at the setting that makes it enforce.
+    expect(output).toContain('src/foo.ts:1 [no-console] Unexpected console.');
+    expect(output).toContain('"enforcement": "block"');
   });
 });

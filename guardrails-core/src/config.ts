@@ -85,10 +85,11 @@ export interface RepoConfig {
    * `gate --mode=pretooluse`) or only warns (`warn` → zero exit; an allow with
    * a stderr note from `gate --mode=pretooluse`, since a deny payload IS the
    * block on both hook dialects — there is no "allow, but say this" channel).
-   * Under `warn`, `gateCommitCommand` still prints every violation and finding
-   * in full before returning 0, and `gatePreToolUseCommand` still reports the
-   * violation/finding counts on stderr; both then state outright that they are
-   * not blocking, so a passing result is never mistakable for a clean gate.
+   * Under `warn`, both commands still print every violation and every added
+   * suppression in full — `gateCommitCommand` before returning 0,
+   * `gatePreToolUseCommand` on stderr — and both then state outright that they
+   * are not blocking and which setting makes them enforce, so a passing result
+   * is never mistakable for a clean gate.
    * This repo's own CI does not currently invoke either command — its
    * `Guardrails verify` step calls bare `verify`, which does not consult this
    * field at all and always fails the build on an error-severity violation.
