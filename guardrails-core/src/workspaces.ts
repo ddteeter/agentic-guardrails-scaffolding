@@ -17,6 +17,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
 import { parseWorkspaceGlob, type ParsedGlob } from './workspace-glob.js';
+import type { Violation } from './violation.js';
 
 export type PackageResolver = (file: string) => string | undefined;
 
@@ -135,4 +136,22 @@ export function loadWorkspaceResolver(repoRoot: string): PackageResolver {
       }
     }
   };
+}
+
+/**
+ * Return `violations` with `package` set where an owning package is known.
+ * Mirrors `withGuidance`: preserve-existing, add no key when there is nothing to
+ * add, and therefore idempotent — safe to apply in both `runVerify` and the gate.
+ */
+export function withPackages(
+  violations: readonly Violation[],
+  resolve: PackageResolver,
+): Violation[] {
+  return violations.map((violation) => {
+    if (violation.package !== undefined) {
+      return violation;
+    }
+    const owner = resolve(violation.file);
+    return owner === undefined ? violation : { ...violation, package: owner };
+  });
 }

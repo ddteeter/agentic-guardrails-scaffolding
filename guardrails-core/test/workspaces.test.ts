@@ -4,7 +4,8 @@ import path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { loadWorkspaceResolver } from '../src/workspaces.js';
+import { loadWorkspaceResolver, withPackages } from '../src/workspaces.js';
+import type { Violation } from '../src/violation.js';
 
 let root: string;
 
@@ -162,5 +163,66 @@ describe('loadWorkspaceResolver — no owning package', () => {
     expect(
       loadWorkspaceResolver(repoRoot)('../elsewhere/a.ts'),
     ).toBeUndefined();
+  });
+});
+
+function violation(file: string, extra: Partial<Violation> = {}): Violation {
+  return {
+    ruleId: 'no-console',
+    file,
+    message: 'msg',
+    severity: 'error',
+    fixable: false,
+    tool: 'eslint',
+    ...extra,
+  };
+}
+
+function resolvePackage(file: string): string | undefined {
+  return file.startsWith('packages/api/') ? 'packages/api' : undefined;
+}
+
+describe('withPackages', () => {
+  it("sets package from the violation's file", () => {
+    const [tagged] = withPackages(
+      [violation('packages/api/src/a.ts')],
+      resolvePackage,
+    );
+    expect(tagged?.package).toBe('packages/api');
+  });
+
+  it('adds no key when there is no owning package', () => {
+    const [untagged] = withPackages(
+      [violation('scripts/build.ts')],
+      resolvePackage,
+    );
+    expect(untagged && Object.hasOwn(untagged, 'package')).toBe(false);
+  });
+
+  it('does not overwrite a package a producer already set', () => {
+    const [tagged] = withPackages(
+      [violation('packages/api/src/a.ts', { package: 'explicit' })],
+      resolvePackage,
+    );
+    expect(tagged?.package).toBe('explicit');
+  });
+
+  it('is idempotent, so it is safe to apply more than once', () => {
+    const once = withPackages([violation('packages/api/a.ts')], resolvePackage);
+    expect(withPackages(once, resolvePackage)).toEqual(once);
+  });
+
+  it('preserves order and every other field', () => {
+    const input = [violation('scripts/b.ts'), violation('packages/api/a.ts')];
+    const result = withPackages(input, resolvePackage);
+    expect(result.map((entry) => entry.file)).toEqual([
+      'scripts/b.ts',
+      'packages/api/a.ts',
+    ]);
+    expect(result[0]).toEqual(input[0]);
+  });
+
+  it('is empty for no violations', () => {
+    expect(withPackages([], resolvePackage)).toEqual([]);
   });
 });
