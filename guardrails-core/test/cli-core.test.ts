@@ -59,6 +59,37 @@ function violation(file: string): Violation {
   };
 }
 
+/** A repo whose commit gate blocks: one eslint error on a changed TS file.
+ *  `enforcement` is written into the config the command will load. */
+function blockingCommitDeps(enforcement: 'warn' | 'block'): CliDeps {
+  writeFileSync(
+    path.join(root, 'guardrails.config.json'),
+    JSON.stringify({ baseBranch: 'main', enforcement }),
+  );
+  const eslintJson = JSON.stringify([
+    {
+      filePath: path.join(root, 'src/foo.ts'),
+      messages: [
+        {
+          ruleId: 'no-console',
+          severity: 2,
+          message: 'Unexpected console.',
+          line: 1,
+        },
+      ],
+    },
+  ]);
+  const exec: Exec = (command, args) => {
+    const line = [command, ...args].join(' ');
+    if (line.includes('--name-only')) return Promise.resolve(ok('src/foo.ts'));
+    if (line.includes('eslint')) return Promise.resolve(ok(eslintJson));
+    // merge-base resolves to nothing, so branchDiff falls back to the staged
+    // diff, which is empty — the block comes from the violation, not a finding.
+    return Promise.resolve(ok(''));
+  };
+  return deps({ exec });
+}
+
 describe('runCommand — verify', () => {
   it('returns 0 when no TypeScript files changed', async () => {
     expect(await runCommand('verify', [], deps())).toBe(0);
@@ -667,7 +698,13 @@ describe('cli-core residual hardening', () => {
 
   it('routes --mode=commit to the commit gate', async () => {
     // Kills `mode === 'commit'` -> false, which would fall through to the stop
-    // gate and never block a dirty commit.
+    // gate and never block a dirty commit. `enforcement: 'block'` because the
+    // default is 'warn' (see "gate --mode=commit enforcement" below) and this
+    // test is about routing, not the enforcement policy.
+    writeFileSync(
+      path.join(root, 'guardrails.config.json'),
+      JSON.stringify({ enforcement: 'block' }),
+    );
     const exec = gitExec({
       'merge-base': 'BASESHA\n',
       'diff BASESHA': [
@@ -787,7 +824,13 @@ describe('cli-core final hardening', () => {
 
   it('prints each added suppression found by the commit gate', async () => {
     // Kills the findings-loop block removal: the gate would block with no
-    // explanation of WHICH suppression tripped it.
+    // explanation of WHICH suppression tripped it. `enforcement: 'block'`
+    // because the default is 'warn' and this test is about the findings
+    // message, not the enforcement policy.
+    writeFileSync(
+      path.join(root, 'guardrails.config.json'),
+      JSON.stringify({ enforcement: 'block' }),
+    );
     const exec = gitExec({
       'merge-base': 'BASESHA\n',
       'diff BASESHA': [
@@ -806,9 +849,13 @@ describe('sanctioned suppressions reach the commit gate', () => {
     // Kills a dropped-forwarding mutant: if `--mode=commit` stopped passing
     // `config.sanctionedSuppressions` through to `runCommitGate`, this finding
     // would exempt nothing and the gate would still block.
+    // `enforcement: 'block'` here (rather than the default 'warn') proves the
+    // 0 comes from the exemption clearing the block, not from the enforcement
+    // policy silently downgrading a real block to a warning.
     writeFileSync(
       path.join(root, 'guardrails.config.json'),
       JSON.stringify({
+        enforcement: 'block',
         sanctionedSuppressions: [
           {
             key: 'src/a.ts|eslint-disable|// eslint-disable-next-line',
@@ -1146,5 +1193,30 @@ describe('autofix command', () => {
       (call) => call[0]?.includes('eslint') === true,
     );
     expect(eslintCall?.[0]).toBe(path.join(localBin, binName));
+  });
+});
+
+describe('gate --mode=commit enforcement', () => {
+  it('exits 1 on a blocking violation when enforcement is block', async () => {
+    const code = await runCommand(
+      'gate',
+      ['--mode=commit'],
+      blockingCommitDeps('block'),
+    );
+    expect(code).toBe(1);
+    expect(errors.join('')).not.toContain('enforcement: warn');
+  });
+
+  it('exits 0 when enforcement is warn, but still prints the violations', async () => {
+    const code = await runCommand(
+      'gate',
+      ['--mode=commit'],
+      blockingCommitDeps('warn'),
+    );
+    expect(code).toBe(0);
+    const output = errors.join('');
+    expect(output).toContain('not blocking (enforcement: warn)');
+    // A passing exit code must never be mistakable for a clean gate.
+    expect(output).toContain('no-console');
   });
 });

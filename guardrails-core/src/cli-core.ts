@@ -151,7 +151,21 @@ async function gateCommitCommand(deps: CliDeps): Promise<number> {
       `${finding.file}:${finding.line} added ${finding.kind}: ${finding.text}\n`,
     );
   }
-  return blocked ? 1 : 0;
+  if (!blocked) {
+    return 0;
+  }
+  // `enforcement` governs the commit and preToolUse gates only; the Claude Code
+  // Stop loop is deliberately never softened (see RepoConfig.enforcement). Under
+  // `warn` the findings are still printed in full above — a zero exit must never
+  // be mistakable for a clean gate, so it is stated outright.
+  if (config.enforcement === 'warn') {
+    deps.stderr(
+      'guardrails: not blocking (enforcement: warn). Set "enforcement": ' +
+        '"block" in guardrails.config.json to make this gate enforce.\n',
+    );
+    return 0;
+  }
+  return 1;
 }
 
 const SHELL_TOOLS = /^(?:bash|shell|powershell)$/i;
