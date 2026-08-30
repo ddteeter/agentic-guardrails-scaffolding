@@ -122,5 +122,5 @@
     }
   ],
   "distribution": "solo",
-  "enforcement": "warn"
+  "enforcement": "block"
 }
