@@ -65,12 +65,17 @@ jobs:
       - name: Guardrails verify
         run: node ./node_modules/guardrails-core/dist/cli.mjs verify
 
-      # Approval gate for the diff-auditor's ONLY escape hatch. Any
-      # `sanctionedSuppressions` key added relative to the merge-base fails here,
-      # so a new exemption cannot be self-granted by an agent — approving it means
-      # a human reviewed and merged this PR. Enforced in CI rather than at the
-      # commit gate on purpose: the PR is where that human sign-off actually
-      # happens. Needs the full history fetched above for `git merge-base`.
+      # Visibility + well-formedness gate for the diff-auditor's ONLY escape
+      # hatch. It can only FAIL on a malformed `sanctionedSuppressions` entry
+      # (bad/missing key, reason, or count) in this PR's config. A newly-granted
+      # exemption — a key absent from the merge-base config, or a key whose
+      # count increased — is never a failure here: it is printed prominently in
+      # this step's log for the reviewer, and the step exits 0, because merging
+      # this PR *is* the human approval; a required check that failed on every
+      # legitimate grant would deadlock the merge that constitutes it. The
+      # commit gate is what enforces reality: an occurrence beyond the declared
+      # count still blocks the commit regardless of what this check reports.
+      # Needs the full history fetched above for `git merge-base`.
       - name: Guardrails sanctions approval
         run: node ./node_modules/guardrails-core/dist/cli.mjs sanctions-check
 

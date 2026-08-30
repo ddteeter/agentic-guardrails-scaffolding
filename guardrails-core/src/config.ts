@@ -5,7 +5,7 @@
  * config; unknown or wrongly-typed values are ignored defensively.
  */
 
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
 import type { GateConfig } from './gate-decision.js';
@@ -17,6 +17,20 @@ export interface SanctionedSuppression {
   key: string;
   /** Human-readable justification; blank or missing drops the entry. */
   reason: string;
+  /** How many occurrences of this exact finding the grant covers. Defaults to 1. */
+  count?: number;
+}
+
+/**
+ * Outcome of parsing a `sanctionedSuppressions` array: the entries that
+ * validated, and a human-readable reason for each that did not. Splitting the
+ * result (rather than silently dropping malformed entries, as the gate's
+ * `valid`-only consumers must) lets the CI sanctions check surface mistakes
+ * instead of hiding them.
+ */
+export interface SanctionParseResult {
+  valid: SanctionedSuppression[];
+  malformed: string[];
 }
 
 export interface RepoConfig {
@@ -41,9 +55,14 @@ export interface RepoConfig {
    *
    * Every entry carries a written `reason`: a bare key is unreviewable, and a
    * reviewer cannot tell a proven-equivalent mutant from "the agent got stuck".
-   * Entries missing a key or a non-blank reason are DROPPED — failing closed, so
-   * an unjustified exemption simply does not apply. Adding an entry is itself
-   * audited (`guardrails/self-sanction`) and cannot be self-granted.
+   * Entries missing a key, a non-blank reason, or (when present) a positive
+   * integer `count` are DROPPED — failing closed, so a malformed or unjustified
+   * exemption simply does not apply. The gate spends `count` as a budget (one
+   * grant exempts exactly that many occurrences of the finding, not every
+   * occurrence in the file) — see `runCommitGate` in `gate.ts`. Adding an entry,
+   * or raising an existing one's `count`, is a new grant that a human approves
+   * by merging the pull request (`guardrails sanctions-check`); it cannot be
+   * self-granted.
    */
   sanctionedSuppressions: SanctionedSuppression[];
   distribution: 'solo' | 'team';
@@ -80,38 +99,82 @@ export function defaultConfig(): RepoConfig {
 
 /**
  * Parse a `guardrails.config.json` TEXT into its sanction list, defensively.
- * Shared by `loadConfig` and the CI sanctions check, which reads the base
- * revision of the file out of git rather than off disk.
+ * Shared by `loadConfig` (which keeps only `.valid`, so the gate still fails
+ * closed on a malformed entry) and the CI sanctions check, which reads the
+ * base revision of the file out of git rather than off disk and additionally
+ * reports `.malformed` so a mistake is visible instead of silently dropped.
  */
-export function parseSanctionsJson(text: string): SanctionedSuppression[] {
+export function parseSanctionsJson(text: string): SanctionParseResult {
   let raw: unknown;
   try {
     raw = JSON.parse(text);
   } catch {
-    return [];
+    return { valid: [], malformed: ['config is not valid JSON'] };
   }
-  return isRecord(raw) ? pickSanctions(raw.sanctionedSuppressions) : [];
+  return isRecord(raw)
+    ? pickSanctions(raw.sanctionedSuppressions)
+    : { valid: [], malformed: [] };
 }
 
-function pickSanctions(value: unknown): SanctionedSuppression[] {
+/**
+ * True when `value` is present and NOT a positive integer — i.e. malformed.
+ * `Number.isInteger` never coerces (it returns `false`, never throws, for any
+ * non-number type), so it alone already implies "not a valid count" for a
+ * non-number `value` — a separate `typeof value !== 'number'` clause would be
+ * fully subsumed by it and is deliberately omitted. The cast on the second
+ * operand is sound (not merely convenient): `||` only evaluates it once
+ * `!Number.isInteger(value)` is false, i.e. once `value` is already known, at
+ * runtime, to be a number — `Number.isInteger`'s signature just can't express
+ * that as a type guard for TypeScript to narrow on.
+ */
+function isMalformedCount(value: unknown): boolean {
+  return (
+    value !== undefined && (!Number.isInteger(value) || (value as number) <= 0)
+  );
+}
+
+/** Parse one raw sanction entry: either a valid suppression, or a
+ * human-readable reason it is malformed (`entry <position>: ...`). */
+function parseSanctionEntry(
+  entry: unknown,
+  position: number,
+): { sanction: SanctionedSuppression } | { malformed: string } {
+  if (!isRecord(entry)) {
+    return { malformed: `entry ${position}: not an object` };
+  }
+  const { key, reason, count } = entry;
+  if (typeof key !== 'string' || key.trim() === '') {
+    return { malformed: `entry ${position}: missing key` };
+  }
+  if (typeof reason !== 'string' || !reason.trim()) {
+    return { malformed: `entry ${position}: missing reason` };
+  }
+  if (isMalformedCount(count)) {
+    return {
+      malformed: `entry ${position}: count must be a positive integer`,
+    };
+  }
+  return {
+    sanction:
+      typeof count === 'number' ? { key, reason, count } : { key, reason },
+  };
+}
+
+function pickSanctions(value: unknown): SanctionParseResult {
   if (!Array.isArray(value)) {
-    return [];
+    return { valid: [], malformed: [] };
   }
-  const sanctions: SanctionedSuppression[] = [];
-  for (const entry of value) {
-    if (!isRecord(entry)) {
-      continue;
-    }
-    const { key, reason } = entry;
-    if (
-      typeof key === 'string' &&
-      typeof reason === 'string' &&
-      reason.trim()
-    ) {
-      sanctions.push({ key, reason });
+  const valid: SanctionedSuppression[] = [];
+  const malformed: string[] = [];
+  for (const [index, entry] of value.entries()) {
+    const parsed = parseSanctionEntry(entry, index + 1);
+    if ('malformed' in parsed) {
+      malformed.push(parsed.malformed);
+    } else {
+      valid.push(parsed.sanction);
     }
   }
-  return sanctions;
+  return { valid, malformed };
 }
 
 function pickStringArray(value: unknown): string[] {
@@ -149,6 +212,22 @@ function pickNumber(value: unknown, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
 }
 
+const CONFIG_FILE_NAME = 'guardrails.config.json';
+
+/**
+ * Read `guardrails.config.json` TEXT off disk, or `undefined` if it is
+ * missing. Exported so the CI sanctions check can run `parseSanctionsJson`
+ * against the same head-revision text `loadConfig` reads, to recover the
+ * malformed entries `loadConfig` itself drops. Checks existence explicitly
+ * (rather than a try/catch around the read) so a missing file is the only
+ * `undefined` path — an unexpected read error still throws, instead of
+ * silently reading as "no config".
+ */
+export function readConfigText(repoRoot: string): string | undefined {
+  const filePath = path.join(repoRoot, CONFIG_FILE_NAME);
+  return existsSync(filePath) ? readFileSync(filePath, 'utf8') : undefined;
+}
+
 export function loadConfig(repoRoot: string): RepoConfig {
   const defaults = defaultConfig();
   let raw: unknown;
@@ -159,7 +238,7 @@ export function loadConfig(repoRoot: string): RepoConfig {
   // Stryker disable BlockStatement
   try {
     raw = JSON.parse(
-      readFileSync(path.join(repoRoot, 'guardrails.config.json'), 'utf8'),
+      readFileSync(path.join(repoRoot, CONFIG_FILE_NAME), 'utf8'),
     );
   } catch {
     return defaults;
@@ -179,7 +258,7 @@ export function loadConfig(repoRoot: string): RepoConfig {
     fastFixer: pickString(raw.fastFixer, defaults.fastFixer),
     thoroughFixer: pickString(raw.thoroughFixer, defaults.thoroughFixer),
     looseRules: pickStringArray(raw.looseRules),
-    sanctionedSuppressions: pickSanctions(raw.sanctionedSuppressions),
+    sanctionedSuppressions: pickSanctions(raw.sanctionedSuppressions).valid,
     distribution: pickString(raw.distribution, defaults.distribution, [
       'solo',
       'team',

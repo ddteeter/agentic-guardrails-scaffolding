@@ -34,6 +34,15 @@ const SANCTIONED_DISABLE = [
   '+// Stryker disable all',
 ].join('\n');
 
+const TWO_IDENTICAL_DISABLES = [
+  'diff --git a/src/a.ts b/src/a.ts',
+  '--- a/src/a.ts',
+  '+++ b/src/a.ts',
+  '@@ -1,0 +1,2 @@',
+  '+// Stryker disable all',
+  '+// Stryker disable all',
+].join('\n');
+
 describe('runCommitGate', () => {
   it('flags a suppression introduced on the branch (merge-base diff)', async () => {
     const result = await runCommitGate({
@@ -54,7 +63,10 @@ describe('runCommitGate', () => {
       baseBranch: 'main',
       exec: fakeExec(SANCTIONED_DISABLE),
       sanctionedSuppressions: [
-        'src/a.ts|mutation-suppress|// Stryker disable all',
+        {
+          key: 'src/a.ts|mutation-suppress|// Stryker disable all',
+          reason: 'reviewed',
+        },
       ],
     });
     expect(result.findings).toHaveLength(0);
@@ -68,11 +80,74 @@ describe('runCommitGate', () => {
       baseBranch: 'main',
       exec: fakeExec(SANCTIONED_DISABLE.replaceAll('src/a.ts', 'src/b.ts')),
       sanctionedSuppressions: [
-        'src/a.ts|mutation-suppress|// Stryker disable all',
+        {
+          key: 'src/a.ts|mutation-suppress|// Stryker disable all',
+          reason: 'reviewed',
+        },
       ],
     });
     expect(result.findings).toHaveLength(1);
     expect(result.blocked).toBe(true);
+  });
+
+  it('blocks a second identical directive once a count-1 grant is spent (headline defect)', async () => {
+    // The defect this fix closes: `file|kind|text` carries no occurrence
+    // identity, so a single sanction used to exempt EVERY occurrence of the
+    // same directive in the file, however many an agent added. A count-1
+    // grant must now exempt exactly one occurrence and block the second.
+    const result = await runCommitGate({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec: fakeExec(TWO_IDENTICAL_DISABLES),
+      sanctionedSuppressions: [
+        {
+          key: 'src/a.ts|mutation-suppress|// Stryker disable all',
+          reason: 'reviewed',
+          count: 1,
+        },
+      ],
+    });
+    expect(result.findings).toHaveLength(1);
+    expect(result.blocked).toBe(true);
+  });
+
+  it('exempts exactly as many occurrences as the granted count', async () => {
+    const result = await runCommitGate({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec: fakeExec(TWO_IDENTICAL_DISABLES),
+      sanctionedSuppressions: [
+        {
+          key: 'src/a.ts|mutation-suppress|// Stryker disable all',
+          reason: 'reviewed',
+          count: 2,
+        },
+      ],
+    });
+    expect(result.findings).toHaveLength(0);
+    expect(result.blocked).toBe(false);
+  });
+
+  it('sums counts across several entries sharing a key into one budget', async () => {
+    const result = await runCommitGate({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec: fakeExec(TWO_IDENTICAL_DISABLES),
+      sanctionedSuppressions: [
+        {
+          key: 'src/a.ts|mutation-suppress|// Stryker disable all',
+          reason: 'first site',
+          count: 1,
+        },
+        {
+          key: 'src/a.ts|mutation-suppress|// Stryker disable all',
+          reason: 'second site',
+          count: 1,
+        },
+      ],
+    });
+    expect(result.findings).toHaveLength(0);
+    expect(result.blocked).toBe(false);
   });
 
   it('is clean when the branch diff has no suppressions', async () => {

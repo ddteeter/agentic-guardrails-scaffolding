@@ -26,7 +26,8 @@
     },
     {
       "key": "guardrails-core/src/verify/stryker-adapter.ts|mutation-suppress|// Stryker disable next-line ConditionalExpression",
-      "reason": "Proven-equivalent mutant(s); equivalence argument recorded at the site. The typeof-object halves of the report/mutant guards are subsumed by the field checks below them: a primitive that slips through is rejected anyway."
+      "reason": "Proven-equivalent mutants at four sites sharing this directive text; equivalence arguments recorded at each site (isMutant's guard, isReport's outer guard, isReport's `files` guard, and the per-file `.every` predicate's guard). Each is the typeof-object half of a `typeof x !== 'object' || x === null` (or `typeof x === 'object' && x !== null`) precondition, subsumed by the field/shape checks that follow it: a primitive that slips through is rejected anyway (e.g. `(5).files` / `(5).status` reads as `undefined`, which the next check independently fails).",
+      "count": 4
     },
     {
       "key": "guardrails-core/src/verify/stryker-adapter.ts|mutation-suppress|// Stryker disable BlockStatement",
@@ -46,7 +47,8 @@
     },
     {
       "key": "guardrails-core/src/config.ts|mutation-suppress|// Stryker disable next-line ConditionalExpression",
-      "reason": "Proven-equivalent mutant(s); equivalence argument recorded at the site. Covers isRecord and pickNumber: Number.isFinite does not coerce, and a primitive raw config falls through to per-field defaults - the same result as rejecting it."
+      "reason": "Proven-equivalent mutant(s); equivalence argument recorded at the site. Covers isRecord and pickNumber: Number.isFinite does not coerce, and a primitive raw config falls through to per-field defaults - the same result as rejecting it.",
+      "count": 2
     },
     {
       "key": "guardrails-core/src/config.ts|mutation-suppress|// Stryker disable BlockStatement",
@@ -70,7 +72,8 @@
     },
     {
       "key": "guardrails-core/src/cli-core.ts|mutation-suppress|// Stryker disable next-line ConditionalExpression",
-      "reason": "Proven-equivalent mutant(s); equivalence argument recorded at the site. Bypassing a \"=== undefined\" clause still returns early: the regex test on the next line stringifies undefined to \"undefined\", which matches no anchored pattern."
+      "reason": "Proven-equivalent mutant(s); equivalence argument recorded at the site. Bypassing a \"=== undefined\" clause still returns early: the regex test on the next line stringifies undefined to \"undefined\", which matches no anchored pattern. Covers three sites sharing this directive text: gatePreToolUseCommand's toolName and command guards, and isReadTool's toolName guard.",
+      "count": 3
     },
     {
       "key": "guardrails-core/src/cli-core.ts|mutation-suppress|// Stryker disable next-line ArrayDeclaration",
@@ -78,7 +81,8 @@
     },
     {
       "key": "guardrails-core/src/violation.ts|mutation-suppress|// Stryker disable next-line ConditionalExpression",
-      "reason": "Proven-equivalent mutants; arguments recorded at both sites. isSeverity: SEVERITIES holds only the strings 'error'/'warn', so has(x) implies x is a string. isViolation: the surviving `value === null` half still catches null, and a primitive is rejected field-by-field below. Approved individually after review."
+      "reason": "Proven-equivalent mutants; arguments recorded at both sites. isSeverity: SEVERITIES holds only the strings 'error'/'warn', so has(x) implies x is a string. isViolation: the surviving `value === null` half still catches null, and a primitive is rejected field-by-field below. Approved individually after review.",
+      "count": 2
     },
     {
       "key": "guardrails-core/src/workspaces.ts|mutation-suppress|// Stryker disable BlockStatement",
@@ -90,7 +94,8 @@
     },
     {
       "key": "guardrails-core/src/workspaces.ts|mutation-suppress|// Stryker disable next-line ArrayDeclaration",
-      "reason": "Proven-equivalent mutant(s); equivalence argument recorded at both sites (the escape guard's early return and the accumulator's initial value). ancestorDirectories is never exported, so its return value is only ever probed by the resolver's existsSync check on each entry; a bogus placeholder entry is observationally identical to an empty/unpolluted list unless a real repo directory happens to be named after Stryker's literal placeholder, which no real repo has."
+      "reason": "Proven-equivalent mutant(s); equivalence argument recorded at both sites (the escape guard's early return and the accumulator's initial value). ancestorDirectories is never exported, so its return value is only ever probed by the resolver's existsSync check on each entry; a bogus placeholder entry is observationally identical to an empty/unpolluted list unless a real repo directory happens to be named after Stryker's literal placeholder, which no real repo has.",
+      "count": 2
     },
     {
       "key": "guardrails-core/src/verify/tsc-adapter.ts|mutation-suppress|// Stryker disable next-line ConditionalExpression",
@@ -106,7 +111,8 @@
     },
     {
       "key": "guardrails-core/src/verify/knip-adapter.ts|mutation-suppress|// Stryker disable next-line ConditionalExpression",
-      "reason": "Proven-equivalent mutants at three sites sharing this directive text; equivalence arguments recorded at each site. isKnipReport's outer `typeof value === 'object'`, its per-issue `typeof issue === 'object'`, and isEntryArray's per-entry `typeof entry === 'object'`: no value JSON.parse can produce is both non-object and carries the property checked immediately after it (`issues` / `file` / `name` respectively), so each of these clauses can never be false while the checks below it are true. Each chain was reordered (the `!== null` clause now leads) purely so the directive's line does not also cover the combined-clause mutants sharing that line: Stryker's disable comments match by mutator name and line, not by sub-expression. Measured before/after with `npx stryker run --mutate guardrails-core/src/verify/knip-adapter.ts` (covers all four directives in this file): Killed 67->67 (unchanged), Ignored 21->25 (exactly the four targeted mutants), Survived 4->0. No collateral."
+      "reason": "Proven-equivalent mutants at three sites sharing this directive text; equivalence arguments recorded at each site. isKnipReport's outer `typeof value === 'object'`, its per-issue `typeof issue === 'object'`, and isEntryArray's per-entry `typeof entry === 'object'`: no value JSON.parse can produce is both non-object and carries the property checked immediately after it (`issues` / `file` / `name` respectively), so each of these clauses can never be false while the checks below it are true. Each chain was reordered (the `!== null` clause now leads) purely so the directive's line does not also cover the combined-clause mutants sharing that line: Stryker's disable comments match by mutator name and line, not by sub-expression. Measured before/after with `npx stryker run --mutate guardrails-core/src/verify/knip-adapter.ts` (covers all four directives in this file): Killed 67->67 (unchanged), Ignored 21->25 (exactly the four targeted mutants), Survived 4->0. No collateral.",
+      "count": 3
     },
     {
       "key": "guardrails-core/src/verify/knip-adapter.ts|mutation-suppress|// Stryker disable next-line BlockStatement",
@@ -114,7 +120,8 @@
     },
     {
       "key": "guardrails-core/src/verify/depcruise-adapter.ts|mutation-suppress|// Stryker disable next-line ConditionalExpression",
-      "reason": "Proven-equivalent mutants at two sites sharing this directive text; equivalence arguments recorded at each site. Outer guard `typeof value !== 'object'` (reordered after `value === null`, an early-return `if`, not an `&&`-chain clause -- proved by cases): null is still caught by the surviving `value === null` half; a non-null primitive's property access (e.g. `(5).summary`) never throws, it evaluates to `undefined`, which the very next guard (`typeof summary !== 'object'`) independently rejects; a genuine object/array was already unmutated-false. Inner `.every` predicate's `typeof v === 'object'` (reordered after `v !== null`): no value JSON.parse can produce is both non-object and carries string `from`/`to` and a `rule` object with string `name`/`severity`. Both reordered purely so the directive's line does not also cover the combined-clause/whole-chain mutants sharing that line: Stryker's disable comments match by mutator name and line, not by sub-expression. Measured before/after with `npx stryker run --mutate guardrails-core/src/verify/depcruise-adapter.ts` (covers all four directives in this file): Killed 85->85 (unchanged), Ignored 17->21 (exactly the four targeted mutants), Survived 4->0. No collateral."
+      "reason": "Proven-equivalent mutants at two sites sharing this directive text; equivalence arguments recorded at each site. Outer guard `typeof value !== 'object'` (reordered after `value === null`, an early-return `if`, not an `&&`-chain clause -- proved by cases): null is still caught by the surviving `value === null` half; a non-null primitive's property access (e.g. `(5).summary`) never throws, it evaluates to `undefined`, which the very next guard (`typeof summary !== 'object'`) independently rejects; a genuine object/array was already unmutated-false. Inner `.every` predicate's `typeof v === 'object'` (reordered after `v !== null`): no value JSON.parse can produce is both non-object and carries string `from`/`to` and a `rule` object with string `name`/`severity`. Both reordered purely so the directive's line does not also cover the combined-clause/whole-chain mutants sharing that line: Stryker's disable comments match by mutator name and line, not by sub-expression. Measured before/after with `npx stryker run --mutate guardrails-core/src/verify/depcruise-adapter.ts` (covers all four directives in this file): Killed 85->85 (unchanged), Ignored 17->21 (exactly the four targeted mutants), Survived 4->0. No collateral.",
+      "count": 2
     },
     {
       "key": "guardrails-core/src/verify/depcruise-adapter.ts|mutation-suppress|// Stryker disable next-line OptionalChaining",

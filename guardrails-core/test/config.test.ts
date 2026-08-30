@@ -4,7 +4,13 @@ import path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { defaultConfig, loadConfig, toGateConfig } from '../src/config.js';
+import {
+  defaultConfig,
+  loadConfig,
+  parseSanctionsJson,
+  readConfigText,
+  toGateConfig,
+} from '../src/config.js';
 
 let root: string;
 
@@ -212,5 +218,112 @@ describe('loadConfig mutation-hardening', () => {
     expect(loadConfig(root).sanctionedSuppressions).toEqual([
       { key: 'a.ts|cast-any|x', reason: 'proven equivalent mutant' },
     ]);
+  });
+
+  it('keeps a valid positive-integer count and drops an entry with a malformed one', () => {
+    writeConfig(
+      JSON.stringify({
+        sanctionedSuppressions: [
+          { key: 'a.ts|x|y', reason: 'covers two sites', count: 2 },
+          { key: 'b.ts|x|y', reason: 'zero count', count: 0 },
+          { key: 'c.ts|x|y', reason: 'negative count', count: -1 },
+          { key: 'd.ts|x|y', reason: 'fractional count', count: 1.5 },
+          { key: 'e.ts|x|y', reason: 'string count', count: '2' },
+        ],
+      }),
+    );
+    expect(loadConfig(root).sanctionedSuppressions).toEqual([
+      { key: 'a.ts|x|y', reason: 'covers two sites', count: 2 },
+    ]);
+  });
+
+  it('omits count from a valid entry that does not declare one', () => {
+    writeConfig(
+      JSON.stringify({
+        sanctionedSuppressions: [{ key: 'a.ts|x|y', reason: 'reviewed' }],
+      }),
+    );
+    const [sanction] = loadConfig(root).sanctionedSuppressions;
+    expect(Object.hasOwn(sanction ?? {}, 'count')).toBe(false);
+  });
+});
+
+describe('readConfigText', () => {
+  it('returns the file text when present', () => {
+    writeConfig('{"baseBranch":"trunk"}');
+    expect(readConfigText(root)).toBe('{"baseBranch":"trunk"}');
+  });
+
+  it('returns undefined when the file is missing', () => {
+    expect(readConfigText(root)).toBeUndefined();
+  });
+});
+
+describe('parseSanctionsJson', () => {
+  it('splits well-formed entries into valid, with no malformed entries', () => {
+    const result = parseSanctionsJson(
+      JSON.stringify({
+        sanctionedSuppressions: [
+          { key: 'a.ts|x|y', reason: 'reviewed' },
+          { key: 'b.ts|x|y', reason: 'reviewed twice', count: 2 },
+        ],
+      }),
+    );
+    expect(result.valid).toEqual([
+      { key: 'a.ts|x|y', reason: 'reviewed' },
+      { key: 'b.ts|x|y', reason: 'reviewed twice', count: 2 },
+    ]);
+    expect(result.malformed).toEqual([]);
+  });
+
+  it('reports a 1-indexed, human-readable reason for each malformed entry', () => {
+    const result = parseSanctionsJson(
+      JSON.stringify({
+        sanctionedSuppressions: [
+          { key: 'a.ts|x|y', reason: 'reviewed' },
+          { key: 'b.ts|x|y' },
+          { key: 'c.ts|x|y', reason: '   ' },
+          { reason: 'no key' },
+          { key: 'd.ts|x|y', reason: 'reviewed', count: 0 },
+          'e.ts|x|y',
+        ],
+      }),
+    );
+    expect(result.valid).toEqual([{ key: 'a.ts|x|y', reason: 'reviewed' }]);
+    expect(result.malformed).toEqual([
+      'entry 2: missing reason',
+      'entry 3: missing reason',
+      'entry 4: missing key',
+      'entry 5: count must be a positive integer',
+      'entry 6: not an object',
+    ]);
+  });
+
+  it('treats a whitespace-only key as missing, not merely typed', () => {
+    // A key of type string that is blank once trimmed must still be rejected —
+    // an untrimmed check would let "   " through as a "valid" key.
+    const result = parseSanctionsJson(
+      JSON.stringify({
+        sanctionedSuppressions: [{ key: '   ', reason: 'reviewed' }],
+      }),
+    );
+    expect(result.valid).toEqual([]);
+    expect(result.malformed).toEqual(['entry 1: missing key']);
+  });
+
+  it('reports invalid JSON itself as malformed, rather than staying silent', () => {
+    expect(parseSanctionsJson('not json')).toEqual({
+      valid: [],
+      malformed: ['config is not valid JSON'],
+    });
+  });
+
+  it('is empty (not malformed) for a non-object top level or a non-array field', () => {
+    // These parse as valid JSON, just not the shape sanctionedSuppressions
+    // needs — every OTHER field still gets its own defaults via `pick*`.
+    expect(parseSanctionsJson('null')).toEqual({ valid: [], malformed: [] });
+    expect(
+      parseSanctionsJson(JSON.stringify({ sanctionedSuppressions: 'nope' })),
+    ).toEqual({ valid: [], malformed: [] });
   });
 });

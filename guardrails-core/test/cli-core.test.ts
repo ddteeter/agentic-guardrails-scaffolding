@@ -788,8 +788,9 @@ describe('cli-core final hardening', () => {
 
 describe('sanctioned suppressions reach the commit gate', () => {
   it('exempts a finding whose key is sanctioned in the policy file', async () => {
-    // Kills the `(sanction) => sanction.key` -> `() => undefined` mutants: a
-    // list of undefined keys exempts nothing, so the gate would still block.
+    // Kills a dropped-forwarding mutant: if `--mode=commit` stopped passing
+    // `config.sanctionedSuppressions` through to `runCommitGate`, this finding
+    // would exempt nothing and the gate would still block.
     writeFileSync(
       path.join(root, 'guardrails.config.json'),
       JSON.stringify({
@@ -813,8 +814,8 @@ describe('sanctioned suppressions reach the commit gate', () => {
   });
 
   it('also forwards sanctions from the pretooluse gate', async () => {
-    // The pretooluse path maps the list independently of --mode=commit; kills
-    // the second `(sanction) => sanction.key` -> `() => undefined` mutant.
+    // The pretooluse path forwards the list independently of --mode=commit;
+    // kills the same dropped-forwarding mutant on that second call site.
     writeFileSync(
       path.join(root, 'guardrails.config.json'),
       JSON.stringify({
@@ -880,7 +881,7 @@ function writeRepoConfig(sanctions: unknown[]): void {
 const REVIEWED = { key: 'a.ts|cast-any|x', reason: 'proven equivalent' };
 const REQUESTED = { key: 'b.ts|cast-any|y', reason: 'newly requested' };
 
-describe('runCommand — sanctions-check (CI approval gate)', () => {
+describe('runCommand — sanctions-check (CI approval-visibility gate)', () => {
   it('passes when the branch adds no new exemption', async () => {
     writeRepoConfig([REVIEWED]);
     const base = JSON.stringify({ sanctionedSuppressions: [REVIEWED] });
@@ -894,7 +895,9 @@ describe('runCommand — sanctions-check (CI approval gate)', () => {
     expect(errors.join('')).toContain('no new diff-auditor exemptions');
   });
 
-  it('fails and names each newly-requested exemption', async () => {
+  it('passes and prominently prints each newly-granted exemption', async () => {
+    // A new grant is informational, not a failure: the PR merge IS the
+    // approval, so a required check that failed here would deadlock it.
     writeRepoConfig([REVIEWED, REQUESTED]);
     const base = JSON.stringify({ sanctionedSuppressions: [REVIEWED] });
     expect(
@@ -903,30 +906,21 @@ describe('runCommand — sanctions-check (CI approval gate)', () => {
         [],
         deps({ exec: sanctionsExec(base).exec }),
       ),
-    ).toBe(1);
+    ).toBe(0);
     const printed = errors.join('');
     expect(printed).toContain('b.ts|cast-any|y');
     expect(printed).toContain('newly requested');
-    expect(printed).toContain('require human approval');
+    expect(printed).toContain('1 new diff-auditor exemption');
     // The already-approved entry must not be re-reported.
     expect(printed).not.toContain('a.ts|cast-any|x');
   });
 
-  it('treats every entry as new when the base has no policy file', async () => {
-    writeRepoConfig([REVIEWED]);
-    expect(
-      await runCommand(
-        'sanctions-check',
-        [],
-        deps({ exec: sanctionsExec(null).exec }),
-      ),
-    ).toBe(1);
-  });
-
-  it('ignores an unjustified entry, which never takes effect anyway', async () => {
-    // No reason => dropped by loadConfig => not an exemption => nothing to approve.
-    writeRepoConfig([{ key: 'c.ts|cast-any|z' }]);
-    const base = JSON.stringify({ sanctionedSuppressions: [] });
+  it('prints a raised count as a new grant, even though the key already existed', async () => {
+    // The headline case a bare key-set diff would miss: the key was already
+    // approved, but the branch raises how many occurrences it covers.
+    const raised = { ...REVIEWED, count: 2 };
+    writeRepoConfig([raised]);
+    const base = JSON.stringify({ sanctionedSuppressions: [REVIEWED] });
     expect(
       await runCommand(
         'sanctions-check',
@@ -934,6 +928,62 @@ describe('runCommand — sanctions-check (CI approval gate)', () => {
         deps({ exec: sanctionsExec(base).exec }),
       ),
     ).toBe(0);
+    const printed = errors.join('');
+    expect(printed).toContain('a.ts|cast-any|x');
+    expect(printed).toContain('count: 2');
+  });
+
+  it('treats every entry as newly granted when the base has no policy file, and still passes', async () => {
+    writeRepoConfig([REVIEWED]);
+    expect(
+      await runCommand(
+        'sanctions-check',
+        [],
+        deps({ exec: sanctionsExec(null).exec }),
+      ),
+    ).toBe(0);
+    expect(errors.join('')).toContain('a.ts|cast-any|x');
+  });
+
+  it('fails and names each malformed entry in the head config', async () => {
+    writeRepoConfig([REVIEWED, { key: 'c.ts|cast-any|z' }]);
+    const base = JSON.stringify({ sanctionedSuppressions: [] });
+    expect(
+      await runCommand(
+        'sanctions-check',
+        [],
+        deps({ exec: sanctionsExec(base).exec }),
+      ),
+    ).toBe(1);
+    const printed = errors.join('');
+    expect(printed).toContain('missing reason');
+    expect(printed).toContain('malformed');
+  });
+
+  it('fails on a non-integer or non-positive count', async () => {
+    writeRepoConfig([{ ...REVIEWED, count: 0 }]);
+    const base = JSON.stringify({ sanctionedSuppressions: [] });
+    expect(
+      await runCommand(
+        'sanctions-check',
+        [],
+        deps({ exec: sanctionsExec(base).exec }),
+      ),
+    ).toBe(1);
+    expect(errors.join('')).toContain('count must be a positive integer');
+  });
+
+  it('does not report a new grant when the head config is malformed', async () => {
+    // Malformed-entry failure is the ONLY failure mode; it must not also spend
+    // effort computing (or printing) grants from a config it is rejecting.
+    writeRepoConfig([REQUESTED, { key: 'c.ts|cast-any|z' }]);
+    const base = JSON.stringify({ sanctionedSuppressions: [] });
+    await runCommand(
+      'sanctions-check',
+      [],
+      deps({ exec: sanctionsExec(base).exec }),
+    );
+    expect(errors.join('')).not.toContain('newly requested');
   });
 });
 
@@ -980,13 +1030,15 @@ describe('sanctions-check git plumbing', () => {
 
   it('ignores the base file contents when git show fails', async () => {
     // Kills `base.code === 0 ? parse : []` -> true. A failed `git show` may
-    // still print to stdout; trusting it would silently approve an exemption.
+    // still print stdout; trusting it would treat REVIEWED as already known
+    // (base === head) instead of reporting it as a new grant.
     writeRepoConfig([REVIEWED]);
     const { exec } = sanctionsExec(
       JSON.stringify({ sanctionedSuppressions: [REVIEWED] }),
       ok('BASESHA\n'),
       128,
     );
-    expect(await runCommand('sanctions-check', [], deps({ exec }))).toBe(1);
+    expect(await runCommand('sanctions-check', [], deps({ exec }))).toBe(0);
+    expect(errors.join('')).toContain('a.ts|cast-any|x');
   });
 });

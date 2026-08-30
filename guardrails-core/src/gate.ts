@@ -16,6 +16,7 @@ import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 import { auditDiff, type AuditFinding } from './audit.js';
+import type { SanctionedSuppression } from './config.js';
 import type { Exec } from './exec.js';
 import { withGuidance } from './guidance.js';
 import {
@@ -55,8 +56,13 @@ export interface CommitGateOptions {
   baseBranch: string;
   exec: Exec;
   resolveBin?: (tool: string) => string;
-  /** Reviewed `file|kind|text` keys to exempt (RepoConfig.sanctionedSuppressions). */
-  sanctionedSuppressions?: readonly string[];
+  /**
+   * Reviewed exemptions (RepoConfig.sanctionedSuppressions). Each grant spends
+   * a budget of `count` (default 1) occurrences of its `file|kind|text` key —
+   * NOT every occurrence of that key in the file — so a second identical
+   * directive beyond the granted count still blocks. See `sanctionBudget`.
+   */
+  sanctionedSuppressions?: readonly SanctionedSuppression[];
 }
 
 export interface CommitGateResult {
@@ -67,6 +73,45 @@ export interface CommitGateResult {
 
 function findingKey(finding: AuditFinding): string {
   return `${finding.file}|${finding.kind}|${finding.text}`;
+}
+
+/**
+ * Sum each sanction's `count` (default 1) per key, so several entries granting
+ * the same key (or one entry granting several occurrences) combine into one
+ * spendable budget. This is what turns membership-testing (one grant exempts
+ * every occurrence, forever) into budget-spending (one grant exempts exactly
+ * that many occurrences).
+ */
+function sanctionBudget(
+  sanctions: readonly SanctionedSuppression[],
+): Map<string, number> {
+  const budget = new Map<string, number>();
+  for (const sanction of sanctions) {
+    const amount = sanction.count ?? 1;
+    budget.set(sanction.key, (budget.get(sanction.key) ?? 0) + amount);
+  }
+  return budget;
+}
+
+/**
+ * Filter findings against a spendable budget: a finding whose key still has
+ * budget remaining is exempted and decrements that budget by one; once the
+ * budget for a key is exhausted, every further occurrence of that same key is
+ * reported. `budget` is mutated in place — private to one `runCommitGate` call.
+ */
+function spendBudget(
+  findings: readonly AuditFinding[],
+  budget: Map<string, number>,
+): AuditFinding[] {
+  return findings.filter((finding) => {
+    const key = findingKey(finding);
+    const remaining = budget.get(key) ?? 0;
+    if (remaining <= 0) {
+      return true;
+    }
+    budget.set(key, remaining - 1);
+    return false;
+  });
 }
 
 function snapshotFile(directory: string, sessionId: string): string {
@@ -234,13 +279,12 @@ export async function runCommitGate(
   // knip/fallow ignore entries. It is NOT applied to the Stop gate, whose
   // snapshot already distinguishes fixer-added suppressions from pre-existing
   // ones — so this cannot become a fixer escape hatch.
-  // Equivalent mutant on the `[]` default: the set is only probed with real
-  // `file|kind|text` finding keys, so a placeholder entry can never match.
+  // Equivalent mutant on the `[]` default: the budget is only probed with real
+  // `file|kind|text` finding keys, and a placeholder entry's `.key` reads as
+  // `undefined` (not a string), so it can never match and grants no budget.
   // Stryker disable next-line ArrayDeclaration
-  const sanctioned = new Set(options.sanctionedSuppressions ?? []);
-  const findings = auditDiff(await branchDiff(options)).filter(
-    (finding) => !sanctioned.has(findingKey(finding)),
-  );
+  const budget = sanctionBudget(options.sanctionedSuppressions ?? []);
+  const findings = spendBudget(auditDiff(await branchDiff(options)), budget);
   const guided = withGuidance(violations);
   return {
     violations: guided,

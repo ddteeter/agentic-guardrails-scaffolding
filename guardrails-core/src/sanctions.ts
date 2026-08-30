@@ -1,13 +1,19 @@
 /**
  * Sanction approval (§ "self-sanction"). `sanctionedSuppressions` is the one
  * escape hatch from the diff-auditor, so GRANTING one must not be something the
- * agent can do for itself. The check compares the sanction KEY SET against the
- * branch's merge-base: any key present on the branch but absent from the base is
- * a newly-requested exemption.
+ * agent can do for itself. The check compares each key's TOTAL granted count
+ * against the branch's merge-base: a key absent from the base entirely, or one
+ * whose total count increased, is a new grant this branch introduces.
  *
- * It is deliberately enforced in **CI, not at the commit gate**. The PR is where
- * a human actually signs off, so merging the PR *is* the approval. Locally the
- * agent may add an entry and commit; it cannot merge.
+ * It is deliberately enforced in **CI**, and deliberately never fails on a new
+ * grant — the PR is where a human actually signs off, so merging the PR *is*
+ * the approval, and a required check that failed on every legitimate approval
+ * would deadlock the very merge that constitutes it. The check can only fail
+ * on a MALFORMED entry (see `config.ts`'s `SanctionParseResult`); a new grant
+ * is printed prominently instead, for the reviewer to see, and passes. The
+ * gate itself (`runCommitGate` in `gate.ts`) is what enforces reality: an
+ * occurrence beyond the declared `count` still blocks the commit regardless of
+ * what this check says.
  *
  * An `approvedBy` provenance field was built and then removed on purpose. Local
  * git identity is writable by whatever is running — and is frequently a bot or a
@@ -15,35 +21,98 @@
  * field recorded a name that proved nothing and looked like a guarantee. The
  * `reason` text plus PR review carry the whole load instead.
  *
- * Comparing keys rather than diff lines also keeps the check precise:
- * reformatting the file, editing a `reason`, or REMOVING an entry are all
- * legitimate edits that must not trip it.
+ * Comparing key TOTALS rather than diff lines also keeps the check precise:
+ * reformatting the file, editing a `reason`, splitting one entry into several
+ * that still sum to the same count, or REMOVING a grant are all legitimate
+ * edits that must not read as a new grant.
  */
 
 import type { SanctionedSuppression } from './config.js';
 import type { Violation } from './violation.js';
 
-/** Keys present in `head` but not in `base` — the exemptions this branch adds. */
+/** A sanction's occurrence budget: the declared `count`, defaulting to 1. */
+function effectiveCount(sanction: SanctionedSuppression): number {
+  return sanction.count ?? 1;
+}
+
+/** Sum every entry's effective count per key — several entries granting the
+ * same key combine into one total, mirroring the gate's own budget math. */
+function totalsByKey(
+  sanctions: readonly SanctionedSuppression[],
+): Map<string, number> {
+  const totals = new Map<string, number>();
+  for (const sanction of sanctions) {
+    totals.set(
+      sanction.key,
+      (totals.get(sanction.key) ?? 0) + effectiveCount(sanction),
+    );
+  }
+  return totals;
+}
+
+/** One newly-approved exemption: a key absent from the base config, or a key
+ * whose total granted count increased on this branch. */
+export interface SanctionGrant {
+  key: string;
+  /** Total occurrence budget now granted for this key (all entries summed). */
+  count: number;
+  /** `reason` text of every entry granting this key, in config order. */
+  reasons: readonly string[];
+}
+
+/**
+ * Grants present in `head` that are new relative to `base`: a key whose total
+ * count in `head` exceeds its total in `base` (zero when the key is absent
+ * from `base` entirely).
+ */
 export function newlySanctioned(
   base: readonly SanctionedSuppression[],
   head: readonly SanctionedSuppression[],
-): SanctionedSuppression[] {
-  const known = new Set(base.map((sanction) => sanction.key));
-  return head.filter((sanction) => !known.has(sanction.key));
+): SanctionGrant[] {
+  const baseTotals = totalsByKey(base);
+  const headTotals = totalsByKey(head);
+  const seenKeys = new Set<string>();
+  const grants: SanctionGrant[] = [];
+  for (const sanction of head) {
+    if (seenKeys.has(sanction.key)) {
+      continue;
+    }
+    seenKeys.add(sanction.key);
+    const headCount = headTotals.get(sanction.key) ?? 0;
+    const baseCount = baseTotals.get(sanction.key) ?? 0;
+    if (headCount > baseCount) {
+      grants.push({
+        key: sanction.key,
+        count: headCount,
+        reasons: head
+          .filter((entry) => entry.key === sanction.key)
+          .map((entry) => entry.reason),
+      });
+    }
+  }
+  return grants;
 }
 
-/** Map newly-requested exemptions to blocking violations for the CI report. */
-export function toSanctionViolations(
-  added: readonly SanctionedSuppression[],
+/** Render newly-granted exemptions as report lines for the CI sanctions-check
+ * to print — informational, never a blocking `Violation`: the human review
+ * that approves a grant IS the pull-request merge, not this check. */
+export function formatGrantReport(grants: readonly SanctionGrant[]): string[] {
+  return grants.map(
+    (grant) =>
+      `  - ${grant.key} (count: ${grant.count}): ${grant.reasons.join('; ')}`,
+  );
+}
+
+/** Map malformed `sanctionedSuppressions` entries in the head config to
+ * blocking violations — the ONLY failure mode of the CI sanctions check. */
+export function toMalformedViolations(
+  malformed: readonly string[],
   configPath: string,
 ): Violation[] {
-  return added.map((sanction) => ({
-    ruleId: 'guardrails/self-sanction',
+  return malformed.map((message) => ({
+    ruleId: 'guardrails/malformed-sanction',
     file: configPath,
-    message:
-      `New diff-auditor exemption requested: ${sanction.key} — ` +
-      `reason: "${sanction.reason}". A human must approve this by reviewing ` +
-      `and merging the pull request; it cannot be self-granted.`,
+    message: `Malformed sanctionedSuppressions ${message}.`,
     severity: 'error' as const,
     fixable: false,
     tool: 'guardrails',
