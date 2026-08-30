@@ -1077,3 +1077,29 @@ it already computed.
 stryker analyzer will now see `stryker/no-coverage` on changed files that have
 untested lines. That is the intended behaviour, but it is a behaviour change to
 call out in release notes rather than ship silently.
+
+### Dogfooding finding: single-file `stryker --mutate` reports false survivors
+
+Found while executing Phase E pieces 1-2, where per-task mutation checks were
+run file-by-file to catch survivors early rather than at the commit gate.
+
+`npx stryker run --mutate <one file>` is **not** a faithful preview of what the
+commit gate will report. Two distinct problems:
+
+- **False survivors.** The vitest runner loads only the test files it considers
+  related to the mutated file, so mutants killed by a test elsewhere in the
+  suite are reported as surviving. The direction is safe — it over-reports, never
+  under-reports — so a clean `0 survived` from a single-file run can be trusted,
+  but a reported survivor must be re-checked before anyone spends time proving it
+  equivalent or (worse) asks for a suppression.
+- **Cache poisoning.** The run writes `reports/stryker-incremental.json`, and a
+  later run over a different file set reads that state back. Delete that file
+  before re-verifying, or the false survivor persists across runs.
+
+**Practice:** treat a single-file run as a cheap early filter. Before acting on
+any survivor it reports — and always before proposing a `sanctionedSuppressions`
+entry — delete `reports/stryker-incremental.json` and re-run over the gate's own
+changed-file set. Two of this plan's three escalations to the developer were
+resolved by restructuring instead of exemption; a false survivor that reached
+that conversation would have spent the developer's attention on a mutant that
+was already dead.
