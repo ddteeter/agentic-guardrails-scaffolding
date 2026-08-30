@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -25,9 +25,9 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
-function v(file: string): Violation {
+function v(file: string, ruleId = 'x'): Violation {
   return {
-    ruleId: 'x',
+    ruleId,
     file,
     message: 'm',
     severity: 'error',
@@ -49,6 +49,65 @@ describe('collectManifestFiles', () => {
 
   it('is empty when there are no manifests', () => {
     expect(collectManifestFiles(directory).size).toBe(0);
+  });
+
+  it('never makes package.json editable, whatever names it', () => {
+    // guardrails/analyzer-missing points at package.json. Letting the fixer
+    // edit it would let it delete the provider dependency, which flips the
+    // analyzer to auto+undeclared and makes the violation vanish.
+    writeViolations(directory, 's1', [
+      v('package.json', 'guardrails/analyzer-missing'),
+    ]);
+    expect(collectManifestFiles(directory).size).toBe(0);
+  });
+
+  it('never makes guardrails.config.json editable, whatever names it', () => {
+    // guardrails/analyzer-unknown points at the config, which holds
+    // sanctionedSuppressions, maxAttempts, analyzers and enforcement.
+    writeViolations(directory, 's1', [
+      v('guardrails.config.json', 'guardrails/analyzer-unknown'),
+    ]);
+    expect(collectManifestFiles(directory).size).toBe(0);
+  });
+
+  it('denies a workspace member package.json at any depth', () => {
+    writeViolations(directory, 's1', [
+      v('packages/a/package.json', 'guardrails/analyzer-missing'),
+    ]);
+    expect(collectManifestFiles(directory).size).toBe(0);
+  });
+
+  it('reads only `.last.json` manifests, not other state files', () => {
+    // The state directory also holds session tallies and recurrence counts, and
+    // a consumer may leave anything else there. Without the suffix filter this
+    // array-shaped stray would widen the fixer's allowlist.
+    writeViolations(directory, 's1', [v('src/a.ts')]);
+    writeFileSync(
+      path.join(directory, 'notes.json'),
+      JSON.stringify([v('src/stray.ts')]),
+    );
+    expect([...collectManifestFiles(directory)]).toEqual(['src/a.ts']);
+  });
+
+  it('yields nothing for a manifest that is not a JSON array', () => {
+    writeFileSync(path.join(directory, 's1.last.json'), '{"not":"an array"}');
+    expect(collectManifestFiles(directory).size).toBe(0);
+  });
+
+  it('ignores manifest entries that are not violations', () => {
+    writeFileSync(
+      path.join(directory, 's1.last.json'),
+      JSON.stringify([{ nonsense: true }, v('src/a.ts')]),
+    );
+    expect([...collectManifestFiles(directory)]).toEqual(['src/a.ts']);
+  });
+
+  it('keeps every non-denied file editable alongside a denied one', () => {
+    writeViolations(directory, 's1', [
+      v('src/foo.ts'),
+      v('package.json', 'guardrails/analyzer-missing'),
+    ]);
+    expect([...collectManifestFiles(directory)]).toEqual(['src/foo.ts']);
   });
 });
 
@@ -79,6 +138,10 @@ describe('isWithinRepo', () => {
     expect(isWithinRepo('/repo', '/repo/.claude/state/g/sid.last.json')).toBe(
       true,
     );
+  });
+
+  it('accepts the repo root itself', () => {
+    expect(isWithinRepo('/repo', '/repo')).toBe(true);
   });
 
   it('rejects paths outside the repo (e.g. ~/.claude project memory)', () => {
