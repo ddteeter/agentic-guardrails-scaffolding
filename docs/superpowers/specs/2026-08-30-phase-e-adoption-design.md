@@ -34,6 +34,10 @@ the loop, which makes it unrepresentative in exactly the ways that matter.
   touch).
 - **Release is a GitHub Release tarball installed by URL**, with a CI tarball
   smoke test. npm publish is a one-line migration later.
+- **The phase ends at adoption, not at code.** Its exit criterion is `v0.1.0`
+  cut, installed into the target project, and driven to a green
+  `guardrails verify` with findings recorded in `plan.md`. There is deliberately
+  no mid-phase pause; a wrong guess costs a tag.
 - **Out of scope:** the mutation survivor baseline. Greenfield never pays that
   tax; it is a ramp for legacy code, not a composition question.
 
@@ -54,10 +58,10 @@ here so the exclusions are decisions rather than omissions:
   phase delivers the **guidance** — through Phase C's existing guidance pipeline,
   so Copilot gets it too — but `init` neither installs a validator nor picks one.
   Choosing zod vs valibot vs typia for someone else's repo is a judgement call,
-  and this design has a judgement layer to put it in (§8).
+  and this design has a judgement layer to put it in (§7).
 - **Solo→team flip — narrowed to verification plus documentation.** Honoring
   `enforcement` is the only _code_ the flip needs and it is piece 2. What remains
-  is testing plan.md's standing claim rather than restating it (§9.3).
+  is testing plan.md's standing claim rather than restating it (§8.3).
 
 ## 2. Piece ordering
 
@@ -69,16 +73,21 @@ Seven pieces, ordered by dependency.
 | 2   | `enforcement` honored — commit + preToolUse gates                   | Small and independent; lands with piece 1 for one clean config diff                  |
 | 3   | Packaging + release — `files`, tarball smoke test, Release workflow | init's design depends on knowing what actually ships in the tarball                  |
 | 4   | `guardrails init` — detect / plan / apply, file classes, manifest   | The deliverable                                                                      |
-| 5   | Adoption dry-run checkpoint — adopt into the real greenfield repo   | Findings feed back into piece 4 before it is finished                                |
-| 6   | Scaffolding skill — judgement layer; validator guidance rides here  | Needs piece 4 to exist to drive                                                      |
-| 7   | CI template, adoption docs, team-flip verification                  | The write-up, once behaviour is settled                                              |
+| 5   | Scaffolding skill — judgement layer; validator guidance rides here  | Needs piece 4 to exist to drive                                                      |
+| 6   | CI template, adoption docs, team-flip verification                  | The write-up, once behaviour is settled                                              |
+| 7   | Cut `v0.1.0`, adopt in the target project, record findings          | Adoption is the phase's exit criterion, not a midpoint                               |
 
-Piece 5 is a **checkpoint, not a deliverable**. It exists because the scaffolder
-automates a consumer footprint nobody has ever assembled: this repo self-hosts by
-inlining into `.claude/` and hand-maintaining `guardrails.config.json`. Walking
-the path manually once, after pieces 1–3 make it walkable, is what keeps piece 4
-specified against reality instead of inference. Piece 4 should therefore reach
-the checkpoint **reviewable and revisable, not polished.**
+**There is deliberately no mid-phase pause.** An earlier draft placed a manual
+adoption dry-run between pieces 3 and 4, so that findings from a hand-assembled
+consumer footprint could shape `init` before it was finished. That was rejected:
+the release channel is a GitHub Release rather than npm, so a `v0.1.x` that gets
+something wrong costs a tag and nothing else. Cheap re-cutting beats an
+interrupted build, and it keeps piece 4 built to completion rather than
+deliberately half-done at a checkpoint.
+
+The consequence, accepted knowingly: **adoption findings arrive as rework, not as
+input.** Piece 7 records them in `plan.md`, and acting on them is a follow-on
+phase. §11.2 states the risk that carries.
 
 **Branch risk.** This phase branches `worktree-phase-c-stryker` (PR #16, open).
 Pieces 1–2 touch `config.ts` and `verify/index.ts`, both modified by #16, so a
@@ -131,7 +140,7 @@ absent key means `"auto"`.
 
 Row 5 is what makes the hybrid safe. The cost plan.md identified for
 installed-means-enabled was that "a tool that fails to install degrades silently
-— the exact failure piece 5 exists to remove." That case is _detectable_: a
+— the exact failure Phase C piece 5 exists to remove." That case is _detectable_: a
 provider named in the consumer's own `package.json` whose binary does not resolve
 is a broken install, not an opt-out. Reading `package.json` costs nothing —
 `workspaces.ts` already reads it.
@@ -261,7 +270,7 @@ Code, CLI, and cloud agent; a Claude-only scaffolder is a regression. The CLI is
 also the only form that works in CI and in a headless agent.
 
 The skill is not discarded — it becomes the **judgement layer above** the CLI
-(§8). The CLI owns detection, the plan, and the writes: everything that must be
+(§7). The CLI owns detection, the plan, and the writes: everything that must be
 deterministic and idempotent. The skill owns the decisions.
 
 ### 6.2 Invocation modes
@@ -294,7 +303,7 @@ Unmodified → rewritten on upgrade. Modified → left alone and reported as dri
 - `.claude/skills/*/SKILL.md` and `docs/guardrails/*.md` — **run-time**
   guidance only (`crushing-mutants`, the boundary-validator doc). The
   `adopting-guardrails` skill is deliberately excluded; it is adoption-time
-  and ships in the tarball instead (§8.1).
+  and ships in the tarball instead (§7.1).
 
 **SHARED** — merge only guardrails' own entries; consumer content untouched.
 
@@ -360,7 +369,7 @@ the Copilot cloud agent, which reads from the default branch**, where
 
 So `init` copies run-time guidance into `docs/guardrails/` as OWNED files. The
 packaged `guidance/` directory stays — it is the source `init` copies _from_, and
-it is what makes adoption-time guidance readable before adoption (§8).
+it is what makes adoption-time guidance readable before adoption (§7).
 
 ### 6.8 Rider: `resolveRepoRoot`
 
@@ -377,19 +386,7 @@ That bug is invisible in this repo and certain to bite a real adopter running
 tests) lands as part of this piece, and the broader gitignore-hygiene follow-up
 is subsumed by it.
 
-## 7. Piece 5 — the adoption dry-run checkpoint
-
-After pieces 1–3, adopt guardrails into the real greenfield repo **by hand**:
-install the release tarball, hand-author `guardrails.config.json` including the
-`analyzers` block, copy the hook and agent files, wire `core.hooksPath`, and run
-the loop until `guardrails verify` is green.
-
-The output is not code. It is a list of findings recorded in `plan.md`, answering:
-what did the footprint actually have to contain, what was ambiguous, what
-defaults were wrong, and what did the manual path require that §6.4's file list
-does not cover. Piece 4 is revised against that list before it is finished.
-
-## 8. Piece 6 — the scaffolding skill (judgement layer)
+## 7. Piece 5 — the scaffolding skill (judgement layer)
 
 Source at `guardrails-plugin/skills/adopting-guardrails/`, riding the pipeline
 Phase C built: `sync-agents.mjs` emits it to `.claude/skills/`, `docs/guardrails/`,
@@ -397,7 +394,7 @@ Phase C built: `sync-agents.mjs` emits it to `.claude/skills/`, `docs/guardrails
 One source, three surfaces — Claude Code skill, Copilot doc plus index, and
 `guardrails init` interactive for a plain CLI user.
 
-### 8.1 The bootstrapping split
+### 7.1 The bootstrapping split
 
 A skill that explains how to adopt guardrails cannot itself be delivered by
 adoption. The resolution also settles what `init` installs:
@@ -410,7 +407,7 @@ adoption. The resolution also settles what `init` installs:
   `crushing-mutants`, the boundary-validator doc — because those are needed
   every day, by the cloud agent, from the default branch.
 
-### 8.2 What the skill does
+### 7.2 What the skill does
 
 1. Run `guardrails init --plan --json`.
 2. Read the repo for real: library vs application vs monorepo, which analyzers
@@ -431,7 +428,7 @@ clean-baseline prerequisite means a repo scaffolded onto a dirty baseline has a
 gate that blocks every turn on pre-existing findings, which is worse than no
 gate. Scaffolding ends at file-writing; **adoption ends at green.**
 
-### 8.3 Boundary-validator guidance
+### 7.3 Boundary-validator guidance
 
 A second doc on the same pipeline, delivering the Phase C redirect: at trust
 boundaries, `schema.parse(JSON.parse(x))` rather than a structural cast; and the
@@ -439,9 +436,9 @@ fixer's instruction for a boundary cast becomes _route it to a validator_, not
 _delete it_. Referenced from both fixer agents. No dependency is installed and no
 validator is chosen for the consumer — that is step 5's call, per repo.
 
-## 9. Piece 7 — CI template, docs, team flip
+## 8. Piece 6 — CI template, docs, team flip
 
-### 9.1 CI template
+### 8.1 CI template
 
 `.github/workflows/guardrails.yml`, consumer-generic: checkout with
 `fetch-depth: 0` (the merge-base baseline needs history) and
@@ -461,7 +458,7 @@ command rather than by new code. This repo's own `ci.yml` adopts the same shape.
 and no analyzer currently declares `minRung: 'ci'`, so commit ≡ ci today. The day
 one does, CI needs a `--mode=ci`.
 
-### 9.2 Adoption docs
+### 8.2 Adoption docs
 
 `docs/adoption.md`, linked from the README: install, `init`, what each written
 file is and who owns it, what each analyzer costs at which rung, the
@@ -470,7 +467,7 @@ re-running `init` after an upgrade and reading a drift report, the URL-dependenc
 upgrade caveat, the kill-switch, and the note that an org admin can disable the
 Copilot CLI or cloud-agent surface outright, leaving that half inert.
 
-### 9.3 Team-flip verification
+### 8.3 Team-flip verification
 
 plan.md has asserted since Phase A that solo→team is "config plus a publish, not
 a rewrite". This piece **tests that claim** rather than restating it.
@@ -483,6 +480,36 @@ committed ledger would be both ignored and eventually deleted. If that holds, th
 claim is **false as written** and the flip needs a small change: move the ledger
 out of `state/`, or exempt it from both the ignore and the sweep. The piece
 confirms or fixes it, and updates plan.md either way.
+
+## 9. Piece 7 — cut the release, adopt, record findings
+
+The phase's exit criterion. Not "the code is written" — **adopted and green in a
+real repo that is not this one.**
+
+1. Tag `v0.1.0`; the release workflow (§5.3) builds, packs, and attaches the
+   tarball.
+2. In the target greenfield Node/TypeScript project: install from the release
+   URL, run the scaffolding skill (or `guardrails init` directly), and drive it
+   to a green `guardrails verify`.
+3. Exercise the loop for real — let the Stop gate block a turn, let a fixer
+   subagent resolve it, make a commit through the pre-commit hook, and let CI
+   run.
+4. Record every finding in `plan.md`, in the same spirit as the Phase C
+   execution-findings sections: what `init` got wrong, what the defaults should
+   have been, what the adoption doc failed to explain, what the footprint was
+   missing.
+
+Findings are the deliverable of this piece. Acting on them is a follow-on phase,
+and a `v0.1.1` costs a tag — which is the trade §2 makes explicit.
+
+**Two things to watch for specifically**, because this repo cannot surface them:
+
+- The **clean-baseline prerequisite** under real conditions. A greenfield repo
+  should satisfy it trivially, which makes this the cheapest possible test of
+  whether it is actually true.
+- Whether `guardrails verify` run from a **package subdirectory** behaves, which
+  is what §6.8's `resolveRepoRoot` rider exists to fix and what this repo's
+  single-package-at-root layout hides.
 
 ## 10. Testing
 
@@ -515,13 +542,17 @@ Following the seams the codebase already uses — `exec`, `readFile` and
    _computation_ pure and separate from file _I/O_, so mutants die to unit tests
    rather than to integration tests. Per CLAUDE.md, no `sanctionedSuppressions`
    entry is added without asking first.
-2. **The dry-run may invalidate piece 4's design.** That is what piece 5 is for,
-   but it means piece 4 reaches the checkpoint reviewable and revisable rather
-   than polished.
+2. **Adoption findings arrive as rework, not as input.** With no mid-phase
+   checkpoint (§2), piece 4 is built to completion before anyone has assembled a
+   consumer footprint, so a wrong assumption in the file classes or the detection
+   logic surfaces only at piece 7 — after it is polished and mutation-tested.
+   This is accepted deliberately: the release channel is a GitHub Release, so
+   correcting it costs a `v0.1.1` tag rather than a published-package migration.
+   The exposure is wasted effort on piece 4 internals, not a stuck consumer.
 3. **`.claude/settings.json` is the sharpest edge.** It is the one SHARED file
    where a wrong merge either silently disables the loop or clobbers a consumer's
    own hooks. It gets the most test attention.
 4. **The Copilot half may be inert in a managed org.** plan.md records that
    admins can disable the CLI or cloud-agent surface outright. `init` writes the
-   files regardless; §9.2 documents the consequence.
-5. **Open:** the `--mode=ci` seam (§9.1) is recorded, not built.
+   files regardless; §8.2 documents the consequence.
+5. **Open:** the `--mode=ci` seam (§8.1) is recorded, not built.
