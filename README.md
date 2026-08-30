@@ -17,6 +17,22 @@ This repository is the **development home** for three artifacts:
 
 See [`plan.md`](./plan.md) for the full design and phase breakdown.
 
+## Install
+
+`guardrails-core` is delivered as a GitHub Release asset, not from npm:
+
+```bash
+npm i -D https://github.com/ddteeter/agentic-guardrails-scaffolding/releases/download/v0.1.0/guardrails-core-0.1.0.tgz
+```
+
+**What a URL dependency costs you, stated plainly:** no semver range, no dedupe,
+and Dependabot will not track it. Upgrading means editing the URL by hand. This
+is deliberate while the package has no external consumers — publishing to npm
+later changes this line and nothing else.
+
+Installing the package does not yet wire anything up; `guardrails init`
+(piece 4) writes the hooks, fixer agents, and pre-commit hook into your repo.
+
 ## The control loop (Claude Code)
 
 ```
