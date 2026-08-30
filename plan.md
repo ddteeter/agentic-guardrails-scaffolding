@@ -81,8 +81,11 @@ full enforcement matrix and per-surface research grounding.
   (piece 4), workspaces / affected-package attribution (piece 6).
 - **D — Java pack + polyglot** (spotless, pmd, error-prone/nullaway, spotbugs,
   ArchUnit, pitest/descartes; Maven/Gradle report adapters).
-- **E — Scaffolder + team-flip** (detection/plan/confirm/idempotency skill;
-  solo→team config flip).
+- **E — Adoption: analyzer opt-in, `guardrails init`, team-flip.** Seven pieces:
+  (1) analyzer opt-in — shipped; (2) `enforcement` honored by the commit and
+  preToolUse gates — shipped; (3) packaging + release; (4) `guardrails init`;
+  (5) the scaffolding skill; (6) CI template + adoption docs + team-flip
+  verification; (7) cut the release, adopt in a real project, record findings.
 
 ## Solo → team
 
@@ -289,12 +292,17 @@ core/src/audit.ts`) surfaced that it was a context-free text scan: it flagged
   documentation. (A template literal nested _inside_ another template's `${...}`
   interpolation is likewise skipped as an opaque string span rather than
   recursively lexed.) Both are structurally fixed by the roadmapped AST auditor
-  (below), which tracks open-comment state across lines. Also noted while auditing the commit path: **both
-  `gate --mode=commit` and `gate --mode=pretooluse` currently hard-block
-  unconditionally** on any finding — they do not yet consult
-  `RepoConfig.enforcement` (`"warn"` vs `"block"`). Honoring `enforcement` on
-  the commit/pretooluse gates is deferred; it's reserved for the solo→team
-  flip (Phase E), where `enforcement: "block"` becomes the team default.
+  (below), which tracks open-comment state across lines. Also noted while auditing the commit path — **now shipped (Phase E piece
+  2):** `gate --mode=commit` and `gate --mode=pretooluse` honor
+  `RepoConfig.enforcement` (`"warn"` vs `"block"`). Under `warn` both still
+  run the gate and report violations/findings in full; only the exit code
+  (`--mode=commit`) or the deny-payload-vs-stderr choice (`--mode=pretooluse`)
+  changes, and each says outright that it is not blocking. `enforcement` is
+  consulted only in `cli-core.ts` — it governs the commit/preToolUse surfaces
+  alone, `toGateConfig` still does not forward it, and the Claude Code Stop
+  loop is deliberately never softened by it. This repo sets its own
+  `enforcement` to `"block"` in `guardrails.config.json`, since the default is
+  `"warn"` and leaving it there would have made this repo's own gate advisory.
 
 - **Auditor soundness: text lexer → AST (decided, roadmapped).** The auditor is
   a hand-rolled single-line lexer + regex signatures operating on _diff
@@ -389,42 +397,26 @@ core/src/audit.ts`) surfaced that it was a context-free text scan: it flagged
   `fixerReadAllowlist: string[]` to `guardrails.config.json` (extra roots the
   fixer may read), mirroring how `looseRules` extends the built-in defaults.
 
-## Roadmap: analyzer opt-in (pack composition, not all-or-nothing)
+## Roadmap: analyzer opt-in (pack composition, not all-or-nothing) — shipped
 
-`ANALYZERS` is a hardcoded table, so every consumer runs the whole TS pack.
-Phase C piece 5 makes that bite: a pack tool that cannot run is now an
-error-severity `guardrails/analyzer-missing` violation, because a guard that
-silently did not run is worse than no guard. The corollary is that a consumer who
-deliberately does not want, say, knip would face a permanent blocking violation.
-
-**Adoption should be opt-in per analyzer.** A repo should be able to take
-dependency-cruiser and stryker without knip, or start with eslint/tsc only and
-add the rest as it matures — the same graduated-adoption argument as the mutation
-survivor baseline. All-or-nothing is a bad default for a tool whose whole pitch is
-dropping into an existing repo.
-
-Two candidate policies, to be chosen when this is designed:
-
-- **Explicit config.** `guardrails.config.json` carries an analyzer allowlist or
-  per-analyzer `false`. Unambiguous, reviewable, and it composes with the
-  `minRung`/`scope` policy already in the table. Cost: a new config surface, and a
-  consumer who forgets to enable something gets no signal.
-- **Installed-means-enabled.** Run the analyzers that resolve, and raise
-  `analyzer-missing` only for ones the config explicitly _enables_. Zero-config
-  for the common case, and it makes `npm uninstall knip` a complete opt-out. Cost:
-  the default is implicit, so a tool that fails to install degrades silently — the
-  exact failure piece 5 exists to remove.
-
-The likely answer is a hybrid: installed-means-enabled as the default, with an
-explicit `analyzers` block that promotes a tool to _required_ (and so restores
-piece 5's hard error for anyone who wants it). Whichever is chosen, the
-**scaffolder owns the conversation** — its detect/plan/confirm flow is where a
-consumer should be asked which analyzers they want, and it is what installs the
-peer dependencies. Phase-E-owned.
+Phase E piece 1 shipped the hybrid this section used to guess at:
+installed-means-enabled by default, with an explicit `guardrails.config.json`
+`analyzers` block (keyed by tool name, values `off` / `auto` / `required`, with
+`true`/`false` accepted as shorthand for `required`/`off`) that promotes a tool
+to `required` and so restores a hard `guardrails/analyzer-missing` error for
+anyone who wants it. The full truth table — off if the config says off,
+otherwise it runs if it is there, and a missing binary is an error only if it
+was asked for, in `analyzers` **or** in the repo's own `package.json` — is
+`decideAnalyzer` in `guardrails-core/src/verify/analyzer-policy.ts`; the design
+is `docs/superpowers/specs/2026-08-30-phase-e-adoption-design.md` §3. That
+declared-in-`package.json` clause is specifically what closes the
+silent-degradation hole this section worried about: a provider the repo names in
+its own manifest but whose binary will not start is a broken install and still
+errors, not a quiet opt-out.
 
 Related: the mutation **survivor baseline** (Phase C piece 4 findings) is the same
 shape of problem — a pack member that is unusable on day one of adoption unless
-there is a ramp.
+there is a ramp. That baseline remains out of scope for this phase.
 
 ## Phase A status
 

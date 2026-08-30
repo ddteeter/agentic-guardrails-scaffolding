@@ -81,6 +81,11 @@ is whole-graph, so — like tsc — it assumes a **knip-clean baseline**. Run
 `npx knip` clean before relying on the commit gate; pre-existing dead code will
 otherwise block every commit until removed.
 
+An analyzer set to `"off"` in `guardrails.config.json`'s `analyzers` block never
+runs and never reports, so a repo can adopt eslint/tsc first and add the
+whole-graph analyzers (knip, dependency-cruiser, stryker) once its baseline is
+clean.
+
 ## Verifying the live Claude Code loop
 
 The headless tests prove verify → gate → delegate → audit → re-verify →
