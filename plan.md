@@ -799,6 +799,53 @@ the disjoint `cwd`-dropping mutants.
 Related note for `crushing-mutants`: a test's containment must not live in code
 the mutation engine mutates. Cheap to say; not worth shipped machinery.
 
+### Finding: mutation suppressions are far coarser than they look
+
+**A sanction always grants more than its description.** Measured on
+`stryker-adapter.ts` by stripping its directives and re-running:
+
+|                    | killed | ignored | survived |
+| ------------------ | ------ | ------- | -------- |
+| with directives    | 61     | 31      | **0**    |
+| directives removed | 76     | 12      | **4**    |
+
+Only **4** mutants genuinely survive — exactly the four analysed as equivalent
+and approved. Suppressing them silences **19**: fifteen genuinely-killed mutants
+go along as collateral. The tests still kill them, so no coverage is _lost_ — but
+every "zero survivors" report on such a file verifies substantially less than it
+claims, and the human who approved four exemptions actually granted nineteen.
+
+Two independent mechanics cause this, both confirmed in this repo:
+
+1. **Directives match by (mutator name, line), not by sub-expression.** On a
+   compound condition like `typeof v === 'object' && v !== null && …`, every
+   clause shares a start line with the whole chain, so a
+   `disable next-line ConditionalExpression` silences all of them.
+2. **A `restore` only binds if a statement follows it.** One placed after a
+   `return` never attaches, and its `disable` then runs to **end of file**. That
+   bug hid 21 mutants across four functions in `gate.ts` — including the
+   anti-cheat core — while the report read zero survivors.
+
+**Remedy (proven, used to land piece 6's adapter hardening):** reorder the
+`&&`/`||` chain so the equivalent clause is _not_ leftmost, putting it on its own
+line where a directive lands on it alone. Verify null-safety survives the reorder
+— it does when the null check still precedes every property access, since
+`typeof` never dereferences. For a `try`/`catch` range, ensure the `restore`
+precedes a real statement; note Prettier will collapse `}\ncatch {` and relocate
+the comment, defeating the directive, so those sites need `// prettier-ignore`.
+
+**Always measure the collateral:** record per-file `Ignored` and `Killed` before
+and after adding a directive. `Ignored` must rise by exactly the number of
+mutants intended and `Killed` must not drop. Losing real coverage to silence an
+equivalent mutant is a worse trade than leaving the mutant.
+
+**Known debt:** directives were applied the coarse way across `audit.ts`,
+`config.ts`, `gate.ts`, `violation.ts`, `cli-core.ts`, `verify/index.ts`,
+`stryker-adapter.ts` and `workspaces.ts` before the remedy was found. Deferred as
+its own piece: it is degraded measurement rather than lost coverage, and fixing
+it means clause reorderings across eight files, each re-triggering the
+file-granularity gate.
+
 ### Sanctions — the diff-auditor's escape hatch (shipped in piece 4)
 
 `sanctionedSuppressions` exists because mutation testing produces
