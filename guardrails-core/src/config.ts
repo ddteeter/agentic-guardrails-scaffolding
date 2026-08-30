@@ -77,13 +77,35 @@ export interface RepoConfig {
   sanctionedSuppressions: SanctionedSuppression[];
   distribution: 'solo' | 'team';
   /**
-   * RESERVED — read by the CI gate and the Copilot commit-gate, both Phase B;
-   * not yet consumed. It governs whether a *failing gate on those surfaces*
-   * blocks (`block` → CI required status check / commit-gate deny) or only warns
-   * (`warn` → non-blocking CI). It deliberately does NOT gate the Claude Code
-   * Stop-loop — that loop is the flagship local feature and always runs; its
-   * safety comes from the bounded attempt counter and the `--no-verify` bypass,
-   * not from this flag. `toGateConfig` intentionally does not forward it.
+   * Consumed by exactly two commands in `cli-core.ts`: `gateCommitCommand`
+   * (`gate --mode=commit`, run by `.husky/pre-commit`) and
+   * `gatePreToolUseCommand` (`gate --mode=pretooluse`, the Copilot commit/push
+   * gate). It governs whether a *failing gate on those two surfaces* blocks
+   * (`block` → non-zero exit from `gate --mode=commit`; a deny payload from
+   * `gate --mode=pretooluse`) or only warns (`warn` → zero exit; an allow with
+   * a stderr note from `gate --mode=pretooluse`, since a deny payload IS the
+   * block on both hook dialects — there is no "allow, but say this" channel).
+   * Under `warn`, `gateCommitCommand` still prints every violation and finding
+   * in full before returning 0, and `gatePreToolUseCommand` still reports the
+   * violation/finding counts on stderr; both then state outright that they are
+   * not blocking, so a passing result is never mistakable for a clean gate.
+   * This repo's own CI does not currently invoke either command — its
+   * `Guardrails verify` step calls bare `verify`, which does not consult this
+   * field at all and always fails the build on an error-severity violation.
+   *
+   * Enforcement lives entirely in those two commands' exit code / deny
+   * payload: no hook definition or workflow template encodes the policy
+   * separately, so config and wiring cannot drift apart — anything that later
+   * shells out to `gate --mode=commit` (a CI step, a different git hook)
+   * inherits the enforcement decision for free, without reading this field.
+   *
+   * It deliberately does NOT gate the Claude Code Stop loop — that loop is the
+   * flagship local feature and always runs regardless of `enforcement`; its
+   * safety comes from the bounded attempt counter and the `--no-verify`
+   * bypass, not from this flag. Softening the Stop loop under `warn` would be
+   * switching the feature off rather than making it advisory, which is a
+   * different decision than this field exists to make. `toGateConfig`
+   * intentionally does not forward it.
    */
   enforcement: 'warn' | 'block';
   /** Copilot model id for the fast/thorough fixer .agent.md (the tier ladder on
