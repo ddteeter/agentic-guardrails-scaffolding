@@ -279,6 +279,12 @@ function gitExec(map: Record<string, string>): Exec {
 
 describe('runCommand — gate pretooluse (copilot commit/push gate)', () => {
   it('denies a git commit when the tree is dirty (copilot dialect)', async () => {
+    // Explicit 'block': this test is about the deny payload shape, not
+    // enforcement, and the default 'warn' would route it to stderr instead.
+    writeFileSync(
+      path.join(root, 'guardrails.config.json'),
+      JSON.stringify({ enforcement: 'block' }),
+    );
     const stdin = JSON.stringify({
       toolName: 'bash',
       toolArgs: { command: 'git commit -m wip' },
@@ -333,6 +339,11 @@ describe('runCommand — gate pretooluse (copilot commit/push gate)', () => {
     );
     expect(code).toBe(0);
     expect(out.join('')).toBe('');
+    // Also asserts stderr: a clean gate must stay fully silent. Without this,
+    // a mutant that skips the `!blocked` early return would still pass the
+    // stdout check above (the default 'warn' enforcement routes the deny to
+    // stderr, not stdout), leaving the mutant alive.
+    expect(errors.join('')).toBe('');
   });
 });
 
@@ -379,6 +390,13 @@ function dirtyExec(): Exec {
 }
 
 async function runPreToolUse(stdin: string): Promise<string> {
+  // These trigger-condition tests are about the shell-tool + git-write
+  // self-filter, not about enforcement, so make that assumption explicit:
+  // without it the default 'warn' would route the deny to stderr instead.
+  writeFileSync(
+    path.join(root, 'guardrails.config.json'),
+    JSON.stringify({ enforcement: 'block' }),
+  );
   await runCommand(
     'gate',
     ['--mode=pretooluse', '--dialect=copilot'],
@@ -1218,5 +1236,43 @@ describe('gate --mode=commit enforcement', () => {
     expect(output).toContain('not blocking (enforcement: warn)');
     // A passing exit code must never be mistakable for a clean gate.
     expect(output).toContain('no-console');
+  });
+});
+
+/** As blockingCommitDeps, plus the preToolUse hook payload that gets past the
+ *  command's shell-tool + git-commit self-filter. */
+function blockingPreToolUseDeps(enforcement: 'warn' | 'block'): CliDeps {
+  const base = blockingCommitDeps(enforcement);
+  return {
+    ...base,
+    readStdin: () =>
+      Promise.resolve(
+        JSON.stringify({
+          cwd: root,
+          tool_name: 'bash',
+          tool_input: { command: 'git commit -m x' },
+        }),
+      ),
+  };
+}
+
+describe('gate --mode=pretooluse enforcement', () => {
+  it('emits a deny payload when enforcement is block', async () => {
+    await runCommand(
+      'gate',
+      ['--mode=pretooluse'],
+      blockingPreToolUseDeps('block'),
+    );
+    expect(out.join('')).toContain('deny');
+  });
+
+  it('writes feedback to stderr and emits no deny payload when enforcement is warn', async () => {
+    await runCommand(
+      'gate',
+      ['--mode=pretooluse'],
+      blockingPreToolUseDeps('warn'),
+    );
+    expect(out.join('')).toBe('');
+    expect(errors.join('')).toContain('not blocking (enforcement: warn)');
   });
 });

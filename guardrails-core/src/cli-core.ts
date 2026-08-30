@@ -213,6 +213,14 @@ async function gatePreToolUseCommand(
     `guardrails: ${violations.length} violation(s), ` +
     `${findings.length} added suppression(s). ` +
     `Resolve them before committing (run 'guardrails verify').`;
+  // Under `warn` the gate reports and allows. stderr rather than a deny payload,
+  // because both hook dialects treat a deny payload as the block itself — there
+  // is no "allow, but say this" channel — and stderr still surfaces in the
+  // transcript.
+  if (config.enforcement === 'warn') {
+    deps.stderr(`${reason} not blocking (enforcement: warn).\n`);
+    return;
+  }
   deps.stdout(JSON.stringify(formatPreToolUseDeny(reason, dialect)));
 }
 
