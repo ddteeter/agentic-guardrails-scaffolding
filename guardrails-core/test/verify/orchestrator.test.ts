@@ -534,34 +534,15 @@ describe('runVerify analyzer invocation contract', () => {
 });
 
 describe('runVerify default readFile seam', () => {
-  it('reads stryker’s report from disk when no readFile is injected', async () => {
+  it('reads stryker’s report from disk, at the path it was told to use, when no readFile is injected', async () => {
     // Kills the default-arrow mutant on the `options.readFile ?? ...` fallback:
     // with `() => undefined` the real filesystem path is never exercised, and
-    // every test above injects a reader, so nothing else covers it.
+    // every test above injects a reader, so nothing else covers it. Unlike the
+    // old fixed default-path test, the fake `stryker` here writes to whatever
+    // path it was actually told (`--jsonReporter.fileName`) — proving the real
+    // reader reads the SAME per-run path runStryker passed, not a hardcoded one.
     const repoRoot = await mkdtemp(path.join(tmpdir(), 'guardrails-stryker-'));
-    await mkdir(path.join(repoRoot, 'reports', 'mutation'), {
-      recursive: true,
-    });
-    await writeFile(
-      path.join(repoRoot, 'reports', 'mutation', 'mutation.json'),
-      JSON.stringify({
-        files: {
-          'src/foo.ts': {
-            mutants: [
-              {
-                id: '1',
-                mutatorName: 'ArithmeticOperator',
-                status: 'Survived',
-                location: { start: { line: 42, column: 1 } },
-              },
-            ],
-          },
-        },
-      }),
-      'utf8',
-    );
-
-    const { exec } = fakeExec({
+    const { exec: base } = fakeExec({
       'git diff --name-only --diff-filter=ACM main': {
         stdout: 'src/foo.ts\n',
         stderr: '',
@@ -573,6 +554,37 @@ describe('runVerify default readFile seam', () => {
         code: 0,
       },
     });
+    const exec: Exec = async (command, args, options) => {
+      if (command === 'stryker') {
+        const flagIndex = args.indexOf('--jsonReporter.fileName');
+        const reportPath = args[flagIndex + 1];
+        if (reportPath === undefined) {
+          throw new Error('stryker invoked without --jsonReporter.fileName');
+        }
+        const fullPath = path.join(repoRoot, reportPath);
+        await mkdir(path.dirname(fullPath), { recursive: true });
+        await writeFile(
+          fullPath,
+          JSON.stringify({
+            files: {
+              'src/foo.ts': {
+                mutants: [
+                  {
+                    id: '1',
+                    mutatorName: 'ArithmeticOperator',
+                    status: 'Survived',
+                    location: { start: { line: 42, column: 1 } },
+                  },
+                ],
+              },
+            },
+          }),
+          'utf8',
+        );
+        return { stdout: '', stderr: '', code: 0 };
+      }
+      return base(command, args, options);
+    };
     const { violations } = await runVerify({
       repoRoot,
       baseBranch: 'main',
@@ -625,6 +637,13 @@ describe('missing analyzers fail CLOSED', () => {
     expect(missing.every((v) => v.severity === 'error' && !v.fixable)).toBe(
       true,
     );
+    // A tool that could not be STARTED must be reported only as missing, never
+    // ALSO as analyzer-failed (each analyzer's own spawnFailed short-circuit —
+    // e.g. runStryker's `if (result.spawnFailed === true) return [];` — must
+    // fire before any exit-code check runs).
+    expect(
+      violations.some((v) => v.ruleId === 'guardrails/analyzer-failed'),
+    ).toBe(false);
   });
 
   it('flags only the missing tool and still runs the others', async () => {
@@ -686,5 +705,353 @@ describe('package attribution', () => {
     });
     expect(violations.length).toBeGreaterThan(0);
     expect(violations.every((v) => !Object.hasOwn(v, 'package'))).toBe(true);
+  });
+});
+
+describe('analyzers that run and then fail (defect 1: exit code ignored)', () => {
+  interface GenericAnalyzer {
+    tool: string;
+    key: string;
+    findingsStdout: string;
+    findingRuleId: string;
+    profile?: 'stop' | 'commit' | 'ci';
+  }
+
+  const GENERIC_ANALYZERS: GenericAnalyzer[] = [
+    {
+      tool: 'eslint',
+      key: 'eslint --format json --no-warn-ignored src/foo.ts src/new.ts',
+      findingsStdout: eslintJson,
+      findingRuleId: 'no-console',
+    },
+    {
+      tool: 'tsc',
+      key: 'tsc --noEmit --pretty false -p tsconfig.json',
+      findingsStdout: tscOut,
+      findingRuleId: 'TS2304',
+    },
+    {
+      tool: 'knip',
+      key: 'knip --reporter json',
+      findingsStdout: knipJson,
+      findingRuleId: 'knip/files',
+      profile: 'commit',
+    },
+    {
+      tool: 'dependency-cruiser',
+      key: 'depcruise --output-type json .',
+      findingsStdout: depcruiseJson,
+      findingRuleId: 'dependency-cruiser/exec-seam',
+      profile: 'commit',
+    },
+  ];
+
+  for (const analyzer of GENERIC_ANALYZERS) {
+    it(`does NOT flag ${analyzer.tool} as analyzer-failed when it exits non-zero WITH parseable findings`, async () => {
+      // eslint exits 1 on findings; tsc/knip/dependency-cruiser exit non-zero
+      // on their own findings too. A non-zero code here is the NORMAL
+      // findings case and must be indistinguishable from a zero exit.
+      const { exec } = fakeExec({
+        [analyzer.key]: {
+          stdout: analyzer.findingsStdout,
+          stderr: '',
+          code: 1,
+        },
+      });
+      const { violations } = await runVerify({
+        repoRoot: '/repo',
+        baseBranch: 'main',
+        exec,
+        profile: analyzer.profile ?? 'stop',
+        readFile: () => Promise.resolve('{}'),
+      });
+      expect(
+        violations.some((v) => v.ruleId === 'guardrails/analyzer-failed'),
+      ).toBe(false);
+      expect(violations.map((v) => v.ruleId)).toContain(analyzer.findingRuleId);
+    });
+
+    it(`flags ${analyzer.tool} as analyzer-failed when it exits non-zero with EMPTY output (crash/misconfiguration)`, async () => {
+      // A broken config or a crash starts the tool (spawnFailed never fires)
+      // but writes nothing parseable — the exact hole this defect closes.
+      const { exec } = fakeExec({
+        [analyzer.key]: {
+          stdout: '',
+          stderr: `fatal error in ${analyzer.tool}\nmore detail on line 2`,
+          code: 2,
+        },
+      });
+      const { violations } = await runVerify({
+        repoRoot: '/repo',
+        baseBranch: 'main',
+        exec,
+        profile: analyzer.profile ?? 'stop',
+        readFile: () => Promise.resolve('{}'),
+      });
+      const failed = violations.filter(
+        (v) => v.ruleId === 'guardrails/analyzer-failed',
+      );
+      expect(failed).toHaveLength(1);
+      expect(failed[0]?.message).toContain(analyzer.tool);
+      expect(failed[0]?.message).toContain('2');
+      expect(failed[0]?.message).toContain(`fatal error in ${analyzer.tool}`);
+      expect(failed[0]?.severity).toBe('error');
+      expect(failed[0]?.fixable).toBe(false);
+      expect(failed[0]?.tool).toBe('guardrails');
+      // distinct from the missing-binary case
+      expect(
+        violations.some((v) => v.ruleId === 'guardrails/analyzer-missing'),
+      ).toBe(false);
+    });
+  }
+
+  it('omits the stderr detail entirely when stderr is empty/whitespace-only', async () => {
+    const { exec } = fakeExec({
+      'eslint --format json --no-warn-ignored src/foo.ts src/new.ts': {
+        stdout: '',
+        stderr: '   \n   \n',
+        code: 2,
+      },
+    });
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      readFile: () => Promise.resolve('{}'),
+    });
+    const failed = violations.find(
+      (v) => v.ruleId === 'guardrails/analyzer-failed',
+    );
+    expect(failed).toBeDefined();
+    expect(failed?.message).not.toContain('First line of stderr');
+  });
+
+  it('picks the first NON-BLANK line of stderr, trimmed, skipping leading blank lines', async () => {
+    const { exec } = fakeExec({
+      'eslint --format json --no-warn-ignored src/foo.ts src/new.ts': {
+        stdout: '',
+        stderr: '\n   \n   fatal: config file not found   \nsome other detail',
+        code: 2,
+      },
+    });
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      readFile: () => Promise.resolve('{}'),
+    });
+    const failed = violations.find(
+      (v) => v.ruleId === 'guardrails/analyzer-failed',
+    );
+    expect(failed?.message).toContain(
+      'First line of stderr: "fatal: config file not found"',
+    );
+    // Neither the blank lines nor the untrimmed padding leaked through.
+    expect(failed?.message).not.toContain('   fatal:');
+    expect(failed?.message).not.toContain('some other detail');
+  });
+});
+
+describe('git exit code ignored (defect 2)', () => {
+  it('flags analyzer-failed naming git — with its exit code and stderr — when the tracked-diff call exits non-zero with empty stdout (e.g. a missing/unfetched base branch)', async () => {
+    const { exec, calls } = fakeExec({
+      'git diff --name-only --diff-filter=ACM main': {
+        stdout: '',
+        stderr: "fatal: bad revision 'main'",
+        code: 128,
+      },
+    });
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      profile: 'ci',
+      readFile: () => Promise.resolve('{}'),
+    });
+    const failed = violations.filter(
+      (v) => v.ruleId === 'guardrails/analyzer-failed',
+    );
+    expect(failed.some((v) => v.message.includes('git'))).toBe(true);
+    expect(failed.some((v) => v.message.includes('128'))).toBe(true);
+    expect(failed.some((v) => v.message.includes("bad revision 'main'"))).toBe(
+      true,
+    );
+    // The gate must NOT read clean: the changed-files-scoped analyzers were
+    // skipped as a result of the (correctly empty) file list, but the
+    // analyzer-failed violation above means the run overall is not clean.
+    expect(
+      calls.some((call) => call.command === 'eslint' || call.command === 'tsc'),
+    ).toBe(false);
+    expect(violations.length).toBeGreaterThan(0);
+  });
+
+  it('flags analyzer-failed naming git when only the untracked-files call exits non-zero', async () => {
+    const { exec } = fakeExec({
+      'git ls-files --others --exclude-standard': {
+        stdout: '',
+        stderr: 'fatal: not a git repository',
+        code: 128,
+      },
+    });
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+    });
+    const failed = violations.filter(
+      (v) => v.ruleId === 'guardrails/analyzer-failed',
+    );
+    expect(failed.some((v) => v.message.includes('git'))).toBe(true);
+    expect(failed.some((v) => v.message.includes('128'))).toBe(true);
+  });
+
+  it('does not double-report when git could not be started at all (spawnFailed pre-empts the exit-code check)', async () => {
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec: execMissing(['git']),
+    });
+    expect(
+      violations.filter((v) => v.ruleId === 'guardrails/analyzer-failed'),
+    ).toHaveLength(0);
+    expect(
+      violations.filter((v) => v.ruleId === 'guardrails/analyzer-missing'),
+    ).toHaveLength(1);
+  });
+});
+
+describe('stryker fails open twice (defect 3)', () => {
+  const changedFilesOverrides: Record<string, ExecResult> = {
+    'git diff --name-only --diff-filter=ACM main': {
+      stdout: 'guardrails-core/src/foo.ts\n',
+      stderr: '',
+      code: 0,
+    },
+    'git ls-files --others --exclude-standard': {
+      stdout: '',
+      stderr: '',
+      code: 0,
+    },
+  };
+
+  function execWithStryker(strykerResult: ExecResult): {
+    exec: Exec;
+    calls: Call[];
+  } {
+    const { exec: base, calls } = fakeExec(changedFilesOverrides);
+    const exec: Exec = (command, args, options) => {
+      if (command === 'stryker') {
+        calls.push({ command, args, options });
+        return Promise.resolve(strykerResult);
+      }
+      return base(command, args, options);
+    };
+    return { exec, calls };
+  }
+
+  it('flags analyzer-failed and does NOT read clean when stryker crashes (non-zero exit)', async () => {
+    // This repo sets no `break` threshold, so stryker exits 0 even with
+    // surviving mutants — a non-zero exit here can only mean a crash.
+    const { exec } = execWithStryker({
+      stdout: '',
+      stderr: 'FATAL ERROR: Reached heap limit',
+      code: 1,
+    });
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      profile: 'commit',
+      readFile: () => Promise.reject(new Error('must not be called')),
+    });
+    const failed = violations.filter(
+      (v) => v.ruleId === 'guardrails/analyzer-failed',
+    );
+    expect(failed.some((v) => v.message.includes('stryker'))).toBe(true);
+    expect(failed.some((v) => v.message.includes('1'))).toBe(true);
+    expect(failed.some((v) => v.message.includes('Reached heap limit'))).toBe(
+      true,
+    );
+    expect(violations.some((v) => v.ruleId === 'stryker/survived')).toBe(false);
+  });
+
+  it('flags analyzer-failed and does NOT read clean when stryker exits 0 but its report file is missing', async () => {
+    const { exec } = execWithStryker({ stdout: '', stderr: '', code: 0 });
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      profile: 'commit',
+      readFile: () => Promise.reject(new Error('ENOENT: no such file')),
+    });
+    const failed = violations.filter(
+      (v) => v.ruleId === 'guardrails/analyzer-failed',
+    );
+    expect(failed).toHaveLength(1);
+    expect(failed[0]?.message).toContain('stryker');
+    expect(failed[0]?.severity).toBe('error');
+    expect(failed[0]?.fixable).toBe(false);
+    expect(failed[0]?.tool).toBe('guardrails');
+    expect(violations.some((v) => v.ruleId === 'stryker/survived')).toBe(false);
+  });
+
+  it('passes a unique --jsonReporter.fileName in argv, distinct from the default reports/mutation/mutation.json path, and reads exactly that path back', async () => {
+    const { exec, calls } = execWithStryker({
+      stdout: '',
+      stderr: '',
+      code: 0,
+    });
+    let readFilePath: string | undefined;
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      profile: 'commit',
+      readFile: (filePath) => {
+        readFilePath = filePath;
+        return Promise.resolve(JSON.stringify({ files: {} }));
+      },
+    });
+    const strykerCall = calls.find((call) => call.command === 'stryker');
+    const args = strykerCall?.args ?? [];
+    const flagIndex = args.indexOf('--jsonReporter.fileName');
+    expect(flagIndex).toBeGreaterThanOrEqual(0);
+    const reportPathArgument = args[flagIndex + 1];
+    expect(reportPathArgument).toBeDefined();
+    expect(reportPathArgument).not.toBe(
+      path.join('reports', 'mutation', 'mutation.json'),
+    );
+    expect(readFilePath).toBe(path.join('/repo', reportPathArgument ?? ''));
+    // consumer-generic: relative, no absolute/repo-specific path baked in
+    expect(reportPathArgument?.startsWith('/')).toBe(false);
+    expect(
+      violations.some((v) => v.ruleId === 'guardrails/analyzer-failed'),
+    ).toBe(false);
+  });
+
+  it('uses a different report filename on every run (a stale file from a prior crash cannot be read as this run’s result)', async () => {
+    const paths: string[] = [];
+    for (let run = 0; run < 2; run += 1) {
+      const { exec, calls } = execWithStryker({
+        stdout: '',
+        stderr: '',
+        code: 0,
+      });
+      // Sequential runs are the point: proving each gets its own path.
+      await runVerify({
+        repoRoot: '/repo',
+        baseBranch: 'main',
+        exec,
+        profile: 'commit',
+        readFile: () => Promise.resolve(JSON.stringify({ files: {} })),
+      });
+      const strykerCall = calls.find((call) => call.command === 'stryker');
+      const args = strykerCall?.args ?? [];
+      const flagIndex = args.indexOf('--jsonReporter.fileName');
+      const reportPathArgument = args[flagIndex + 1];
+      expect(reportPathArgument).toBeDefined();
+      paths.push(reportPathArgument ?? '');
+    }
+    expect(paths[0]).not.toBe(paths[1]);
   });
 });

@@ -22,12 +22,23 @@
  * If the branch already has pre-existing `tsc` / knip / dependency-cruiser
  * errors, every turn will escalate on them until they're fixed (see README —
  * run `guardrails verify` clean before relying on the gate).
+ *
+ * A guard that RAN and then FAILED must never look like a guard that passed
+ * either: eslint/tsc/knip/dependency-cruiser use a non-zero exit to report
+ * *findings* (which parse into violations), so the one signal that separates a
+ * crash/misconfiguration from a clean run is "non-zero exit, yet nothing
+ * parsed" — `withExitCodeCheck` applies that rule uniformly. `stryker` is
+ * different: absent a configured `break` threshold (this pack sets none), it
+ * exits 0 even with surviving mutants, so ANY non-zero exit from it is a crash,
+ * and its report is read from an explicit per-run path rather than its
+ * (gitignored, cross-run-persistent) default location — see `runStryker`.
  */
 
+import { randomUUID } from 'node:crypto';
 import { readFile as fsReadFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import type { Exec } from '../exec.js';
+import type { Exec, ExecResult } from '../exec.js';
 import type { Violation } from '../violation.js';
 import { loadWorkspaceResolver, withPackages } from '../workspaces.js';
 import { parseDepcruiseJson } from './depcruise-adapter.js';
@@ -55,9 +66,76 @@ export interface VerifyResult {
   violations: Violation[];
 }
 
+/** First non-blank line of a tool's stderr, for a violation message that names
+ *  *why* the tool failed rather than just that it did. `undefined` when stderr
+ *  carried nothing useful. */
+function firstNonEmptyLine(text: string): string | undefined {
+  return text
+    .split('\n')
+    .map((line) => line.trim())
+    .find((line) => line.length > 0);
+}
+
+/** A guard that ran and then crashed/misconfigured, distinct from
+ *  `guardrails/analyzer-missing` (which means the binary never started). Named
+ *  after the tool, its exit code, and — when present — the first line of
+ *  stderr, so a consumer can tell why without re-running it. */
+function analyzerFailedViolation(
+  tool: string,
+  code: number,
+  stderr: string,
+): Violation {
+  const stderrLine = firstNonEmptyLine(stderr);
+  const detail =
+    stderrLine === undefined ? '' : ` First line of stderr: "${stderrLine}"`;
+  return {
+    ruleId: 'guardrails/analyzer-failed',
+    file: 'package.json',
+    message:
+      `${tool} exited with code ${code} and produced no parseable violations — ` +
+      `it started but did not complete cleanly (a bad config, a crash, or an ` +
+      `unexpected flag). A failed analyzer is a failed gate, not a clean one.` +
+      detail,
+    severity: 'error',
+    fixable: false,
+    tool: 'guardrails',
+  };
+}
+
+/**
+ * eslint/tsc/knip/dependency-cruiser all use a non-zero exit to report
+ * *findings* — that is the normal case and would have parsed into violations.
+ * So the failure signal is the conjunction: non-zero exit AND nothing parsed.
+ * `spawnFailed` is excluded because that case is reported separately as
+ * `guardrails/analyzer-missing` by the caller's spawn tracking.
+ */
+function withExitCodeCheck(
+  tool: string,
+  execResult: ExecResult,
+  violations: Violation[],
+): Violation[] {
+  if (
+    execResult.spawnFailed !== true &&
+    execResult.code !== 0 &&
+    violations.length === 0
+  ) {
+    return [
+      ...violations,
+      analyzerFailedViolation(tool, execResult.code, execResult.stderr),
+    ];
+  }
+  return violations;
+}
+
+/** `true` when a git invocation neither could not be started (that is tracked
+ *  separately) nor exited zero. */
+function gitCallFailed(result: ExecResult): boolean {
+  return result.spawnFailed !== true && result.code !== 0;
+}
+
 async function changedTypeScriptFiles(
   options: VerifyOptions,
-): Promise<string[]> {
+): Promise<{ files: string[]; violations: Violation[] }> {
   const { exec, repoRoot, baseBranch } = options;
   const tracked = await exec(
     'git',
@@ -69,9 +147,29 @@ async function changedTypeScriptFiles(
     ['ls-files', '--others', '--exclude-standard'],
     { cwd: repoRoot },
   );
-  return mergeChangedFiles(tracked.stdout, untracked.stdout).filter((file) =>
-    isTypeScriptFile(file),
+  // A missing/unfetched base branch exits non-zero with empty stdout; treated
+  // as zero changed files that would silently skip every diff-scoped analyzer
+  // and read clean. Neither invocation's exit code carries a "findings" case
+  // (unlike the analyzers above) — a non-zero git exit is always a failure.
+  const failedGitCall = [tracked, untracked].find((result) =>
+    gitCallFailed(result),
   );
+  if (failedGitCall !== undefined) {
+    return {
+      files: [],
+      violations: [
+        analyzerFailedViolation(
+          'git',
+          failedGitCall.code,
+          failedGitCall.stderr,
+        ),
+      ],
+    };
+  }
+  const files = mergeChangedFiles(tracked.stdout, untracked.stdout).filter(
+    (file) => isTypeScriptFile(file),
+  );
+  return { files, violations: [] };
 }
 
 /** knip is whole-graph (not diff-scoped) and seconds-scale, so it runs only at
@@ -87,7 +185,7 @@ async function runKnip(
   const knip = await exec(resolveBin('knip'), ['--reporter', 'json'], {
     cwd: repoRoot,
   });
-  return parseKnipJson(knip.stdout, repoRoot);
+  return withExitCodeCheck('knip', knip, parseKnipJson(knip.stdout, repoRoot));
 }
 
 /** dependency-cruiser is whole-graph (not diff-scoped); like knip it runs at
@@ -109,7 +207,11 @@ async function runDepcruise(
     ['--output-type', 'json', '.'],
     { cwd: repoRoot },
   );
-  return parseDepcruiseJson(result.stdout, repoRoot);
+  return withExitCodeCheck(
+    'dependency-cruiser',
+    result,
+    parseDepcruiseJson(result.stdout, repoRoot),
+  );
 }
 
 async function runEslint(
@@ -123,7 +225,11 @@ async function runEslint(
     ['--format', 'json', '--no-warn-ignored', ...files],
     { cwd: repoRoot },
   );
-  return parseEslintJson(eslint.stdout, repoRoot);
+  return withExitCodeCheck(
+    'eslint',
+    eslint,
+    parseEslintJson(eslint.stdout, repoRoot),
+  );
 }
 
 /** `tsc` is changed-files-TRIGGERED but whole-project-CHECKED: it takes no file
@@ -140,15 +246,47 @@ async function runTsc(
     ['--noEmit', '--pretty', 'false', '-p', tsconfig],
     { cwd: repoRoot },
   );
-  return parseTscOutput(tsc.stdout, repoRoot);
+  return withExitCodeCheck('tsc', tsc, parseTscOutput(tsc.stdout, repoRoot));
 }
 
-/** stryker is diff-scoped (changed production files) and CI/commit-only (mutation
- *  testing reruns the suite per mutant). Consumer-generic: no `--configFile` (stryker
- *  auto-detects the consumer's stryker.conf.json), the `--mutate` list is the
- *  consumer's own changed files. Forces `--reporters json` and reads stryker's default
- *  report path (reports/mutation/mutation.json). A missing/failed report yields [] —
- *  a stryker crash must not falsely block the gate. */
+/** A fresh, repo-relative report path on every call. Consumer-generic (no
+ *  absolute path, no assumption about this repo's layout — still lands under
+ *  stryker's own default `reports/mutation/` directory, which every consumer
+ *  already gitignores) and collision-proof across runs: stryker's DEFAULT path
+ *  is fixed and gitignored, so it persists between runs, and a crashed run can
+ *  silently leave a PRIOR run's report there for the next read to pick up. A
+ *  unique filename per call makes that impossible — there is nothing stale at
+ *  this path because nothing else has ever written to it. */
+function strykerReportPath(): string {
+  return path.join('reports', 'mutation', `mutation-${randomUUID()}.json`);
+}
+
+function strykerReportMissingViolation(reportPath: string): Violation {
+  return {
+    ruleId: 'guardrails/analyzer-failed',
+    file: 'package.json',
+    message:
+      `stryker exited 0 but its mutation report was not found at ` +
+      `"${reportPath}" — treating the mutation check as failed, not clean.`,
+    severity: 'error',
+    fixable: false,
+    tool: 'guardrails',
+  };
+}
+
+/** stryker is diff-scoped (changed production files) and CI/commit-only
+ *  (mutation testing reruns the suite per mutant). Consumer-generic: no
+ *  `--configFile` (stryker auto-detects the consumer's stryker.conf.json), and
+ *  the `--mutate` list is the consumer's own changed files. The report path is
+ *  passed explicitly via `--jsonReporter.fileName` and read back from that same
+ *  path (see `strykerReportPath`) rather than stryker's default location,
+ *  which is gitignored and persists between runs.
+ *
+ *  Unlike the analyzers above, stryker exits 0 even with surviving mutants
+ *  unless a `break` threshold is configured (this pack sets none) — so ANY
+ *  non-zero exit here means a crash, never "findings", and is always a
+ *  failure. A missing report file after a zero exit is also a failure: the
+ *  report is the only channel mutation results reach this process through. */
 async function runStryker(
   options: VerifyOptions,
   resolveBin: (tool: string) => string,
@@ -163,34 +301,36 @@ async function runStryker(
   const { exec, repoRoot } = options;
   const readFile =
     options.readFile ?? ((filePath) => fsReadFile(filePath, 'utf8'));
+  const reportPath = strykerReportPath();
 
-  await exec(
+  const result = await exec(
     resolveBin('stryker'),
     [
       'run',
       '--incremental',
       '--reporters',
       'json',
+      '--jsonReporter.fileName',
+      reportPath,
       '--mutate',
       production.join(','),
     ],
     { cwd: repoRoot },
   );
-
-  // Equivalent mutants: emptying either block leaves `report` undefined, and
-  // parseStrykerJson's own JSON.parse guard then returns [] — the same result.
-  // A range directive is required: `disable next-line` only attaches to a
-  // statement-LEADING comment, which a `} catch {` line does not have.
-  // Stryker disable BlockStatement
-  let report: string;
-  try {
-    report = await readFile(
-      path.join(repoRoot, 'reports', 'mutation', 'mutation.json'),
-    );
-  } catch {
+  if (result.spawnFailed === true) {
+    // Reported separately as guardrails/analyzer-missing by the caller.
     return [];
   }
-  // Stryker restore BlockStatement
+  if (result.code !== 0) {
+    return [analyzerFailedViolation('stryker', result.code, result.stderr)];
+  }
+
+  let report: string;
+  try {
+    report = await readFile(path.join(repoRoot, reportPath));
+  } catch {
+    return [strykerReportMissingViolation(reportPath)];
+  }
   return parseStrykerJson(report, production);
 }
 
@@ -303,11 +443,12 @@ function missingToolViolation(tool: string, provider: string): Violation {
 export async function runVerify(options: VerifyOptions): Promise<VerifyResult> {
   const { exec, failures } = trackSpawnFailures(options.exec);
   const tracked = { ...options, exec };
-  const files = await changedTypeScriptFiles(tracked);
+  const { files, violations: gitViolations } =
+    await changedTypeScriptFiles(tracked);
   const resolveBin = options.resolveBin ?? ((tool) => tool);
   const profile = options.profile ?? 'stop';
 
-  const violations: Violation[] = [];
+  const violations: Violation[] = [...gitViolations];
   // git failing to start is catastrophic and was equally silent: no changed
   // files means every diff-scoped analyzer is skipped, and the gate passes.
   if (failures.length > 0) {

@@ -478,6 +478,21 @@ function failingVerifyExec(): Exec {
     const line = [command, ...args].join(' ');
     if (line.includes('--name-only')) return Promise.resolve(ok('src/foo.ts'));
     if (line.includes('eslint')) return Promise.resolve(ok(eslintJson));
+    if (command === 'stryker') {
+      // The `verify` CLI command runs at the 'ci' profile, so stryker runs too
+      // and reads its report from the REAL filesystem (CliDeps has no readFile
+      // seam). Write an empty-but-valid report at the path stryker was told to
+      // use, so this fixture stays about eslint's finding, not a fabricated
+      // mutation failure.
+      const flagIndex = args.indexOf('--jsonReporter.fileName');
+      const reportPath = args[flagIndex + 1];
+      if (reportPath !== undefined) {
+        const fullPath = path.join(root, reportPath);
+        mkdirSync(path.dirname(fullPath), { recursive: true });
+        writeFileSync(fullPath, JSON.stringify({ files: {} }));
+      }
+      return Promise.resolve(ok(''));
+    }
     return Promise.resolve(ok(''));
   };
 }
