@@ -10,6 +10,7 @@ import path from 'node:path';
 
 import type { GateConfig } from './gate-decision.js';
 import { makeIsLoose } from './loose-rules.js';
+import type { AnalyzerMode } from './verify/analyzer-policy.js';
 
 /** One reviewed diff-auditor exemption: the finding key plus why it is allowed. */
 export interface SanctionedSuppression {
@@ -46,6 +47,15 @@ export interface RepoConfig {
    * For house rules the built-in set doesn't know about.
    */
   looseRules: string[];
+  /**
+   * Per-analyzer opt-in (Phase E piece 1). Keyed by the analyzer's `tool` name
+   * (`eslint`, `tsc`, `knip`, `dependency-cruiser`, `stryker`). An unlisted
+   * analyzer is `auto`: it runs if its binary resolves, and a failure to
+   * resolve is an error only when the repo's own `package.json` declares the
+   * provider. `required` restores the unconditional hard error; `off` skips it
+   * entirely. Empty by default. See `verify/analyzer-policy.ts`.
+   */
+  analyzers: Record<string, AnalyzerMode>;
   /**
    * Reviewed, checked-in escape hatch for the diff-auditor: exact
    * `file|kind|text` keys of suppressions a human has deliberately sanctioned
@@ -91,6 +101,7 @@ export function defaultConfig(): RepoConfig {
     fastFixer: 'guardrail-fixer',
     thoroughFixer: 'guardrail-fixer-thorough',
     looseRules: [],
+    analyzers: {},
     sanctionedSuppressions: [],
     distribution: 'solo',
     enforcement: 'warn',
@@ -205,6 +216,34 @@ function pickString<T extends string>(
   return value as T;
 }
 
+function isAnalyzerMode(value: unknown): value is AnalyzerMode {
+  return value === 'off' || value === 'auto' || value === 'required';
+}
+
+/**
+ * Parse the `analyzers` block. `true`/`false` are accepted as the natural
+ * shorthand for `required`/`off`. Anything else is DROPPED rather than
+ * defaulted, so a typo'd value falls back to `auto` (the analyzer keeps
+ * running) instead of silently disabling a guard — failing toward more
+ * checking, like every other defensive path in this file.
+ */
+function pickAnalyzers(value: unknown): Record<string, AnalyzerMode> {
+  if (!isRecord(value)) {
+    return {};
+  }
+  const modes: Record<string, AnalyzerMode> = {};
+  for (const [tool, raw] of Object.entries(value)) {
+    if (raw === true) {
+      modes[tool] = 'required';
+    } else if (raw === false) {
+      modes[tool] = 'off';
+    } else if (isAnalyzerMode(raw)) {
+      modes[tool] = raw;
+    }
+  }
+  return modes;
+}
+
 function pickNumber(value: unknown, fallback: number): number {
   // Equivalent mutant on the `typeof value === 'number'` half: Number.isFinite
   // does NOT coerce, so a non-number is rejected by the second half regardless.
@@ -258,6 +297,7 @@ export function loadConfig(repoRoot: string): RepoConfig {
     fastFixer: pickString(raw.fastFixer, defaults.fastFixer),
     thoroughFixer: pickString(raw.thoroughFixer, defaults.thoroughFixer),
     looseRules: pickStringArray(raw.looseRules),
+    analyzers: pickAnalyzers(raw.analyzers),
     sanctionedSuppressions: pickSanctions(raw.sanctionedSuppressions).valid,
     distribution: pickString(raw.distribution, defaults.distribution, [
       'solo',

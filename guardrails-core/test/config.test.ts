@@ -259,6 +259,60 @@ describe('readConfigText', () => {
   });
 });
 
+describe('analyzers', () => {
+  it('defaults to an empty map, so every analyzer is auto', () => {
+    const directory = mkdtempSync(path.join(tmpdir(), 'guardrails-config-'));
+    expect(loadConfig(directory).analyzers).toEqual({});
+  });
+
+  it('reads the three string modes', () => {
+    const directory = mkdtempSync(path.join(tmpdir(), 'guardrails-config-'));
+    writeFileSync(
+      path.join(directory, 'guardrails.config.json'),
+      JSON.stringify({
+        analyzers: { eslint: 'required', knip: 'auto', stryker: 'off' },
+      }),
+    );
+    expect(loadConfig(directory).analyzers).toEqual({
+      eslint: 'required',
+      knip: 'auto',
+      stryker: 'off',
+    });
+  });
+
+  it('accepts true/false as shorthand for required/off', () => {
+    const directory = mkdtempSync(path.join(tmpdir(), 'guardrails-config-'));
+    writeFileSync(
+      path.join(directory, 'guardrails.config.json'),
+      JSON.stringify({ analyzers: { eslint: true, knip: false } }),
+    );
+    expect(loadConfig(directory).analyzers).toEqual({
+      eslint: 'required',
+      knip: 'off',
+    });
+  });
+
+  it('drops an entry whose value is neither a known mode nor a boolean', () => {
+    const directory = mkdtempSync(path.join(tmpdir(), 'guardrails-config-'));
+    writeFileSync(
+      path.join(directory, 'guardrails.config.json'),
+      JSON.stringify({ analyzers: { knip: 'sometimes', eslint: 3 } }),
+    );
+    // Dropped, not defaulted to off: a malformed entry must never be the thing
+    // that silently disables a guard.
+    expect(loadConfig(directory).analyzers).toEqual({});
+  });
+
+  it('ignores an analyzers value that is not an object', () => {
+    const directory = mkdtempSync(path.join(tmpdir(), 'guardrails-config-'));
+    writeFileSync(
+      path.join(directory, 'guardrails.config.json'),
+      JSON.stringify({ analyzers: ['knip'] }),
+    );
+    expect(loadConfig(directory).analyzers).toEqual({});
+  });
+});
+
 describe('parseSanctionsJson', () => {
   it('splits well-formed entries into valid, with no malformed entries', () => {
     const result = parseSanctionsJson(
