@@ -63,7 +63,10 @@ for (const directory of ['dist', 'guidance', 'templates']) {
 // 4. The templates a consumer's install depends on must have survived packing.
 for (const relative of [
   'claude/agents/guardrail-fixer.md',
+  'claude/agents/guardrail-fixer-thorough.md',
   'claude/settings.hooks.json',
+  'copilot/agents/guardrail-fixer.agent.md',
+  'copilot/agents/guardrail-fixer-thorough.agent.md',
   'copilot/hooks/guardrails.json',
   'githooks/pre-commit',
 ]) {

@@ -25,6 +25,9 @@ See [`plan.md`](./plan.md) for the full design and phase breakdown.
 npm i -D https://github.com/ddteeter/agentic-guardrails-scaffolding/releases/download/v0.1.0/guardrails-core-0.1.0.tgz
 ```
 
+No `v0.1.0` release exists yet — this resolves once the tag is pushed and
+`.github/workflows/release.yml` runs.
+
 **What a URL dependency costs you, stated plainly:** no semver range, no dedupe,
 and Dependabot will not track it. Upgrading means editing the URL by hand. This
 is deliberate while the package has no external consumers — publishing to npm
