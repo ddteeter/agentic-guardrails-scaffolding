@@ -59,8 +59,6 @@ const report = JSON.stringify({
 
 describe('parseStrykerJson', () => {
   it('emits one violation per Survived mutant in a changed file', () => {
-    // No packageId argument: the exact-object match below asserts the
-    // emitted violation carries no `package` key.
     const result = parseStrykerJson(report, ['src/changed.ts']);
     expect(result).toContainEqual({
       ruleId: 'stryker/survived',
@@ -78,20 +76,6 @@ describe('parseStrykerJson', () => {
     const result = parseStrykerJson(report, ['src/changed.ts']);
     expect(result).toHaveLength(1);
     expect(result.map((v) => v.line)).toEqual([12]);
-  });
-
-  it('adds the package id when given', () => {
-    const result = parseStrykerJson(
-      report,
-      ['src/changed.ts'],
-      'guardrails-core',
-    );
-    expect(result).toContainEqual(
-      expect.objectContaining({
-        package: 'guardrails-core',
-        ruleId: 'stryker/survived',
-      }),
-    );
   });
 
   it('returns [] on malformed or wrong-shaped JSON', () => {
@@ -215,13 +199,5 @@ describe('parseStrykerJson guard rejection', () => {
       files: { 'src/changed.ts': { mutants: [{ status: 'Survived' }] } },
     });
     expect(parseStrykerJson(shaped, changed)).toEqual([]);
-  });
-
-  it('omits the package key entirely when no packageId is given', () => {
-    // Kills the `packageId === undefined` ternary mutant, which would spread
-    // `{ package: undefined }` — an own key that `toEqual` alone would miss.
-    const result = parseStrykerJson(reportWith([validMutant]), changed);
-    expect(result).toHaveLength(1);
-    expect(result.every((v) => !Object.hasOwn(v, 'package'))).toBe(true);
   });
 });

@@ -23,11 +23,7 @@ import type { Violation } from '../violation.js';
 // not a `(1,2)`-shaped segment inside the path itself.
 const DIAGNOSTIC = /^(.+)\((\d+),\d+\): error (TS\d+): (.+)$/;
 
-export function parseTscOutput(
-  stdout: string,
-  repoRoot: string,
-  packageId?: string,
-): Violation[] {
+export function parseTscOutput(stdout: string, repoRoot: string): Violation[] {
   const violations: Violation[] = [];
   for (const line of stdout.split('\n')) {
     const match = DIAGNOSTIC.exec(line);
@@ -36,7 +32,23 @@ export function parseTscOutput(
     }
     const [, rawFile, lineNumber, code, message] = match;
     const file =
-      rawFile !== undefined && path.isAbsolute(rawFile)
+      // `path.isAbsolute(rawFile ?? '')` leads (not `rawFile !== undefined`)
+      // so the equivalent mutant below sits on its own line: Stryker's
+      // disable comments match by mutator + line, and the leftmost clause of
+      // an `&&` chain always shares its start line with the whole chain
+      // (measured; see guardrails.config.json). `?? ''` here is just to keep
+      // this clause reorderable without relying on the narrowing the
+      // original order provided — `path.isAbsolute('')` is `false`, so an
+      // undefined `rawFile` still short-circuits the `&&` to `false` exactly
+      // as before.
+      path.isAbsolute(rawFile ?? '') &&
+      // Equivalent mutant: `rawFile` is `match[1]`, the DIAGNOSTIC regex's
+      // first capture group. That group is mandatory (`(.+)`, not optional
+      // and not behind an alternation), so whenever `match` is non-null,
+      // `rawFile` is already guaranteed to be a defined string — no input can
+      // make `rawFile === undefined` while `match` still succeeds.
+      // Stryker disable next-line ConditionalExpression
+      rawFile !== undefined
         ? path.relative(repoRoot, rawFile)
         : (rawFile ?? '');
     violations.push({
@@ -47,7 +59,6 @@ export function parseTscOutput(
       severity: 'error',
       fixable: false,
       tool: 'tsc',
-      ...(packageId === undefined ? {} : { package: packageId }),
     });
   }
   return violations;

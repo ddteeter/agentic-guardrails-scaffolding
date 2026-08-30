@@ -88,9 +88,48 @@ describe('parseEslintJson', () => {
     expect(parseEslintJson('', root)).toEqual([]);
     expect(parseEslintJson('not json', root)).toEqual([]);
   });
+});
 
-  it('carries the package id through when provided', () => {
-    const violations = parseEslintJson(stdout, root, 'packages/api');
-    expect(violations[0]?.package).toBe('packages/api');
+/**
+ * Guard-rejection suite. Each malformed case is paired with a VALID result
+ * alongside it, so a guard that wrongly ACCEPTS the malformed shape emits a
+ * violation and the `toEqual([])` assertion fails. Asserting `[]` against the
+ * malformed shape alone is not enough: most guards fail open to `[]` anyway
+ * (the malformed value never reaches a violation-producing code path), which
+ * is why these mutants survived the original suite.
+ */
+describe('parseEslintJson guard rejection', () => {
+  it('returns an empty array when the top-level JSON is null or a plain object', () => {
+    expect(parseEslintJson('null', root)).toEqual([]);
+    expect(parseEslintJson('{}', root)).toEqual([]);
+  });
+
+  it('rejects the whole array when one result is null, keeping the valid one out too', () => {
+    const withNullResult = JSON.stringify([
+      null,
+      { filePath: '/repo/src/valid.ts', messages: [] },
+    ]);
+    expect(parseEslintJson(withNullResult, root)).toEqual([]);
+  });
+
+  it('rejects the whole array when one result has a non-string filePath', () => {
+    const withBadFilePath = JSON.stringify([
+      { filePath: 123, messages: [] },
+      { filePath: '/repo/src/valid.ts', messages: [] },
+    ]);
+    expect(parseEslintJson(withBadFilePath, root)).toEqual([]);
+  });
+
+  it('omits the line key entirely when a message carries no line', () => {
+    const withoutLine = JSON.stringify([
+      {
+        filePath: '/repo/src/foo.ts',
+        messages: [
+          { ruleId: 'some-rule', severity: 2, message: 'no line here' },
+        ],
+      },
+    ]);
+    const [violation] = parseEslintJson(withoutLine, root);
+    expect(Object.hasOwn(violation ?? {}, 'line')).toBe(false);
   });
 });

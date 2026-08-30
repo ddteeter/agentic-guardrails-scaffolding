@@ -69,11 +69,7 @@ function isReport(
   );
 }
 
-function survivorViolation(
-  file: string,
-  mutant: StrykerMutant,
-  packageId?: string,
-): Violation {
+function survivorViolation(file: string, mutant: StrykerMutant): Violation {
   return {
     ruleId: 'stryker/survived',
     file,
@@ -82,14 +78,12 @@ function survivorViolation(
     severity: 'error',
     fixable: false,
     tool: 'stryker',
-    ...(packageId === undefined ? {} : { package: packageId }),
   };
 }
 
 export function parseStrykerJson(
   reportJson: string,
   changedFiles: readonly string[],
-  packageId?: string,
 ): Violation[] {
   let parsed: unknown;
   // Equivalent mutants: emptying either block leaves `parsed` undefined, which
@@ -114,7 +108,7 @@ export function parseStrykerJson(
     }
     for (const mutant of fileResult.mutants) {
       if (mutant.status === 'Survived') {
-        violations.push(survivorViolation(file, mutant, packageId));
+        violations.push(survivorViolation(file, mutant));
       }
     }
   }

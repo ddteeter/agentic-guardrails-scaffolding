@@ -41,7 +41,6 @@ export interface VerifyOptions {
   repoRoot: string;
   baseBranch: string;
   exec: Exec;
-  packageId?: string;
   tsconfig?: string;
   resolveBin?: (tool: string) => string;
   /** Cadence rung. Heavy whole-graph analyzers (knip, dependency-cruiser) run
@@ -84,11 +83,11 @@ async function runKnip(
   options: VerifyOptions,
   resolveBin: (tool: string) => string,
 ): Promise<Violation[]> {
-  const { exec, repoRoot, packageId } = options;
+  const { exec, repoRoot } = options;
   const knip = await exec(resolveBin('knip'), ['--reporter', 'json'], {
     cwd: repoRoot,
   });
-  return parseKnipJson(knip.stdout, repoRoot, packageId);
+  return parseKnipJson(knip.stdout, repoRoot);
 }
 
 /** dependency-cruiser is whole-graph (not diff-scoped); like knip it runs at
@@ -98,7 +97,7 @@ async function runDepcruise(
   options: VerifyOptions,
   resolveBin: (tool: string) => string,
 ): Promise<Violation[]> {
-  const { exec, repoRoot, packageId } = options;
+  const { exec, repoRoot } = options;
   // Config-agnostic and layout-generic, exactly as runKnip: no `--config` (DC
   // auto-detects the consumer repo's own `.dependency-cruiser.{cjs,js,json}` /
   // `package.json#dependency-cruiser`) and no hardcoded target (cruise `.` from
@@ -110,7 +109,7 @@ async function runDepcruise(
     ['--output-type', 'json', '.'],
     { cwd: repoRoot },
   );
-  return parseDepcruiseJson(result.stdout, repoRoot, packageId);
+  return parseDepcruiseJson(result.stdout, repoRoot);
 }
 
 async function runEslint(
@@ -118,13 +117,13 @@ async function runEslint(
   resolveBin: (tool: string) => string,
   files: string[],
 ): Promise<Violation[]> {
-  const { exec, repoRoot, packageId } = options;
+  const { exec, repoRoot } = options;
   const eslint = await exec(
     resolveBin('eslint'),
     ['--format', 'json', '--no-warn-ignored', ...files],
     { cwd: repoRoot },
   );
-  return parseEslintJson(eslint.stdout, repoRoot, packageId);
+  return parseEslintJson(eslint.stdout, repoRoot);
 }
 
 /** `tsc` is changed-files-TRIGGERED but whole-project-CHECKED: it takes no file
@@ -134,14 +133,14 @@ async function runTsc(
   options: VerifyOptions,
   resolveBin: (tool: string) => string,
 ): Promise<Violation[]> {
-  const { exec, repoRoot, packageId } = options;
+  const { exec, repoRoot } = options;
   const tsconfig = options.tsconfig ?? 'tsconfig.json';
   const tsc = await exec(
     resolveBin('tsc'),
     ['--noEmit', '--pretty', 'false', '-p', tsconfig],
     { cwd: repoRoot },
   );
-  return parseTscOutput(tsc.stdout, repoRoot, packageId);
+  return parseTscOutput(tsc.stdout, repoRoot);
 }
 
 /** stryker is diff-scoped (changed production files) and CI/commit-only (mutation
@@ -161,7 +160,7 @@ async function runStryker(
   if (production.length === 0) {
     return [];
   }
-  const { exec, repoRoot, packageId } = options;
+  const { exec, repoRoot } = options;
   const readFile =
     options.readFile ?? ((filePath) => fsReadFile(filePath, 'utf8'));
 
@@ -192,7 +191,7 @@ async function runStryker(
     return [];
   }
   // Stryker restore BlockStatement
-  return parseStrykerJson(report, production, packageId);
+  return parseStrykerJson(report, production);
 }
 
 type Rung = NonNullable<VerifyOptions['profile']>;
