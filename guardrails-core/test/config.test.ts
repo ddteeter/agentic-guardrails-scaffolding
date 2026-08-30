@@ -165,15 +165,38 @@ describe('loadConfig mutation-hardening', () => {
   it('falls back when an enum-valued field is outside its allowed set', () => {
     // Kills the `allowed && !allowed.includes(...)` mutant and the
     // `['solo','team']` -> `[]` mutant (an empty allowlist rejects everything).
+    // `enforcement` is deliberately NOT in this test: it does not fall back on
+    // a bad value — see the "enforcement" describe below.
     writeConfig(JSON.stringify({ distribution: 'enterprise' }));
     expect(loadConfig(root).distribution).toBe('solo');
-    writeConfig(JSON.stringify({ enforcement: 'shout' }));
-    expect(loadConfig(root).enforcement).toBe('warn');
     // ...while a legitimate non-default value IS honoured.
     writeConfig(JSON.stringify({ distribution: 'team', enforcement: 'block' }));
     expect(loadConfig(root)).toMatchObject({
       distribution: 'team',
       enforcement: 'block',
+    });
+  });
+
+  describe('enforcement', () => {
+    it('defaults to warn when the field is absent', () => {
+      writeConfig(JSON.stringify({ baseBranch: 'main' }));
+      expect(loadConfig(root).enforcement).toBe('warn');
+    });
+
+    it('honours both valid values', () => {
+      writeConfig(JSON.stringify({ enforcement: 'warn' }));
+      expect(loadConfig(root).enforcement).toBe('warn');
+      writeConfig(JSON.stringify({ enforcement: 'block' }));
+      expect(loadConfig(root).enforcement).toBe('block');
+    });
+
+    it('blocks — not warns — on a value that is present but invalid', () => {
+      // A field the author typed and got wrong must never be what silently
+      // turns the commit gate advisory.
+      for (const value of ['Block', 'blocked', true, 0]) {
+        writeConfig(JSON.stringify({ enforcement: value }));
+        expect(loadConfig(root).enforcement).toBe('block');
+      }
     });
   });
 

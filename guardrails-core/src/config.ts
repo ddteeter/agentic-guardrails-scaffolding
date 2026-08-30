@@ -106,6 +106,9 @@ export interface RepoConfig {
    * switching the feature off rather than making it advisory, which is a
    * different decision than this field exists to make. `toGateConfig`
    * intentionally does not forward it.
+   *
+   * Parsed asymmetrically: absent → `warn`, present but invalid → `block`.
+   * See `pickEnforcement`.
    */
   enforcement: 'warn' | 'block';
   /** Copilot model id for the fast/thorough fixer .agent.md (the tier ladder on
@@ -266,6 +269,26 @@ function pickAnalyzers(value: unknown): Record<string, AnalyzerMode> {
   return modes;
 }
 
+/**
+ * Parse `enforcement`, asymmetrically and on purpose. ABSENT falls back to the
+ * caller's default (`'warn'`): a new adopter should not be blocked by a gate
+ * they never asked for, and that humane default is deliberate. PRESENT but not
+ * one of the two valid values — `"Block"`, `"blocked"`, `true` — resolves to
+ * `'block'` instead, because an author who typed the field meant to configure
+ * enforcement, and a typo must never be the thing that silently turns a gate
+ * advisory. Both directions fail toward more checking, like every other
+ * defensive path in this file; only the absent case can produce `'warn'`.
+ */
+function pickEnforcement(
+  value: unknown,
+  fallback: RepoConfig['enforcement'],
+): RepoConfig['enforcement'] {
+  if (value === undefined) {
+    return fallback;
+  }
+  return value === 'warn' ? 'warn' : 'block';
+}
+
 function pickNumber(value: unknown, fallback: number): number {
   // Equivalent mutant on the `typeof value === 'number'` half: Number.isFinite
   // does NOT coerce, so a non-number is rejected by the second half regardless.
@@ -325,10 +348,7 @@ export function loadConfig(repoRoot: string): RepoConfig {
       'solo',
       'team',
     ]),
-    enforcement: pickString(raw.enforcement, defaults.enforcement, [
-      'warn',
-      'block',
-    ]),
+    enforcement: pickEnforcement(raw.enforcement, defaults.enforcement),
     ...(typeof raw.copilotFastModel === 'string'
       ? { copilotFastModel: raw.copilotFastModel }
       : {}),
