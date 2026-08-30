@@ -98,14 +98,37 @@ Read the mutant's `replacement` — it tells you exactly what to defeat.
 2. **Use a mutator-scoped directive**, never a blanket one:
    `// Stryker disable next-line ConditionalExpression` — not `disable next-line`.
    A blanket disable silently discards the real coverage on that line.
+
+   But scoped is **not** precise. Directives match by **mutator name and line**,
+   not by sub-expression, so on a compound condition every clause shares a start
+   line with the whole chain and one directive silences all of them. Measured on
+   a real file: suppressing 4 equivalent mutants silenced 19, taking 15
+   genuinely-killed ones as collateral. **The remedy is to reorder the `&&`/`||`
+   chain so the equivalent clause is not leftmost**, putting it on its own line.
+   Check the reorder preserves short-circuit safety — it does when the null check
+   still precedes every property access, since `typeof` never dereferences.
+
 3. **Placement is fussy.** `disable next-line` only attaches to a comment that
-   _leads a statement_. It will not attach from the end of a previous block (above
+   leads a statement. It will not attach from the end of a previous block (above
    a `} else if`, or above a `} catch {`). Use a
    `// Stryker disable X` … `// Stryker restore X` range there, or restructure so
    the directive has a statement to lead.
-4. **Verify the directive took effect** by re-running: the mutant should move to
-   `Ignored`, not stay `Survived`. A directive that silently failed to attach is
-   easy to miss.
+
+   A **`restore` only binds if a statement follows it.** One placed after a
+   `return` never attaches, and its `disable` then silently runs to **end of
+   file**. That exact bug hid 21 mutants across four functions in one file while
+   the report read zero survivors. Prefer `disable next-line` over a range; where
+   a range is unavoidable, put the `restore` before a real statement. Prettier
+   also collapses a `}` / `catch {` pair and relocates a comment placed there,
+   defeating the directive — such sites need `// prettier-ignore`.
+
+4. **Verify the directive took effect, and measure its collateral.** Re-run and
+   confirm the mutant moved to `Ignored` rather than staying `Survived` — a
+   directive that silently failed to attach is easy to miss. Then check what
+   _else_ moved: record per-file `Ignored` and `Killed` before and after.
+   `Ignored` must rise by exactly the number you intended, and `Killed` must not
+   drop. Losing real coverage to silence an equivalent mutant is a worse trade
+   than leaving the mutant.
 
 ## Exemptions need a human
 
