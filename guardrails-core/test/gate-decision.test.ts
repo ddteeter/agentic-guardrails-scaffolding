@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { decideGate, type GateConfig } from '../src/gate-decision.js';
 import { createSession } from '../src/state.js';
-import type { Violation } from '../src/violation.js';
+import { recurrenceKey, type Violation } from '../src/violation.js';
 
 function v(partial: Partial<Violation> & Pick<Violation, 'ruleId'>): Violation {
   return {
@@ -153,5 +153,29 @@ describe('decideGate — recurrence injection', () => {
     );
     // bumped to 3 === graduationThreshold → suggest graduation.
     expect(decision.additionalContext).toContain('CLAUDE.md');
+  });
+});
+
+describe('per-package recurrence', () => {
+  const base = {
+    ruleId: 'no-console',
+    file: 'a.ts',
+    message: 'msg',
+    severity: 'error' as const,
+    fixable: false,
+    tool: 'eslint',
+  };
+
+  it('keys the same rule separately in different packages', () => {
+    // The whole point of attribution: a rule recurring in one package must not
+    // be diluted across the repo, which is what recurrence-as-signal measures.
+    const api: Violation = { ...base, package: 'packages/api' };
+    const web: Violation = { ...base, package: 'packages/web' };
+    expect(recurrenceKey(api)).not.toBe(recurrenceKey(web));
+    expect(recurrenceKey(api)).toBe('packages/api:no-console');
+  });
+
+  it('keys on the bare ruleId when there is no package', () => {
+    expect(recurrenceKey(base)).toBe('no-console');
   });
 });
