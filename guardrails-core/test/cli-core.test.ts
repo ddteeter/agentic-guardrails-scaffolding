@@ -886,11 +886,38 @@ function sanctionsExec(
   return { exec, calls };
 }
 
+/** Writes the policy file AND materializes the source each key names, so the
+ *  count drift-guard sees a repo whose suppressions match what is declared.
+ *  Fixture keys are real auditable lines for the same reason: a synthetic key
+ *  no auditor could ever produce would make the drift-guard the thing under
+ *  test in every unrelated case. */
 function writeRepoConfig(sanctions: unknown[]): void {
   writeFileSync(
     path.join(root, 'guardrails.config.json'),
     JSON.stringify({ sanctionedSuppressions: sanctions }),
   );
+  const declared = new Map<string, number>();
+  for (const entry of sanctions as { key?: string; count?: number }[]) {
+    if (typeof entry.key !== 'string') {
+      continue;
+    }
+    const count = typeof entry.count === 'number' ? entry.count : 1;
+    declared.set(entry.key, (declared.get(entry.key) ?? 0) + count);
+  }
+  const linesByFile = new Map<string, string[]>();
+  for (const [key, total] of declared) {
+    const [file, , text] = key.split('|');
+    if (file === undefined || text === undefined || total < 1) {
+      continue;
+    }
+    linesByFile.set(file, [
+      ...(linesByFile.get(file) ?? []),
+      ...Array.from({ length: total }, () => text),
+    ]);
+  }
+  for (const [file, lines] of linesByFile) {
+    writeFileSync(path.join(root, file), `${lines.join('\n')}\n`);
+  }
 }
 
 /** git fake where the base branch resolves ONLY as `origin/<branch>` (the CI
@@ -917,8 +944,10 @@ function baseReferenceExec(resolvable: readonly string[]): {
   return { exec, calls };
 }
 
-const REVIEWED = { key: 'a.ts|cast-any|x', reason: 'proven equivalent' };
-const REQUESTED = { key: 'b.ts|cast-any|y', reason: 'newly requested' };
+const REVIEWED_KEY = 'a.ts|cast-any|const value = input as any;';
+const REQUESTED_KEY = 'b.ts|cast-any|const other = input as any;';
+const REVIEWED = { key: REVIEWED_KEY, reason: 'proven equivalent' };
+const REQUESTED = { key: REQUESTED_KEY, reason: 'newly requested' };
 
 describe('runCommand — sanctions-check (CI approval-visibility gate)', () => {
   it('passes when the branch adds no new exemption', async () => {
@@ -947,11 +976,11 @@ describe('runCommand — sanctions-check (CI approval-visibility gate)', () => {
       ),
     ).toBe(0);
     const printed = errors.join('');
-    expect(printed).toContain('b.ts|cast-any|y');
+    expect(printed).toContain(REQUESTED_KEY);
     expect(printed).toContain('newly requested');
     expect(printed).toContain('1 new diff-auditor exemption');
     // The already-approved entry must not be re-reported.
-    expect(printed).not.toContain('a.ts|cast-any|x');
+    expect(printed).not.toContain(REVIEWED_KEY);
   });
 
   it('prints a raised count as a new grant, even though the key already existed', async () => {
@@ -968,7 +997,7 @@ describe('runCommand — sanctions-check (CI approval-visibility gate)', () => {
       ),
     ).toBe(0);
     const printed = errors.join('');
-    expect(printed).toContain('a.ts|cast-any|x');
+    expect(printed).toContain(REVIEWED_KEY);
     expect(printed).toContain('count: 2');
   });
 
@@ -981,11 +1010,11 @@ describe('runCommand — sanctions-check (CI approval-visibility gate)', () => {
         deps({ exec: sanctionsExec(null).exec }),
       ),
     ).toBe(0);
-    expect(errors.join('')).toContain('a.ts|cast-any|x');
+    expect(errors.join('')).toContain(REVIEWED_KEY);
   });
 
   it('fails and names each malformed entry in the head config', async () => {
-    writeRepoConfig([REVIEWED, { key: 'c.ts|cast-any|z' }]);
+    writeRepoConfig([REVIEWED, { key: 'c.ts|cast-any|const z = q as any;' }]);
     const base = JSON.stringify({ sanctionedSuppressions: [] });
     expect(
       await runCommand(
@@ -1078,7 +1107,7 @@ describe('sanctions-check git plumbing', () => {
       128,
     );
     expect(await runCommand('sanctions-check', [], deps({ exec }))).toBe(0);
-    expect(errors.join('')).toContain('a.ts|cast-any|x');
+    expect(errors.join('')).toContain(REVIEWED_KEY);
   });
 });
 
@@ -1194,5 +1223,63 @@ describe('sanctions-check base branch resolution', () => {
     const mergeBase = calls.find((call) => call[1] === 'merge-base');
     expect(mergeBase).toEqual(['git', 'merge-base', 'main', 'HEAD']);
     expect(mergeBase?.includes('undefined')).toBe(false);
+  });
+});
+
+describe('sanctions-check count drift-guard', () => {
+  it('fails and names each entry whose declared count exceeds the source', async () => {
+    // The stale-config case: a refactor deleted one of two suppressed sites
+    // without touching the policy file, over-provisioning the budget.
+    writeRepoConfig([{ ...REVIEWED, count: 2 }]);
+    writeFileSync(path.join(root, 'a.ts'), 'const value = input as any;\n');
+    const code = await runCommand(
+      'sanctions-check',
+      [],
+      deps({ exec: sanctionsExec('{}').exec }),
+    );
+    expect(code).toBe(1);
+    const printed = errors.join('');
+    expect(printed).toContain(`${REVIEWED_KEY}: declared 2, found 1`);
+    expect(printed).toContain('no longer match the source');
+  });
+
+  it('passes when every declared count matches, and still reports grants', async () => {
+    // Paired with the case above so a guard that always failed — or never ran —
+    // is caught rather than passing silently.
+    writeRepoConfig([{ ...REVIEWED, count: 2 }]);
+    const code = await runCommand(
+      'sanctions-check',
+      [],
+      deps({ exec: sanctionsExec('{}').exec }),
+    );
+    expect(code).toBe(0);
+    expect(errors.join('')).not.toContain('no longer match the source');
+  });
+
+  it('does not read a source file outside the repo to satisfy a count', async () => {
+    // A key that escapes the repo must read as ABSENT, not be followed. The
+    // escape target really exists and really contains the suppression, so a
+    // reader without the containment guard would find it and report no drift.
+    const escapee = path.join(root, '..', 'guardrails-escape-probe.ts');
+    writeFileSync(escapee, 'const value = input as any;\n');
+    try {
+      const key =
+        '../guardrails-escape-probe.ts|cast-any|const value = input as any;';
+      writeFileSync(
+        path.join(root, 'guardrails.config.json'),
+        JSON.stringify({
+          sanctionedSuppressions: [{ key, reason: 'escapes the repo' }],
+        }),
+      );
+      const code = await runCommand(
+        'sanctions-check',
+        [],
+        deps({ exec: sanctionsExec('{}').exec }),
+      );
+      expect(code).toBe(1);
+      expect(errors.join('')).toContain('declared 1, found 0');
+    } finally {
+      rmSync(escapee, { force: true });
+    }
   });
 });

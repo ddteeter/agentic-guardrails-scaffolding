@@ -1133,3 +1133,42 @@ sub-expression**, not the whole return, and the whole-expression mutants were
 in fact killed. Reading the mutant's `location` columns rather than its line
 number is what settled it. When a mutation result contradicts intuition,
 compare the exact mutated **span** before concluding the tool is wrong.
+
+### Hardening: sanction counts are now verified against the source
+
+Suggested by the automated review of PR #16, which observed that `count` is a
+hand-entered number with nothing re-checking it: a refactor removing a suppressed
+call site without touching `guardrails.config.json` leaves the budget
+over-provisioned. Not exploitable — the gate still spends per occurrence, so
+nothing net-new gets through — but it silently shrinks how much the auditor is
+watching, which is precisely what this escape hatch exists to keep visible.
+
+`sanctionCountDrift` sums each key's declared budget and compares it to the
+occurrences actually present, and `sanctions-check` now **fails** on any
+mismatch. It blocks for the same reason `malformed` blocks: both are _factual_
+errors about the policy file, not judgments about whether an exemption is
+deserved — which is the line this command already draws, and why a new grant
+still exits 0.
+
+**Counted with the auditor's own machinery.** `auditSource` presents a whole file
+to `auditDiff` as an all-additions hunk, so the lexer state (strings, regex,
+template literals) and the signature table are the ones the gate enforces with.
+Two reasons this matters more than convenience:
+
+- A directive mentioned inside a string literal is not a directive, and only the
+  real lexer knows that.
+- `// Stryker disable next-line ConditionalExpression` is a strict **prefix** of
+  `// Stryker disable next-line ConditionalExpression,BlockStatement`, both of
+  which are live keys in this repo. Naive substring counting would score the
+  wider directive as an occurrence of the narrower one and over-provision it.
+
+`findingKey` moved to `audit.ts` and is now shared by the gate's budget map and
+this guard, so the two cannot disagree about what "the same suppression" means —
+reimplementing it here would have been the very drift being guarded against.
+
+A key that escapes the repo (`../`) reads as absent rather than being followed:
+the policy file is checked-in text, but it is still input.
+
+**Verified against reality:** the repo's 29 entries / 28 distinct keys / 40
+declared occurrences pass with zero drift, and artificially inflating one count
+produces `declared 6, found 1` and exit 1.

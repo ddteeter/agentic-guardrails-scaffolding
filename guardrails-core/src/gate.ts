@@ -15,7 +15,7 @@
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
-import { auditDiff, type AuditFinding } from './audit.js';
+import { auditDiff, findingKey, type AuditFinding } from './audit.js';
 import type { SanctionedSuppression } from './config.js';
 import type { Exec } from './exec.js';
 import { withGuidance } from './guidance.js';
@@ -70,10 +70,6 @@ export interface CommitGateResult {
   violations: Violation[];
   findings: AuditFinding[];
   blocked: boolean;
-}
-
-function findingKey(finding: AuditFinding): string {
-  return `${finding.file}|${finding.kind}|${finding.text}`;
 }
 
 /**

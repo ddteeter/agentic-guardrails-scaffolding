@@ -494,3 +494,28 @@ export function auditDiff(diffText: string): AuditFinding[] {
 
   return findings;
 }
+
+/** Stable identity of a suppression: file + kind + exact trimmed text. Shared
+ *  with the gate's budget map and the count drift-guard so all three agree on
+ *  what "the same suppression" means. */
+export function findingKey(finding: AuditFinding): string {
+  return `${finding.file}|${finding.kind}|${finding.text}`;
+}
+
+/**
+ * Audit a WHOLE FILE rather than a diff, by presenting it as an all-additions
+ * hunk. Reusing `auditDiff` is the point: the lexer state (strings, regex,
+ * template literals, block comments) and the signature table are the same ones
+ * the gate enforces with, so a count taken here cannot drift from the count the
+ * gate would produce. Line numbers are 1-indexed as usual.
+ */
+export function auditSource(file: string, source: string): AuditFinding[] {
+  const lines = source.split('\n');
+  return auditDiff(
+    [
+      `+++ b/${file}`,
+      `@@ -0,0 +1,${lines.length} @@`,
+      ...lines.map((line) => `+${line}`),
+    ].join('\n'),
+  );
+}

@@ -4,6 +4,9 @@
  * `cli.ts` is a thin bootstrap that supplies the real dependencies.
  */
 
+import { existsSync, readFileSync } from 'node:fs';
+import path from 'node:path';
+
 import { auditDiff } from './audit.js';
 import { runAutofix } from './autofix.js';
 import {
@@ -17,6 +20,7 @@ import { runCommitGate, runStopGate } from './gate.js';
 import {
   formatGrantReport,
   newlySanctioned,
+  sanctionCountDrift,
   toMalformedViolations,
 } from './sanctions.js';
 import {
@@ -210,6 +214,20 @@ const CONFIG_FILE = 'guardrails.config.json';
  * constitutes its approval. The gate itself (`runCommitGate`) is what enforces
  * reality: an occurrence beyond the declared count still blocks the commit
  * regardless of what this check reports. See src/sanctions.ts. */
+/** Reads a repo-relative source file for the count drift-guard. A key that
+ *  escapes the repo (`../`) reads as absent rather than reaching outside it:
+ *  the policy file is checked-in text, but it is still input. */
+function repoSourceReader(
+  repoRoot: string,
+): (file: string) => string | undefined {
+  return (file) => {
+    const full = path.join(repoRoot, file);
+    return isWithinRepo(repoRoot, file) && existsSync(full)
+      ? readFileSync(full, 'utf8')
+      : undefined;
+  };
+}
+
 async function sanctionsCheckCommand(deps: CliDeps): Promise<number> {
   const headText = readConfigText(deps.cwd) ?? '';
   const { valid: headSanctions, malformed } = parseSanctionsJson(headText);
@@ -218,6 +236,26 @@ async function sanctionsCheckCommand(deps: CliDeps): Promise<number> {
     deps.stderr(
       `guardrails: ${malformed.length} malformed sanctionedSuppressions ` +
         `entry(ies) in ${CONFIG_FILE} — fix before merging.\n`,
+    );
+    return 1;
+  }
+
+  // Declared budgets must still match the source. Like `malformed`, this is a
+  // FACTUAL error rather than a judgment about whether an exemption is
+  // deserved, so it blocks -- an over-provisioned budget silently shrinks how
+  // much the auditor is watching.
+  const drift = sanctionCountDrift(headSanctions, repoSourceReader(deps.cwd));
+  if (drift.length > 0) {
+    for (const entry of drift) {
+      deps.stderr(
+        `  - ${entry.key}: declared ${entry.declared}, found ${entry.actual}\n`,
+      );
+    }
+    deps.stderr(
+      `guardrails: ${drift.length} sanctionedSuppressions entry(ies) in ` +
+        `${CONFIG_FILE} no longer match the source. Update \`count\` to the ` +
+        `number of occurrences that remain, or drop the entry if the ` +
+        `suppression is gone.\n`,
     );
     return 1;
   }
