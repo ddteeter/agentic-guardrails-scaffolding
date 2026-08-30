@@ -6,7 +6,7 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import type { Exec, ExecResult } from '../../src/exec.js';
-import { runVerify } from '../../src/verify/index.js';
+import { ANALYZER_TOOLS, runVerify } from '../../src/verify/index.js';
 
 const eslintJson = JSON.stringify([
   {
@@ -61,6 +61,15 @@ const depcruiseJson = JSON.stringify({
   },
   modules: [],
 });
+
+const knipMissing = {
+  'knip --reporter json': {
+    stdout: '',
+    stderr: '',
+    code: 1,
+    spawnFailed: true as const,
+  },
+};
 
 interface Call {
   command: string;
@@ -302,6 +311,130 @@ describe('runVerify', () => {
         (c) => c.command === 'depcruise' || c.args.includes('depcruise'),
       ),
     ).toBe(true);
+  });
+
+  it('does not spawn an analyzer turned off in config', async () => {
+    const { exec, calls } = fakeExec();
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      profile: 'commit',
+      analyzers: { knip: 'off' },
+      declaredProviders: new Set(['knip']),
+    });
+    expect(calls.some((call) => call.command === 'knip')).toBe(false);
+    // A recognised key must never itself be flagged as unknown.
+    expect(
+      violations.some(
+        (violation) => violation.ruleId === 'guardrails/analyzer-unknown',
+      ),
+    ).toBe(false);
+  });
+
+  it('lists exactly the analyzer table’s tool names', () => {
+    expect(ANALYZER_TOOLS).toEqual([
+      'eslint',
+      'tsc',
+      'knip',
+      'dependency-cruiser',
+      'stryker',
+    ]);
+  });
+
+  it('reports a required analyzer that cannot start', async () => {
+    const { exec } = fakeExec(knipMissing);
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      profile: 'commit',
+      analyzers: { knip: 'required' },
+      declaredProviders: new Set(),
+    });
+    expect(
+      violations.filter(
+        (violation) => violation.ruleId === 'guardrails/analyzer-missing',
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('stays silent about an auto analyzer that is neither installed nor declared', async () => {
+    const { exec } = fakeExec(knipMissing);
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      profile: 'commit',
+      declaredProviders: new Set(),
+    });
+    expect(
+      violations.some(
+        (violation) => violation.ruleId === 'guardrails/analyzer-missing',
+      ),
+    ).toBe(false);
+  });
+
+  it('reports an auto analyzer that package.json declares but that cannot start', async () => {
+    const { exec } = fakeExec(knipMissing);
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      profile: 'commit',
+      declaredProviders: new Set(['knip']),
+    });
+    const missing = violations.filter(
+      (violation) => violation.ruleId === 'guardrails/analyzer-missing',
+    );
+    expect(missing).toHaveLength(1);
+    expect(missing[0]?.message).toContain('knip');
+  });
+
+  it('warns about an unknown key in the analyzers block', async () => {
+    const { exec } = fakeExec();
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      // Mixes a valid key alongside the typo so the filter's job — picking
+      // out only the unrecognised one — is actually exercised.
+      analyzers: { knip: 'off', knipp: 'off' },
+      declaredProviders: new Set(),
+    });
+    const unknown = violations.filter(
+      (violation) => violation.ruleId === 'guardrails/analyzer-unknown',
+    );
+    expect(unknown).toHaveLength(1);
+    expect(unknown[0]?.severity).toBe('warn');
+    expect(unknown[0]?.fixable).toBe(false);
+    expect(unknown[0]?.message).toContain('knipp');
+  });
+
+  it('reads a real package.json from disk when declaredProviders is not injected', async () => {
+    // Every test above injects declaredProviders directly; none exercises the
+    // production default (`declaredProviders(readManifest(repoRoot))`) against
+    // a manifest that actually parses. Without this, a knip devDependency
+    // would never be discovered outside a test double.
+    const repoRoot = await mkdtemp(path.join(tmpdir(), 'guardrails-manifest-'));
+    await writeFile(
+      path.join(repoRoot, 'package.json'),
+      JSON.stringify({ devDependencies: { knip: '^5.0.0' } }),
+      'utf8',
+    );
+    const { exec } = fakeExec(knipMissing);
+    const { violations } = await runVerify({
+      repoRoot,
+      baseBranch: 'main',
+      exec,
+      profile: 'commit',
+      // deliberately no declaredProviders: exercise the real-fs default
+    });
+    const missing = violations.filter(
+      (violation) => violation.ruleId === 'guardrails/analyzer-missing',
+    );
+    expect(missing).toHaveLength(1);
+    expect(missing[0]?.message).toContain('knip');
   });
 });
 
@@ -671,6 +804,13 @@ describe('missing analyzers fail CLOSED', () => {
       exec: execMissing(['eslint', 'tsc', 'knip', 'depcruise', 'stryker']),
       profile: 'ci',
       readFile: () => Promise.resolve('{}'),
+      declaredProviders: new Set([
+        'eslint',
+        'typescript',
+        'knip',
+        'dependency-cruiser',
+        '@stryker-mutator/core',
+      ]),
     });
     const missing = violations.filter(
       (v) => v.ruleId === 'guardrails/analyzer-missing',
@@ -696,6 +836,13 @@ describe('missing analyzers fail CLOSED', () => {
       exec: execMissing(['knip']),
       profile: 'ci',
       readFile: () => Promise.resolve('{}'),
+      declaredProviders: new Set([
+        'eslint',
+        'typescript',
+        'knip',
+        'dependency-cruiser',
+        '@stryker-mutator/core',
+      ]),
     });
     const missing = violations.filter(
       (v) => v.ruleId === 'guardrails/analyzer-missing',

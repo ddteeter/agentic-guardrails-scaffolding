@@ -13,9 +13,10 @@
  * attribution is an enrichment and must never fail a gate that would pass.
  */
 
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import path from 'node:path';
 
+import { readJsonFile } from './json-file.js';
 import { parseWorkspaceGlob, type ParsedGlob } from './workspace-glob.js';
 import type { Violation } from './violation.js';
 
@@ -41,24 +42,12 @@ function declaredPatterns(manifest: unknown): unknown[] {
 }
 
 function readWorkspaceGlobs(repoRoot: string): ParsedGlob[] {
-  let manifest: unknown;
-  // Equivalent mutant: `manifest` is declared but never assigned before the
-  // try block runs, so if JSON.parse/readFileSync throws, the assignment on
-  // the next line never completes and `manifest` stays `undefined`. Emptying
-  // the catch block instead of returning `[]` still falls through to
-  // `declaredPatterns(undefined)`, which returns `[]` anyway (`isRecord`
-  // rejects `undefined`) — the two paths are unobservably different. A range
-  // directive is used because `disable next-line` only attaches to a
-  // statement-LEADING comment, and a `} catch {` line has none.
-  // Stryker disable BlockStatement
-  try {
-    manifest = JSON.parse(
-      readFileSync(path.join(repoRoot, 'package.json'), 'utf8'),
-    );
-  } catch {
-    return [];
-  }
-  // Stryker restore BlockStatement
+  // A missing or malformed root manifest yields `parsed: undefined`, which
+  // `declaredPatterns` rejects (`isRecord` returns `false`), so this falls
+  // through to `[]` exactly like the old explicit early return — see
+  // `readJsonFile` for why the failure case is a wrapper rather than a bare
+  // `undefined`.
+  const manifest = readJsonFile(path.join(repoRoot, 'package.json')).parsed;
   const parsed: ParsedGlob[] = [];
   for (const pattern of declaredPatterns(manifest)) {
     if (typeof pattern !== 'string') {

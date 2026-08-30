@@ -44,8 +44,15 @@ import { readFile as fsReadFile, rm as fsRm } from 'node:fs/promises';
 import path from 'node:path';
 
 import type { Exec, ExecResult } from '../exec.js';
+import { readJsonFile } from '../json-file.js';
 import type { Violation } from '../violation.js';
 import { loadWorkspaceResolver, withPackages } from '../workspaces.js';
+import {
+  type AnalyzerMode,
+  analyzerMode,
+  decideAnalyzer,
+  declaredProviders,
+} from './analyzer-policy.js';
 import { parseDepcruiseJson } from './depcruise-adapter.js';
 import { parseEslintJson } from './eslint-adapter.js';
 import { isTestFile, isTypeScriptFile, mergeChangedFiles } from './git.js';
@@ -70,6 +77,17 @@ export interface VerifyOptions {
    *  this one's. Defaults to node:fs/promises `rm` with `{ force: true }`
    *  (a missing file is not an error); injected in tests. */
   removeFile?: (filePath: string) => Promise<void>;
+  /**
+   * Per-analyzer opt-in (`RepoConfig.analyzers`). Absent → every analyzer is
+   * `auto`. See `analyzer-policy.ts` for the truth table.
+   */
+  analyzers?: Readonly<Record<string, AnalyzerMode>>;
+  /**
+   * Package names the repo's own `package.json` declares. A provider named
+   * there whose binary does not resolve is a broken install, not an opt-out.
+   * Injected in tests; defaults to reading `<repoRoot>/package.json`.
+   */
+  declaredProviders?: ReadonlySet<string>;
 }
 
 export interface VerifyResult {
@@ -427,12 +445,37 @@ export const ANALYZER_PROVIDERS: readonly string[] = ANALYZERS.map(
   (analyzer) => analyzer.provider,
 );
 
+/** The valid keys of `guardrails.config.json`'s `analyzers` block. Exported so
+ *  `runVerify` can flag an unrecognised key rather than let a typo silently
+ *  leave an analyzer running that the author believes disabled. */
+export const ANALYZER_TOOLS: readonly string[] = ANALYZERS.map(
+  (analyzer) => analyzer.tool,
+);
+
+function unknownAnalyzerViolations(
+  analyzers: Readonly<Record<string, AnalyzerMode>>,
+): Violation[] {
+  return Object.keys(analyzers)
+    .filter((key) => !ANALYZER_TOOLS.includes(key))
+    .map((key) => ({
+      ruleId: 'guardrails/analyzer-unknown',
+      file: 'guardrails.config.json',
+      message:
+        `"${key}" in the "analyzers" block is not a known analyzer, so the ` +
+        `entry has no effect. Known analyzers: ${ANALYZER_TOOLS.join(', ')}. ` +
+        `Check for a typo — an analyzer you believe disabled is still running.`,
+      severity: 'warn' as const,
+      fixable: false,
+      tool: 'guardrails',
+    }));
+}
+
 /**
  * A guard that could not RUN must never look like a guard that passed. Exit code
  * cannot carry that distinction — eslint exits 1 on findings, tsc on type errors
  * — so `spawnExec` flags the could-not-start case and this wrapper records which
- * commands hit it. See plan.md "Roadmap: analyzer opt-in" for making a pack tool
- * optional rather than required.
+ * commands hit it. Whether a failure becomes a violation is the opt-in policy's
+ * call — see `analyzer-policy.ts`.
  */
 function trackSpawnFailures(exec: Exec): { exec: Exec; failures: string[] } {
   const failures: string[] = [];
@@ -474,7 +517,22 @@ export async function runVerify(options: VerifyOptions): Promise<VerifyResult> {
   if (failures.length > 0) {
     violations.push(missingToolViolation('git', 'git'));
   }
+  const analyzers = options.analyzers ?? {};
+  const declared =
+    options.declaredProviders ??
+    declaredProviders(
+      readJsonFile(path.join(options.repoRoot, 'package.json')).parsed,
+    );
+  violations.push(...unknownAnalyzerViolations(analyzers));
+
   for (const analyzer of ANALYZERS) {
+    const decision = decideAnalyzer(
+      analyzerMode(analyzers, analyzer.tool),
+      declared.has(analyzer.provider),
+    );
+    if (!decision.run) {
+      continue;
+    }
     if (RUNG_ORDER[profile] < RUNG_ORDER[analyzer.minRung]) {
       continue;
     }
@@ -483,7 +541,7 @@ export async function runVerify(options: VerifyOptions): Promise<VerifyResult> {
     }
     const before = failures.length;
     violations.push(...(await analyzer.run(tracked, resolveBin, files)));
-    if (failures.length > before) {
+    if (failures.length > before && decision.reportMissing) {
       violations.push(missingToolViolation(analyzer.tool, analyzer.provider));
     }
   }
