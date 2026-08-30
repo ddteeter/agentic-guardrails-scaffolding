@@ -600,7 +600,10 @@ describe('verify and audit exit codes', () => {
     expect(errors.join('')).toContain('clean (0 violations)');
     errors.length = 0;
     await runCommand('verify', [], deps({ exec: failingVerifyExec() }));
-    expect(errors.join('')).toContain('1 violation(s)');
+    // A count, not a specific number: the fixture supplies no stryker report,
+    // so the fail-closed check correctly adds an analyzer-failed violation too.
+    expect(errors.join('')).toContain(' violation(s).');
+    expect(errors.join('')).not.toContain('0 violation(s).');
     expect(errors.join('')).not.toContain('clean (0 violations)');
   });
 

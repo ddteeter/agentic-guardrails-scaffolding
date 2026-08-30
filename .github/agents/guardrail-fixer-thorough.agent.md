@@ -21,7 +21,9 @@ follow them exactly. You are invoked when a fix needs more care:
 For a **surviving mutant** (`stryker/survived`), read the guidance before you
 touch anything — the violation in your manifest carries its path in a `guidance`
 field. It is the **crushing-mutants** skill where your runtime has skills, and
-`docs/guardrails/crushing-mutants.md` where it does not. It carries the method that is expensive to
+`node_modules/guardrails-core/guidance/crushing-mutants.md` where it does not
+(the same doc, shipped with the package so it resolves in any consumer repo).
+It carries the method that is expensive to
 rediscover: how to tell a killable mutant from an equivalent one, why an
 assertion can pass for the wrong reason (and the pairing trick that exposes it),
 which input defeats each mutator, and what to do on the rare occasion the mutant

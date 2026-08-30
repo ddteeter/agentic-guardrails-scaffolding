@@ -18,7 +18,9 @@ function violation(ruleId: string, extra: Partial<Violation> = {}): Violation {
 describe('withGuidance', () => {
   it('attaches the mutation doc to a surviving-mutant violation', () => {
     const [tagged] = withGuidance([violation('stryker/survived')]);
-    expect(tagged?.guidance).toBe('docs/guardrails/crushing-mutants.md');
+    expect(tagged?.guidance).toBe(
+      'node_modules/guardrails-core/guidance/crushing-mutants.md',
+    );
   });
 
   it('leaves classes with no guidance untouched, adding no key', () => {
@@ -36,7 +38,9 @@ describe('withGuidance', () => {
 
   it('matches on prefix, not exact id', () => {
     const [tagged] = withGuidance([violation('stryker/timeout')]);
-    expect(tagged?.guidance).toBe('docs/guardrails/crushing-mutants.md');
+    expect(tagged?.guidance).toBe(
+      'node_modules/guardrails-core/guidance/crushing-mutants.md',
+    );
   });
 
   it('preserves every other field and the input order', () => {

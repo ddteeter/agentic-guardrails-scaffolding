@@ -388,7 +388,7 @@ export async function runCommand(
     }
     default: {
       deps.stderr(
-        'usage: guardrails <verify|autofix|audit|gate [--mode=stop|commit|pretooluse] [--dialect=copilot]|state|scope-check|session-start|session-end>\n',
+        'usage: guardrails <verify|autofix|audit|gate [--mode=stop|commit|pretooluse] [--dialect=copilot]|sanctions-check|state|scope-check|session-start|session-end>\n',
       );
       return 1;
     }

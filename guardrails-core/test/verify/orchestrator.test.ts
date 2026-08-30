@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -533,14 +534,16 @@ describe('runVerify analyzer invocation contract', () => {
   });
 });
 
-describe('runVerify default readFile seam', () => {
-  it('reads stryker’s report from disk, at the path it was told to use, when no readFile is injected', async () => {
+describe('runVerify default readFile/removeFile seams', () => {
+  const STRYKER_REPORT_PATH = path.join('reports', 'mutation', 'mutation.json');
+
+  it('reads stryker’s report from disk, at its default location, when no readFile is injected', async () => {
     // Kills the default-arrow mutant on the `options.readFile ?? ...` fallback:
     // with `() => undefined` the real filesystem path is never exercised, and
-    // every test above injects a reader, so nothing else covers it. Unlike the
-    // old fixed default-path test, the fake `stryker` here writes to whatever
-    // path it was actually told (`--jsonReporter.fileName`) — proving the real
-    // reader reads the SAME per-run path runStryker passed, not a hardcoded one.
+    // every test above injects a reader, so nothing else covers it. There is no
+    // per-run path any more (no CLI flag can set one) — the fake `stryker`
+    // here writes to stryker's own fixed default location, proving the real
+    // reader reads that same default path runStryker reads back.
     const repoRoot = await mkdtemp(path.join(tmpdir(), 'guardrails-stryker-'));
     const { exec: base } = fakeExec({
       'git diff --name-only --diff-filter=ACM main': {
@@ -556,12 +559,7 @@ describe('runVerify default readFile seam', () => {
     });
     const exec: Exec = async (command, args, options) => {
       if (command === 'stryker') {
-        const flagIndex = args.indexOf('--jsonReporter.fileName');
-        const reportPath = args[flagIndex + 1];
-        if (reportPath === undefined) {
-          throw new Error('stryker invoked without --jsonReporter.fileName');
-        }
-        const fullPath = path.join(repoRoot, reportPath);
+        const fullPath = path.join(repoRoot, STRYKER_REPORT_PATH);
         await mkdir(path.dirname(fullPath), { recursive: true });
         await writeFile(
           fullPath,
@@ -598,6 +596,51 @@ describe('runVerify default readFile seam', () => {
         file: 'src/foo.ts',
         line: 42,
       }),
+    );
+  });
+
+  it('deletes a real stale report from disk when no removeFile is injected', async () => {
+    // Proves the default `removeFile` (node:fs/promises rm) actually removes
+    // the file, not just that some function was called — a stale report left
+    // by a prior run must be gone before stryker is invoked, or a run that
+    // writes nothing would silently read the old one as if it were fresh.
+    const repoRoot = await mkdtemp(path.join(tmpdir(), 'guardrails-stryker-'));
+    const fullPath = path.join(repoRoot, STRYKER_REPORT_PATH);
+    await mkdir(path.dirname(fullPath), { recursive: true });
+    await writeFile(fullPath, JSON.stringify({ files: {} }), 'utf8');
+    const { exec: base } = fakeExec({
+      'git diff --name-only --diff-filter=ACM main': {
+        stdout: 'src/foo.ts\n',
+        stderr: '',
+        code: 0,
+      },
+      'git ls-files --others --exclude-standard': {
+        stdout: '',
+        stderr: '',
+        code: 0,
+      },
+    });
+    let reportPathExistedAtStrykerInvocation: boolean | undefined;
+    const exec: Exec = async (command, args, options) => {
+      if (command === 'stryker') {
+        reportPathExistedAtStrykerInvocation = existsSync(fullPath);
+        // Never writes a report: simulates the missing-report failure mode,
+        // proving the stale file above cannot be mistaken for a fresh one.
+        return { stdout: '', stderr: '', code: 0 };
+      }
+      return base(command, args, options);
+    };
+    const { violations } = await runVerify({
+      repoRoot,
+      baseBranch: 'main',
+      exec,
+      profile: 'commit',
+      // deliberately no removeFile: exercise the node:fs/promises default
+    });
+    expect(reportPathExistedAtStrykerInvocation).toBe(false);
+    expect(existsSync(fullPath)).toBe(false);
+    expect(violations).toContainEqual(
+      expect.objectContaining({ ruleId: 'guardrails/analyzer-failed' }),
     );
   });
 });
@@ -705,6 +748,79 @@ describe('package attribution', () => {
     });
     expect(violations.length).toBeGreaterThan(0);
     expect(violations.every((v) => !Object.hasOwn(v, 'package'))).toBe(true);
+  });
+
+  it('attributes a violation to its declared workspace member end to end', async () => {
+    // The absence assertion above only proves attribution does no harm even
+    // when it cannot resolve anything; it would still pass if the wiring were
+    // deleted entirely. This proves the feature actually works: a real
+    // workspace on disk, a finding on a file inside a declared member, and the
+    // resulting violation carrying that member's `package`.
+    const repoRoot = await mkdtemp(
+      path.join(tmpdir(), 'guardrails-workspace-'),
+    );
+    await writeFile(
+      path.join(repoRoot, 'package.json'),
+      JSON.stringify({ workspaces: ['packages/*'] }),
+      'utf8',
+    );
+    const memberDirectory = path.join(repoRoot, 'packages', 'api');
+    await mkdir(memberDirectory, { recursive: true });
+    await writeFile(path.join(memberDirectory, 'package.json'), '{}', 'utf8');
+    const changedFile = 'packages/api/src/thing.ts';
+    await mkdir(path.dirname(path.join(repoRoot, changedFile)), {
+      recursive: true,
+    });
+    await writeFile(
+      path.join(repoRoot, changedFile),
+      'export const thing = 1;\n',
+      'utf8',
+    );
+
+    const memberEslintJson = JSON.stringify([
+      {
+        filePath: path.join(repoRoot, changedFile),
+        messages: [
+          {
+            ruleId: 'no-console',
+            severity: 2,
+            message: 'Unexpected console statement.',
+            line: 1,
+          },
+        ],
+      },
+    ]);
+    const { exec } = fakeExec({
+      'git diff --name-only --diff-filter=ACM main': {
+        stdout: `${changedFile}\n`,
+        stderr: '',
+        code: 0,
+      },
+      'git ls-files --others --exclude-standard': {
+        stdout: '',
+        stderr: '',
+        code: 0,
+      },
+      [`eslint --format json --no-warn-ignored ${changedFile}`]: {
+        stdout: memberEslintJson,
+        stderr: '',
+        code: 1,
+      },
+    });
+
+    const { violations } = await runVerify({
+      repoRoot,
+      baseBranch: 'main',
+      exec,
+    });
+
+    expect(violations).toContainEqual(
+      expect.objectContaining({
+        ruleId: 'no-console',
+        file: changedFile,
+        package: 'packages/api',
+      }),
+    );
   });
 });
 
@@ -995,63 +1111,54 @@ describe('stryker fails open twice (defect 3)', () => {
     expect(violations.some((v) => v.ruleId === 'stryker/survived')).toBe(false);
   });
 
-  it('passes a unique --jsonReporter.fileName in argv, distinct from the default reports/mutation/mutation.json path, and reads exactly that path back', async () => {
+  it('deletes the report before running stryker, and passes no path flag', async () => {
+    // The redesign: `--jsonReporter.fileName` is a config-file-only key, never
+    // registered as a CLI flag, so the report path cannot be relocated per run.
+    // Staleness is closed by DELETING the default path first instead — nothing
+    // there afterwards means nothing else could have written it in between.
+    const order: string[] = [];
+    const { exec } = execWithStryker({ stdout: '', stderr: '', code: 0 });
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec: (command, args, execOptions) => {
+        if (command.includes('stryker')) {
+          order.push('run');
+        }
+        return exec(command, args, execOptions);
+      },
+      profile: 'commit',
+      readFile: () => Promise.resolve(JSON.stringify({ files: {} })),
+      removeFile: (filePath) => {
+        order.push(`remove:${filePath}`);
+        return Promise.resolve();
+      },
+    });
+    // Deleted BEFORE the run — ordering is the property, not merely that a
+    // delete happened at some point.
+    expect(order[0]).toMatch(/^remove:/);
+    expect(order[0]).toContain('mutation.json');
+    expect(order[1]).toBe('run');
+    expect(violations.filter((v) => v.tool === 'stryker')).toEqual([]);
+  });
+
+  it('carries no report-path flag and no repo-specific path in its argv', async () => {
     const { exec, calls } = execWithStryker({
       stdout: '',
       stderr: '',
       code: 0,
     });
-    let readFilePath: string | undefined;
-    const { violations } = await runVerify({
+    await runVerify({
       repoRoot: '/repo',
       baseBranch: 'main',
       exec,
       profile: 'commit',
-      readFile: (filePath) => {
-        readFilePath = filePath;
-        return Promise.resolve(JSON.stringify({ files: {} }));
-      },
+      readFile: () => Promise.resolve(JSON.stringify({ files: {} })),
+      removeFile: () => Promise.resolve(),
     });
-    const strykerCall = calls.find((call) => call.command === 'stryker');
-    const args = strykerCall?.args ?? [];
-    const flagIndex = args.indexOf('--jsonReporter.fileName');
-    expect(flagIndex).toBeGreaterThanOrEqual(0);
-    const reportPathArgument = args[flagIndex + 1];
-    expect(reportPathArgument).toBeDefined();
-    expect(reportPathArgument).not.toBe(
-      path.join('reports', 'mutation', 'mutation.json'),
-    );
-    expect(readFilePath).toBe(path.join('/repo', reportPathArgument ?? ''));
-    // consumer-generic: relative, no absolute/repo-specific path baked in
-    expect(reportPathArgument?.startsWith('/')).toBe(false);
-    expect(
-      violations.some((v) => v.ruleId === 'guardrails/analyzer-failed'),
-    ).toBe(false);
-  });
-
-  it('uses a different report filename on every run (a stale file from a prior crash cannot be read as this run’s result)', async () => {
-    const paths: string[] = [];
-    for (let run = 0; run < 2; run += 1) {
-      const { exec, calls } = execWithStryker({
-        stdout: '',
-        stderr: '',
-        code: 0,
-      });
-      // Sequential runs are the point: proving each gets its own path.
-      await runVerify({
-        repoRoot: '/repo',
-        baseBranch: 'main',
-        exec,
-        profile: 'commit',
-        readFile: () => Promise.resolve(JSON.stringify({ files: {} })),
-      });
-      const strykerCall = calls.find((call) => call.command === 'stryker');
-      const args = strykerCall?.args ?? [];
-      const flagIndex = args.indexOf('--jsonReporter.fileName');
-      const reportPathArgument = args[flagIndex + 1];
-      expect(reportPathArgument).toBeDefined();
-      paths.push(reportPathArgument ?? '');
-    }
-    expect(paths[0]).not.toBe(paths[1]);
+    const args = calls.find((call) => call.command === 'stryker')?.args ?? [];
+    // The flag does not exist in stryker's CLI; passing it made every run fail.
+    expect(args).not.toContain('--jsonReporter.fileName');
+    expect(args.every((argument) => !argument.startsWith('/'))).toBe(true);
   });
 });

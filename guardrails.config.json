@@ -38,14 +38,6 @@
       "reason": "Closes the try/catch exclusion above."
     },
     {
-      "key": "guardrails-core/src/verify/index.ts|mutation-suppress|// Stryker disable BlockStatement",
-      "reason": "Proven-equivalent mutant(s); equivalence argument recorded at the site. Emptying the report-read try/catch leaves report undefined; parseStrykerJson's own JSON.parse guard then returns [] regardless."
-    },
-    {
-      "key": "guardrails-core/src/verify/index.ts|mutation-suppress|// Stryker restore BlockStatement",
-      "reason": "Closes the try/catch exclusion above."
-    },
-    {
       "key": "guardrails-core/src/config.ts|mutation-suppress|// Stryker disable next-line ConditionalExpression",
       "reason": "Proven-equivalent mutant(s); equivalence argument recorded at the site. Covers isRecord and pickNumber: Number.isFinite does not coerce, and a primitive raw config falls through to per-field defaults - the same result as rejecting it.",
       "count": 2

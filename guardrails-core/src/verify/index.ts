@@ -29,13 +29,18 @@
  * crash/misconfiguration from a clean run is "non-zero exit, yet nothing
  * parsed" — `withExitCodeCheck` applies that rule uniformly. `stryker` is
  * different: absent a configured `break` threshold (this pack sets none), it
- * exits 0 even with surviving mutants, so ANY non-zero exit from it is a crash,
- * and its report is read from an explicit per-run path rather than its
- * (gitignored, cross-run-persistent) default location — see `runStryker`.
+ * exits 0 even with surviving mutants, so ANY non-zero exit from it is a crash.
+ * Its report is read from its own default, gitignored, cross-run-persistent
+ * location (`reports/mutation/mutation.json`) — there is no CLI flag to
+ * relocate it (`--jsonReporter.fileName` does not exist; only `--dashboard.*`
+ * is a registered dotted option) and a `--configFile` would break
+ * consumer-genericity. So `runStryker` deletes that path before every run,
+ * making a stale report from a prior run unreadable, and treats a report
+ * still missing afterward as `analyzer-failed` rather than clean — see
+ * `runStryker`.
  */
 
-import { randomUUID } from 'node:crypto';
-import { readFile as fsReadFile } from 'node:fs/promises';
+import { readFile as fsReadFile, rm as fsRm } from 'node:fs/promises';
 import path from 'node:path';
 
 import type { Exec, ExecResult } from '../exec.js';
@@ -60,6 +65,11 @@ export interface VerifyOptions {
   /** File reader seam (stryker writes its JSON report to disk, not stdout).
    *  Defaults to node:fs/promises readFile; injected in tests. */
   readFile?: (filePath: string) => Promise<string>;
+  /** File removal seam: `runStryker` deletes stryker's report path before
+   *  every run, so a stale report from a prior run can never be mistaken for
+   *  this one's. Defaults to node:fs/promises `rm` with `{ force: true }`
+   *  (a missing file is not an error); injected in tests. */
+  removeFile?: (filePath: string) => Promise<void>;
 }
 
 export interface VerifyResult {
@@ -249,17 +259,14 @@ async function runTsc(
   return withExitCodeCheck('tsc', tsc, parseTscOutput(tsc.stdout, repoRoot));
 }
 
-/** A fresh, repo-relative report path on every call. Consumer-generic (no
- *  absolute path, no assumption about this repo's layout — still lands under
- *  stryker's own default `reports/mutation/` directory, which every consumer
- *  already gitignores) and collision-proof across runs: stryker's DEFAULT path
- *  is fixed and gitignored, so it persists between runs, and a crashed run can
- *  silently leave a PRIOR run's report there for the next read to pick up. A
- *  unique filename per call makes that impossible — there is nothing stale at
- *  this path because nothing else has ever written to it. */
-function strykerReportPath(): string {
-  return path.join('reports', 'mutation', `mutation-${randomUUID()}.json`);
-}
+/** Stryker's own default JSON-reporter path. There is no supported way to
+ *  relocate it per run: `--jsonReporter.fileName` is a config-file-only key,
+ *  never registered as a CLI flag (only `--dashboard.*` is), and a
+ *  `--configFile` would hardcode a guardrails-owned config into the
+ *  consumer's stryker invocation, breaking consumer-genericity. So this path
+ *  is fixed, gitignored, and persists across runs — which is exactly why
+ *  `runStryker` deletes it before every run rather than trying to avoid it. */
+const STRYKER_REPORT_PATH = path.join('reports', 'mutation', 'mutation.json');
 
 function strykerReportMissingViolation(reportPath: string): Violation {
   return {
@@ -267,7 +274,10 @@ function strykerReportMissingViolation(reportPath: string): Violation {
     file: 'package.json',
     message:
       `stryker exited 0 but its mutation report was not found at ` +
-      `"${reportPath}" — treating the mutation check as failed, not clean.`,
+      `"${reportPath}" — treating the mutation check as failed, not clean. ` +
+      `(A consumer that customises jsonReporter.fileName writes its report ` +
+      `elsewhere; this failure is what catches that, instead of silently ` +
+      `reporting a clean mutation gate.)`,
     severity: 'error',
     fixable: false,
     tool: 'guardrails',
@@ -277,16 +287,23 @@ function strykerReportMissingViolation(reportPath: string): Violation {
 /** stryker is diff-scoped (changed production files) and CI/commit-only
  *  (mutation testing reruns the suite per mutant). Consumer-generic: no
  *  `--configFile` (stryker auto-detects the consumer's stryker.conf.json), and
- *  the `--mutate` list is the consumer's own changed files. The report path is
- *  passed explicitly via `--jsonReporter.fileName` and read back from that same
- *  path (see `strykerReportPath`) rather than stryker's default location,
- *  which is gitignored and persists between runs.
+ *  the `--mutate` list is the consumer's own changed files. The report is read
+ *  from stryker's own default, gitignored, cross-run-persistent location
+ *  (`STRYKER_REPORT_PATH`) — there is no flag to relocate it per run (see that
+ *  constant's comment) — so a stale report from a PRIOR run could otherwise be
+ *  misread as this run's. `removeFile` deletes that path BEFORE stryker runs,
+ *  which makes that impossible: nothing at the path afterward means nothing
+ *  else could have written it in between.
  *
  *  Unlike the analyzers above, stryker exits 0 even with surviving mutants
  *  unless a `break` threshold is configured (this pack sets none) — so ANY
  *  non-zero exit here means a crash, never "findings", and is always a
- *  failure. A missing report file after a zero exit is also a failure: the
- *  report is the only channel mutation results reach this process through. */
+ *  failure. A report still missing after a zero exit is also a failure
+ *  (`analyzer-failed`, not clean): whether because stryker crashed
+ *  internally without a non-zero exit, or because the consumer's own
+ *  `stryker.conf.json` customises `jsonReporter.fileName` to write somewhere
+ *  else — either way, the report is the only channel mutation results reach
+ *  this process through, and finding none there must never read as clean. */
 async function runStryker(
   options: VerifyOptions,
   resolveBin: (tool: string) => string,
@@ -301,7 +318,11 @@ async function runStryker(
   const { exec, repoRoot } = options;
   const readFile =
     options.readFile ?? ((filePath) => fsReadFile(filePath, 'utf8'));
-  const reportPath = strykerReportPath();
+  const removeFile =
+    options.removeFile ?? ((filePath) => fsRm(filePath, { force: true }));
+  const reportPath = STRYKER_REPORT_PATH;
+
+  await removeFile(path.join(repoRoot, reportPath));
 
   const result = await exec(
     resolveBin('stryker'),
@@ -310,8 +331,6 @@ async function runStryker(
       '--incremental',
       '--reporters',
       'json',
-      '--jsonReporter.fileName',
-      reportPath,
       '--mutate',
       production.join(','),
     ],

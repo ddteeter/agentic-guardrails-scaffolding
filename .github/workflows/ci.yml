@@ -59,8 +59,11 @@ jobs:
       # The skill docs and the Copilot index are generated from
       # guardrails-plugin/skills/ and COMMITTED, because Copilot has no skill
       # mechanism and its cloud agent reads from the default branch.
+      # guardrails-core/guidance/ is the same skill docs, emitted a second time
+      # so they ship with the npm package (`files`) and resolve via
+      # node_modules in a consumer repo, where docs/guardrails does not exist.
       - name: Skill docs in sync (generated docs committed)
-        run: git diff --exit-code -- docs/guardrails .github/copilot-instructions.md
+        run: git diff --exit-code -- docs/guardrails guardrails-core/guidance .github/copilot-instructions.md
 
       - name: Guardrails verify
         run: node ./node_modules/guardrails-core/dist/cli.mjs verify

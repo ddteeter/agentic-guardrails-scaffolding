@@ -8,15 +8,20 @@
  * on the agent going to look; the manifest is the one channel every runtime
  * already reads, so the pointer rides along on the violation itself.
  *
- * Paths are repo-relative and emitted by `scripts/sync-agents.mjs` from the
- * plugin's skills, so the doc a consumer repo has on disk matches this table.
+ * Paths are repo-relative and point into `node_modules/guardrails-core/guidance/`,
+ * not `docs/guardrails/` at the repo root: that root-level copy is generated
+ * for THIS repo only (guardrails-core's `files` field ships just `dist` and
+ * `guidance`), so it does not exist in a consumer repo that merely installs
+ * the package. `guardrails-core/guidance/` is emitted by
+ * `scripts/sync-agents.mjs` from the plugin's skills alongside the root copy,
+ * ships with the package, and resolves via `node_modules` in any consumer.
  */
 
 import type { Violation } from './violation.js';
 
 /** rule-id prefix → repo-relative guidance doc. Longest match wins. */
 const GUIDANCE: readonly (readonly [string, string])[] = [
-  ['stryker/', 'docs/guardrails/crushing-mutants.md'],
+  ['stryker/', 'node_modules/guardrails-core/guidance/crushing-mutants.md'],
 ];
 
 function guidanceFor(ruleId: string): string | undefined {
