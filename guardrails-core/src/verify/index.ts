@@ -503,6 +503,43 @@ function missingToolViolation(tool: string, provider: string): Violation {
   };
 }
 
+interface SelectedAnalyzer {
+  analyzer: Analyzer;
+  /** Whether a spawn failure for this analyzer should be reported as missing. */
+  reportMissing: boolean;
+}
+
+/**
+ * Which analyzers run this pass, and whether each one's absence is an error.
+ * Pure: the opt-in policy, the cadence rung, and the changed-files trigger are
+ * all decisions, so they are made here and `runVerify` is left with the I/O.
+ */
+function selectAnalyzers(
+  analyzers: Readonly<Record<string, AnalyzerMode>>,
+  declared: ReadonlySet<string>,
+  profile: Rung,
+  hasChangedFiles: boolean,
+): SelectedAnalyzer[] {
+  const selected: SelectedAnalyzer[] = [];
+  for (const analyzer of ANALYZERS) {
+    const decision = decideAnalyzer(
+      analyzerMode(analyzers, analyzer.tool),
+      declared.has(analyzer.provider),
+    );
+    if (!decision.run) {
+      continue;
+    }
+    if (RUNG_ORDER[profile] < RUNG_ORDER[analyzer.minRung]) {
+      continue;
+    }
+    if (analyzer.scope === 'changed-files' && !hasChangedFiles) {
+      continue;
+    }
+    selected.push({ analyzer, reportMissing: decision.reportMissing });
+  }
+  return selected;
+}
+
 export async function runVerify(options: VerifyOptions): Promise<VerifyResult> {
   const { exec, failures } = trackSpawnFailures(options.exec);
   const tracked = { ...options, exec };
@@ -525,23 +562,15 @@ export async function runVerify(options: VerifyOptions): Promise<VerifyResult> {
     );
   violations.push(...unknownAnalyzerViolations(analyzers));
 
-  for (const analyzer of ANALYZERS) {
-    const decision = decideAnalyzer(
-      analyzerMode(analyzers, analyzer.tool),
-      declared.has(analyzer.provider),
-    );
-    if (!decision.run) {
-      continue;
-    }
-    if (RUNG_ORDER[profile] < RUNG_ORDER[analyzer.minRung]) {
-      continue;
-    }
-    if (analyzer.scope === 'changed-files' && files.length === 0) {
-      continue;
-    }
+  for (const { analyzer, reportMissing } of selectAnalyzers(
+    analyzers,
+    declared,
+    profile,
+    files.length > 0,
+  )) {
     const before = failures.length;
     violations.push(...(await analyzer.run(tracked, resolveBin, files)));
-    if (failures.length > before && decision.reportMissing) {
+    if (failures.length > before && reportMissing) {
       violations.push(missingToolViolation(analyzer.tool, analyzer.provider));
     }
   }
