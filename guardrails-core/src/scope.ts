@@ -9,6 +9,12 @@
  * regardless of whether a subagent's hook payload carries the main session id —
  * minus `DENIED_FILE_NAMES`, the policy/manifest files no violation may ever
  * make editable.
+ *
+ * The result reports `active` separately from `files` because the two empty
+ * cases mean opposite things: NO manifest means no fixer is running and the
+ * lock must stand aside, while an active manifest that yields no editable files
+ * means the fixer has nothing it may legitimately touch — which must deny every
+ * write, not disengage the lock.
  */
 
 import { readdirSync } from 'node:fs';
@@ -22,12 +28,13 @@ import { isViolation, type Violation } from './violation.js';
  * basename, so a workspace member's `packages/a/package.json` is denied exactly
  * like the root one.
  *
- * Two violations point at a policy/manifest file rather than at code:
- * `guardrails/analyzer-missing` (`package.json`) and
- * `guardrails/analyzer-unknown` (`guardrails.config.json`). Without this
- * denylist, handing a fixer either one would make that file editable, and the
- * diff-auditor would not catch the abuse — it scans code for suppression
- * syntax, and these are data edits. Deleting a provider from `devDependencies`
+ * Three rule-ids point at a policy/manifest file rather than at code:
+ * `guardrails/analyzer-missing` and `guardrails/analyzer-failed` (both
+ * `package.json`), and `guardrails/analyzer-unknown`
+ * (`guardrails.config.json`). Without this denylist, handing a fixer any of
+ * them would make that file editable, and the diff-auditor would not catch the
+ * abuse — it scans code for suppression syntax, and these are data edits.
+ * Deleting a provider from `devDependencies`
  * flips its analyzer from `auto`+declared to `auto`+undeclared, so the missing
  * error vanishes and `verify` reads green with the guard silently not running;
  * `guardrails.config.json` holds `sanctionedSuppressions`, `maxAttempts`,
@@ -45,7 +52,17 @@ const DENIED_FILE_NAMES: ReadonlySet<string> = new Set([
 ]);
 
 function isDeniedFile(normalizedPath: string): boolean {
-  return DENIED_FILE_NAMES.has(path.basename(normalizedPath));
+  // Lowercased: macOS and Windows resolve `Package.json` to the real file on
+  // write, so a case-sensitive lookup would be a way straight through this.
+  return DENIED_FILE_NAMES.has(path.basename(normalizedPath).toLowerCase());
+}
+
+/** What the scope-lock knows about the fixer's editable surface. */
+export interface ManifestScope {
+  /** Files the fixer may edit. Empty when every violation named a denied file. */
+  readonly files: ReadonlySet<string>;
+  /** Whether any manifest exists at all — distinct from an empty `files`. */
+  readonly active: boolean;
 }
 
 const MANIFEST_SUFFIX = '.last.json';
@@ -66,14 +83,15 @@ function readManifest(file: string): Violation[] {
     : [];
 }
 
-export function collectManifestFiles(directory: string): Set<string> {
+export function collectManifestScope(directory: string): ManifestScope {
   let entries: string[];
   try {
     entries = readdirSync(directory);
   } catch {
-    return new Set();
+    return { files: new Set(), active: false };
   }
   const files = new Set<string>();
+  let active = false;
   for (const name of entries) {
     // Only `<session>.last.json` files are manifests. The same directory holds
     // session tallies (`<session>.json`) and `recurrence.json`, and a consumer
@@ -82,6 +100,7 @@ export function collectManifestFiles(directory: string): Set<string> {
     if (!name.endsWith(MANIFEST_SUFFIX)) {
       continue;
     }
+    active = true;
     for (const violation of readManifest(path.join(directory, name))) {
       const file = path.normalize(violation.file);
       if (isDeniedFile(file)) {
@@ -90,7 +109,7 @@ export function collectManifestFiles(directory: string): Set<string> {
       files.add(file);
     }
   }
-  return files;
+  return { files, active };
 }
 
 /**

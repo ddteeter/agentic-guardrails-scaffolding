@@ -217,6 +217,67 @@ describe('runCommand — scope-check', () => {
     expect(out.join('')).toBe('');
   });
 
+  // `guardrails/analyzer-missing`, `guardrails/analyzer-failed` (both
+  // `file: 'package.json'`) and `guardrails/analyzer-unknown`
+  // (`file: 'guardrails.config.json'`) are all error-severity, so a repo with
+  // clean code but a missing or crashing analyzer produces a manifest whose
+  // every entry names an undeditable policy file — and still spawns a fixer.
+  // That manifest must lock the fixer OUT, not disengage the lock.
+  describe('a manifest naming only denied files', () => {
+    beforeEach(() => {
+      writeViolations(stateDirectory(root), 'sid', [
+        violation('package.json'),
+        violation('guardrails.config.json'),
+      ]);
+    });
+
+    it('denies an edit to the denied file itself', async () => {
+      expect(
+        await runScopeCheck(
+          scopeStdin('edit', path.join(root, 'package.json')),
+        ),
+      ).toContain('deny');
+    });
+
+    it('denies an edit to an arbitrary unrelated file', async () => {
+      // THE regression pin: an all-denied manifest yields an empty file set,
+      // and a scope-lock keyed on "is the set non-empty" would read that as
+      // "no fixer is running" and hand the fixer the whole repo.
+      expect(
+        await runScopeCheck(
+          scopeStdin('edit', path.join(root, 'src/anything.ts')),
+        ),
+      ).toContain('deny');
+    });
+  });
+
+  it('keeps the non-denied files of a mixed manifest editable', async () => {
+    writeViolations(stateDirectory(root), 'sid', [
+      violation('src/allowed.ts'),
+      violation('package.json'),
+    ]);
+    expect(
+      await runScopeCheck(
+        scopeStdin('edit', path.join(root, 'src/allowed.ts')),
+      ),
+    ).toBe('');
+    expect(
+      await runScopeCheck(scopeStdin('edit', path.join(root, 'package.json'))),
+    ).toContain('deny');
+  });
+
+  it('denies a denied file named with different casing', async () => {
+    // macOS and Windows resolve `Package.json` to the real file on write, so a
+    // case-sensitive denylist lookup would be a way straight through it.
+    writeViolations(stateDirectory(root), 'sid', [
+      violation('src/allowed.ts'),
+      violation('Package.json'),
+    ]);
+    expect(
+      await runScopeCheck(scopeStdin('edit', path.join(root, 'Package.json'))),
+    ).toContain('deny');
+  });
+
   it('denies a Copilot `view` read outside the repo', async () => {
     const stdin = JSON.stringify({
       workingDirectory: root,
@@ -572,8 +633,9 @@ describe('scope-check trigger conditions', () => {
   });
 
   it('allows any edit when no manifest is active', async () => {
-    // Kills `files.size > 0` -> `>= 0` / true: with no manifest the fixer is not
-    // running, and the scope-lock must not interfere.
+    // Kills `scope.active` -> true: with no manifest the fixer is not running,
+    // and the scope-lock must not interfere. This escape is what the all-denied
+    // manifest tests above must NOT be allowed to reuse.
     expect(
       await runScopeCheck(scopeStdin('edit', path.join(root, 'src/a.ts'))),
     ).toBe('');

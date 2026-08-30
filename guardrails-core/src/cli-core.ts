@@ -27,7 +27,7 @@ import {
   parseHookInput,
   resolveLocalBin,
 } from './hook-io.js';
-import { collectManifestFiles, isPathAllowed, isWithinRepo } from './scope.js';
+import { collectManifestScope, isPathAllowed, isWithinRepo } from './scope.js';
 import {
   deleteSession,
   loadRecurrence,
@@ -364,13 +364,20 @@ async function scopeCheckCommand(
     return;
   }
   // Edit/Write: only the files named in the violations manifest. No active
-  // manifest → the fixer isn't running; don't interfere.
-  const files = collectManifestFiles(stateDirectory(repoRoot));
-  if (files.size > 0 && !isPathAllowed(files, repoRoot, input.filePath)) {
+  // manifest → the fixer isn't running; don't interfere. Keyed on `active`
+  // rather than on the file set being non-empty, because those two differ in
+  // exactly the case that matters: a manifest whose every violation named a
+  // denied policy file (see DENIED_FILE_NAMES) yields NO editable files while a
+  // fixer IS running, and reading that as "no fixer" would hand it the whole
+  // repo. Such a fixer has nothing it may legitimately edit, so every write is
+  // denied and the attempt escalates to the main agent.
+  const scope = collectManifestScope(stateDirectory(repoRoot));
+  if (scope.active && !isPathAllowed(scope.files, repoRoot, input.filePath)) {
     denyPreToolUse(
       deps,
-      `Fixer scope-lock: ${input.filePath} is not in the violations ` +
-        `manifest. The fixer may only edit files listed there.`,
+      `Fixer scope-lock: ${input.filePath} is not editable. The fixer may ` +
+        `only edit files named in the violations manifest, and never ` +
+        `package.json or guardrails.config.json.`,
       dialect,
     );
   }

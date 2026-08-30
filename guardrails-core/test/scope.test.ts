@@ -5,7 +5,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
-  collectManifestFiles,
+  collectManifestScope,
   isPathAllowed,
   isWithinRepo,
 } from '../src/scope.js';
@@ -36,19 +36,61 @@ function v(file: string, ruleId = 'x'): Violation {
   };
 }
 
-describe('collectManifestFiles', () => {
+describe('collectManifestScope', () => {
   it('unions the files across every session manifest', () => {
     writeViolations(directory, 's1', [v('src/a.ts'), v('src/b.ts')]);
     writeViolations(directory, 's2', [v('src/c.ts')]);
     expect(
-      [...collectManifestFiles(directory)].toSorted((a, b) =>
+      [...collectManifestScope(directory).files].toSorted((a, b) =>
         a.localeCompare(b),
       ),
     ).toEqual(['src/a.ts', 'src/b.ts', 'src/c.ts']);
   });
 
-  it('is empty when there are no manifests', () => {
-    expect(collectManifestFiles(directory).size).toBe(0);
+  it('is empty and INACTIVE when there are no manifests', () => {
+    const scope = collectManifestScope(directory);
+    expect(scope.files.size).toBe(0);
+    // `active` is what the scope-lock keys on: no manifest means no fixer is
+    // running, so the lock stands aside.
+    expect(scope.active).toBe(false);
+  });
+
+  it('is empty and inactive when the state directory does not exist', () => {
+    const scope = collectManifestScope(path.join(root, 'absent'));
+    expect(scope.files.size).toBe(0);
+    expect(scope.active).toBe(false);
+  });
+
+  it('is ACTIVE with no editable files when every violation names a denied file', () => {
+    // The two empty cases must stay distinguishable: this one denies every
+    // write, where "no manifest" allows them all.
+    writeViolations(directory, 's1', [
+      v('package.json', 'guardrails/analyzer-missing'),
+      v('guardrails.config.json', 'guardrails/analyzer-unknown'),
+    ]);
+    const scope = collectManifestScope(directory);
+    expect(scope.files.size).toBe(0);
+    expect(scope.active).toBe(true);
+  });
+
+  it('is active for a manifest that names editable files', () => {
+    writeViolations(directory, 's1', [v('src/a.ts')]);
+    expect(collectManifestScope(directory).active).toBe(true);
+  });
+
+  it('is not active for a state directory holding no manifest', () => {
+    // A stray non-manifest file must not switch the lock on.
+    writeFileSync(path.join(directory, 'notes.json'), '[]');
+    expect(collectManifestScope(directory).active).toBe(false);
+  });
+
+  it('denies a denied filename whatever its casing', () => {
+    writeViolations(directory, 's1', [
+      v('Package.json'),
+      v('GUARDRAILS.CONFIG.JSON'),
+      v('packages/a/PACKAGE.JSON'),
+    ]);
+    expect(collectManifestScope(directory).files.size).toBe(0);
   });
 
   it('never makes package.json editable, whatever names it', () => {
@@ -58,7 +100,7 @@ describe('collectManifestFiles', () => {
     writeViolations(directory, 's1', [
       v('package.json', 'guardrails/analyzer-missing'),
     ]);
-    expect(collectManifestFiles(directory).size).toBe(0);
+    expect(collectManifestScope(directory).files.size).toBe(0);
   });
 
   it('never makes guardrails.config.json editable, whatever names it', () => {
@@ -67,14 +109,14 @@ describe('collectManifestFiles', () => {
     writeViolations(directory, 's1', [
       v('guardrails.config.json', 'guardrails/analyzer-unknown'),
     ]);
-    expect(collectManifestFiles(directory).size).toBe(0);
+    expect(collectManifestScope(directory).files.size).toBe(0);
   });
 
   it('denies a workspace member package.json at any depth', () => {
     writeViolations(directory, 's1', [
       v('packages/a/package.json', 'guardrails/analyzer-missing'),
     ]);
-    expect(collectManifestFiles(directory).size).toBe(0);
+    expect(collectManifestScope(directory).files.size).toBe(0);
   });
 
   it('reads only `.last.json` manifests, not other state files', () => {
@@ -86,12 +128,12 @@ describe('collectManifestFiles', () => {
       path.join(directory, 'notes.json'),
       JSON.stringify([v('src/stray.ts')]),
     );
-    expect([...collectManifestFiles(directory)]).toEqual(['src/a.ts']);
+    expect([...collectManifestScope(directory).files]).toEqual(['src/a.ts']);
   });
 
   it('yields nothing for a manifest that is not a JSON array', () => {
     writeFileSync(path.join(directory, 's1.last.json'), '{"not":"an array"}');
-    expect(collectManifestFiles(directory).size).toBe(0);
+    expect(collectManifestScope(directory).files.size).toBe(0);
   });
 
   it('ignores manifest entries that are not violations', () => {
@@ -99,7 +141,7 @@ describe('collectManifestFiles', () => {
       path.join(directory, 's1.last.json'),
       JSON.stringify([{ nonsense: true }, v('src/a.ts')]),
     );
-    expect([...collectManifestFiles(directory)]).toEqual(['src/a.ts']);
+    expect([...collectManifestScope(directory).files]).toEqual(['src/a.ts']);
   });
 
   it('keeps every non-denied file editable alongside a denied one', () => {
@@ -107,7 +149,7 @@ describe('collectManifestFiles', () => {
       v('src/foo.ts'),
       v('package.json', 'guardrails/analyzer-missing'),
     ]);
-    expect([...collectManifestFiles(directory)]).toEqual(['src/foo.ts']);
+    expect([...collectManifestScope(directory).files]).toEqual(['src/foo.ts']);
   });
 });
 
@@ -152,9 +194,9 @@ describe('isWithinRepo', () => {
   });
 });
 
-describe('collectManifestFiles normalization', () => {
+describe('collectManifestScope normalization', () => {
   it('stores normalized manifest paths', () => {
     writeViolations(directory, 's1', [v('src/nested/../a.ts')]);
-    expect(collectManifestFiles(directory).has('src/a.ts')).toBe(true);
+    expect(collectManifestScope(directory).files.has('src/a.ts')).toBe(true);
   });
 });
