@@ -48,7 +48,12 @@ import type { Violation } from '../violation.js';
 import { loadWorkspaceResolver, withPackages } from '../workspaces.js';
 import { parseDepcruiseJson } from './depcruise-adapter.js';
 import { parseEslintJson } from './eslint-adapter.js';
-import { isTestFile, isTypeScriptFile, mergeChangedFiles } from './git.js';
+import {
+  isTestFile,
+  isTypeScriptFile,
+  mergeChangedFiles,
+  resolveBaseReference,
+} from './git.js';
 import { parseKnipJson } from './knip-adapter.js';
 import { parseStrykerJson } from './stryker-adapter.js';
 import { parseTscOutput } from './tsc-adapter.js';
@@ -138,19 +143,38 @@ function withExitCodeCheck(
   return violations;
 }
 
-/** `true` when a git invocation neither could not be started (that is tracked
- *  separately) nor exited zero. */
+/** `true` when a git invocation exited non-zero.
+ *
+ *  No spawn-failure guard is needed here any more: `resolveBaseReference` runs
+ *  two git calls before either of these and returns early on `spawnFailed`, so
+ *  by the time this is reached git has already been proven to start. Keeping a
+ *  `spawnFailed !== true` half would be unreachable code that no test can
+ *  exercise — and mutation testing says so. A tool that could not be STARTED is
+ *  still reported only as `analyzer-missing`, never also as `analyzer-failed`. */
 function gitCallFailed(result: ExecResult): boolean {
-  return result.spawnFailed !== true && result.code !== 0;
+  return result.code !== 0;
 }
 
 async function changedTypeScriptFiles(
   options: VerifyOptions,
 ): Promise<{ files: string[]; violations: Violation[] }> {
   const { exec, repoRoot, baseBranch } = options;
+  const base = await resolveBaseReference(exec, repoRoot, baseBranch);
+  if (base.ref === undefined) {
+    // A spawn failure is git being absent entirely; runVerify reports that
+    // separately via its own tracker, so stay silent here rather than blaming
+    // the base branch for it.
+    return {
+      files: [],
+      violations:
+        base.spawnFailed === true
+          ? []
+          : [unresolvableBaseViolation(baseBranch)],
+    };
+  }
   const tracked = await exec(
     'git',
-    ['diff', '--name-only', '--diff-filter=ACM', baseBranch],
+    ['diff', '--name-only', '--diff-filter=ACM', base.ref],
     { cwd: repoRoot },
   );
   const untracked = await exec(
@@ -454,6 +478,28 @@ function missingToolViolation(tool: string, provider: string): Violation {
       `${tool} could not be started — it is not installed in this repo, so its ` +
       `checks did NOT run. Install it: \`npm install --save-dev ${provider}\`. ` +
       `A missing analyzer is a failed gate, not a clean one.`,
+    severity: 'error',
+    fixable: false,
+    tool: 'guardrails',
+  };
+}
+
+/**
+ * The configured base branch resolves to nothing — neither locally nor as
+ * `origin/<branch>`. Every diff-scoped analyzer would otherwise be skipped for
+ * want of a changed-file list, and the run would read clean.
+ */
+function unresolvableBaseViolation(baseBranch: string): Violation {
+  return {
+    ruleId: 'guardrails/analyzer-failed',
+    file: 'package.json',
+    message:
+      `base branch "${baseBranch}" could not be resolved, as itself or as ` +
+      `"origin/${baseBranch}", so the changed-file set is unknown and every ` +
+      `diff-scoped check was SKIPPED. Check \`baseBranch\` in ` +
+      `guardrails.config.json, and in CI make sure the base branch is fetched ` +
+      `(actions/checkout with fetch-depth: 0). An unknown diff is a failed ` +
+      `gate, not a clean one.`,
     severity: 'error',
     fixable: false,
     tool: 'guardrails',

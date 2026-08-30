@@ -893,6 +893,30 @@ function writeRepoConfig(sanctions: unknown[]): void {
   );
 }
 
+/** git fake where the base branch resolves ONLY as `origin/<branch>` (the CI
+ *  checkout shape), or as nothing at all when `resolvable` is empty. */
+function baseReferenceExec(resolvable: readonly string[]): {
+  exec: Exec;
+  calls: string[][];
+} {
+  const calls: string[][] = [];
+  const exec: Exec = (command, args) => {
+    calls.push([command, ...args]);
+    if (args[0] === 'rev-parse') {
+      const reference = args.at(-1) ?? '';
+      return Promise.resolve(
+        resolvable.some((candidate) => reference.startsWith(candidate))
+          ? ok('SHA\n')
+          : { stdout: '', stderr: 'fatal: bad revision', code: 128 },
+      );
+    }
+    if (args[0] === 'merge-base') return Promise.resolve(ok('BASESHA\n'));
+    if (args[0] === 'show') return Promise.resolve(ok('{}'));
+    return Promise.resolve(ok(''));
+  };
+  return { exec, calls };
+}
+
 const REVIEWED = { key: 'a.ts|cast-any|x', reason: 'proven equivalent' };
 const REQUESTED = { key: 'b.ts|cast-any|y', reason: 'newly requested' };
 
@@ -1146,5 +1170,29 @@ describe('autofix command', () => {
       (call) => call[0]?.includes('eslint') === true,
     );
     expect(eslintCall?.[0]).toBe(path.join(localBin, binName));
+  });
+});
+
+describe('sanctions-check base branch resolution', () => {
+  // In a GitHub Actions PR checkout the base branch exists only as
+  // `origin/main`. An unresolved merge-base would make EVERY entry read as
+  // newly granted, turning the one report a reviewer relies on into noise.
+  it('takes the merge-base against origin/<branch> when only that resolves', async () => {
+    writeRepoConfig([REVIEWED]);
+    const { exec, calls } = baseReferenceExec(['origin/main']);
+    await runCommand('sanctions-check', [], deps({ exec }));
+    const mergeBase = calls.find((call) => call[1] === 'merge-base');
+    expect(mergeBase).toContain('origin/main');
+  });
+
+  it('falls back to the configured branch name when nothing resolves', async () => {
+    // Paired with the case above so a fallback that produced `undefined`
+    // (rather than the branch name) fails here instead of silently passing.
+    writeRepoConfig([REVIEWED]);
+    const { exec, calls } = baseReferenceExec([]);
+    await runCommand('sanctions-check', [], deps({ exec }));
+    const mergeBase = calls.find((call) => call[1] === 'merge-base');
+    expect(mergeBase).toEqual(['git', 'merge-base', 'main', 'HEAD']);
+    expect(mergeBase?.includes('undefined')).toBe(false);
   });
 });

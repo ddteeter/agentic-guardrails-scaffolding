@@ -37,6 +37,7 @@ import {
 } from './state-store.js';
 import { hasErrors, type Violation } from './violation.js';
 import { runVerify } from './verify/index.js';
+import { resolveBaseReference } from './verify/git.js';
 
 export interface CliDeps {
   exec: Exec;
@@ -222,13 +223,25 @@ async function sanctionsCheckCommand(deps: CliDeps): Promise<number> {
   }
 
   const config = loadConfig(deps.cwd);
+  // Resolve the base branch first: in a CI checkout it exists only as
+  // `origin/<branch>`, and an unresolved merge-base would silently make every
+  // entry read as newly granted -- turning the one report a reviewer relies on
+  // into 40 lines of noise.
+  const resolved = await resolveBaseReference(
+    deps.exec,
+    deps.cwd,
+    config.baseBranch,
+  );
+  const baseReference = resolved.ref ?? config.baseBranch;
   const mergeBase = await deps.exec(
     'git',
-    ['merge-base', config.baseBranch, 'HEAD'],
-    { cwd: deps.cwd },
+    ['merge-base', baseReference, 'HEAD'],
+    {
+      cwd: deps.cwd,
+    },
   );
   const sha = mergeBase.stdout.trim();
-  const ref = mergeBase.code === 0 && sha ? sha : config.baseBranch;
+  const ref = mergeBase.code === 0 && sha ? sha : baseReference;
   const base = await deps.exec('git', ['show', `${ref}:${CONFIG_FILE}`], {
     cwd: deps.cwd,
   });

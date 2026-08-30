@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
+import type { Exec } from '../../src/exec.js';
 import {
   isTestFile,
   isTypeScriptFile,
   mergeChangedFiles,
   parseFileList,
+  resolveBaseReference,
 } from '../../src/verify/git.js';
 
 describe('parseFileList', () => {
@@ -78,5 +80,78 @@ describe('git helpers mutation-hardening', () => {
     // Kills the `$` anchor mutants: unanchored, a suffixed backup file matches.
     expect(isTypeScriptFile('src/a.ts.bak')).toBe(false);
     expect(isTestFile('src/a.test.ts.bak')).toBe(false);
+  });
+});
+
+// A GitHub Actions PR checkout leaves the base branch un-created LOCALLY: the
+// fetch populates refs/remotes/origin/*, and HEAD is a detached merge ref. So
+// `git diff main` fails with exit 128 "unknown revision" while `origin/main`
+// resolves fine. Every consumer running verify in CI hits this, so the
+// resolution belongs in the tool, not in each repo's workflow.
+function execFor(resolvable: readonly string[]): {
+  exec: Exec;
+  asked: string[];
+} {
+  const asked: string[] = [];
+  const exec: Exec = (_command, args) => {
+    const reference = args.at(-1) ?? '';
+    asked.push(reference);
+    return Promise.resolve(
+      resolvable.some((candidate) => reference.startsWith(candidate))
+        ? { stdout: 'abc123', stderr: '', code: 0 }
+        : { stdout: '', stderr: 'fatal: Needed a single revision', code: 128 },
+    );
+  };
+  return { exec, asked };
+}
+
+const spawnFailedExec: Exec = () =>
+  Promise.resolve({
+    stdout: '',
+    stderr: 'spawn git ENOENT',
+    code: 1,
+    spawnFailed: true as const,
+  });
+
+describe('resolveBaseReference', () => {
+  it('uses the base branch as given when it resolves locally', async () => {
+    const { exec, asked } = execFor(['main']);
+    expect(await resolveBaseReference(exec, '/repo', 'main')).toEqual({
+      ref: 'main',
+    });
+    // The local ref resolving must short-circuit: no remote probe follows.
+    expect(asked.some((ref) => ref.startsWith('origin/'))).toBe(false);
+  });
+
+  it('falls back to the origin-qualified ref when only that resolves', async () => {
+    const { exec } = execFor(['origin/main']);
+    expect(await resolveBaseReference(exec, '/repo', 'main')).toEqual({
+      ref: 'origin/main',
+    });
+  });
+
+  it('returns undefined when neither the local nor the remote ref resolves', async () => {
+    const { exec } = execFor([]);
+    expect(await resolveBaseReference(exec, '/repo', 'main')).toEqual({});
+  });
+
+  it('honors a non-default base branch name in both candidates', async () => {
+    // Paired with the case above so a resolver that hardcoded "main" would
+    // fail here rather than silently pass.
+    const { exec, asked } = execFor(['origin/develop']);
+    expect(await resolveBaseReference(exec, '/repo', 'develop')).toEqual({
+      ref: 'origin/develop',
+    });
+    expect(asked.some((ref) => ref.startsWith('develop'))).toBe(true);
+  });
+
+  it('does not treat a spawn failure as an unresolvable ref', async () => {
+    // git missing entirely is a different failure with a different remedy; it
+    // must not be reported as "your base branch is wrong".
+    expect(
+      await resolveBaseReference(spawnFailedExec, '/repo', 'main'),
+    ).toEqual({
+      spawnFailed: true,
+    });
   });
 });

@@ -36,6 +36,7 @@ import {
 import { hasErrors, type Violation } from './violation.js';
 import { runVerify } from './verify/index.js';
 import { loadWorkspaceResolver, withPackages } from './workspaces.js';
+import { resolveBaseReference } from './verify/git.js';
 
 export interface StopGateOptions {
   repoRoot: string;
@@ -239,9 +240,15 @@ export async function runStopGate(
  * inherited from the base branch are excluded. Falls back to the staged diff
  * when the merge-base can't be resolved (shallow clone / missing base). */
 async function branchDiff(options: CommitGateOptions): Promise<string> {
+  // `origin/<branch>` is the only form that resolves in a CI checkout.
+  const resolved = await resolveBaseReference(
+    options.exec,
+    options.repoRoot,
+    options.baseBranch,
+  );
   const mergeBase = await options.exec(
     'git',
-    ['merge-base', options.baseBranch, 'HEAD'],
+    ['merge-base', resolved.ref ?? options.baseBranch, 'HEAD'],
     { cwd: options.repoRoot },
   );
   const sha = mergeBase.stdout.trim();

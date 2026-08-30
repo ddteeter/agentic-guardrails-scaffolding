@@ -1071,3 +1071,65 @@ it already computed.
 stryker analyzer will now see `stryker/no-coverage` on changed files that have
 untested lines. That is the intended behaviour, but it is a behaviour change to
 call out in release notes rather than ship silently.
+
+### Finding: the base branch never resolved in CI — every PR run was fail-open
+
+Surfaced by CI on PR #16, immediately after the fail-closed exit-code checks
+landed. `guardrails verify` failed with:
+
+```
+git exited with code 128 … fatal: ambiguous argument 'main':
+unknown revision or path not in the working tree.
+```
+
+**What was wrong.** `verify`, `gate`, and `sanctions-check` all passed
+`config.baseBranch` (`"main"`) straight to git. GitHub Actions checks a pull
+request out as a **detached merge ref** and populates `refs/remotes/origin/*`
+without ever creating the base branch locally, so `git diff main` cannot
+resolve while `origin/main` can. `fetch-depth: 0` does not help: it controls
+history depth, not which local branches exist.
+
+**This had been silently true on every PR.** Before the exit-code checks, a
+failing `git diff` returned empty stdout, which read as _zero changed files_ —
+so every `changed-files`-scoped analyzer (eslint, tsc, stryker) was **skipped**
+and CI reported clean. Only the two `whole-project` analyzers (knip,
+dependency-cruiser) ever actually ran on a PR. The comment at
+`verify/index.ts:161` had predicted exactly this case; it took the fail-closed
+change to make it visible.
+
+The same latent bug sat in the other two consumers, degrading quietly rather
+than failing:
+
+- **`sanctions-check`** falls back to the branch name when `merge-base` fails,
+  then `git show main:guardrails.config.json` fails too, leaving the known set
+  empty — so **all 40 exemptions would report as newly granted.** The one report
+  a reviewer relies on to spot a new suppression would have been 40 lines of
+  noise on every PR.
+- **`gate --mode=commit`** falls back to the staged diff, auditing a narrower
+  range than intended.
+
+**Fix (shipped).** `resolveBaseReference(exec, repoRoot, baseBranch)` in
+`verify/git.ts` tries the branch as given, then `origin/<branch>`, returning a
+`{ ref?, spawnFailed? }` result. All three call sites use it. An unresolvable
+base is now a **blocking** `guardrails/analyzer-failed` naming the branch and
+saying every diff-scoped check was skipped — never a silent empty diff.
+
+This belongs in the tool, not in each repo's workflow: every consumer running
+`verify` in GitHub Actions has this problem, and a fix in our own `ci.yml` would
+have left the shipped product broken for them.
+
+**Secondary cleanup.** With `resolveBaseReference` running two git calls before
+any diff, git is proven to start before `gitCallFailed` is reached, so its
+`spawnFailed !== true` half became unreachable. Mutation testing caught it as
+two survivors on otherwise-covered code. The guard was **removed** rather than
+suppressed; the "a tool that could not be STARTED is reported only as
+`analyzer-missing`" invariant still holds and is still tested.
+
+**Method note.** Two of these five survivors were nearly misdiagnosed. A quick
+check — replacing the whole `gitCallFailed` body with `return true` — failed 47
+tests, which looked like proof that Stryker was reporting a false survivor. It
+was not: the surviving mutants were on the **`result.spawnFailed !== true`
+sub-expression**, not the whole return, and the whole-expression mutants were
+in fact killed. Reading the mutant's `location` columns rather than its line
+number is what settled it. When a mutation result contradicts intuition,
+compare the exact mutated **span** before concluding the tool is wrong.

@@ -160,3 +160,51 @@ describe('runCommitGate', () => {
     expect(result.blocked).toBe(false);
   });
 });
+
+// Same CI-checkout shape as verify: the base branch may exist only as
+// `origin/<branch>`. The merge-base must be taken against whichever form
+// resolves, or the gate silently audits the wrong range.
+function recordingExec(resolvable: readonly string[]): {
+  exec: Exec;
+  calls: string[][];
+} {
+  const calls: string[][] = [];
+  const exec: Exec = (command, args) => {
+    calls.push([command, ...args]);
+    if (args[0] === 'rev-parse') {
+      const reference = args.at(-1) ?? '';
+      return Promise.resolve(
+        resolvable.some((candidate) => reference.startsWith(candidate))
+          ? execResult('SHA\n')
+          : { stdout: '', stderr: 'fatal: bad revision', code: 128 },
+      );
+    }
+    if (args[0] === 'merge-base')
+      return Promise.resolve(execResult('BASESHA\n'));
+    return Promise.resolve(execResult(''));
+  };
+  return { exec, calls };
+}
+
+describe('commit gate base branch resolution', () => {
+  it('takes the merge-base against origin/<branch> when only that resolves', async () => {
+    const { exec, calls } = recordingExec(['origin/main']);
+    await runCommitGate({ repoRoot: '/repo', baseBranch: 'main', exec });
+    expect(calls.find((call) => call[1] === 'merge-base')).toContain(
+      'origin/main',
+    );
+  });
+
+  it('falls back to the configured branch name when nothing resolves', async () => {
+    // Paired with the case above: a fallback yielding `undefined` instead of
+    // the branch name fails here rather than passing silently.
+    const { exec, calls } = recordingExec([]);
+    await runCommitGate({ repoRoot: '/repo', baseBranch: 'main', exec });
+    expect(calls.find((call) => call[1] === 'merge-base')).toEqual([
+      'git',
+      'merge-base',
+      'main',
+      'HEAD',
+    ]);
+  });
+});
