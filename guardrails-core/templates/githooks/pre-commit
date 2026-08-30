@@ -1,0 +1,10 @@
+#!/bin/sh
+# Universal, tool-agnostic guardrail floor for consumer repos. Fires for ANY
+# committer (human or agent) that shells out to git. Activate with:
+#   git config core.hooksPath .githooks
+# This repo uses Husky instead (see .husky/pre-commit), which runs the same
+# check; the template ships for repos scaffolded by guardrails (Phase E).
+node "./node_modules/guardrails-core/dist/cli.mjs" gate --mode=commit || {
+  echo "guardrails: commit blocked — resolve violations or run 'guardrails verify'." >&2
+  exit 1
+}

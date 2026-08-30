@@ -218,3 +218,57 @@ for (const file of agents) {
 console.log(
   `synced ${agents.length} agent(s): guardrails-plugin/agents → .github/agents (.agent.md)`,
 );
+
+// Consumer-facing templates, shipped in the npm tarball (`files`) and written
+// into a target repo by `guardrails init` (piece 4). The SOURCES are this
+// repo's own live wiring: what we dogfood is exactly what we ship, so the two
+// cannot drift. All three wiring files are already consumer-generic — they
+// reference `${CLAUDE_PROJECT_DIR}` / `./node_modules`, never a path specific
+// to this repo. Committed and CI drift-guarded, like .github/agents.
+const templates = path.join(root, 'guardrails-core', 'templates');
+rmSync(templates, { recursive: true, force: true });
+
+const claudeAgents = path.join(templates, 'claude', 'agents');
+mkdirSync(claudeAgents, { recursive: true });
+for (const file of agents) {
+  copyFileSync(path.join(from, file), path.join(claudeAgents, file));
+}
+
+const copilotAgents = path.join(templates, 'copilot', 'agents');
+mkdirSync(copilotAgents, { recursive: true });
+for (const file of agents) {
+  const target = file.replace(/\.md$/, '.agent.md');
+  // toCopilotAgent takes the file CONTENTS, not a path -- match the existing
+  // .github/agents emitter above, which reads the file first.
+  writeFileSync(
+    path.join(copilotAgents, target),
+    toCopilotAgent(readFileSync(path.join(from, file), 'utf8')),
+  );
+}
+
+// Only the `hooks` block: a consumer's .claude/settings.json is THEIR file, and
+// `init` merges this in rather than replacing it.
+const claudeSettings = JSON.parse(
+  readFileSync(path.join(root, '.claude', 'settings.json'), 'utf8'),
+);
+mkdirSync(path.join(templates, 'claude'), { recursive: true });
+writeFileSync(
+  path.join(templates, 'claude', 'settings.hooks.json'),
+  `${JSON.stringify({ hooks: claudeSettings.hooks }, undefined, 2)}\n`,
+);
+
+const copilotHooks = path.join(templates, 'copilot', 'hooks');
+mkdirSync(copilotHooks, { recursive: true });
+copyFileSync(
+  path.join(root, '.github', 'hooks', 'guardrails.json'),
+  path.join(copilotHooks, 'guardrails.json'),
+);
+
+const gitHooks = path.join(templates, 'githooks');
+mkdirSync(gitHooks, { recursive: true });
+copyFileSync(
+  path.join(root, '.githooks', 'pre-commit'),
+  path.join(gitHooks, 'pre-commit'),
+);
+
+console.log(`synced consumer templates → guardrails-core/templates`);
