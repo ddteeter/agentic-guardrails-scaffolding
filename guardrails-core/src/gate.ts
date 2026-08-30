@@ -83,13 +83,15 @@ function readSnapshot(file: string): Set<string> {
     // with `.has(<string key>)`, so a non-string entry that survives the filter
     // can never match; and calling `.filter` on a non-array throws straight into
     // the catch below, which returns the same empty Set.
+    //
+    // The Stryker restore must always follow a statement (not a return), so the
+    // directive attaches and does not run to end of file; we hoist to const for this.
     // Stryker disable ConditionalExpression,MethodExpression,ArrayDeclaration
-    return new Set(
-      Array.isArray(parsed)
-        ? parsed.filter((entry): entry is string => typeof entry === 'string')
-        : [],
-    );
+    const strings = Array.isArray(parsed)
+      ? parsed.filter((entry): entry is string => typeof entry === 'string')
+      : [];
     // Stryker restore ConditionalExpression,MethodExpression,ArrayDeclaration
+    return new Set(strings);
   } catch {
     return new Set();
   }
