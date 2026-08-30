@@ -24,6 +24,7 @@ import {
   type GateConfig,
   type GateDecision,
 } from './gate-decision.js';
+import type { AnalyzerMode } from './verify/analyzer-policy.js';
 import {
   loadRecurrence,
   loadSession,
@@ -44,6 +45,8 @@ export interface StopGateOptions {
   exec: Exec;
   config: GateConfig;
   resolveBin?: (tool: string) => string;
+  /** Per-analyzer opt-in (`RepoConfig.analyzers`), forwarded to `runVerify`. */
+  analyzers?: Readonly<Record<string, AnalyzerMode>>;
 }
 
 export interface StopGateResult {
@@ -63,6 +66,8 @@ export interface CommitGateOptions {
    * directive beyond the granted count still blocks. See `sanctionBudget`.
    */
   sanctionedSuppressions?: readonly SanctionedSuppression[];
+  /** Per-analyzer opt-in (`RepoConfig.analyzers`), forwarded to `runVerify`. */
+  analyzers?: Readonly<Record<string, AnalyzerMode>>;
 }
 
 export interface CommitGateResult {
@@ -190,6 +195,7 @@ export async function runStopGate(
     exec,
     profile: 'stop' as const,
     ...(options.resolveBin ? { resolveBin: options.resolveBin } : {}),
+    ...(options.analyzers ? { analyzers: options.analyzers } : {}),
   };
   const { violations } = await runVerify(verifyOptions);
   // Guidance rides on the violation so it reaches the fixer through the
@@ -270,6 +276,7 @@ export async function runCommitGate(
     exec: options.exec,
     profile: 'commit',
     ...(options.resolveBin ? { resolveBin: options.resolveBin } : {}),
+    ...(options.analyzers ? { analyzers: options.analyzers } : {}),
   });
   // The commit gate audits the branch's CUMULATIVE diff and has no per-loop
   // snapshot baseline (unlike runStopGate), so a deliberately-sanctioned

@@ -300,6 +300,18 @@ describe('runStopGate mutation-hardening', () => {
     expect(calls.length).toBeGreaterThan(0);
     expect(calls.every((call) => call.cwd === root)).toBe(true);
   });
+
+  it('forwards the analyzer policy to verify', async () => {
+    // Kills the `...(options.analyzers ? {...} : {})` -> `{}` mutant on
+    // runStopGate's verifyOptions: with eslint turned off, its command must
+    // never be spawned even though the turn touched a TypeScript file.
+    const { exec, calls } = recordingExec((line) => {
+      if (line.includes('--name-only')) return ok('src/foo.ts');
+      return ok('');
+    });
+    await runStopGate({ ...options(exec), analyzers: { eslint: 'off' } });
+    expect(calls.some((call) => call.line.includes('eslint'))).toBe(false);
+  });
 });
 
 describe('runCommitGate mutation-hardening', () => {

@@ -73,6 +73,7 @@ async function verifyCommand(deps: CliDeps): Promise<number> {
     exec: deps.exec,
     profile: 'ci',
     resolveBin: binResolver(repoRoot),
+    analyzers: config.analyzers,
   });
   printViolations(deps, violations);
   deps.stderr(
@@ -121,6 +122,7 @@ async function gateStopCommand(
     exec: deps.exec,
     config: toGateConfig(config),
     resolveBin: binResolver(repoRoot),
+    analyzers: config.analyzers,
   });
   const output =
     dialect === 'copilot'
@@ -141,6 +143,7 @@ async function gateCommitCommand(deps: CliDeps): Promise<number> {
     exec: deps.exec,
     resolveBin: binResolver(repoRoot),
     sanctionedSuppressions: config.sanctionedSuppressions,
+    analyzers: config.analyzers,
   });
   printViolations(deps, violations);
   for (const finding of findings) {
@@ -187,6 +190,7 @@ async function gatePreToolUseCommand(
     exec: deps.exec,
     resolveBin: binResolver(repoRoot),
     sanctionedSuppressions: config.sanctionedSuppressions,
+    analyzers: config.analyzers,
   });
   if (!blocked) {
     return; // allow (silent)
