@@ -414,6 +414,20 @@ silent-degradation hole this section worried about: a provider the repo names in
 its own manifest but whose binary will not start is a broken install and still
 errors, not a quiet opt-out.
 
+- **Known limit — root-manifest-only declared providers.** `declaredProviders`
+  reads `<repoRoot>/package.json` and nothing else. A monorepo that declares its
+  analyzer dependencies in member packages rather than at the root therefore has
+  an empty declared set: every analyzer is `auto`+undeclared, and a broken
+  install degrades silently instead of erroring — the exact failure the
+  declared-provider clause above exists to prevent, in a layout this project
+  otherwise supports. The workaround is to mark those analyzers `"required"` in
+  `guardrails.config.json`, which states the dependency explicitly and restores
+  the hard `guardrails/analyzer-missing` error. Fixing it properly means
+  deciding _which_ member manifests count (all workspaces? only those matching
+  the changed files?), which is a design question, not a cleanup — hence
+  recorded here rather than patched. See the comment at the `declaredProviders`
+  call site in `guardrails-core/src/verify/index.ts`.
+
 Related: the mutation **survivor baseline** (Phase C piece 4 findings) is the same
 shape of problem — a pack member that is unusable on day one of adoption unless
 there is a ramp. That baseline remains out of scope for this phase.

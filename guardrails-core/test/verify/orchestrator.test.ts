@@ -409,6 +409,11 @@ describe('runVerify', () => {
     expect(unknown[0]?.severity).toBe('warn');
     expect(unknown[0]?.fixable).toBe(false);
     expect(unknown[0]?.message).toContain('knipp');
+    expect(unknown[0]?.message).toContain('has no effect');
+    // A typo'd key leaves the REAL analyzer on `auto`, so it runs only if it is
+    // installed. Claiming it "is still running" would be wrong in the common
+    // case; what is always true is that the entry did nothing.
+    expect(unknown[0]?.message).not.toContain('still running');
   });
 
   it('reads a real package.json from disk when declaredProviders is not injected', async () => {

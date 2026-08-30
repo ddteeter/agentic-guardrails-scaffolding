@@ -463,7 +463,8 @@ function unknownAnalyzerViolations(
       message:
         `"${key}" in the "analyzers" block is not a known analyzer, so the ` +
         `entry has no effect. Known analyzers: ${ANALYZER_TOOLS.join(', ')}. ` +
-        `Check for a typo — an analyzer you believe disabled is still running.`,
+        `Check for a typo: whatever you meant this entry to do — turn an ` +
+        `analyzer off, or require it — did not happen.`,
       severity: 'warn' as const,
       fixable: false,
       tool: 'guardrails',
@@ -555,6 +556,15 @@ export async function runVerify(options: VerifyOptions): Promise<VerifyResult> {
     violations.push(missingToolViolation('git', 'git'));
   }
   const analyzers = options.analyzers ?? {};
+  // KNOWN LIMIT: only the repo ROOT's package.json is read. A monorepo that
+  // declares its analyzer dependencies in member packages rather than at the
+  // root has an empty declared set, so every analyzer is `auto`+undeclared and
+  // a broken install degrades silently — the very failure the declared-provider
+  // rule exists to prevent, in a layout this project supports. Workaround: name
+  // the analyzer `"required"` in guardrails.config.json, which states the
+  // dependency explicitly and restores the hard `analyzer-missing` error.
+  // Enumerating workspace members instead is a design decision, not a cleanup;
+  // it is recorded in plan.md's "Roadmap: analyzer opt-in" section.
   const declared =
     options.declaredProviders ??
     declaredProviders(
