@@ -62,8 +62,11 @@ jobs:
       # guardrails-core/guidance/ is the same skill docs, emitted a second time
       # so they ship with the npm package (`files`) and resolve via
       # node_modules in a consumer repo, where docs/guardrails does not exist.
+      # guardrails-core/templates/ is generated from this repo's own live
+      # wiring, so drift here means the shipped template no longer matches
+      # what this repo runs.
       - name: Skill docs in sync (generated docs committed)
-        run: git diff --exit-code -- docs/guardrails guardrails-core/guidance .github/copilot-instructions.md
+        run: git diff --exit-code -- docs/guardrails guardrails-core/guidance guardrails-core/templates .github/copilot-instructions.md
 
       - name: Guardrails verify
         run: node ./node_modules/guardrails-core/dist/cli.mjs verify
@@ -89,3 +92,10 @@ jobs:
       # complexity. Reads coverage/coverage-final.json from the step above.
       - name: Fallow graph gate
         run: npm run check:graph
+
+      # The only check that exercises the artifact a consumer installs. Every
+      # other step runs against the workspace, where guardrails-core is
+      # symlinked into node_modules — so `files`, the bin shebang and ESM
+      # resolution are all bypassed here and only here.
+      - name: Tarball smoke test
+        run: npm run smoke:tarball
