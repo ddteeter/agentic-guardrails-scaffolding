@@ -3,6 +3,13 @@
   "maxAttempts": 3,
   "recurThreshold": 3,
   "graduationThreshold": 3,
+  "analyzers": {
+    "eslint": "required",
+    "tsc": "required",
+    "knip": "required",
+    "dependency-cruiser": "required",
+    "stryker": "required"
+  },
   "sanctionedSuppressions": [
     {
       "key": "guardrails-core/src/audit.ts|mutation-suppress|// Stryker disable all",
