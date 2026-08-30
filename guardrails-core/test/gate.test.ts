@@ -15,9 +15,11 @@ import type { Exec, ExecResult } from '../src/exec.js';
 import {
   runCommitGate,
   runStopGate,
+  stopHookReason,
   type StopGateOptions,
 } from '../src/gate.js';
-import type { GateConfig } from '../src/gate-decision.js';
+import type { GateConfig, GateDecision } from '../src/gate-decision.js';
+import { createSession } from '../src/state.js';
 import {
   loadSession,
   readViolations,
@@ -414,5 +416,34 @@ describe('manifest guidance', () => {
     const written = readViolations(stateDirectory(root), 'sid');
     // eslint violations get no guidance key; the manifest stays terse.
     expect(written.every((v) => !Object.hasOwn(v, 'guidance'))).toBe(true);
+  });
+});
+
+// Public API (exported from index.ts) with no internal caller — it is what a
+// consumer wiring their own Stop hook would use to render the block text.
+// stryker reported both its branches as NoCoverage.
+const blockDecision = (over: Partial<GateDecision> = {}): GateDecision => ({
+  outcome: 'delegate',
+  block: true,
+  message: 'Guardrail blocked this turn.',
+  nextSession: createSession(),
+  nextRecurrence: {},
+  ...over,
+});
+
+describe('stopHookReason', () => {
+  it('returns the message alone when there is no behavioral correction', () => {
+    expect(stopHookReason(blockDecision())).toBe(
+      'Guardrail blocked this turn.',
+    );
+  });
+
+  it('appends the behavioral correction below the message', () => {
+    const reason = stopHookReason(
+      blockDecision({ additionalContext: 'Do not weaken the test.' }),
+    );
+    expect(reason).toBe(
+      'Guardrail blocked this turn.\n\nDo not weaken the test.',
+    );
   });
 });

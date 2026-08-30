@@ -1,12 +1,24 @@
 /**
  * stryker adapter: maps a `mutation-testing-elements` report into `Violation[]`.
  *
- * Emits one violation per **Survived** mutant whose file is in the changed-file
- * set — a surviving mutant in changed code means a test executes the line but
- * doesn't assert its behavior. `Killed`/`Timeout` are good; `NoCoverage` is left
- * to the coverage gate; `Ignored`/`Pending`/`CompileError`/`RuntimeError` are
- * non-signal. Every violation is `fixable: false`: the fix is a judgment
- * (strengthen a test, or exclude an equivalent mutant), never a silent autofix.
+ * Emits one violation per **failing** mutant whose file is in the changed-file
+ * set, in two classes:
+ *
+ * - `Survived` — a test executes the line but does not assert its behavior.
+ * - `NoCoverage` — no test executes the line at all. Stryker does not run these
+ *   (no covering test could fail), so they are reported by status rather than
+ *   by outcome. This is the STRICTER failure of the two, and it was previously
+ *   discarded here on the stated grounds that a coverage gate would catch it.
+ *   No such gate exists in this project or in a consumer repo: `NoCoverage`
+ *   went unreported by everything. It is reported here because mutation already
+ *   locates it per-line and diff-scoped, which a coverage percentage — an
+ *   aggregate that permits any individual line to be uncovered — does not.
+ *
+ * `Killed`/`Timeout` are good; `Ignored`/`Pending`/`CompileError`/`RuntimeError`
+ * are non-signal. Every violation is `fixable: false`: the fix is a judgment
+ * (write a covering test, strengthen an existing one, or exclude an equivalent
+ * mutant), never a silent autofix. The two classes carry distinct rule ids
+ * because their remedies differ, and the fixer routes on rule id.
  * Stryker emits repo-relative paths already, matching the git-diff file list.
  */
 
@@ -69,12 +81,29 @@ function isReport(
   );
 }
 
-function survivorViolation(file: string, mutant: StrykerMutant): Violation {
-  return {
+/** Mutant status → (rule id, message tail). Absent status = not a failure. */
+const FAILING_STATUSES: Record<string, { ruleId: string; reason: string }> = {
+  Survived: {
     ruleId: 'stryker/survived',
+    reason:
+      'survived — a test executes this line but does not assert its behavior',
+  },
+  NoCoverage: {
+    ruleId: 'stryker/no-coverage',
+    reason: 'was never executed — no test covers this line',
+  },
+};
+
+function failureViolation(
+  file: string,
+  mutant: StrykerMutant,
+  failure: { ruleId: string; reason: string },
+): Violation {
+  return {
+    ruleId: failure.ruleId,
     file,
     line: mutant.location.start.line,
-    message: `${mutant.mutatorName} mutant survived — a test executes this line but does not assert its behavior`,
+    message: `${mutant.mutatorName} mutant ${failure.reason}`,
     severity: 'error',
     fixable: false,
     tool: 'stryker',
@@ -107,8 +136,9 @@ export function parseStrykerJson(
       continue;
     }
     for (const mutant of fileResult.mutants) {
-      if (mutant.status === 'Survived') {
-        violations.push(survivorViolation(file, mutant));
+      const failure = FAILING_STATUSES[mutant.status];
+      if (failure !== undefined) {
+        violations.push(failureViolation(file, mutant, failure));
       }
     }
   }

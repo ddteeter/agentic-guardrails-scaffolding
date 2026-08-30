@@ -996,3 +996,78 @@ not repeated here: the git-corruption incident during mutation testing ("Dogfood
 finding: our own git-simulating tests escaped under mutation") and the
 suppression-coarseness measurement ("Finding: mutation suppressions are far
 coarser than they look").
+
+### Finding: the mutation gate was fail-open on uncovered code
+
+Surfaced during the final PR review of Phase C, from a stray `NoCoverage` count
+in a mutation report.
+
+**What was wrong.** `stryker-adapter.ts` emitted a violation only for mutants
+with `status === 'Survived'`. Its header justified discarding `NoCoverage` with
+"left to the coverage gate". **No such gate exists** — not in this repo, and not
+in a consumer repo:
+
+- `vitest.config.ts` configures a coverage _reporter_, but no `thresholds`, so
+  nothing fails on a coverage drop.
+- `check:graph` runs `fallow`, a churn/complexity hotspot tool. It has no
+  coverage assertion and exited 0 throughout.
+
+So code that **no test executed at all** passed every gate in the stack. This is
+the same class of defect as the three fail-open paths closed earlier in this
+phase (analyzer exit codes, git exit codes, the stryker double fail-open) — the
+gate reported clean because a signal was discarded, not because it was checked.
+
+**Why it mattered here.** Statement coverage read a healthy 94.22% the whole
+time, while these were untested:
+
+- `autofixCommand` — the entire PostToolUse hook entry point, which runs on
+  every edit in a guarded session.
+- `stopHookReason` — public API (exported from `index.ts`), the text a consumer's
+  Stop hook shows the agent.
+- `spawnExec`'s `child.stderr.on('data')` handler — the only path that captures
+  stderr from a process that actually runs. The existing stderr assertion covered
+  the _spawn-error_ path instead, which fills `stderr` from the `error` event.
+  So "First line of stderr", the diagnostic `analyzerFailedViolation` was built
+  on in this same phase, had never been proven to work end to end.
+
+That last one is the sharpest lesson: a fail-closed diagnostic added in this
+phase depended on an uncovered line, and nothing noticed.
+
+**The numbers.** On the full report at the time of the finding:
+
+| Metric                                                     | Value   |
+| ---------------------------------------------------------- | ------- |
+| Mutation score of **covered** code (what we gated on)      | 100.00% |
+| Mutation score, **standard** (`NoCoverage` counts against) | 98.62%  |
+| Mutants in code no test executes                           | 16      |
+
+**Covering them found a real bug in the tests.** Writing tests for the uncovered
+regions immediately turned one of them into a genuine `Survived` mutant in
+`cli-core.ts` that had been invisible while the region was uncovered. Coverage
+gaps do not merely hide untested code — they hide _mutation findings_.
+
+**Fix (shipped).** `NoCoverage` is now reported as `stryker/no-coverage`, a
+distinct rule id from `stryker/survived`, because the remedies differ (write a
+covering test vs. strengthen an existing assertion) and the fixer routes on rule
+id. `crushing-mutants` gained a section contrasting the two, including the rule
+that a `no-coverage` mutant must never be argued equivalent: equivalence is a
+claim about behaviour under a test that _runs_ the code.
+
+**Why not a coverage threshold.** Considered and rejected:
+
+- A threshold is an **aggregate**. It permits any individual line to stay
+  uncovered while the percentage looks fine — exactly what happened here at
+  94.22%.
+- Mutation already locates the gap **per line** and **diff-scoped**, so it only
+  ever flags code the agent just touched. A threshold is inherently
+  whole-project and ratchets badly.
+- Zero new tool, config, or dependency — which the zero-runtime-dependency and
+  polyglot-consumer goals both care about.
+
+Mutation testing subsumes the coverage threshold. We were discarding the answer
+it already computed.
+
+**Consumer-visible.** This makes the pack stricter: a consumer adopting the
+stryker analyzer will now see `stryker/no-coverage` on changed files that have
+untested lines. That is the intended behaviour, but it is a behaviour change to
+call out in release notes rather than ship silently.

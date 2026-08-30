@@ -60,7 +60,7 @@
     },
     {
       "key": "guardrails-core/src/gate.ts|mutation-suppress|// Stryker disable next-line ArrayDeclaration",
-      "reason": "Proven-equivalent mutant(s); equivalence argument recorded at the site. The sanctioned Set is only probed with real file|kind|text finding keys, so a placeholder default entry can never match."
+      "reason": "Proven-equivalent mutant(s); equivalence argument recorded at the site. The sanctioned budget Map is only keyed by real file|kind|text finding keys, so a placeholder default entry can never match."
     },
     {
       "key": "guardrails-core/src/cli-core.ts|mutation-suppress|// Stryker disable next-line ConditionalExpression",
@@ -122,6 +122,11 @@
     {
       "key": "guardrails-core/src/verify/depcruise-adapter.ts|mutation-suppress|// Stryker disable next-line BlockStatement",
       "reason": "Proven-equivalent mutant; equivalence argument recorded at the site. Emptying the JSON.parse catch body leaves `parsed` undefined, which `isDepcruiseReport` rejects immediately after -- the function returns [] either way. `catch` is kept on its own line via a `// prettier-ignore` on the preceding `try` so this directive's line matches only the catch block, not the try block: verified by testing the try block's own BlockStatement mutant unsuppressed -- it is real (it silently drops every input, valid or not, which the happy-path tests catch), so it must stay mutated and is not covered by this entry. See the ConditionalExpression entry above for this file's before/after counts (all four directives measured together)."
+    },
+    {
+      "key": "guardrails-core/src/cli-core.ts|mutation-suppress|// Stryker disable next-line ConditionalExpression",
+      "reason": "Proven-equivalent mutant, equivalence argument recorded at the site: the `if (input.filePath !== undefined)` guard in autofixCommand is redundant with runAutofix's own isTypeScriptFile filter, which rejects `undefined` safely, so the mutated branch spawns nothing and is observationally identical. COST, stated plainly: Stryker directives match by mutator name and LINE, not by replacement, so this also silences the `false` variant on the same line -- a mutant that IS currently killed (by 'runs eslint --fix on the edited file named by the hook payload'). That test still exists and still asserts; what is lost is the mutation-level proof that it protects this branch. Accepted because the alternative shapes relocate the equivalence rather than remove it.",
+      "count": 1
     }
   ],
   "distribution": "solo",

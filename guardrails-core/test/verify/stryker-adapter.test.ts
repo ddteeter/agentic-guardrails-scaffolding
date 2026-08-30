@@ -72,10 +72,42 @@ describe('parseStrykerJson', () => {
     });
   });
 
-  it('ignores Killed, NoCoverage, and survivors in unchanged files', () => {
+  it('emits one violation per NoCoverage mutant in a changed file', () => {
+    // NoCoverage is a STRICTER failure than Survived: Survived means a test ran
+    // the line without asserting on it, NoCoverage means no test ran it at all.
+    // Stryker does not execute these mutants (no covering test could fail), so
+    // they are reported by status rather than by outcome.
     const result = parseStrykerJson(report, ['src/changed.ts']);
-    expect(result).toHaveLength(1);
-    expect(result.map((v) => v.line)).toEqual([12]);
+    expect(result).toContainEqual({
+      ruleId: 'stryker/no-coverage',
+      file: 'src/changed.ts',
+      line: 30,
+      message:
+        'ArithmeticOperator mutant was never executed — no test covers this line',
+      severity: 'error',
+      fixable: false,
+      tool: 'stryker',
+    });
+  });
+
+  it('ignores Killed mutants and mutants in unchanged files', () => {
+    // Paired with the two positive cases above: an adapter that emitted
+    // everything, or nothing, fails one of the three.
+    const result = parseStrykerJson(report, ['src/changed.ts']);
+    expect(result).toHaveLength(2);
+    expect(
+      result.map((v) => v.line).sort((a, b) => (a ?? 0) - (b ?? 0)),
+    ).toEqual([12, 30]);
+    expect(result.every((v) => v.file === 'src/changed.ts')).toBe(true);
+  });
+
+  it('distinguishes the two failure classes by ruleId, not by message alone', () => {
+    // The remedies differ — write a covering test vs strengthen an existing
+    // assertion — so the fixer routes on ruleId.
+    const result = parseStrykerJson(report, ['src/changed.ts']);
+    expect(
+      result.map((v) => v.ruleId).sort((a, b) => a.localeCompare(b)),
+    ).toEqual(['stryker/no-coverage', 'stryker/survived']);
   });
 
   it('returns [] on malformed or wrong-shaped JSON', () => {

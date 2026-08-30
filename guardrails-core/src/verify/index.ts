@@ -103,8 +103,9 @@ function analyzerFailedViolation(
     file: 'package.json',
     message:
       `${tool} exited with code ${code} and produced no parseable violations — ` +
-      `it started but did not complete cleanly (a bad config, a crash, or an ` +
-      `unexpected flag). A failed analyzer is a failed gate, not a clean one.` +
+      `it either did not complete cleanly (a bad config, a crash, an ` +
+      `unexpected flag) or reported only issue kinds this adapter does not ` +
+      `map. A failed analyzer is a failed gate, not a clean one.` +
       detail,
     severity: 'error',
     fixable: false,

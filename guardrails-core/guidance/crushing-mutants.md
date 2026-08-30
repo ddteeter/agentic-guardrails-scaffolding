@@ -9,6 +9,25 @@ cannot — there was an assertion. It was just the wrong one.
 
 Your job is to make the test observe the behaviour, not to make the report empty.
 
+## Two rule ids, two different remedies
+
+| Rule id               | What it means                                          | What to do                                                                                  |
+| --------------------- | ------------------------------------------------------ | ------------------------------------------------------------------------------------------- |
+| `stryker/survived`    | A test **runs** the line but asserts nothing about it. | Strengthen an existing test so it observes the behaviour.                                   |
+| `stryker/no-coverage` | **No test runs the line at all.**                      | Write a test that exercises it — then re-run, because survivors hide inside uncovered code. |
+
+`no-coverage` is the **stricter** failure of the two, not the milder one. Stryker
+does not execute these mutants (no covering test could fail them), so it reports
+them by status rather than by outcome.
+
+Do not treat a `no-coverage` mutant as equivalent. Equivalence is an argument
+about behaviour under a test that _runs_ the code; you cannot make it about code
+nothing has ever executed. Cover it first, then classify whatever survives.
+
+Expect that to surface new work: covering a `no-coverage` region routinely turns
+up genuine survivors that were invisible while the region was uncovered. That is
+the point, not a setback.
+
 ## The loop
 
 1. **Scope the run to the file you are working on.** A whole-repo run is minutes;

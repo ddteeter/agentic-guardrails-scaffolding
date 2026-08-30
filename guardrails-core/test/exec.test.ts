@@ -115,3 +115,29 @@ describe('env replacement', () => {
     ).resolves.toBe('inherited');
   });
 });
+
+describe('stderr capture from a real process', () => {
+  // The `child.stderr.on('data')` handler was previously exercised only via the
+  // spawn-error path (a missing binary), which fills `stderr` from the `error`
+  // event instead. `analyzerFailedViolation` quotes the first line of stderr as
+  // its diagnostic, so a process that RUNS and writes to stderr is the case
+  // that actually has to work.
+  it('accumulates what a running process writes to stderr', async () => {
+    const result = await spawnExec(node, [
+      '-e',
+      String.raw`process.stderr.write("first line\nsecond line"); process.exit(2)`,
+    ]);
+    expect(result.stderr).toBe('first line\nsecond line');
+    expect(result.code).toBe(2);
+    expect(result.spawnFailed).toBeUndefined();
+  });
+
+  it('accumulates stderr across multiple chunks without interleaving stdout', async () => {
+    const result = await spawnExec(node, [
+      '-e',
+      'process.stderr.write("a"); process.stdout.write("OUT"); process.stderr.write("b");',
+    ]);
+    expect(result.stderr).toBe('ab');
+    expect(result.stdout).toBe('OUT');
+  });
+});

@@ -481,16 +481,13 @@ function failingVerifyExec(): Exec {
     if (command === 'stryker') {
       // The `verify` CLI command runs at the 'ci' profile, so stryker runs too
       // and reads its report from the REAL filesystem (CliDeps has no readFile
-      // seam). Write an empty-but-valid report at the path stryker was told to
-      // use, so this fixture stays about eslint's finding, not a fabricated
-      // mutation failure.
-      const flagIndex = args.indexOf('--jsonReporter.fileName');
-      const reportPath = args[flagIndex + 1];
-      if (reportPath !== undefined) {
-        const fullPath = path.join(root, reportPath);
-        mkdirSync(path.dirname(fullPath), { recursive: true });
-        writeFileSync(fullPath, JSON.stringify({ files: {} }));
-      }
+      // seam). Write an empty-but-valid report at stryker's DEFAULT path — the
+      // only path it can use, since the report location is not relocatable per
+      // run — so this fixture stays about eslint's finding rather than a
+      // fabricated mutation failure.
+      const fullPath = path.join(root, 'reports', 'mutation', 'mutation.json');
+      mkdirSync(path.dirname(fullPath), { recursive: true });
+      writeFileSync(fullPath, JSON.stringify({ files: {} }));
       return Promise.resolve(ok(''));
     }
     return Promise.resolve(ok(''));
@@ -1058,5 +1055,96 @@ describe('sanctions-check git plumbing', () => {
     );
     expect(await runCommand('sanctions-check', [], deps({ exec }))).toBe(0);
     expect(errors.join('')).toContain('a.ts|cast-any|x');
+  });
+});
+
+function execRecorder(): { exec: Exec; calls: string[][] } {
+  const calls: string[][] = [];
+  const exec: Exec = (command, args) => {
+    calls.push([command, ...args]);
+    return Promise.resolve(ok(''));
+  };
+  return { exec, calls };
+}
+
+// The PostToolUse hook entry point. It runs on every edit in a guarded session,
+// and had no test at all: stryker reported its whole body as NoCoverage, which
+// the mutation gate did not flag before this change.
+describe('autofix command', () => {
+  it('runs eslint --fix on the edited file named by the hook payload', async () => {
+    const { exec, calls } = execRecorder();
+    const stdin = JSON.stringify({
+      cwd: root,
+      tool_name: 'Edit',
+      tool_input: { file_path: 'src/edited.ts' },
+    });
+    const code = await runCommand(
+      'autofix',
+      [],
+      deps({ exec, readStdin: () => Promise.resolve(stdin) }),
+    );
+    expect(code).toBe(0);
+    const eslintCall = calls.find(
+      (call) => call[0]?.includes('eslint') === true,
+    );
+    expect(eslintCall).toBeDefined();
+    expect(eslintCall).toContain('--fix');
+    expect(eslintCall).toContain('src/edited.ts');
+  });
+
+  it('runs nothing when the hook payload carries no file path', async () => {
+    const { exec, calls } = execRecorder();
+    const stdin = JSON.stringify({ cwd: root, tool_name: 'Bash' });
+    const code = await runCommand(
+      'autofix',
+      [],
+      deps({ exec, readStdin: () => Promise.resolve(stdin) }),
+    );
+    expect(code).toBe(0);
+    expect(calls).toEqual([]);
+  });
+
+  it('runs nothing when the edited file is not TypeScript', async () => {
+    // Paired with the positive case above so an autofix that silently stopped
+    // running eslint entirely would still fail this file.
+    const { exec, calls } = execRecorder();
+    const stdin = JSON.stringify({
+      cwd: root,
+      tool_input: { file_path: 'README.md' },
+    });
+    const code = await runCommand(
+      'autofix',
+      [],
+      deps({ exec, readStdin: () => Promise.resolve(stdin) }),
+    );
+    expect(code).toBe(0);
+    expect(calls).toEqual([]);
+  });
+
+  it("resolves eslint from the payload cwd's local bin, not the process cwd", async () => {
+    // Two things at once, because they can only fail together: the payload
+    // `cwd` wins over `deps.cwd` as the repo root, AND the repo-local
+    // node_modules/.bin binary is preferred over a bare PATH lookup. A local
+    // bin is planted under the payload root only — so a resolver that used
+    // `deps.cwd` would fall back to the bare name and fail this.
+    const { exec, calls } = execRecorder();
+    const payloadRoot = path.join(root, 'nested');
+    const localBin = path.join(payloadRoot, 'node_modules', '.bin');
+    mkdirSync(localBin, { recursive: true });
+    const binName = process.platform === 'win32' ? 'eslint.cmd' : 'eslint';
+    writeFileSync(path.join(localBin, binName), '');
+    const stdin = JSON.stringify({
+      cwd: payloadRoot,
+      tool_input: { file_path: 'src/edited.ts' },
+    });
+    await runCommand(
+      'autofix',
+      [],
+      deps({ exec, readStdin: () => Promise.resolve(stdin) }),
+    );
+    const eslintCall = calls.find(
+      (call) => call[0]?.includes('eslint') === true,
+    );
+    expect(eslintCall?.[0]).toBe(path.join(localBin, binName));
   });
 });
