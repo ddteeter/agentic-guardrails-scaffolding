@@ -76,9 +76,9 @@ full enforcement matrix and per-surface research grounding.
   git pre-commit + CI. Shipped (headless); see "Phase B status" below. ← _this
   branch_
 - **C — TS pack complete + workspaces** (knip, dependency-cruiser, semgrep,
-  stryker in CI; affected-package scoping). Analyzers done: knip (piece 1),
+  stryker in CI; affected-package scoping). Shipped. Analyzers: knip (piece 1),
   dependency-cruiser (piece 2), semgrep retired as a no-go (piece 3), stryker
-  (piece 4). **Remaining: workspaces / affected-package scoping.**
+  (piece 4), workspaces / affected-package attribution (piece 6).
 - **D — Java pack + polyglot** (spotless, pmd, error-prone/nullaway, spotbugs,
   ArchUnit, pitest/descartes; Maven/Gradle report adapters).
 - **E — Scaffolder + team-flip** (detection/plan/confirm/idempotency skill;
@@ -933,3 +933,66 @@ research already implied it: per-agent `hooks` frontmatter is **VS-Code-Preview
 only and unconfirmed on Copilot CLI/cloud**, which is precisely why
 `.github/hooks/guardrails.json` wires the same check session-wide for Copilot —
 richest-per-surface, not an inconsistency.
+
+- **Piece 6 — workspaces / affected-package attribution (shipped).** The last
+  piece of Phase C. A hybrid `loadWorkspaceResolver(repoRoot)`: declared
+  workspace members when the root `package.json` declares `workspaces` (npm's
+  array form or yarn's `{ packages: [...] }` object form), nearest-ancestor
+  `package.json` otherwise; the deepest match wins in either mode, and
+  resolution degrades to `undefined` rather than throwing. The package id is
+  the repo-relative directory path, never the `name` field. Declared-mode globs
+  are matched by a hand-rolled matcher against a small, explicit npm-workspace
+  subset (`*`, `**`, a leading `!`) rather than a dependency — the polyglot
+  argument: Phase D targets Java/Maven repos, where the usual justification for
+  a _declared_ dependency (visible to the consumer's `npm audit`/Dependabot)
+  buys nothing at all, which beat even zero-transitive-dep `picomatch`.
+  `guardrails-core` still ships an empty `dependencies`. `withPackages` mirrors
+  `withGuidance` — preserve-existing, add-no-key, therefore idempotent —
+  applied in both `runVerify` and the stop gate. The dead `packageId` parameter
+  is deleted from all five adapters and from `VerifyOptions`. Per-package
+  recurrence (`package:ruleId`) is now live, pinned by a test proving the same
+  rule in two packages tallies separately rather than merging. Design:
+  `docs/superpowers/specs/2026-08-29-phase-c-workspaces-design.md`.
+
+### Phase C piece 6 — execution findings
+
+- **`packageId` was a forward-declared seam set by nobody.** Threaded through
+  five adapters since Phase A, and no caller ever passed it. Neither knip nor
+  fallow could see it, because it was a _parameter_, not an export — dead code
+  no analyzer flags. The general lesson: declaring an interface before its
+  producer exists creates dead code that survives every dead-code check.
+- **The file-granularity cliff hit us directly.** Deleting that dead parameter
+  meant touching four adapters this branch had never otherwise changed, which
+  billed **71 pre-existing survivors** (verified against baseline: 73 before
+  the change, 71 after). 24 tests killed 60; the residual 11 were equivalents,
+  approved by the developer in four families. This is the adoption-cliff
+  scenario the piece-4 findings predicted, landing on the people who wrote the
+  prediction — the strongest evidence yet that the Phase-E adoption ramp is not
+  optional polish.
+- **Deleting redundant code beats suppressing it.** Two guard operands
+  (`relative.length === 0`, `current !== '.'`) turned out provably redundant
+  given `path.dirname('') === '.'` and `path.dirname('.') === '.'`; deleting
+  them removed the mutants entirely rather than silencing them, avoiding the
+  collateral a directive would have cost on the same line. Prefer deletion
+  when the code is genuinely dead.
+- **The plan's own tests were the weak ones, three times over.** A canary test
+  ("Stryker was here") whose kill power depended on a tool internal was hollow
+  in waiting and was removed with the developer's approval. An "is idempotent"
+  test was not self-sufficient — the resolver is deterministic, so it would
+  pass against a broken implementation; the real coverage came from a separate
+  "does not overwrite" test plus the 0-survivor mutation run. A wiring
+  regression test was hollow as proof of wiring — with a nonexistent
+  `repoRoot` the resolver always returns `undefined`, so it would pass even
+  with the wiring absent (intentional, since it guards degrade-safely rather
+  than integration, but still not proof of the thing its name claims). All
+  three were specified by the implementation plan; every test an implementer
+  wrote to kill a specific mutant was sound. Tests written to specify intent
+  tend to restate the happy path; tests written to kill a mutant must
+  distinguish two behaviours. Worth carrying into how future plans are
+  written, not just this one.
+
+Two more findings from this piece are recorded under their own headings above,
+not repeated here: the git-corruption incident during mutation testing ("Dogfooding
+finding: our own git-simulating tests escaped under mutation") and the
+suppression-coarseness measurement ("Finding: mutation suppressions are far
+coarser than they look").
