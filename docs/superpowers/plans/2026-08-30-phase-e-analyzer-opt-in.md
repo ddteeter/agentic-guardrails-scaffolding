@@ -812,7 +812,9 @@ Append to `guardrails-core/test/commit-gate.test.ts`:
 ```ts
 it('passes the configured analyzer policy through to verify', async () => {
   const commands: string[] = [];
-  const exec: Exec = (command, args) => {
+  // Only the command name matters here, so the args parameter is omitted --
+  // the house eslint config rejects an unused parameter.
+  const exec: Exec = (command) => {
     commands.push(command);
     return Promise.resolve({ stdout: '', stderr: '', code: 0 });
   };
@@ -1095,7 +1097,9 @@ In `gatePreToolUseCommand`, replace the final line
 // is no "allow, but say this" channel — and stderr still surfaces in the
 // transcript.
 if (config.enforcement === 'warn') {
-  deps.stderr(`guardrails: ${reason} Not blocking (enforcement: warn).\n`);
+  // `reason` already begins with "guardrails: " -- do not prefix it again,
+  // and keep "not blocking" lowercase so it matches this task's assertion.
+  deps.stderr(`${reason} not blocking (enforcement: warn).\n`);
   return;
 }
 deps.stdout(JSON.stringify(formatPreToolUseDeny(reason, dialect)));
