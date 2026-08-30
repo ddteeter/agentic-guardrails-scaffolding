@@ -27,6 +27,7 @@ import {
   parseHookInput,
   resolveLocalBin,
 } from './hook-io.js';
+import { initCommand } from './scaffold/init.js';
 import { collectManifestScope, isPathAllowed, isWithinRepo } from './scope.js';
 import {
   deleteSession,
@@ -446,9 +447,12 @@ export async function runCommand(
     case 'session-end': {
       return sessionEndCommand(deps);
     }
+    case 'init': {
+      return initCommand(deps, rest);
+    }
     default: {
       deps.stderr(
-        'usage: guardrails <verify|autofix|audit|gate [--mode=stop|commit|pretooluse] [--dialect=copilot]|sanctions-check|state|scope-check|session-start|session-end>\n',
+        'usage: guardrails <init [--plan|--apply] [--json] [--force]|verify|autofix|audit|gate [--mode=stop|commit|pretooluse] [--dialect=copilot]|sanctions-check|state|scope-check|session-start|session-end>\n',
       );
       return 1;
     }
