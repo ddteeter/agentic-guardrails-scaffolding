@@ -29,6 +29,7 @@ import path from 'node:path';
 
 import type { Exec } from '../exec.js';
 import type { Violation } from '../violation.js';
+import { loadWorkspaceResolver, withPackages } from '../workspaces.js';
 import { parseDepcruiseJson } from './depcruise-adapter.js';
 import { parseEslintJson } from './eslint-adapter.js';
 import { isTestFile, isTypeScriptFile, mergeChangedFiles } from './git.js';
@@ -326,5 +327,13 @@ export async function runVerify(options: VerifyOptions): Promise<VerifyResult> {
       violations.push(missingToolViolation(analyzer.tool, analyzer.provider));
     }
   }
-  return { violations };
+  // Attribution is per-file, so it happens here rather than inside any adapter.
+  // Built once per run: the resolver reads the filesystem at construction and is
+  // pure thereafter.
+  return {
+    violations: withPackages(
+      violations,
+      loadWorkspaceResolver(options.repoRoot),
+    ),
+  };
 }

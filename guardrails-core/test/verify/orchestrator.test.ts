@@ -674,3 +674,17 @@ describe('missing analyzers fail CLOSED', () => {
     expect(missing[0]?.message).toContain('git');
   });
 });
+
+describe('package attribution', () => {
+  it('adds no package key in a single-package repo', async () => {
+    // repoRoot '/repo' does not exist, so resolution degrades to undefined —
+    // proving attribution cannot throw or fail a gate that would otherwise pass.
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec: fakeExec().exec,
+    });
+    expect(violations.length).toBeGreaterThan(0);
+    expect(violations.every((v) => !Object.hasOwn(v, 'package'))).toBe(true);
+  });
+});

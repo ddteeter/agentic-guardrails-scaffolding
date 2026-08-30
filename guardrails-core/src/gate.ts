@@ -34,6 +34,7 @@ import {
 } from './state-store.js';
 import { hasErrors, type Violation } from './violation.js';
 import { runVerify } from './verify/index.js';
+import { loadWorkspaceResolver, withPackages } from './workspaces.js';
 
 export interface StopGateOptions {
   repoRoot: string;
@@ -145,11 +146,16 @@ export async function runStopGate(
   };
   const { violations } = await runVerify(verifyOptions);
   // Guidance rides on the violation so it reaches the fixer through the
-  // manifest — the one channel every runtime reads.
-  const combined = withGuidance([
-    ...violations,
-    ...auditFindings.map((finding) => toViolation(finding)),
-  ]);
+  // manifest — the one channel every runtime reads. `runVerify`'s violations
+  // are already attributed; `withPackages` is idempotent, so re-applying is a
+  // no-op — this call is what attributes the audit-derived findings, which
+  // carry files too.
+  const combined = withGuidance(
+    withPackages(
+      [...violations, ...auditFindings.map((finding) => toViolation(finding))],
+      loadWorkspaceResolver(repoRoot),
+    ),
+  );
 
   writeViolations(directory, sessionId, combined);
   const manifestPath = path.relative(
