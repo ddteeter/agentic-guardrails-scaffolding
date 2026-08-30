@@ -1,0 +1,321 @@
+/**
+ * SHARED-class mergers -- spec §6.4 SHARED.
+ *
+ * `planScaffold` decides that a SHARED path (`.claude/settings.json`,
+ * `.gitignore`, `package.json`'s `prepare` script,
+ * `.github/copilot-instructions.md`) always gets `merge`, never `drift`: the
+ * consumer owns the file, and guardrails only ever touches its own entries in
+ * it. These four functions ARE that touch. Every one is pure -- no I/O, no
+ * filesystem -- so the sharpest edge in the whole piece (a wrong merge here
+ * either silently disables the guardrail loop or clobbers a consumer's own
+ * hooks) is provable by fast unit tests instead of filesystem fixtures.
+ */
+import { isRecord } from './record.js';
+
+/** Identifies a guardrails-owned hook entry, wherever it nests inside one. */
+const GUARDRAILS_HOOK_MARKER = 'guardrails-core/dist/cli.mjs';
+
+/** The desired shape of the template's hooks block, trusted as-authored: it
+ * ships with guardrails-core itself and is never consumer-supplied, so unlike
+ * `current` below it gets no runtime validation -- see `hook-io.ts`'s
+ * `RawHookPayload` for the same "guarded once at the true boundary, cast
+ * afterward" convention. */
+interface HooksTemplate {
+  readonly hooks: Readonly<Record<string, readonly unknown[]>>;
+}
+
+/**
+ * Wraps the parse result rather than returning `unknown | undefined` directly,
+ * and is exported so it has its own direct test -- the same reasoning as
+ * `json-file.ts`'s `readJsonFile`. A bare `undefined` return would make the
+ * catch block's mutant equivalent from any *caller's* point of view (`{}`'s
+ * `.parsed` reads back `undefined` too, same as `{ parsed: undefined }`'s);
+ * only a test against this function's own return value (`toHaveProperty`,
+ * which `{}` fails and `{ parsed: undefined }` passes) makes that mutant
+ * observable, so it's provable instead of exempted from the gate.
+ */
+export interface ParsedJson {
+  readonly parsed: unknown;
+}
+
+export function parseConsumerJson(text: string): ParsedJson {
+  try {
+    return { parsed: JSON.parse(text) };
+  } catch {
+    return { parsed: undefined };
+  }
+}
+
+/**
+ * A whole matcher-group entry (`{ matcher?, hooks: [...] }`) is "ours" if any
+ * command anywhere inside it mentions our CLI. Checking the entry as a single
+ * opaque blob -- rather than modelling `hooks[].command` field by field --
+ * means this merger never needs to understand a shape it didn't author, and
+ * still correctly drops a stale guardrails entry of any past template version.
+ */
+function isGuardrailsEntry(entry: unknown): boolean {
+  return JSON.stringify(entry).includes(GUARDRAILS_HOOK_MARKER);
+}
+
+/** One hook event: keep every consumer entry that is not ours, then append
+ * the template's entries for that event. Filter-then-append is what makes a
+ * re-run idempotent instead of duplicating -- see the module's own test for
+ * "replaces a stale guardrails hook rather than duplicating it". */
+function mergeHookEvent(
+  consumerEntries: unknown,
+  templateEntries: readonly unknown[],
+): unknown[] {
+  const ownEntries = Array.isArray(consumerEntries) ? consumerEntries : [];
+  const keptEntries = ownEntries.filter((entry) => !isGuardrailsEntry(entry));
+  return [...keptEntries, ...templateEntries];
+}
+
+/** Merges every templated event into the consumer's `hooks` object, leaving
+ * any event the consumer defined that guardrails doesn't template untouched. */
+function mergeHooksObject(
+  consumerHooks: unknown,
+  templateHooks: Readonly<Record<string, readonly unknown[]>>,
+): Record<string, unknown> {
+  const consumerHooksRecord = isRecord(consumerHooks)
+    ? consumerHooks
+    : undefined;
+  const merged: Record<string, unknown> = { ...consumerHooksRecord };
+  for (const [event, templateEntries] of Object.entries(templateHooks)) {
+    merged[event] = mergeHookEvent(
+      consumerHooksRecord?.[event],
+      templateEntries,
+    );
+  }
+  return merged;
+}
+
+function serializeSettings(settings: Record<string, unknown>): string {
+  return `${JSON.stringify(settings, undefined, 2)}\n`;
+}
+
+/**
+ * Merges guardrails' own hook entries into `.claude/settings.json`, by hook
+ * event, without disturbing anything else in the file.
+ *
+ * Fails closed on unparseable consumer JSON: `current` comes back byte-for-
+ * byte unchanged, so the caller can report the problem rather than this
+ * function guessing and destroying a file it cannot read.
+ */
+export function mergeClaudeSettings(
+  current: string | undefined,
+  hooksBlock: string,
+): string {
+  const template = JSON.parse(hooksBlock) as HooksTemplate;
+
+  if (current === undefined) {
+    return serializeSettings({
+      hooks: mergeHooksObject(undefined, template.hooks),
+    });
+  }
+
+  const consumer = parseConsumerJson(current).parsed;
+  if (!isRecord(consumer)) {
+    return current;
+  }
+
+  return serializeSettings({
+    ...consumer,
+    hooks: mergeHooksObject(consumer.hooks, template.hooks),
+  });
+}
+
+/**
+ * Replaces the text between `startMarker` and `endMarker` with `block`
+ * (which already carries its own markers), or appends `block` when the
+ * markers aren't both present -- ported from the marker-splice logic in
+ * `scripts/sync-agents.mjs`'s Copilot-instructions merge, so this file and
+ * that script don't grow two dialects of the same idea.
+ */
+function replaceMarkedBlock(
+  existing: string,
+  startMarker: string,
+  endMarker: string,
+  block: string,
+): string {
+  const startAt = existing.indexOf(startMarker);
+  const endAt = existing.indexOf(endMarker);
+  if (startAt === -1 || endAt === -1) {
+    return existing.trim() === ''
+      ? `${block}\n`
+      : `${existing.trimEnd()}\n\n${block}\n`;
+  }
+  return `${existing.slice(0, startAt)}${block}${existing.slice(endAt + endMarker.length)}`;
+}
+
+const GITIGNORE_START = '# --- guardrails:start ---';
+const GITIGNORE_END = '# --- guardrails:end ---';
+
+// Deliberately NOT `.claude/agents` or `.claude/skills`: this repo ignores
+// those because it REGENERATES them on every build (see
+// `scripts/sync-agents.mjs`). A consumer has no build step, so those
+// directories are the only copy of the fixer agents/skills that will ever
+// exist in their repo -- ignoring them would silently disable the Copilot
+// cloud agent and leave every teammate without fixers.
+const GITIGNORE_BLOCK = [
+  GITIGNORE_START,
+  '.guardrails/state/',
+  GITIGNORE_END,
+].join('\n');
+
+/** Merges guardrails' own `.gitignore` entries into a marker-delimited block,
+ * leaving every other line in the file exactly where the consumer put it. */
+export function mergeGitignore(current: string | undefined): string {
+  return replaceMarkedBlock(
+    current ?? '',
+    GITIGNORE_START,
+    GITIGNORE_END,
+    GITIGNORE_BLOCK,
+  );
+}
+
+const OUR_PREPARE_COMMAND = 'guardrails install-hooks';
+
+/**
+ * Appends our hook-installer to `package.json`'s `prepare` script rather than
+ * replacing it: a consumer running husky (or anything else) via `prepare`
+ * must not lose it. Idempotent by construction -- an already-wired script
+ * already contains the command and is returned unchanged.
+ */
+export function mergePrepareScript(current: string | undefined): string {
+  if (current === undefined) {
+    return OUR_PREPARE_COMMAND;
+  }
+  if (current.includes(OUR_PREPARE_COMMAND)) {
+    return current;
+  }
+  return `${current} && ${OUR_PREPARE_COMMAND}`;
+}
+
+const COPILOT_SKILLS_START = '<!-- guardrails:skills:start -->';
+const COPILOT_SKILLS_END = '<!-- guardrails:skills:end -->';
+
+/**
+ * Merges the guardrails skills index into `.github/copilot-instructions.md`,
+ * replacing only the marked block so hand-written prose around it survives.
+ * `block` is the caller's fully-assembled replacement, markers included --
+ * the same shape `scripts/sync-agents.mjs` builds for this repo's own file.
+ */
+export function mergeCopilotInstructions(
+  current: string | undefined,
+  block: string,
+): string {
+  return replaceMarkedBlock(
+    current ?? '',
+    COPILOT_SKILLS_START,
+    COPILOT_SKILLS_END,
+    block,
+  );
+}
+
+function serializeWithMergedPrepare(parsed: Record<string, unknown>): string {
+  const scripts = isRecord(parsed.scripts) ? parsed.scripts : {};
+  const preparedScript =
+    typeof scripts.prepare === 'string' ? scripts.prepare : undefined;
+  const merged = {
+    ...parsed,
+    scripts: { ...scripts, prepare: mergePrepareScript(preparedScript) },
+  };
+  return `${JSON.stringify(merged, undefined, 2)}\n`;
+}
+
+/**
+ * `mergePrepareScript` merges one script string; `package.json` is shared as
+ * a whole file, so this is the JSON-shaped wrapper around it -- reading the
+ * current `scripts.prepare`, merging it, and writing the rest of the file
+ * back untouched. Fails closed on unparseable JSON, matching every other
+ * SHARED merger: the file comes back exactly as it was.
+ */
+export function mergePackageJsonScripts(current: string | undefined): string {
+  if (current === undefined) {
+    return serializeWithMergedPrepare({});
+  }
+  const parsed = parseConsumerJson(current).parsed;
+  if (!isRecord(parsed)) {
+    return current;
+  }
+  return serializeWithMergedPrepare(parsed);
+}
+
+/**
+ * The result of routing a SHARED path through its merger. `parseFailed` is
+ * what lets a caller (`apply.ts`) tell "already up to date" apart from "could
+ * not be parsed, so left unchanged" -- both produce `content === current`,
+ * but only the second is something a consumer needs to hear about. Only the
+ * two JSON-based mergers (`.claude/settings.json`, `package.json`) can ever
+ * fail to parse; the two text-splicing mergers (`.gitignore`, Copilot
+ * instructions) never do, so `parseFailed` is always `false` for them --
+ * re-parsing their output as JSON would spuriously "fail" on every genuinely
+ * up-to-date run, which is exactly the false alarm this type exists to avoid.
+ */
+export interface SharedMergeResult {
+  readonly content: string;
+  readonly parseFailed: boolean;
+}
+
+type SharedMerger = (
+  current: string | undefined,
+  desiredContent: string,
+) => SharedMergeResult;
+
+/**
+ * Wraps a JSON-based merger: `current` failing to parse as a JSON record
+ * means the merger hit its own fail-closed branch. This is computed directly
+ * from `current` alone, not from `content === current` -- every JSON-based
+ * merger's own contract already guarantees the two coincide (a fail-closed
+ * merge always returns `current` unchanged, by construction), so re-checking
+ * it here would only add a clause that's always true whenever it matters: a
+ * `content === current` comparison can only be true when `current` is
+ * itself a string, since `content` always is one, which makes a further
+ * `current !== undefined` alongside it a dead check with no observable
+ * effect a test could point to.
+ */
+function jsonMerger(
+  merge: (current: string | undefined, desiredContent: string) => string,
+): SharedMerger {
+  return (current, desiredContent) => ({
+    content: merge(current, desiredContent),
+    parseFailed:
+      current !== undefined && !isRecord(parseConsumerJson(current).parsed),
+  });
+}
+
+/** Wraps a text-splicing merger, which never fails to parse -- there is no
+ * such thing as malformed `.gitignore` or Markdown. */
+function textMerger(
+  merge: (current: string | undefined, desiredContent: string) => string,
+): SharedMerger {
+  return (current, desiredContent) => ({
+    content: merge(current, desiredContent),
+    parseFailed: false,
+  });
+}
+
+/**
+ * The operational definition of "SHARED": a path is shared precisely because
+ * a merger here knows how to touch only guardrails' own part of it. `plan.ts`
+ * classifies a path as `shared` by asking `isSharedPath`, and `apply.ts`
+ * looks up its merger here by the same key -- one literal table, so the two
+ * concerns (which paths are shared, and how each one merges) cannot drift
+ * apart the way two independently maintained lists could.
+ */
+export const SHARED_MERGERS = {
+  '.claude/settings.json': jsonMerger(mergeClaudeSettings),
+  '.github/copilot-instructions.md': textMerger(mergeCopilotInstructions),
+  '.gitignore': textMerger((current: string | undefined) =>
+    mergeGitignore(current),
+  ),
+  'package.json': jsonMerger((current: string | undefined) =>
+    mergePackageJsonScripts(current),
+  ),
+} as const satisfies Record<string, SharedMerger>;
+
+export type SharedPath = keyof typeof SHARED_MERGERS;
+
+export function isSharedPath(candidate: string): candidate is SharedPath {
+  return Object.hasOwn(SHARED_MERGERS, candidate);
+}

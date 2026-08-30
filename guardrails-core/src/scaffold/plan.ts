@@ -12,6 +12,7 @@
  * here ever needs to read a file, that need belongs in `detect()` instead.
  */
 import type { RepoFacts } from './detect.js';
+import { isSharedPath } from './merge.js';
 import { checksum, type ScaffoldManifest } from './manifest.js';
 
 export type FileClass = 'owned' | 'shared' | 'seed-once';
@@ -66,20 +67,17 @@ const SEED_ONCE_PATHS: ReadonlySet<string> = new Set([
 /**
  * Paths where init merges only its own entries, leaving the rest of the file
  * untouched -- spec §6.4 SHARED. The consumer is expected to own these files,
- * so they never produce `drift`.
+ * so they never produce `drift`. `isSharedPath` (from `merge.ts`) is the
+ * single source of truth for this set: a path is shared precisely because a
+ * merger there knows how to touch only guardrails' own part of it, so
+ * classification and merging are read off the same table instead of two
+ * lists that could drift apart.
  */
-const SHARED_PATHS: ReadonlySet<string> = new Set([
-  '.claude/settings.json',
-  '.github/copilot-instructions.md',
-  '.gitignore',
-  'package.json',
-]);
-
 function classifyFile(path: string): FileClass {
   if (SEED_ONCE_PATHS.has(path)) {
     return 'seed-once';
   }
-  if (SHARED_PATHS.has(path)) {
+  if (isSharedPath(path)) {
     return 'shared';
   }
   return 'owned';
