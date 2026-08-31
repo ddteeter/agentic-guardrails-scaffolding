@@ -22,6 +22,7 @@ import path from 'node:path';
 import { packageRoot } from '../package-root.js';
 import { analyzerMode, decideAnalyzer } from '../verify/analyzer-policy.js';
 import type { RepoFacts } from './detect.js';
+import { COPILOT_SKILLS_END, COPILOT_SKILLS_START } from './merge.js';
 import type { SharedPath } from './merge.js';
 import type { ScaffoldDecisions } from './plan.js';
 import {
@@ -72,7 +73,7 @@ const TEMPLATE_FILES: readonly DesiredEntry[] = [
 ];
 
 /*
- * Three paths spec §6.4 lists that this map deliberately does NOT yet carry,
+ * Two paths spec §6.4 lists that this map deliberately does NOT yet carry,
  * each because its source is not in the tarball rather than because the
  * scaffolder cannot place it:
  *
@@ -80,17 +81,6 @@ const TEMPLATE_FILES: readonly DesiredEntry[] = [
  * - `.claude/skills/<name>/SKILL.md` — the skills themselves are piece 5 (§7);
  *   the run-time GUIDANCE half of that bullet IS installed, into
  *   `docs/guardrails/` (§6.7), from the packaged `guidance/` tree.
- * - `.github/copilot-instructions.md` — a merger for it exists, but the block
- *   it would splice in is a progressive-disclosure index ("read this doc when
- *   this trigger applies"), and the per-doc trigger text lives in the plugin's
- *   SKILL.md frontmatter, which `guidance/` does not ship. Emitting bare links
- *   without triggers would be an index that tells an agent nothing about when
- *   to read anything. Shipping the descriptions means shipping them alongside
- *   the doc bodies in `guidance/` itself (an index file, or retaining each
- *   doc's frontmatter) plus a drift-guard line -- not extending
- *   `scripts/sync-agents.mjs` wholesale, which builds the Claude-side skill
- *   index from a different source tree than what ships in a consumer's
- *   `guidance/`.
  */
 
 /**
@@ -179,7 +169,8 @@ function templateEntries(): DesiredEntry[] {
  * Every guidance doc in `directory`, as desired entries under
  * `docs/guardrails/`. Takes the directory rather than calling `guidanceRoot()`
  * itself so the non-`.md` filter is provable against a fixture -- the packaged
- * tree happens to hold only Markdown, which would make the filter invisible.
+ * tree happens to hold only Markdown (plus `index.json`, itself proof the
+ * filter does something), which would otherwise make the filter invisible.
  *
  * Deliberately unsorted: `planScaffold` sorts the whole desired map before it
  * plans, so ordering here would be a second, unobservable sort.
@@ -191,6 +182,51 @@ export function guidanceEntries(directory: string): DesiredEntry[] {
       `docs/guardrails/${name}`,
       readFileSync(path.join(directory, name), 'utf8'),
     ]);
+}
+
+/**
+ * `guidance/index.json`, parsed. Trusted as-authored rather than
+ * runtime-validated: it is self-authored packaged data written by this
+ * repo's own `scripts/sync-agents.mjs`, never consumer- or network-supplied
+ * -- the same convention `merge.ts`'s `HooksTemplate` documents for its own
+ * `JSON.parse(...) as` cast.
+ */
+function skillIndex(directory: string): Record<string, string> {
+  return JSON.parse(
+    readFileSync(path.join(directory, 'index.json'), 'utf8'),
+  ) as Record<string, string>;
+}
+
+/**
+ * The `.github/copilot-instructions.md` marker block, in the exact dialect
+ * `merge.ts`'s `mergeCopilotInstructions` expects (its `block` argument
+ * already carries its own markers) -- reusing `COPILOT_SKILLS_START/END`
+ * rather than restating the literal strings, so this and that module cannot
+ * grow two dialects of the same idea.
+ *
+ * Not re-sorted here: `skillIndex` reads `index.json` back via `JSON.parse`,
+ * which preserves the file's own key order, and `scripts/sync-agents.mjs`
+ * already writes that file with sorted keys (the same "trusted as-authored"
+ * reasoning `skillIndex`'s own comment gives for skipping validation applies
+ * to its order too -- re-deriving an invariant the writer already guarantees
+ * would be a second, unobservable sort, the same reason `guidanceEntries`
+ * stays unsorted).
+ */
+function copilotInstructionsBlock(directory: string): string {
+  return [
+    COPILOT_SKILLS_START,
+    '',
+    '## Guardrails reference docs',
+    '',
+    'Read the linked doc **when its trigger applies** — not up front.',
+    '',
+    ...Object.entries(skillIndex(directory)).map(
+      ([name, description]) =>
+        `- [\`${name}\`](../docs/guardrails/${name}.md) — ${description}`,
+    ),
+    '',
+    COPILOT_SKILLS_END,
+  ].join('\n');
 }
 
 /**
@@ -246,6 +282,10 @@ export function buildDesiredFiles(
   for (const [key, content] of [
     ...templateEntries(),
     ...guidanceEntries(guidanceRoot()),
+    [
+      '.github/copilot-instructions.md',
+      copilotInstructionsBlock(guidanceRoot()),
+    ] satisfies DesiredEntry,
     ...SHARED_DERIVED_PATHS.map((shared): DesiredEntry => [
       shared,
       MERGER_DERIVED,

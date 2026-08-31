@@ -113,6 +113,27 @@ if (skillList.length > 0) {
     writeFileSync(path.join(skillDocs, `${skill.name}.md`), content);
     writeFileSync(path.join(packageGuidance, `${skill.name}.md`), content);
   }
+
+  // guidance/ ships only each skill's BODY (parseSkill strips the
+  // frontmatter before writing it above), so a consumer's installed
+  // docs/guardrails/*.md land with no trigger text of their own -- `init`
+  // has nothing to build a Copilot index from. This index carries exactly
+  // the piece parseSkill stripped: name -> description, so templates.ts can
+  // rebuild both the .claude/skills/*/SKILL.md frontmatter and the
+  // .github/copilot-instructions.md index at install time. Deterministic
+  // (sorted keys, two-space indent, trailing newline) for the same reason
+  // manifest.ts's serializeManifest is: the committed file stays out of
+  // every diff and the CI drift-guard can work on it.
+  const index = {};
+  for (const skill of [...skillList].sort((left, right) =>
+    left.name.localeCompare(right.name),
+  )) {
+    index[skill.name] = skill.description;
+  }
+  writeFileSync(
+    path.join(packageGuidance, 'index.json'),
+    `${JSON.stringify(index, undefined, 2)}\n`,
+  );
 }
 
 // Replace only the marked block, so hand-written Copilot instructions around it

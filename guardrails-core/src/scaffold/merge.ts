@@ -197,8 +197,13 @@ export function mergePrepareScript(current: string | undefined): string {
   return `${current} && ${OUR_PREPARE_COMMAND}`;
 }
 
-const COPILOT_SKILLS_START = '<!-- guardrails:skills:start -->';
-const COPILOT_SKILLS_END = '<!-- guardrails:skills:end -->';
+// Exported so templates.ts's buildDesiredFiles can build the DESIRED block
+// with these same literal markers, rather than restating them -- see that
+// module's copilotInstructionsBlock. Two independently-typed marker strings
+// would risk drifting apart silently: replaceMarkedBlock would just append
+// instead of splice, with no error.
+export const COPILOT_SKILLS_START = '<!-- guardrails:skills:start -->';
+export const COPILOT_SKILLS_END = '<!-- guardrails:skills:end -->';
 
 /**
  * Merges the guardrails skills index into `.github/copilot-instructions.md`,

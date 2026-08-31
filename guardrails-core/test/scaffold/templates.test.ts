@@ -151,6 +151,22 @@ describe('buildDesiredFiles — the shipped template tree', () => {
   });
 });
 
+describe('buildDesiredFiles — .github/copilot-instructions.md (spec §7 Task 3)', () => {
+  it('includes the marker block with a skill trigger, not merely a link', () => {
+    // A bare-links index is the failure this task exists to avoid: an agent
+    // with only a link and no trigger text has nothing telling it WHEN to
+    // read the doc. Assert the description text is present, not just the URL.
+    const desired = buildDesiredFiles(facts(), decisions());
+    const content = contentOf(desired, '.github/copilot-instructions.md');
+    expect(content).toContain('<!-- guardrails:skills:start -->');
+    expect(content).toContain('<!-- guardrails:skills:end -->');
+    expect(content).toContain('(../docs/guardrails/crushing-mutants.md)');
+    // Trigger text from crushing-mutants' frontmatter description, not just
+    // the link -- proves the index carries WHEN to read the doc.
+    expect(content).toContain('stryker/survived');
+  });
+});
+
 describe('guidanceEntries', () => {
   let guidance: string;
 
