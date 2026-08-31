@@ -85,9 +85,12 @@ const TEMPLATE_FILES: readonly DesiredEntry[] = [
  *   this trigger applies"), and the per-doc trigger text lives in the plugin's
  *   SKILL.md frontmatter, which `guidance/` does not ship. Emitting bare links
  *   without triggers would be an index that tells an agent nothing about when
- *   to read anything. Shipping the descriptions means extending
- *   `scripts/sync-agents.mjs` and its drift-guard — pipeline work with its own
- *   slice.
+ *   to read anything. Shipping the descriptions means shipping them alongside
+ *   the doc bodies in `guidance/` itself (an index file, or retaining each
+ *   doc's frontmatter) plus a drift-guard line -- not extending
+ *   `scripts/sync-agents.mjs` wholesale, which builds the Claude-side skill
+ *   index from a different source tree than what ships in a consumer's
+ *   `guidance/`.
  */
 
 /**

@@ -45,7 +45,9 @@ npx guardrails init --apply  # write it
 `.githooks/pre-commit`, `.github/hooks/guardrails.json`, and a seeded
 `guardrails.config.json`; on a repo it already scaffolded, an untouched file
 is upgraded in place, and a file you edited is reported as drifted and left
-alone (pass `--force` to overwrite it anyway). A file you own outright —
+alone (pass `--force` to overwrite it anyway) — except `guardrails.config.json`
+itself, which holds your policy and your sanctioned suppressions and is never
+overwritten again once it exists, `--force` included. A file you own outright —
 `package.json`, `.claude/settings.json`, `.gitignore` — is never replaced;
 `init` merges only its own entries into whatever is already there. See
 `plan.md`'s "Phase E status" for what that merge does and does not preserve.

@@ -393,6 +393,16 @@ describe('init — orphan files from an older scaffold', () => {
     await init('--apply');
     expect(read('.claude/agents/retired.md')).toBe('old\n');
     expect(`${out.join('')}${errors.join('')}`).not.toContain('retired.md');
+
+    // The orphan's manifest entry is not just left alone -- `writeManifest`
+    // spreads the existing entries under the fresh ones, so nothing ever
+    // drops it. Pinned here, not just inferred from the file being left in
+    // place: a future change that started pruning dead manifest keys while
+    // still leaving the orphaned file on disk would pass every assertion
+    // above and only fail this one.
+    const manifest: unknown = JSON.parse(read('.guardrails/scaffold.json'));
+    const { files } = manifest as { files: Record<string, string> };
+    expect(files['.claude/agents/retired.md']).toBe('sha256-stale');
   });
 });
 
