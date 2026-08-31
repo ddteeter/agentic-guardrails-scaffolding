@@ -97,14 +97,10 @@ function factsWithManifest(manifestRaw: string | undefined): RepoFacts {
     repoRoot: REPO_ROOT,
     baseBranch: 'main',
     declaredProviders: new Set(),
-    hasTypeScriptConfig: false,
-    hasEslintConfig: false,
     hasDependencyCruiserConfig: false,
     hasStrykerConfig: false,
-    hasGuardrailsConfig: false,
     manifest,
     hooksPath: undefined,
-    prepareScript: undefined,
   };
 }
 

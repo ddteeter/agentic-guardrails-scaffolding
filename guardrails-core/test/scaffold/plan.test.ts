@@ -26,14 +26,10 @@ function facts(manifest?: ScaffoldManifest): RepoFacts {
     repoRoot: '/repo',
     baseBranch: 'main',
     declaredProviders: new Set(),
-    hasTypeScriptConfig: false,
-    hasEslintConfig: false,
     hasDependencyCruiserConfig: false,
     hasStrykerConfig: false,
-    hasGuardrailsConfig: false,
     manifest,
     hooksPath: undefined,
-    prepareScript: undefined,
   };
 }
 

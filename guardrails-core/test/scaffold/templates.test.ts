@@ -37,14 +37,10 @@ function facts(over: Partial<RepoFacts> = {}): RepoFacts {
     repoRoot: '/repo',
     baseBranch: 'main',
     declaredProviders: new Set<string>(),
-    hasTypeScriptConfig: false,
-    hasEslintConfig: false,
     hasDependencyCruiserConfig: false,
     hasStrykerConfig: false,
-    hasGuardrailsConfig: false,
     manifest: undefined,
     hooksPath: undefined,
-    prepareScript: undefined,
     ...over,
   };
 }

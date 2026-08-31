@@ -15,21 +15,28 @@ import type { Exec } from '../exec.js';
 import { readJsonFile } from '../json-file.js';
 import { resolveRepoRoot } from '../repo-root.js';
 import { declaredProviders } from '../verify/analyzer-policy.js';
-import { isRecord } from './record.js';
 import { parseManifest, type ScaffoldManifest } from './manifest.js';
 
+/**
+ * Every field here has a production reader, and that is the rule rather than
+ * an accident: a fact nothing consults is an `existsSync` per `init` and a
+ * line of fixture boilerplate in four test files, bought for a decision no
+ * code makes. Five such fields were removed once (`hasTypeScriptConfig`,
+ * `hasEslintConfig`, `hasGuardrailsConfig`, `prepareScript`, and, until it was
+ * wired up, `hooksPath`) — they are invisible to knip, because the tests
+ * assert them directly, so nothing but this rule catches them. Detect the fact
+ * when something needs it.
+ */
 export interface RepoFacts {
   readonly repoRoot: string;
   readonly baseBranch: string;
+  /** Read by `templates.ts` — which analyzer configs to offer to seed. */
   readonly declaredProviders: ReadonlySet<string>;
-  readonly hasTypeScriptConfig: boolean;
-  readonly hasEslintConfig: boolean;
   readonly hasDependencyCruiserConfig: boolean;
   readonly hasStrykerConfig: boolean;
-  readonly hasGuardrailsConfig: boolean;
   readonly manifest: ScaffoldManifest | undefined;
+  /** Read by `hooks-path.ts` — the one config entry we refuse to overwrite. */
   readonly hooksPath: string | undefined;
-  readonly prepareScript: string | undefined;
 }
 
 export interface DetectOptions {
@@ -82,14 +89,6 @@ async function detectHooksPath(
   return trimmed === '' ? undefined : trimmed;
 }
 
-function detectPrepareScript(packageJson: unknown): string | undefined {
-  if (!isRecord(packageJson) || !isRecord(packageJson.scripts)) {
-    return undefined;
-  }
-  const { prepare } = packageJson.scripts;
-  return typeof prepare === 'string' ? prepare : undefined;
-}
-
 export async function detect(options: DetectOptions): Promise<RepoFacts> {
   const { exec, cwd } = options;
   const fileExists = options.fileExists ?? existsSync;
@@ -112,13 +111,6 @@ export async function detect(options: DetectOptions): Promise<RepoFacts> {
     baseBranch,
     hooksPath,
     declaredProviders: declaredProviders(packageJson),
-    prepareScript: detectPrepareScript(packageJson),
-    hasTypeScriptConfig: anyExists(repoRoot, ['tsconfig.json'], fileExists),
-    hasEslintConfig: anyExists(
-      repoRoot,
-      ['eslint.config.js', 'eslint.config.mjs', 'eslint.config.cjs'],
-      fileExists,
-    ),
     hasDependencyCruiserConfig: anyExists(
       repoRoot,
       [
@@ -129,11 +121,6 @@ export async function detect(options: DetectOptions): Promise<RepoFacts> {
       fileExists,
     ),
     hasStrykerConfig: anyExists(repoRoot, ['stryker.conf.json'], fileExists),
-    hasGuardrailsConfig: anyExists(
-      repoRoot,
-      ['guardrails.config.json'],
-      fileExists,
-    ),
     manifest,
   };
 }

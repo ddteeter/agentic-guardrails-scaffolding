@@ -61,15 +61,10 @@ describe('detect', () => {
     expect(result.repoRoot).toBe('/repo');
   });
 
-  it('reports which analyzer configs exist', async () => {
-    const result = await facts({
-      '/repo/tsconfig.json': {},
-      '/repo/stryker.conf.json': {},
-    });
-    expect(result.hasTypeScriptConfig).toBe(true);
+  it('reports which seedable analyzer configs exist', async () => {
+    const result = await facts({ '/repo/stryker.conf.json': {} });
     expect(result.hasStrykerConfig).toBe(true);
     expect(result.hasDependencyCruiserConfig).toBe(false);
-    expect(result.hasEslintConfig).toBe(false);
   });
 
   it('collects declared providers from package.json', async () => {
@@ -79,18 +74,6 @@ describe('detect', () => {
     expect(
       [...result.declaredProviders].sort((a, b) => a.localeCompare(b)),
     ).toEqual(['eslint', 'knip']);
-  });
-
-  it('reads an existing prepare script', async () => {
-    const result = await facts({
-      '/repo/package.json': { scripts: { prepare: 'husky' } },
-    });
-    expect(result.prepareScript).toBe('husky');
-  });
-
-  it('leaves prepareScript undefined when there is none', async () => {
-    const result = await facts({ '/repo/package.json': {} });
-    expect(result.prepareScript).toBeUndefined();
   });
 
   it('reports core.hooksPath when git has one configured', async () => {
@@ -104,11 +87,6 @@ describe('detect', () => {
   it('leaves hooksPath undefined when git has none', async () => {
     const result = await facts({});
     expect(result.hooksPath).toBeUndefined();
-  });
-
-  it('notices an existing guardrails.config.json', async () => {
-    const result = await facts({ '/repo/guardrails.config.json': {} });
-    expect(result.hasGuardrailsConfig).toBe(true);
   });
 
   it('parses an existing scaffold manifest', async () => {
@@ -143,18 +121,12 @@ describe('detect', () => {
     expect(result.baseBranch).toBe('main');
   });
 
-  it('recognizes any accepted eslint or dependency-cruiser config filename', async () => {
-    // `anyExists` accepts several candidate filenames per analyzer -- only ONE
-    // needs to exist. Exercising a single non-first candidate for each of two
-    // different candidate lists proves it is "any of", not "all of" or "the
-    // first one only".
-    const eslintResult = await facts({ '/repo/eslint.config.cjs': {} });
-    expect(eslintResult.hasEslintConfig).toBe(true);
-
-    const dependencyCruiserResult = await facts({
-      '/repo/.dependency-cruiser.json': {},
-    });
-    expect(dependencyCruiserResult.hasDependencyCruiserConfig).toBe(true);
+  it('recognizes any accepted dependency-cruiser config filename', async () => {
+    // `anyExists` accepts several candidate filenames -- only ONE needs to
+    // exist. Exercising a non-first candidate proves it is "any of", not "all
+    // of" or "the first one only".
+    const result = await facts({ '/repo/.dependency-cruiser.json': {} });
+    expect(result.hasDependencyCruiserConfig).toBe(true);
   });
 
   it('runs each git command anchored at the resolved repo root, with the exact argv detect relies on', async () => {
@@ -241,17 +213,10 @@ describe('detect', () => {
     expect(result.hooksPath).toBeUndefined();
   });
 
-  it('ignores a non-string prepare script value', async () => {
-    const result = await facts({
-      '/repo/package.json': { scripts: { prepare: 123 } },
-    });
-    expect(result.prepareScript).toBeUndefined();
-  });
-
   it('falls back to the real filesystem and JSON reader when none are injected', async () => {
     // Proves the default `fileExists`/`readJson` seams (existsSync,
     // readJsonFile) are wired up, not just the injected fakes every other
-    // test uses -- by writing a REAL package.json/tsconfig.json to a temp
+    // test uses -- by writing a REAL package.json/stryker.conf.json to a temp
     // directory and asserting their actual content is reflected, not merely
     // that the defaults tolerate a missing file.
     const repoRoot = mkdtempSync(path.join(os.tmpdir(), 'guardrails-detect-'));
@@ -259,13 +224,13 @@ describe('detect', () => {
       path.join(repoRoot, 'package.json'),
       JSON.stringify({ devDependencies: { eslint: '^9' } }),
     );
-    writeFileSync(path.join(repoRoot, 'tsconfig.json'), '{}');
+    writeFileSync(path.join(repoRoot, 'stryker.conf.json'), '{}');
 
     const exec = fakeExec({
       'git rev-parse --show-toplevel': ok(`${repoRoot}\n`),
     });
     const result = await detect({ exec, cwd: repoRoot });
-    expect(result.hasTypeScriptConfig).toBe(true);
+    expect(result.hasStrykerConfig).toBe(true);
     expect([...result.declaredProviders]).toEqual(['eslint']);
   });
 });
