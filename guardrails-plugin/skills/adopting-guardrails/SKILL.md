@@ -23,9 +23,10 @@ A skill that explains how to adopt guardrails cannot itself be delivered by
   single file has been scaffolded. It is a one-time read; it never needs to
   live in the consumer repo, and `init` does not copy it there.
 - **Run-time guidance is installed into the repo by `init`.** `crushing-mutants`
-  and the boundary-validation doc land under `docs/guardrails/` because they
-  are needed every day, by the cloud agent reading from the default branch,
-  where `node_modules` does not exist.
+  and the boundary-validation doc land under `docs/guardrails/` **and** as
+  `.claude/skills/<name>/SKILL.md`, because they are needed every day, by the
+  cloud agent reading from the default branch, where `node_modules` does not
+  exist.
 
 If you're reading this from `.claude/skills/` or `docs/guardrails/` inside
 **this** repo (guardrails-core's own development home), that's normal — this
@@ -88,7 +89,7 @@ no test-runner-specific Stryker plugin installed; do you want `@stryker-mutator/
 or stay on the generic `command` runner" — not "how do you want mutation
 testing configured?"
 
-### 5. Author the configs `init` deliberately does not own
+### 5. Author the configs and dependencies `init` deliberately does not own
 
 `init` seeds three configs only when their analyzer is enabled and no config
 exists (SEED-ONCE): a starter `.dependency-cruiser.cjs` (one rule —
@@ -108,6 +109,12 @@ maintaining lint rules for somebody else's repository. That's this step's job:
 - **Stryker's test-runner plugin and thresholds** — swap `command` for a
   framework-specific runner once one is installed, and set `break`/`low`/`high`
   thresholds that mean something, not the schema's defaults.
+- **A validator library, if a boundary cast needs redirecting** (see the
+  `boundary-validation` skill) — zod, valibot, typia, or arktype, whichever
+  matches the repo's existing dependency graph and the team's taste.
+  `guardrails-core` installs none and picks none: this is the same kind of
+  per-repo call as the eslint config above, just for a dependency instead of
+  a file.
 
 ### 6. Run `guardrails init --apply` with the decisions
 
