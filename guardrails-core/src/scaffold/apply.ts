@@ -164,21 +164,30 @@ function readExistingManifest(
 }
 
 /**
- * Rewrites the manifest with the existing entries plus a fresh checksum for
- * every OWNED file this run actually wrote -- never called when nothing was
- * written, which is what keeps a repeat run of an up-to-date repo from
+ * Rewrites the manifest with the existing FILE entries plus a fresh checksum
+ * for every OWNED file this run actually wrote -- never called when nothing
+ * was written, which is what keeps a repeat run of an up-to-date repo from
  * touching the manifest at all.
+ *
+ * `version` always OVERWRITES whatever `guardrailsVersion` was already on
+ * disk; it is never read from `existing`. Preserving it the way file entries
+ * are preserved would mean a repo first scaffolded by a build that stamped
+ * '' (or any stale version) stays stamped that way forever, through every
+ * later `init --apply` -- the caller always knows the version actually
+ * running right now, which is a strictly better answer than whatever an
+ * earlier run happened to record.
  */
 function writeManifest(
   repoRoot: string,
   manifestUpdates: Readonly<Record<string, string>>,
+  version: string,
   deps: ApplyDeps,
   warnings: string[],
 ): void {
   const manifestFullPath = path.join(repoRoot, MANIFEST_PATH);
   const existing = readExistingManifest(manifestFullPath, deps, warnings);
   const manifest: ScaffoldManifest = {
-    guardrailsVersion: existing?.guardrailsVersion ?? '',
+    guardrailsVersion: version,
     files: { ...existing?.files, ...manifestUpdates },
   };
   deps.writeFile(manifestFullPath, serializeManifest(manifest));
@@ -189,6 +198,7 @@ export function applyScaffold(
   desired: Readonly<Record<string, string>>,
   repoRoot: string,
   deps: ApplyDeps,
+  version: string,
 ): ApplyResult {
   const accumulator: ApplyAccumulator = {
     written: [],
@@ -233,6 +243,7 @@ export function applyScaffold(
     writeManifest(
       repoRoot,
       accumulator.manifestUpdates,
+      version,
       deps,
       accumulator.warnings,
     );

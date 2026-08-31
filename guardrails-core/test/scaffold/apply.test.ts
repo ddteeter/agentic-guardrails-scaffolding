@@ -17,6 +17,12 @@ import {
 } from '../../src/scaffold/plan.js';
 
 const REPO_ROOT = '/repo';
+/** The version `applyScaffold` is told to stamp into the manifest -- most
+ *  tests here don't care about its value, only that it flows through.
+ *  Deliberately distinct from the '1.2.3' some tests seed as a PRE-EXISTING
+ *  manifest version, so a test that asserts the manifest ends up holding
+ *  VERSION actually proves the new value overwrote the old one. */
+const VERSION = '9.9.9';
 
 function fullPath(repoRelativePath: string): string {
   return path.join(REPO_ROOT, repoRelativePath);
@@ -117,6 +123,7 @@ describe('applyScaffold', () => {
       { 'guardrails.config.json': '{"enforcement":"warn"}' },
       REPO_ROOT,
       deps,
+      VERSION,
     );
     expect(result.written).toEqual(['guardrails.config.json']);
     expect(result.skipped).toEqual([]);
@@ -141,6 +148,7 @@ describe('applyScaffold', () => {
       { '.githooks/pre-commit': 'new content' },
       REPO_ROOT,
       deps,
+      VERSION,
     );
     // An owned write also refreshes the manifest checksum -- see "the
     // manifest" describe block below for that in isolation.
@@ -164,6 +172,7 @@ describe('applyScaffold', () => {
       { '.githooks/pre-commit': 'template content' },
       REPO_ROOT,
       deps,
+      VERSION,
     );
     expect(result.written).toEqual([]);
     expect(result.skipped).toEqual(['.githooks/pre-commit']);
@@ -188,6 +197,7 @@ describe('applyScaffold', () => {
       { 'guardrails.config.json': '{"enforcement":"warn"}' },
       REPO_ROOT,
       deps,
+      VERSION,
     );
     expect(result.written).toEqual([]);
     expect(result.skipped).toEqual(['guardrails.config.json']);
@@ -228,6 +238,7 @@ describe('applyScaffold', () => {
       { '.claude/settings.json': hooksBlock },
       REPO_ROOT,
       deps,
+      VERSION,
     );
     expect(result.written).toEqual(['.claude/settings.json']);
     const written = files.get(fullPath('.claude/settings.json'));
@@ -257,6 +268,7 @@ describe('applyScaffold', () => {
       { '.claude/settings.json': hooksBlock },
       REPO_ROOT,
       deps,
+      VERSION,
     );
     expect(result.written).toEqual(['.claude/settings.json']);
     const parsed = JSON.parse(
@@ -286,6 +298,7 @@ describe('applyScaffold', () => {
       { '.claude/settings.json': JSON.stringify({ hooks: {} }) },
       REPO_ROOT,
       deps,
+      VERSION,
     );
     expect(result.written).toEqual([]);
     expect(result.skipped).toEqual(['.claude/settings.json']);
@@ -314,6 +327,7 @@ describe('applyScaffold', () => {
         { 'some/future-shared-path.json': '{}' },
         REPO_ROOT,
         deps,
+        VERSION,
       ),
     ).toThrow('no SHARED merger registered for some/future-shared-path.json');
   });
@@ -330,7 +344,7 @@ describe('applyScaffold', () => {
       const plan = planOf(
         action({ path: 'package.json', fileClass: 'shared', kind: 'merge' }),
       );
-      applyScaffold(plan, { 'package.json': '' }, REPO_ROOT, deps);
+      applyScaffold(plan, { 'package.json': '' }, REPO_ROOT, deps, VERSION);
       const parsed = JSON.parse(files.get(fullPath('package.json')) ?? '') as {
         scripts: { prepare: string };
       };
@@ -348,6 +362,7 @@ describe('applyScaffold', () => {
         { 'package.json': '' },
         REPO_ROOT,
         deps,
+        VERSION,
       );
       expect(result.skipped).toEqual(['package.json']);
       expect(files.get(fullPath('package.json'))).toBe(current);
@@ -363,7 +378,7 @@ describe('applyScaffold', () => {
       const plan = planOf(
         action({ path: '.gitignore', fileClass: 'shared', kind: 'create' }),
       );
-      applyScaffold(plan, { '.gitignore': '' }, REPO_ROOT, deps);
+      applyScaffold(plan, { '.gitignore': '' }, REPO_ROOT, deps, VERSION);
       const written = files.get(fullPath('.gitignore'));
       expect(written).toContain('.guardrails/state/');
     });
@@ -387,6 +402,7 @@ describe('applyScaffold', () => {
         { '.github/copilot-instructions.md': block },
         REPO_ROOT,
         deps,
+        VERSION,
       );
       const written = files.get(fullPath('.github/copilot-instructions.md'));
       expect(written).toContain('index content');
@@ -402,7 +418,7 @@ describe('applyScaffold', () => {
       const createPlan = planOf(
         action({ path: '.gitignore', fileClass: 'shared', kind: 'create' }),
       );
-      applyScaffold(createPlan, { '.gitignore': '' }, REPO_ROOT, deps);
+      applyScaffold(createPlan, { '.gitignore': '' }, REPO_ROOT, deps, VERSION);
 
       const mergePlan = planOf(
         action({ path: '.gitignore', fileClass: 'shared', kind: 'merge' }),
@@ -412,6 +428,7 @@ describe('applyScaffold', () => {
         { '.gitignore': '' },
         REPO_ROOT,
         deps,
+        VERSION,
       );
       expect(result.written).toEqual([]);
       expect(result.warnings).toEqual([]);
@@ -437,6 +454,7 @@ describe('applyScaffold', () => {
         { '.github/copilot-instructions.md': block },
         REPO_ROOT,
         deps,
+        VERSION,
       );
 
       const mergePlan = planOf(
@@ -451,6 +469,7 @@ describe('applyScaffold', () => {
         { '.github/copilot-instructions.md': block },
         REPO_ROOT,
         deps,
+        VERSION,
       );
       expect(result.written).toEqual([]);
       expect(result.warnings).toEqual([]);
@@ -480,6 +499,7 @@ describe('applyScaffold', () => {
         },
         REPO_ROOT,
         deps,
+        VERSION,
       );
       const manifestRaw = files.get(fullPath(MANIFEST_PATH));
       expect(manifestRaw).toBeDefined();
@@ -496,7 +516,11 @@ describe('applyScaffold', () => {
       expect(result.warnings).toEqual([]);
     });
 
-    it('preserves existing manifest entries for files untouched this run', () => {
+    it('preserves existing file entries but overwrites guardrailsVersion with the current one', () => {
+      // A version-aware release must not keep stamping whatever was on disk
+      // at the FIRST `init --apply` forever -- see apply.ts's `writeManifest`.
+      // '1.2.3' here is deliberately not VERSION, so the assertion below
+      // proves an overwrite happened rather than passing on a coincidence.
       const existingManifest = JSON.stringify({
         guardrailsVersion: '1.2.3',
         files: { 'existing-owned-file.md': checksum('old content') },
@@ -516,12 +540,13 @@ describe('applyScaffold', () => {
         { '.githooks/pre-commit': 'hook script' },
         REPO_ROOT,
         deps,
+        VERSION,
       );
       const manifest = JSON.parse(files.get(fullPath(MANIFEST_PATH)) ?? '') as {
         guardrailsVersion: string;
         files: Record<string, string>;
       };
-      expect(manifest.guardrailsVersion).toBe('1.2.3');
+      expect(manifest.guardrailsVersion).toBe(VERSION);
       expect(manifest.files['existing-owned-file.md']).toBe(
         checksum('old content'),
       );
@@ -549,12 +574,13 @@ describe('applyScaffold', () => {
         { '.githooks/pre-commit': 'hook script' },
         REPO_ROOT,
         deps,
+        VERSION,
       );
       const manifest = JSON.parse(files.get(fullPath(MANIFEST_PATH)) ?? '') as {
         guardrailsVersion: string;
         files: Record<string, string>;
       };
-      expect(manifest.guardrailsVersion).toBe('');
+      expect(manifest.guardrailsVersion).toBe(VERSION);
       expect(manifest.files).toEqual({
         '.githooks/pre-commit': checksum('hook script'),
       });
@@ -570,7 +596,7 @@ describe('applyScaffold', () => {
       const plan = planOf(
         action({ path: '.gitignore', fileClass: 'shared', kind: 'create' }),
       );
-      applyScaffold(plan, { '.gitignore': '' }, REPO_ROOT, deps);
+      applyScaffold(plan, { '.gitignore': '' }, REPO_ROOT, deps, VERSION);
       expect(files.has(fullPath(MANIFEST_PATH))).toBe(false);
     });
   });
@@ -585,7 +611,13 @@ describe('applyScaffold', () => {
           kind: 'create',
         }),
       );
-      applyScaffold(plan, { '.githooks/pre-commit': 'hook' }, REPO_ROOT, deps);
+      applyScaffold(
+        plan,
+        { '.githooks/pre-commit': 'hook' },
+        REPO_ROOT,
+        deps,
+        VERSION,
+      );
       expect(hooksPathCallCount()).toBe(1);
     });
 
@@ -598,7 +630,13 @@ describe('applyScaffold', () => {
           kind: 'create',
         }),
       );
-      applyScaffold(plan, { 'guardrails.config.json': '{}' }, REPO_ROOT, deps);
+      applyScaffold(
+        plan,
+        { 'guardrails.config.json': '{}' },
+        REPO_ROOT,
+        deps,
+        VERSION,
+      );
       expect(hooksPathCallCount()).toBe(0);
     });
 
@@ -618,6 +656,7 @@ describe('applyScaffold', () => {
         { '.githooks/pre-commit': 'template' },
         REPO_ROOT,
         deps,
+        VERSION,
       );
       expect(hooksPathCallCount()).toBe(0);
     });
@@ -628,7 +667,7 @@ describe('applyScaffold', () => {
     const plan = planOf(
       action({ path: 'ghost.md', fileClass: 'owned', kind: 'create' }),
     );
-    const result = applyScaffold(plan, {}, REPO_ROOT, deps);
+    const result = applyScaffold(plan, {}, REPO_ROOT, deps, VERSION);
     expect(result.written).toEqual([]);
     expect(result.skipped).toEqual(['ghost.md']);
     expect(result.warnings).toHaveLength(1);
@@ -657,6 +696,7 @@ describe('applyScaffold', () => {
       { 'guardrails.config.json': '{}', '.githooks/pre-commit': 'template' },
       REPO_ROOT,
       deps,
+      VERSION,
     );
     expect(result.written).toEqual([]);
     expect(files.has(fullPath(MANIFEST_PATH))).toBe(false);
@@ -703,7 +743,7 @@ describe('applyScaffold', () => {
       desired,
       current: currentFilesFrom(files),
     });
-    applyScaffold(firstPlan, desired, REPO_ROOT, deps);
+    applyScaffold(firstPlan, desired, REPO_ROOT, deps, VERSION);
 
     // Re-plan for real, against what the first apply actually left behind --
     // including the manifest it just wrote.
@@ -728,7 +768,7 @@ describe('applyScaffold', () => {
     );
 
     const filesBefore = new Map(files);
-    const result = applyScaffold(secondPlan, desired, REPO_ROOT, deps);
+    const result = applyScaffold(secondPlan, desired, REPO_ROOT, deps, VERSION);
 
     expect(result.written).toEqual([]);
     expect(result.warnings).toEqual([]);

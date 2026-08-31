@@ -28,6 +28,7 @@ import {
 import path from 'node:path';
 
 import type { Exec } from '../exec.js';
+import { packageVersion } from '../package-root.js';
 import type { AnalyzerMode } from '../verify/analyzer-policy.js';
 import { ANALYZER_TOOLS } from '../verify/index.js';
 import { applyScaffold, type ApplyDeps, type ApplyResult } from './apply.js';
@@ -377,6 +378,7 @@ export async function initCommand(
     desired,
     facts.repoRoot,
     fileSystemApplyDeps(facts.repoRoot, latch.request),
+    packageVersion(),
   );
   if (latch.requested()) {
     await deps.exec('git', ['config', 'core.hooksPath', HOOKS_DIRECTORY], {
