@@ -41,3 +41,9 @@ Same manifest-driven procedure. Same forbidden list (no suppressions, no casts,
 no test-weakening, no deletion — flag possibly-live code instead). The
 diff-auditor and scope-lock apply to you exactly as they do to the fast tier.
 If you cannot fix it honestly, leave it and say so; the main agent takes it next.
+
+If the only mechanical fix is a structural cast on data crossing a trust
+boundary (parsed JSON, a network response, an env var, external tool output),
+that is one of those cases — see
+`node_modules/guardrails-core/guidance/boundary-validation.md` and leave it for
+the main agent rather than adding the cast.

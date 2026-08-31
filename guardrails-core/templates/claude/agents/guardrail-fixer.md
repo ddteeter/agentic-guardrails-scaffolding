@@ -56,3 +56,9 @@ the underlying problem or flag it; never silence it.
 Leave it. Say so in your one-line summary. The attempt counter will escalate it
 to the main agent (top model, full context), which is the correct owner for the
 hard cases. A partial honest fix beats a complete dishonest one.
+
+If the only mechanical fix is a structural cast on data crossing a trust
+boundary (parsed JSON, a network response, an env var, external tool output),
+that is one of those cases — see
+`node_modules/guardrails-core/guidance/boundary-validation.md` and leave it for
+the main agent rather than adding the cast.
