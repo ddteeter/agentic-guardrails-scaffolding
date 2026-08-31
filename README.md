@@ -9,11 +9,11 @@ recurring mistakes.
 
 This repository is the **development home** for three artifacts:
 
-| Artifact                                    | What it is                                     | Status                |
-| ------------------------------------------- | ---------------------------------------------- | --------------------- |
-| [`guardrails-core/`](./guardrails-core)     | npm package — all machinery, CLI `guardrails`  | **Phase A: built**    |
-| [`guardrails-plugin/`](./guardrails-plugin) | thin Claude Code plugin (hooks + fixer agents) | **Phase A: built**    |
-| per-repo footprint                          | policy + state a target repo checks in         | scaffolder is Phase E |
+| Artifact                                    | What it is                                     | Status                                           |
+| ------------------------------------------- | ---------------------------------------------- | ------------------------------------------------ |
+| [`guardrails-core/`](./guardrails-core)     | npm package — all machinery, CLI `guardrails`  | **Phase A: built**                               |
+| [`guardrails-plugin/`](./guardrails-plugin) | thin Claude Code plugin (hooks + fixer agents) | **Phase A: built**                               |
+| per-repo footprint                          | policy + state a target repo checks in         | **`guardrails init` ships it (Phase E piece 4)** |
 
 See [`plan.md`](./plan.md) for the full design and phase breakdown.
 
@@ -33,8 +33,22 @@ and Dependabot will not track it. Upgrading means editing the URL by hand. This
 is deliberate while the package has no external consumers — publishing to npm
 later changes this line and nothing else.
 
-Installing the package does not yet wire anything up; `guardrails init`
-(piece 4) writes the hooks, fixer agents, and pre-commit hook into your repo.
+Installing the package does not wire anything up by itself — run
+`guardrails init` to do that:
+
+```bash
+npx guardrails init --plan   # see what it would write; nothing touches disk
+npx guardrails init --apply  # write it
+```
+
+`init` is re-runnable: on a fresh repo it creates the fixer agents,
+`.githooks/pre-commit`, `.github/hooks/guardrails.json`, and a seeded
+`guardrails.config.json`; on a repo it already scaffolded, an untouched file
+is upgraded in place, and a file you edited is reported as drifted and left
+alone (pass `--force` to overwrite it anyway). A file you own outright —
+`package.json`, `.claude/settings.json`, `.gitignore` — is never replaced;
+`init` merges only its own entries into whatever is already there. See
+`plan.md`'s "Phase E status" for what that merge does and does not preserve.
 
 ## The control loop (Claude Code)
 

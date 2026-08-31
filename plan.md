@@ -83,9 +83,10 @@ full enforcement matrix and per-surface research grounding.
   ArchUnit, pitest/descartes; Maven/Gradle report adapters).
 - **E — Adoption: analyzer opt-in, `guardrails init`, team-flip.** Seven pieces:
   (1) analyzer opt-in — shipped; (2) `enforcement` honored by the commit and
-  preToolUse gates — shipped; (3) packaging + release; (4) `guardrails init`;
-  (5) the scaffolding skill; (6) CI template + adoption docs + team-flip
-  verification; (7) cut the release, adopt in a real project, record findings.
+  preToolUse gates — shipped; (3) packaging + release — shipped; (4)
+  `guardrails init` — shipped, see "Phase E status" below; (5) the scaffolding
+  skill; (6) CI template + adoption docs + team-flip verification; (7) cut the
+  release, adopt in a real project, record findings.
 
 ## Solo → team
 
@@ -1103,3 +1104,112 @@ changed-file set. Two of this plan's three escalations to the developer were
 resolved by restructuring instead of exemption; a false survivor that reached
 that conversation would have spent the developer's attention on a mutant that
 was already dead.
+
+## Phase E status (in progress)
+
+- **Piece 1 — analyzer opt-in (shipped).** See "Roadmap: analyzer opt-in"
+  above: `analyzers` in `guardrails.config.json` (`off`/`auto`/`required`, with
+  `true`/`false` accepted as shorthand), decided by `decideAnalyzer` in
+  `guardrails-core/src/verify/analyzer-policy.ts`.
+- **Piece 2 — `enforcement` honored by the commit and preToolUse gates
+  (shipped).** `gate --mode=commit` and `gate --mode=pretooluse` read
+  `RepoConfig.enforcement` (`"warn"` vs `"block"`); under `warn` both still run
+  the gate and report violations in full, only the exit code / deny-payload
+  choice changes. The Claude Code Stop loop is deliberately never softened by
+  it. See the note under "Roadmap: fixer-loop hardening" above.
+- **Piece 3 — packaging + release (shipped).** `guardrails-core` ships as a
+  GitHub Release asset (`npm i -D <release-url>/guardrails-core-X.Y.Z.tgz`),
+  built by a tag-triggered `.github/workflows/release.yml`.
+  `scripts/smoke-tarball.mjs` packs the real tarball, installs it into a
+  throwaway repo the way a consumer would, and runs the CLI from there — every
+  other test in the suite runs against the npm-workspace symlink, which
+  bypasses `files`, the bin shebang, and ESM resolution entirely.
+- **Piece 4 — `guardrails init` (shipped).** `detect()` reads the target repo
+  (base branch, which config files already exist, the scaffold manifest,
+  declared analyzer providers) with no writes; `planScaffold` is a pure
+  function from those facts plus the desired file map to a `ScaffoldPlan` —
+  every filesystem decision is provable without touching disk; `applyScaffold`
+  executes the plan through an injected filesystem seam. `init` alone never
+  writes: `--plan` (the default, including a non-TTY invocation — spec §6.2)
+  only prints the plan, and `--apply` is the only way past that. A separate
+  `guardrails install-hooks` command (invoked automatically via the
+  `package.json` `prepare` script `init --apply` wires in) is what actually
+  points `core.hooksPath` at `.githooks` on a fresh clone or a teammate's
+  checkout, so the pre-commit gate activates without anyone running a command
+  by hand.
+
+  Every path `init` manages falls into one of three classes (spec §6.4):
+
+  - **OWNED** (the fixer agent files, `.githooks/pre-commit`,
+    `.github/hooks/guardrails.json`, and the `docs/guardrails/*.md` guidance
+    docs copied from the packaged `guidance/` tree) — absent → create;
+    unmodified since it was scaffolded (its content still matches the sha256
+    recorded for it in `.guardrails/scaffold.json`) → silently rewritten on
+    upgrade; edited by the consumer → left alone and reported as `drift`,
+    unless `--force`, which always overwrites. Content that already matches
+    the desired bytes is `unchanged` regardless of what the manifest says,
+    checked before the checksum comparison.
+  - **SHARED** (`.claude/settings.json`, `.gitignore`, `package.json`) —
+    absent → create the whole file; present → always `merge`, never `drift`
+    and never sensitive to `--force`. Each path's merger touches only
+    guardrails' own entries (hook blocks identified by a command marker, the
+    `scripts.prepare` string, a gitignore stanza) and leaves the rest of the
+    consumer's file untouched. `applyScaffold` skips the write entirely when
+    the merged result is byte-identical to what's already on disk, which is
+    what keeps a re-run of an up-to-date repo a no-op even though `--plan`
+    reports `merge` for these paths every time.
+  - **SEED-ONCE** (`guardrails.config.json`, and `.dependency-cruiser.cjs` /
+    `stryker.conf.json` when that analyzer is enabled and no config exists
+    yet) — absent → create; present → `unchanged`, forever, even with
+    `--force`. `guardrails.config.json` holds the consumer's policy and their
+    sanctioned suppressions, so it is the one class `--force` can never touch.
+
+  `.guardrails/scaffold.json` is the manifest behind OWNED drift-tracking: a
+  sha256 checksum per OWNED path plus `guardrailsVersion`, stamped from the
+  running package's own `package.json` (never from what was previously
+  recorded), rewritten whenever an `--apply` writes at least one OWNED file.
+
+  **Known limit — the `.claude/settings.json` merger always re-serialises.**
+  `mergeClaudeSettings` (`guardrails-core/src/scaffold/merge.ts`) calls
+  `JSON.stringify` on every merge unconditionally, unlike
+  `mergePackageJsonScripts`, which builds the merged object and returns
+  `current` unchanged when it deep-equals what was parsed. A consumer whose
+  formatter disagrees with ours (4-space indent, tabs, different key order)
+  gets `.claude/settings.json` reformatted on every `init --apply`, reformatted
+  back by their own tooling, and rewritten again next run — forever. The fix
+  is the same pattern already used for `package.json`: build the merged
+  object, compare its `JSON.stringify` against the parsed input, and return
+  `current` unchanged when they coincide. Out of scope for piece 4; recorded
+  here so it is not lost.
+
+  **Known limit — orphan files are never reported or removed, and their
+  manifest entry persists forever.** A file an earlier guardrails version
+  wrote that is no longer in `desired` (renamed, retired) is silently left in
+  place by `applyScaffold`. Worse, because `writeManifest` rebuilds
+  `.guardrails/scaffold.json` as `{ ...existing?.files, ...manifestUpdates }`,
+  that orphan's checksum entry survives every later `--apply` too — there is
+  no code path that ever drops a key. This is deliberate, not an oversight:
+  deleting a file inside a consumer's repository needs its own design (what if
+  they edited it first? what if it moved to a different path in the same
+  release?), and is pinned rather than left to silently regress by a labelled
+  characterisation test (`init — orphan files from an older scaffold`,
+  `guardrails-core/test/scaffold/init-command.test.ts`).
+
+  **Known limit — `.github/copilot-instructions.md` is not scaffolded**, even
+  though spec §6.4 lists it as SHARED and a merger for it already exists
+  (`mergeCopilotInstructions`, `merge.ts`) — it is simply never given a
+  `desired` entry, so `planScaffold` never sees the path at all. The reason:
+  the block it would splice in is a progressive-disclosure index ("read this
+  doc when this trigger applies"), and the per-doc trigger text lives in the
+  plugin's `SKILL.md` frontmatter, which the packaged `guidance/` tree does not
+  ship. Emitting bare links with no triggers would be an index that tells an
+  agent nothing about when to read anything. The consequence: `init` _does_
+  copy `docs/guardrails/*.md` into the consumer repo (§6.7), so those docs
+  currently land in a fresh install with nothing in
+  `copilot-instructions.md` — or anywhere else agent-facing — referencing
+  them. The fix direction is shipping the descriptions themselves inside
+  `guidance/` (an index file, or retaining each doc's frontmatter) plus a
+  drift-guard line to keep the two in sync — **not** extending
+  `scripts/sync-agents.mjs` wholesale, which builds the Claude-side skill
+  index from a different source tree than what ships in a consumer's
+  `guidance/`. Belongs to piece 5.
