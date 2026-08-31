@@ -144,6 +144,24 @@ describe('init --apply', () => {
     expect(read(relative).length).toBeGreaterThan(0);
   });
 
+  it('writes real .gitignore content, not the SHARED-merger placeholder marker', async () => {
+    // `.gitignore`'s desired value is a placeholder marker string that
+    // `mergeGitignore` ignores entirely (see templates.ts's `MERGER_DERIVED`)
+    // -- if `.gitignore` were ever demoted from SHARED_MERGERS, `classifyFile`
+    // would read it as OWNED and write that literal marker text into a
+    // consumer's `.gitignore`. The file would still be non-empty, so a bare
+    // `.length > 0` check (see the EXPECTED_WRITES table above) would not
+    // catch it; only asserting the real content does.
+    await init('--apply');
+    const gitignore = read('.gitignore');
+    expect(gitignore).toContain('.guardrails/state/');
+    expect(gitignore).toContain('reports/mutation/');
+    expect(gitignore).toContain('.stryker-tmp/');
+    expect(gitignore).not.toContain(
+      'derived from the file already in the repository',
+    );
+  });
+
   it('copies the packaged guidance docs into docs/guardrails', async () => {
     await init('--apply');
     expect(read('docs/guardrails/crushing-mutants.md')).toContain(
@@ -181,6 +199,19 @@ describe('init --apply', () => {
     expect(parsed).toEqual({
       name: 'consumer',
       scripts: { prepare: 'husky && guardrails install-hooks' },
+    });
+  });
+
+  it('writes a real, parseable package.json on a repo with no package.json yet', async () => {
+    // The EXPECTED_WRITES table above only proves `package.json` ends up
+    // non-empty; the case above only exercises a repo that ALREADY has one.
+    // Neither would catch `package.json`'s desired value being the SHARED-
+    // merger placeholder marker (see the `.gitignore` test above) landing
+    // literally in a brand-new consumer's file -- only parsing it does.
+    await init('--apply');
+    const parsed: unknown = JSON.parse(read('package.json'));
+    expect(parsed).toEqual({
+      scripts: { prepare: 'guardrails install-hooks' },
     });
   });
 
