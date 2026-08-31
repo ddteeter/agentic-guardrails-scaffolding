@@ -91,8 +91,70 @@ full enforcement matrix and per-surface research grounding.
 ## Solo → team
 
 `guardrails.config.json` carries `distribution: "solo" | "team"` and
-`enforcement: "warn" | "block"`. The flip: commit `recurrence.json`, make CI a
-required check, publish core + plugin, standardize thresholds — no code changes.
+`enforcement: "warn" | "block"`. This section has asserted since Phase A that
+the flip is "config plus a publish, not a rewrite." Phase E piece 6 **tested**
+that claim (spec §8.3) instead of restating it — recorded here with the
+evidence, not just the verdict.
+
+**The prediction on record was half right.** It held that committing
+`recurrence.json` was the one non-config-only step, but for a different reason
+than predicted: `sweepStale` (`guardrails-core/src/state-store.ts`) already
+special-cases `name === 'recurrence.json'` — it is **not** on the 7-day TTL
+sweep and never was; `guardrails-core/test/state-store.test.ts`'s "spares
+recurrence.json from the TTL sweep, however stale" pins this. What broke the
+claim instead was `.gitignore`: `mergeGitignore` wrote a blanket
+`.guardrails/state/` directory-ignore with no carve-out, so committing the
+ledger required `git add -f` on every change (a tracked file inside an
+ignored directory keeps needing `-f` for each new hunk unless something
+excludes it explicitly) — that is a real, if small, procedural step a "config
+plus a publish" description hides.
+
+**The fix, applied:** `GITIGNORE_BLOCK` (`guardrails-core/src/scaffold/merge.ts`,
+shipped into every consumer repo via `mergeGitignore`) and this repo's own
+root `.gitignore` now read `.guardrails/state/*` plus
+`!.guardrails/state/recurrence.json`, instead of a bare `.guardrails/state/`.
+git never re-includes a path whose parent directory is itself excluded, so the
+fix wildcards the directory's _contents_ rather than excluding the directory,
+which is what lets the negation take effect. This is proven against real git
+behavior, not just against the string the merger produces, by
+`guardrails-core/test/scaffold/gitignore-recurrence.test.ts` — it spawns a
+throwaway repo and confirms `recurrence.json` is not reported by
+`git check-ignore`, that a sibling session file in the same directory still
+is, and that `git add .guardrails/state/recurrence.json` succeeds with no
+`-f`. Everything else in `.guardrails/state/` (session tallies, violation
+manifests) stays ignored, matching `sweepStale`'s own exemption.
+
+**What is genuinely config-only, verified against the two commands that
+actually consult it (`gateCommitCommand`, `gatePreToolUseCommand` in
+`cli-core.ts`):** setting `enforcement: "block"` in `guardrails.config.json`
+is the one flag that changes gate behavior — it flips `gate --mode=commit`
+(run by `.githooks/pre-commit` and by the CI template's
+`guardrails gate --mode=commit` step) and `gate --mode=pretooluse` from a
+zero exit with a "not blocking" note to an actual deny/non-zero. Marking that
+CI job "required" in GitHub branch protection is a GitHub-side setting, not a
+code change, and only does something once `enforcement` is `"block"` — under
+`"warn"` the job always exits 0 regardless of findings, so "required" and
+"warn" together is a check that can never fail. `distribution` itself is
+**not consulted by any code path** — grep confirms it is read only by
+`init`'s flag parser and `guardrailsConfigSeed` (the value it seeds into a
+fresh config); no gate, verify, or CI logic branches on it. It is a
+documentation field the team declares for humans, not a switch.
+
+**The verified procedure**, in order: (1) get `guardrails verify` clean
+(the clean-baseline prerequisite `docs/adoption.md` states applies here
+too — a team flip onto a dirty baseline just gives every teammate the same
+false-positive gate a solo dev would have hit); (2) set `enforcement: "block"`
+in `guardrails.config.json`; (3) `git add -f .guardrails/state/recurrence.json`
+once, now that a wildcard-plus-negation `.gitignore` entry keeps subsequent
+edits trackable without repeating `-f`; (4) mark the `guardrails` CI job
+required in branch protection; (5) publish `guardrails-core` (and the plugin,
+for Claude Code teammates) somewhere every teammate's `npm install` can reach
+it, and have everyone reinstall so `prepare` re-runs `install-hooks`; (6) set
+`distribution: "team"` for the record, though nothing currently reads it. No
+step here is a code change to `guardrails-core` itself — the one code change
+this task found necessary (the gitignore fix above) was already shipped by
+the time this procedure needed it, closing the gap the original claim glossed
+over.
 
 ## Open questions surfaced in review — resolved in Phase B
 
