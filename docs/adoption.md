@@ -72,6 +72,22 @@ from inside a monorepo package). `npm install` runs `prepare` automatically,
 which is what gets a fresh clone or a teammate's checkout onto the commit gate
 without anyone running a command by hand.
 
+**Unless you already have a `core.hooksPath`.** git accepts exactly one hooks
+directory, so pointing it at `.githooks` would silently disable every hook you
+already have there — and husky sets it to `.husky/_`. Neither `init --apply`
+nor `install-hooks` will do that. If `core.hooksPath` is set to anything other
+than `.githooks`, both leave it exactly as they found it, write
+`.githooks/pre-commit` anyway, and warn — in the `--plan` output as well as the
+`--apply` output — naming the value they found. Your gate is then **not**
+installed: add
+
+```sh
+node ./node_modules/guardrails-core/dist/cli.mjs gate --mode=commit
+```
+
+to the pre-commit hook you already have, and the check runs inside your
+existing hooks instead of replacing them.
+
 One SHARED file is a special case worth calling out: **`.claude/settings.json`
 is re-serialized on every merge**, even when nothing guardrails-owned changed.
 If your formatter disagrees with the merger's (2-space, alphabetical-ish key
@@ -214,7 +230,7 @@ surface.
 
 ## Known limits
 
-Three things worth knowing before you hit them, rather than after:
+Four things worth knowing before you hit them, rather than after:
 
 - **`.claude/settings.json` is reformatted on every merge**, unconditionally
   (see the SHARED-file note above). If your formatter disagrees with the
@@ -230,9 +246,11 @@ Three things worth knowing before you hit them, rather than after:
 - **The scaffolder assumes a clean baseline** (see above) — it will happily
   scaffold onto a repo with pre-existing `verify` findings, and the gate it
   wires up will then escalate on those findings from turn one.
-
-`plan.md`'s Phase E status section also tracked a fourth item — that
-`.github/copilot-instructions.md` wasn't scaffolded at all — as a known limit.
-That has since shipped (the Copilot skills index is now a SHARED file, listed
-above); `plan.md`'s text predates the fix and has not yet been corrected to
-say so.
+- **Declared analyzer providers are read from the ROOT `package.json` only.**
+  A monorepo that declares eslint/typescript/knip/dependency-cruiser/stryker in
+  its member packages rather than at the root has an empty declared set: every
+  analyzer is `auto`+undeclared, so a broken install degrades to "skipped"
+  silently instead of erroring, which is the opposite of what you want. The
+  workaround is one line — mark those analyzers `"required"` in
+  `guardrails.config.json`, which states the dependency explicitly and restores
+  the hard `guardrails/analyzer-missing` error.
