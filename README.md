@@ -15,7 +15,10 @@ This repository is the **development home** for three artifacts:
 | [`guardrails-plugin/`](./guardrails-plugin) | thin Claude Code plugin (hooks + fixer agents) | **Phase A: built**                               |
 | per-repo footprint                          | policy + state a target repo checks in         | **`guardrails init` ships it (Phase E piece 4)** |
 
-See [`plan.md`](./plan.md) for the full design and phase breakdown.
+See [`plan.md`](./plan.md) for the full design and phase breakdown, and
+[`docs/adoption.md`](./docs/adoption.md) for how to adopt guardrails in
+another repo — install, `init`, who owns which written file, what each
+analyzer costs, and the clean-baseline prerequisite.
 
 ## Install
 
