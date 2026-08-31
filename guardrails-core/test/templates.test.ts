@@ -73,6 +73,26 @@ describe('consumer templates', () => {
     expect(workflow).toContain('sanctions-check');
   });
 
+  it('invokes the CLI by local path, never through npx', () => {
+    // `npx guardrails` resolves a BIN NAME. On a misconfigured install --
+    // hoisting gone wrong, a partial `npm ci` -- npx falls through to fetching
+    // a registry package called `guardrails`, which this project does not own.
+    // This repo's own ci.yml uses the explicit path for exactly that reason.
+    const workflow = readFileSync(
+      path.join(templates, 'workflows', 'guardrails.yml'),
+      'utf8',
+    );
+    expect(workflow).toContain(
+      'node ./node_modules/guardrails-core/dist/cli.mjs gate --mode=commit',
+    );
+    expect(workflow).toContain(
+      'node ./node_modules/guardrails-core/dist/cli.mjs sanctions-check',
+    );
+    // Matched against the `run:` STEPS, not the file text: the template's own
+    // comment names `npx guardrails` in order to explain why it is not used.
+    expect(workflow).not.toMatch(/^ *- run: npx\b/m);
+  });
+
   it('pins CI workflow actions to floating major tags, not a SHA', () => {
     // A pinned SHA written into a consumer's repository would rot silently
     // under THEIR Dependabot policy, unlike this repo's own workflows, which

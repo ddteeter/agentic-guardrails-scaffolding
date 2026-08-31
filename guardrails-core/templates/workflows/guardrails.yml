@@ -39,5 +39,10 @@ jobs:
       # currently declares `minRung: 'ci'` -- so commit and ci coverage are
       # identical today. The day one does, this workflow needs a
       # `--mode=ci` step too.
-      - run: npx guardrails gate --mode=commit
-      - run: npx guardrails sanctions-check
+      #
+      # Invoked by explicit path rather than `npx guardrails`: npx resolves a
+      # bin NAME, and on a misconfigured install it falls through to fetching
+      # a registry package called `guardrails`, which this project does not
+      # own. The path form can only ever run what `npm ci` installed.
+      - run: node ./node_modules/guardrails-core/dist/cli.mjs gate --mode=commit
+      - run: node ./node_modules/guardrails-core/dist/cli.mjs sanctions-check
