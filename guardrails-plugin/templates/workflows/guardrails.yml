@@ -1,8 +1,13 @@
 # Consumer-facing CI template, written into a target repo by `guardrails init`.
-# Uses floating major tags (@v4), not the pinned commit SHAs this repo's own
+# Uses floating major tags (@v6), not the pinned commit SHAs this repo's own
 # workflows use: a SHA pinned into a consumer's repository would rot silently
 # under THEIR Dependabot policy, and we cannot update it for them. This repo
 # pins because it controls its own supply chain; a consumer controls theirs.
+#
+# The MAJOR still has to be kept current, which floating does not do for us:
+# @v4 rides the node20 runner GitHub is retiring, so every repo scaffolded
+# with it inherits deprecation warnings fixable only by editing an OWNED
+# file. Keep this in step with the majors `.github/workflows/ci.yml` pins.
 name: Guardrails
 
 on:
@@ -17,12 +22,12 @@ jobs:
   guardrails:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           # The commit gate diffs against the merge-base, which needs history.
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: '24'
           cache: npm

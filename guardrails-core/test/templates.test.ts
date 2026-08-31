@@ -81,8 +81,8 @@ describe('consumer templates', () => {
       path.join(templates, 'workflows', 'guardrails.yml'),
       'utf8',
     );
-    expect(workflow).toContain('actions/checkout@v4');
-    expect(workflow).toContain('actions/setup-node@v4');
+    expect(workflow).toContain('actions/checkout@v6');
+    expect(workflow).toContain('actions/setup-node@v6');
     expect(workflow).not.toMatch(/uses:\s*\S+@[0-9a-f]{40}/);
   });
 });
