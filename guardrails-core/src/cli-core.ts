@@ -27,6 +27,7 @@ import {
   parseHookInput,
   resolveLocalBin,
 } from './hook-io.js';
+import { resolveRepoRoot } from './repo-root.js';
 import { initCommand } from './scaffold/init.js';
 import { collectManifestScope, isPathAllowed, isWithinRepo } from './scope.js';
 import {
@@ -391,6 +392,41 @@ async function sessionEndCommand(deps: CliDeps): Promise<number> {
   return 0;
 }
 
+/** Where `install-hooks` points `core.hooksPath`; mirrors `scaffold/init.ts`'s
+ *  own `HOOKS_DIRECTORY` (kept local rather than imported, since importing it
+ *  would pull the whole scaffolder into every CLI invocation's dependency
+ *  graph for one string). */
+const HOOKS_DIRECTORY = '.githooks';
+
+/**
+ * `install-hooks`: activates the git-native pre-commit gate that
+ * `.githooks/pre-commit` does nothing without. `scripts.prepare` (wired by
+ * `init --apply`'s `package.json` merger) invokes this on every
+ * `npm install`, which is what gets a fresh clone or a teammate's checkout
+ * onto the gate without them running anything by hand.
+ *
+ * Resolves the repo root through `resolveRepoRoot` rather than trusting
+ * `deps.cwd`: `core.hooksPath` is per-clone LOCAL git config, so setting it
+ * from a subdirectory (e.g. `npm install` run inside a monorepo package)
+ * would configure the wrong repository, or none.
+ */
+async function installHooksCommand(deps: CliDeps): Promise<number> {
+  const repoRoot = await resolveRepoRoot(deps.exec, deps.cwd);
+  const result = await deps.exec(
+    'git',
+    ['config', 'core.hooksPath', HOOKS_DIRECTORY],
+    { cwd: repoRoot },
+  );
+  if (result.code !== 0) {
+    deps.stderr(
+      `guardrails: git config core.hooksPath failed (exit ${result.code}): ` +
+        `${result.stderr}\n`,
+    );
+    return 1;
+  }
+  return 0;
+}
+
 function flag(rest: string[], name: string): string | undefined {
   const prefix = `--${name}=`;
   return rest
@@ -450,9 +486,12 @@ export async function runCommand(
     case 'init': {
       return initCommand(deps, rest);
     }
+    case 'install-hooks': {
+      return installHooksCommand(deps);
+    }
     default: {
       deps.stderr(
-        'usage: guardrails <init [--plan|--apply] [--json] [--force]|verify|autofix|audit|gate [--mode=stop|commit|pretooluse] [--dialect=copilot]|sanctions-check|state|scope-check|session-start|session-end>\n',
+        'usage: guardrails <init [--plan|--apply] [--json] [--force]|verify|autofix|audit|gate [--mode=stop|commit|pretooluse] [--dialect=copilot]|sanctions-check|state|scope-check|session-start|session-end|install-hooks>\n',
       );
       return 1;
     }

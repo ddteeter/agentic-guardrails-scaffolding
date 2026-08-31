@@ -432,6 +432,54 @@ describe('runCommand — unknown', () => {
   });
 });
 
+/** git fake for install-hooks: `rev-parse --show-toplevel` always resolves to
+ *  the fixture `root`, regardless of the cwd it is asked from -- which is
+ *  exactly what lets a test prove the SECOND call (`git config`) used that
+ *  resolved root rather than whatever cwd it was invoked with. `configResult`
+ *  is what the `git config` call itself resolves to. */
+function installHooksExec(configResult: ExecResult): {
+  exec: Exec;
+  calls: { args: string[]; cwd: string | undefined }[];
+} {
+  const calls: { args: string[]; cwd: string | undefined }[] = [];
+  const exec: Exec = (command, args, execOptions) => {
+    calls.push({ args, cwd: execOptions?.cwd });
+    return args[0] === 'rev-parse'
+      ? Promise.resolve(ok(`${root}\n`))
+      : Promise.resolve(configResult);
+  };
+  return { exec, calls };
+}
+
+describe('runCommand — install-hooks', () => {
+  // `core.hooksPath` is per-clone LOCAL git config: setting it from anywhere
+  // but the resolved repo root configures the wrong repository (or none), so
+  // the whole point of this command lives in that cwd, not merely its argv.
+  it('resolves the repo root and runs git config core.hooksPath there, not from cwd', async () => {
+    const subdirectory = path.join(root, 'packages', 'app');
+    mkdirSync(subdirectory, { recursive: true });
+    const { exec, calls } = installHooksExec(ok(''));
+    expect(
+      await runCommand('install-hooks', [], deps({ exec, cwd: subdirectory })),
+    ).toBe(0);
+    expect(calls).toEqual([
+      { args: ['rev-parse', '--show-toplevel'], cwd: subdirectory },
+      { args: ['config', 'core.hooksPath', '.githooks'], cwd: root },
+    ]);
+  });
+
+  it('reports a non-zero git exit and returns 1', async () => {
+    const { exec } = installHooksExec({
+      stdout: '',
+      stderr: 'error: could not lock config file\n',
+      code: 1,
+    });
+    expect(await runCommand('install-hooks', [], deps({ exec }))).toBe(1);
+    expect(errors.join('')).toContain('core.hooksPath');
+    expect(errors.join('')).toContain('could not lock config file');
+  });
+});
+
 /** stdin payload for the pretooluse gate. */
 function preToolUseStdin(toolName: unknown, command: unknown): string {
   return JSON.stringify({ toolName, toolArgs: { command }, cwd: root });
