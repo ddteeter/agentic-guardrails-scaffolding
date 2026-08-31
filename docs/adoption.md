@@ -149,6 +149,21 @@ because `guardrails.config.json` is SEED-ONCE, a later `init --apply
 --enforcement=block` has no effect on an already-existing config, `--force`
 included.
 
+**Do not trim `fetch-depth` on the shipped CI workflow.**
+`.github/workflows/guardrails.yml` checks out with `fetch-depth: 0` on
+purpose: `gate --mode=commit`'s diff-auditor and sanction budget diff against
+`git merge-base <baseBranch> HEAD`, which needs history a shallow checkout
+doesn't have. When that `merge-base` call fails, `branchDiff` (`gate.ts`)
+falls back to `git diff --cached` — empty in a CI checkout, since nothing is
+staged there. The blast radius is narrower than "CI audits nothing": eslint,
+tsc, knip, dependency-cruiser, and stryker still run and can still block,
+because they come from `verify`, not from the diff. What silently stops
+working is only the diff-auditor and the sanction budget — a suppression
+introduced on the branch sails through with no error, no warning, just a
+clean-looking run. `.github/workflows/guardrails.yml` is OWNED, so a consumer
+can edit it (including trimming `fetch-depth` to speed up checkout); nothing
+catches that edit for you.
+
 ## Re-running `init` after an upgrade
 
 Bump the tarball URL, run `npx guardrails init --plan` again. Each line is one

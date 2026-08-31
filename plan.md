@@ -144,17 +144,19 @@ documentation field the team declares for humans, not a switch.
 (the clean-baseline prerequisite `docs/adoption.md` states applies here
 too — a team flip onto a dirty baseline just gives every teammate the same
 false-positive gate a solo dev would have hit); (2) set `enforcement: "block"`
-in `guardrails.config.json`; (3) `git add -f .guardrails/state/recurrence.json`
-once, now that a wildcard-plus-negation `.gitignore` entry keeps subsequent
-edits trackable without repeating `-f`; (4) mark the `guardrails` CI job
-required in branch protection; (5) publish `guardrails-core` (and the plugin,
-for Claude Code teammates) somewhere every teammate's `npm install` can reach
-it, and have everyone reinstall so `prepare` re-runs `install-hooks`; (6) set
-`distribution: "team"` for the record, though nothing currently reads it. No
-step here is a code change to `guardrails-core` itself — the one code change
-this task found necessary (the gitignore fix above) was already shipped by
-the time this procedure needed it, closing the gap the original claim glossed
-over.
+in `guardrails.config.json`; (3) `git add .guardrails/state/recurrence.json`
+— no `-f`: the wildcard-plus-negation `.gitignore` entry means the file was
+never ignored in the first place, so a plain `add` works the first time and
+every time after (`gitignore-recurrence.test.ts`'s third case proves exactly
+this: it calls `git add` with no `-f` and asserts the file lands in the
+index); (4) mark the `guardrails` CI job required in branch protection;
+(5) publish `guardrails-core` (and the plugin, for Claude Code teammates)
+somewhere every teammate's `npm install` can reach it, and have everyone
+reinstall so `prepare` re-runs `install-hooks`; (6) set `distribution: "team"`
+for the record, though nothing currently reads it. No step here is a code
+change to `guardrails-core` itself — the one code change this task found
+necessary (the gitignore fix above) was already shipped by the time this
+procedure needed it, closing the gap the original claim glossed over.
 
 ## Open questions surfaced in review — resolved in Phase B
 
@@ -1211,15 +1213,16 @@ was already dead.
     unless `--force`, which always overwrites. Content that already matches
     the desired bytes is `unchanged` regardless of what the manifest says,
     checked before the checksum comparison.
-  - **SHARED** (`.claude/settings.json`, `.gitignore`, `package.json`) —
-    absent → create the whole file; present → always `merge`, never `drift`
-    and never sensitive to `--force`. Each path's merger touches only
-    guardrails' own entries (hook blocks identified by a command marker, the
-    `scripts.prepare` string, a gitignore stanza) and leaves the rest of the
-    consumer's file untouched. `applyScaffold` skips the write entirely when
-    the merged result is byte-identical to what's already on disk, which is
-    what keeps a re-run of an up-to-date repo a no-op even though `--plan`
-    reports `merge` for these paths every time.
+  - **SHARED** (`.claude/settings.json`, `.gitignore`, `package.json`,
+    `.github/copilot-instructions.md`) — absent → create the whole file;
+    present → always `merge`, never `drift` and never sensitive to `--force`.
+    Each path's merger touches only guardrails' own entries (hook blocks
+    identified by a command marker, the `scripts.prepare` string, a gitignore
+    stanza, a marked doc section) and leaves the rest of the consumer's file
+    untouched. `applyScaffold` skips the write entirely when the merged result
+    is byte-identical to what's already on disk, which is what keeps a re-run
+    of an up-to-date repo a no-op even though `--plan` reports `merge` for
+    these paths every time.
   - **SEED-ONCE** (`guardrails.config.json`, and `.dependency-cruiser.cjs` /
     `stryker.conf.json` when that analyzer is enabled and no config exists
     yet) — absent → create; present → `unchanged`, forever, even with
@@ -1257,21 +1260,17 @@ was already dead.
   characterisation test (`init — orphan files from an older scaffold`,
   `guardrails-core/test/scaffold/init-command.test.ts`).
 
-  **Known limit — `.github/copilot-instructions.md` is not scaffolded**, even
-  though spec §6.4 lists it as SHARED and a merger for it already exists
-  (`mergeCopilotInstructions`, `merge.ts`) — it is simply never given a
-  `desired` entry, so `planScaffold` never sees the path at all. The reason:
-  the block it would splice in is a progressive-disclosure index ("read this
-  doc when this trigger applies"), and the per-doc trigger text lives in the
-  plugin's `SKILL.md` frontmatter, which the packaged `guidance/` tree does not
-  ship. Emitting bare links with no triggers would be an index that tells an
-  agent nothing about when to read anything. The consequence: `init` _does_
-  copy `docs/guardrails/*.md` into the consumer repo (§6.7), so those docs
-  currently land in a fresh install with nothing in
-  `copilot-instructions.md` — or anywhere else agent-facing — referencing
-  them. The fix direction is shipping the descriptions themselves inside
-  `guidance/` (an index file, or retaining each doc's frontmatter) plus a
-  drift-guard line to keep the two in sync — **not** extending
-  `scripts/sync-agents.mjs` wholesale, which builds the Claude-side skill
-  index from a different source tree than what ships in a consumer's
-  `guidance/`. Belongs to piece 5.
+  **Resolved — `.github/copilot-instructions.md` is scaffolded.** An earlier
+  draft of this section recorded its absence as a known limit: the block it
+  splices in is a progressive-disclosure index ("read this doc when this
+  trigger applies"), and the per-doc trigger text needed to live somewhere
+  the packaged `guidance/` tree didn't yet ship it. That shipped in `7a2b97a`
+  ("ship skill descriptions in guidance/, build the Copilot index"): the
+  packaged `guidance/index.json` now carries each skill's description,
+  `templates.ts`'s `copilotInstructionsBlock` builds the marked index block
+  from it (excluding `adopting-guardrails`, the one skill that explains
+  adoption rather than participating in it — see `ADOPTION_TIME_SKILL`), and
+  `.github/copilot-instructions.md` is a fourth SHARED path (`merge.ts`'s
+  `SHARED_MERGERS`), listed above. This paragraph previously went stale for
+  several commits after the fix shipped — a reminder to update this section
+  in the same commit as the fix, not after.
