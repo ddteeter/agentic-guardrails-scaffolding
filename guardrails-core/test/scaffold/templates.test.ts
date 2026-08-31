@@ -24,6 +24,7 @@ import type { ScaffoldDecisions } from '../../src/scaffold/plan.js';
 import {
   buildDesiredFiles,
   canonicalKey,
+  claudeSkillEntries,
   guidanceEntries,
   guidanceRoot,
   SEED_ONCE_ANALYZERS,
@@ -135,12 +136,16 @@ describe('buildDesiredFiles — the shipped template tree', () => {
     );
   });
 
-  it('installs every packaged guidance doc under docs/guardrails', () => {
+  it('installs every packaged RUN-TIME guidance doc under docs/guardrails', () => {
     // Spec §6.7: run-time guidance is COPIED IN, because the Copilot cloud
     // agent reads the default branch, where node_modules does not exist.
+    // `adopting-guardrails` is excluded below: it is spec §7.1's ADOPTION-TIME
+    // doc, and this test previously asserted "every" packaged doc lands here
+    // -- which was wrong, and is the Critical finding this suite now encodes
+    // correctly instead of working around.
     const desired = buildDesiredFiles(facts(), decisions());
-    const documents = readdirSync(guidanceRoot()).filter((name) =>
-      name.endsWith('.md'),
+    const documents = readdirSync(guidanceRoot()).filter(
+      (name) => name.endsWith('.md') && name !== 'adopting-guardrails.md',
     );
     expect(documents.length).toBeGreaterThan(0);
     for (const document of documents) {
@@ -148,6 +153,57 @@ describe('buildDesiredFiles — the shipped template tree', () => {
         readFileSync(path.join(guidanceRoot(), document), 'utf8'),
       );
     }
+  });
+
+  it('does NOT install the adoption-time skill under docs/guardrails', () => {
+    // The Critical finding: a review packed the tarball, ran `init --apply`
+    // into a scratch repo, and watched docs/guardrails/adopting-guardrails.md
+    // appear. Spec §6.4/§7.1 say a skill that explains how to adopt
+    // guardrails cannot itself be delivered BY adoption -- it ships in the
+    // tarball only, readable at
+    // node_modules/guardrails-core/guidance/adopting-guardrails.md before
+    // `init` has scaffolded anything.
+    const desired = buildDesiredFiles(facts(), decisions());
+    expect(Object.keys(desired)).not.toContain(
+      'docs/guardrails/adopting-guardrails.md',
+    );
+  });
+});
+
+describe('buildDesiredFiles — .claude/skills/<name>/SKILL.md (spec §6.4 OWNED, run-time only)', () => {
+  it('installs the run-time skills as .claude/skills/<name>/SKILL.md', () => {
+    const desired = buildDesiredFiles(facts(), decisions());
+    expect(Object.keys(desired)).toContain(
+      '.claude/skills/crushing-mutants/SKILL.md',
+    );
+    expect(Object.keys(desired)).toContain(
+      '.claude/skills/boundary-validation/SKILL.md',
+    );
+  });
+
+  it('rebuilds valid SKILL.md frontmatter from the packaged guidance/index.json', () => {
+    // guidance/ ships only the body (parseSkill strips frontmatter before
+    // writing it); the installed SKILL.md needs a real `name`/`description`
+    // header to load as a Claude Code skill, reconstructed from index.json.
+    const desired = buildDesiredFiles(facts(), decisions());
+    const content = contentOf(
+      desired,
+      '.claude/skills/crushing-mutants/SKILL.md',
+    );
+    expect(content).toMatch(/^---\nname: crushing-mutants\n/);
+    expect(content).toContain('stryker/survived');
+  });
+
+  it('does NOT install adopting-guardrails as a .claude skill', () => {
+    // This is the point of the bootstrapping split (spec §7.1): the doc that
+    // explains how to adopt guardrails cannot itself be installed BY
+    // adoption. Asserted as its own test, not folded into the positive
+    // assertions above, because a negative is easy to lose silently if the
+    // packaged skill list ever grows.
+    const desired = buildDesiredFiles(facts(), decisions());
+    expect(Object.keys(desired)).not.toContain(
+      '.claude/skills/adopting-guardrails/SKILL.md',
+    );
   });
 });
 
@@ -164,6 +220,81 @@ describe('buildDesiredFiles — .github/copilot-instructions.md (spec §7 Task 3
     // Trigger text from crushing-mutants' frontmatter description, not just
     // the link -- proves the index carries WHEN to read the doc.
     expect(content).toContain('stryker/survived');
+  });
+
+  it('does not index the adoption-time skill, which is never installed here', () => {
+    // An index entry linking to docs/guardrails/adopting-guardrails.md would
+    // be a dead link in a consumer repo, since that doc is never installed.
+    const desired = buildDesiredFiles(facts(), decisions());
+    const content = contentOf(desired, '.github/copilot-instructions.md');
+    expect(content).not.toContain('adopting-guardrails');
+  });
+});
+
+describe('claudeSkillEntries', () => {
+  let guidance: string;
+
+  beforeEach(() => {
+    guidance = mkdtempSync(path.join(tmpdir(), 'guardrails-skills-'));
+  });
+
+  afterEach(() => {
+    rmSync(guidance, { recursive: true, force: true });
+  });
+
+  it('rebuilds SKILL.md frontmatter and strips the leading provenance comment', () => {
+    writeFileSync(
+      path.join(guidance, 'index.json'),
+      `${JSON.stringify({ 'my-skill': 'Use when testing.' })}\n`,
+    );
+    writeFileSync(
+      path.join(guidance, 'my-skill.md'),
+      '<!-- Generated by scripts/sync-agents.mjs from guardrails-plugin/skills/my-skill/SKILL.md -->\n\n# My skill\n\nBody text.\n',
+    );
+
+    expect(claudeSkillEntries(guidance)).toEqual([
+      [
+        '.claude/skills/my-skill/SKILL.md',
+        '---\nname: my-skill\ndescription: Use when testing.\n---\n\n# My skill\n\nBody text.\n',
+      ],
+    ]);
+  });
+
+  it('leaves the body untouched when there is no blank line to split on', () => {
+    // stripProvenanceComment's fallback: the real packaged tree always opens
+    // with `<comment>\n\n<body>`, so only a fixture with NO blank line
+    // anywhere proves the indexOf(...) === -1 branch.
+    writeFileSync(
+      path.join(guidance, 'index.json'),
+      `${JSON.stringify({ 'my-skill': 'Use when testing.' })}\n`,
+    );
+    writeFileSync(path.join(guidance, 'my-skill.md'), 'No comment here.\n');
+
+    expect(claudeSkillEntries(guidance)).toEqual([
+      [
+        '.claude/skills/my-skill/SKILL.md',
+        '---\nname: my-skill\ndescription: Use when testing.\n---\n\nNo comment here.\n',
+      ],
+    ]);
+  });
+
+  it('excludes adopting-guardrails from the .claude/skills install', () => {
+    writeFileSync(
+      path.join(guidance, 'index.json'),
+      `${JSON.stringify({
+        'adopting-guardrails': 'Use when adopting.',
+        'my-skill': 'Use when testing.',
+      })}\n`,
+    );
+    writeFileSync(
+      path.join(guidance, 'adopting-guardrails.md'),
+      '# Adopting\n\nBody.\n',
+    );
+    writeFileSync(path.join(guidance, 'my-skill.md'), '# My skill\n\nBody.\n');
+
+    expect(claudeSkillEntries(guidance).map(([key]) => key)).toEqual([
+      '.claude/skills/my-skill/SKILL.md',
+    ]);
   });
 });
 
@@ -198,6 +329,22 @@ describe('guidanceEntries', () => {
   it('yields nothing for a directory with no guidance in it', () => {
     writeFileSync(path.join(guidance, 'notes.txt'), 'not guidance\n');
     expect(guidanceEntries(guidance)).toEqual([]);
+  });
+
+  it('excludes adopting-guardrails.md -- adoption-time guidance, never installed', () => {
+    // Install path 1 of 2 for the Critical finding: guidanceEntries feeds
+    // docs/guardrails/*.md. adopting-guardrails ships in the tarball
+    // (guardrails-core/guidance/) so it is readable BEFORE `init` runs, and
+    // must never land inside the repo it explains how to adopt.
+    writeFileSync(path.join(guidance, 'crushing-mutants.md'), 'body\n');
+    writeFileSync(
+      path.join(guidance, 'adopting-guardrails.md'),
+      'adoption body\n',
+    );
+
+    expect(guidanceEntries(guidance)).toEqual([
+      ['docs/guardrails/crushing-mutants.md', 'body\n'],
+    ]);
   });
 });
 
