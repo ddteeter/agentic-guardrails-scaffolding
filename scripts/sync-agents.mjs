@@ -241,11 +241,17 @@ console.log(
 );
 
 // Consumer-facing templates, shipped in the npm tarball (`files`) and written
-// into a target repo by `guardrails init` (piece 4). The SOURCES are this
-// repo's own live wiring: what we dogfood is exactly what we ship, so the two
-// cannot drift. All three wiring files are already consumer-generic — they
-// reference `${CLAUDE_PROJECT_DIR}` / `./node_modules`, never a path specific
-// to this repo. Committed and CI drift-guarded, like .github/agents.
+// into a target repo by `guardrails init` (piece 4). The sources are all
+// consumer-generic — they reference `${CLAUDE_PROJECT_DIR}` / `./node_modules`,
+// never a path specific to this repo. Committed and CI drift-guarded, like
+// .github/agents.
+//
+// For the agents, the Claude hook block and the Copilot hooks, the source IS
+// this repo's own live wiring: what we dogfood is exactly what we ship, so the
+// two cannot drift. `.githooks/pre-commit` is the exception and should not be
+// read as dogfooded — this repo's `core.hooksPath` is `.husky/_`, so that file
+// never executes here; `.husky/pre-commit` runs the same `gate --mode=commit`
+// line instead. It is authored here and shipped, not proven here.
 const templates = path.join(root, 'guardrails-core', 'templates');
 rmSync(templates, { recursive: true, force: true });
 

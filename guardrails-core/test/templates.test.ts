@@ -64,6 +64,19 @@ describe('consumer templates', () => {
     expect(hook).toContain('gate --mode=commit');
   });
 
+  it('ships a pre-commit hook with no prose about THIS repo in it', () => {
+    // The hook is copied verbatim into every scaffolded repo, so a sentence
+    // true only here ("this repo uses Husky instead, see .husky/pre-commit")
+    // lands as a false instruction there: a consumer has no `.husky/`, and
+    // following the pointer leads nowhere.
+    const hook = readFileSync(
+      path.join(templates, 'githooks', 'pre-commit'),
+      'utf8',
+    );
+    expect(hook).not.toContain('.husky');
+    expect(hook).not.toContain('This repo');
+  });
+
   it('ships a CI workflow that runs the commit gate plus sanctions-check', () => {
     const workflow = readFileSync(
       path.join(templates, 'workflows', 'guardrails.yml'),
