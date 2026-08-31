@@ -12,6 +12,7 @@
  * here ever needs to read a file, that need belongs in `detect()` instead.
  */
 import type { RepoFacts } from './detect.js';
+import { foreignHooksPath, foreignHooksPathWarning } from './hooks-path.js';
 import { isSharedPath } from './merge.js';
 import { checksum, type ScaffoldManifest } from './manifest.js';
 
@@ -244,6 +245,16 @@ export function planScaffold(input: PlanInput): ScaffoldPlan {
     if (decision.warning !== undefined) {
       warnings.push(decision.warning);
     }
+  }
+
+  // Not a per-file decision, so it is not an action: `core.hooksPath` lives in
+  // git config, not in the tree. It belongs in the PLAN all the same -- a
+  // consumer whose existing hooks mean our gate will not fire has to learn
+  // that from `--plan`, before `--apply`, not from a gate that never runs.
+  // `printApply` re-emits `plan.warnings`, so stating it once covers both.
+  const existingHooksPath = foreignHooksPath(input.facts.hooksPath);
+  if (existingHooksPath !== undefined) {
+    warnings.push(foreignHooksPathWarning(existingHooksPath));
   }
 
   return { actions, warnings };

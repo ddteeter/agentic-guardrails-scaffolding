@@ -34,6 +34,11 @@ import { ANALYZER_TOOLS } from '../verify/index.js';
 import { applyScaffold, type ApplyDeps, type ApplyResult } from './apply.js';
 import { detect, type RepoFacts } from './detect.js';
 import {
+  foreignHooksPath,
+  HOOKS_DIRECTORY,
+  HOOKS_SCRIPT_PATH,
+} from './hooks-path.js';
+import {
   planScaffold,
   type ScaffoldDecisions,
   type ScaffoldPlan,
@@ -52,17 +57,12 @@ const INIT_USAGE =
   '[--analyzers=<tool>=<off|auto|required>[,...]] ' +
   '[--enforcement=warn|block] [--distribution=solo|team]\n';
 
-/** Where `--apply` points `core.hooksPath`; §6.6. */
-const HOOKS_DIRECTORY = '.githooks';
-
 /**
  * Scaffolded files that must carry the executable bit. git silently SKIPS a
  * hook it cannot execute, which looks exactly like a working install right up
  * until the gate never fires — so this is not cosmetic.
  */
-const EXECUTABLE_PATHS: ReadonlySet<string> = new Set([
-  `${HOOKS_DIRECTORY}/pre-commit`,
-]);
+const EXECUTABLE_PATHS: ReadonlySet<string> = new Set([HOOKS_SCRIPT_PATH]);
 
 type Enforcement = ScaffoldDecisions['enforcement'];
 type Distribution = ScaffoldDecisions['distribution'];
@@ -387,7 +387,11 @@ export async function initCommand(
     fileSystemApplyDeps(facts.repoRoot, latch.request),
     packageVersion(),
   );
-  if (latch.requested()) {
+  // A consumer who already points `core.hooksPath` somewhere else keeps it:
+  // repointing would silently disable every hook they have, and `prepare` would
+  // re-disable it on every install. `planScaffold` has already warned about it
+  // (see `hooks-path.ts`), and `printApply` prints that warning below.
+  if (latch.requested() && foreignHooksPath(facts.hooksPath) === undefined) {
     await deps.exec('git', ['config', 'core.hooksPath', HOOKS_DIRECTORY], {
       cwd: facts.repoRoot,
     });

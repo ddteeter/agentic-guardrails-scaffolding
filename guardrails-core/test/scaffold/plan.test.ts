@@ -330,3 +330,39 @@ describe('planScaffold — cross-cutting properties', () => {
     expect(paths).toHaveLength(5);
   });
 });
+
+/**
+ * `core.hooksPath` is the one piece of guardrails' wiring that lives in git
+ * config rather than in a file, and a consumer who already has one (husky
+ * sets `.husky/_`) would lose every hook they own if `--apply` repointed it.
+ * The plan is where that is announced, so `--plan` says it before `--apply`
+ * does it -- and `printApply` re-emits `plan.warnings`, so one warning here
+ * covers both runs.
+ */
+function planWithHooksPath(hooksPath: string | undefined): readonly string[] {
+  return planScaffold({
+    facts: { ...facts(), hooksPath },
+    decisions: DEFAULT_DECISIONS,
+    desired: { [OWNED_PATH]: 'hook script' },
+    current: {},
+  }).warnings;
+}
+
+describe('plan — an existing foreign core.hooksPath', () => {
+  const FOREIGN = '.husky/_';
+
+  it('warns, naming the value found and the hook left uninstalled', () => {
+    const warnings = planWithHooksPath(FOREIGN).join('\n');
+    expect(warnings).toContain(FOREIGN);
+    expect(warnings).toContain('.githooks/pre-commit');
+    expect(warnings).toContain('gate --mode=commit');
+  });
+
+  it('says nothing when git has no core.hooksPath at all', () => {
+    expect(planWithHooksPath(undefined)).toEqual([]);
+  });
+
+  it('says nothing when core.hooksPath already points at .githooks', () => {
+    expect(planWithHooksPath('.githooks')).toEqual([]);
+  });
+});

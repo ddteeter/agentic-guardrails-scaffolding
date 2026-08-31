@@ -32,12 +32,15 @@ let root: string;
 let out: string[];
 let errors: string[];
 let execCalls: ExecCall[];
+/** What `git config --get core.hooksPath` answers; '' means "not set". */
+let configuredHooksPath: string;
 
 beforeEach(() => {
   root = mkdtempSync(path.join(tmpdir(), 'guardrails-init-'));
   out = [];
   errors = [];
   execCalls = [];
+  configuredHooksPath = '';
 });
 
 function execLines(): string[] {
@@ -61,6 +64,9 @@ const gitExec: Exec = (command, args, options) => {
   }
   if (line.includes('symbolic-ref')) {
     return Promise.resolve(ok('origin/main\n'));
+  }
+  if (line.includes('config --get core.hooksPath')) {
+    return Promise.resolve(ok(configuredHooksPath));
   }
   return Promise.resolve(ok(''));
 };
@@ -242,6 +248,61 @@ describe('init --apply', () => {
     const { files } = manifest as { files: Record<string, string> };
     expect(Object.keys(files)).toContain(HOOK);
     expect(files[HOOK]).toMatch(/^sha256-[0-9a-f]{64}$/);
+  });
+});
+
+/**
+ * The sharpest destructive edge `init --apply` could have: a consumer whose
+ * `core.hooksPath` already points somewhere (husky sets `.husky/_`) has every
+ * hook they own -- pre-commit, commit-msg, lint-staged -- silently killed the
+ * moment we repoint it, and `scripts.prepare` re-kills it on every
+ * `npm install` forever. Not installing our hook is merely incomplete, and
+ * it is VISIBLE; overwriting theirs is destructive and silent.
+ */
+describe('init --apply — a consumer who already has a foreign core.hooksPath', () => {
+  const FOREIGN = '.husky/_';
+
+  it('leaves their core.hooksPath exactly as it found it', async () => {
+    configuredHooksPath = `${FOREIGN}\n`;
+    expect(await init('--apply')).toBe(0);
+    expect(execLines()).not.toContain(HOOKS_WRITE);
+  });
+
+  it('still writes the hook script, so it can be chained into by hand', async () => {
+    configuredHooksPath = `${FOREIGN}\n`;
+    await init('--apply');
+    expect(read(HOOK)).toContain('gate --mode=commit');
+  });
+
+  it('warns, naming the value found and the hook it did not activate', async () => {
+    configuredHooksPath = `${FOREIGN}\n`;
+    await init('--apply');
+    const warned = errors.join('');
+    expect(warned).toContain(FOREIGN);
+    expect(warned).toContain(HOOK);
+  });
+
+  it('says so on a --plan run too, before anything is written', async () => {
+    configuredHooksPath = `${FOREIGN}\n`;
+    await init('--plan');
+    expect(errors.join('')).toContain(FOREIGN);
+  });
+
+  it('carries the warning in --plan --json', async () => {
+    configuredHooksPath = `${FOREIGN}\n`;
+    await init('--plan', '--json');
+    const report: unknown = JSON.parse(out.join(''));
+    const { warnings } = report as { warnings: string[] };
+    expect(warnings.join('\n')).toContain(FOREIGN);
+  });
+
+  it('still repoints when core.hooksPath is already .githooks', async () => {
+    // Unchanged behaviour: repointing at the value it already has costs
+    // nothing and destroys nothing.
+    configuredHooksPath = '.githooks\n';
+    expect(await init('--apply')).toBe(0);
+    expect(execCalls).toContainEqual({ line: HOOKS_WRITE, cwd: root });
+    expect(errors.join('')).not.toContain('core.hooksPath');
   });
 });
 

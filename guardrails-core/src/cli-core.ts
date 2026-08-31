@@ -27,7 +27,12 @@ import {
   parseHookInput,
   resolveLocalBin,
 } from './hook-io.js';
-import { resolveRepoRoot } from './repo-root.js';
+import { detect } from './scaffold/detect.js';
+import {
+  foreignHooksPath,
+  foreignHooksPathWarning,
+  HOOKS_DIRECTORY,
+} from './scaffold/hooks-path.js';
 import { initCommand } from './scaffold/init.js';
 import { collectManifestScope, isPathAllowed, isWithinRepo } from './scope.js';
 import {
@@ -392,12 +397,6 @@ async function sessionEndCommand(deps: CliDeps): Promise<number> {
   return 0;
 }
 
-/** Where `install-hooks` points `core.hooksPath`; mirrors `scaffold/init.ts`'s
- *  own `HOOKS_DIRECTORY` (kept local rather than imported, since importing it
- *  would pull the whole scaffolder into every CLI invocation's dependency
- *  graph for one string). */
-const HOOKS_DIRECTORY = '.githooks';
-
 /**
  * `install-hooks`: activates the git-native pre-commit gate that
  * `.githooks/pre-commit` does nothing without. `scripts.prepare` (wired by
@@ -405,17 +404,28 @@ const HOOKS_DIRECTORY = '.githooks';
  * `npm install`, which is what gets a fresh clone or a teammate's checkout
  * onto the gate without them running anything by hand.
  *
- * Resolves the repo root through `resolveRepoRoot` rather than trusting
- * `deps.cwd`: `core.hooksPath` is per-clone LOCAL git config, so setting it
- * from a subdirectory (e.g. `npm install` run inside a monorepo package)
- * would configure the wrong repository, or none.
+ * Reads the repo through `detect` rather than trusting `deps.cwd`, for two
+ * reasons that are really one: `core.hooksPath` is per-clone LOCAL git
+ * config, so it has to be read AND written at the repo root git resolved
+ * (setting it from a subdirectory — `npm install` inside a monorepo package —
+ * configures the wrong repository, or none), and `detect` is the one place
+ * that reads it. Running on every `npm install` is exactly why the
+ * foreign-hooksPath check belongs here too: without it this command does not
+ * merely break a husky consumer's hooks once, it re-breaks them immediately
+ * after `husky` restores them, forever. That refusal exits 0 — a warning, not
+ * a failed `npm install`.
  */
 async function installHooksCommand(deps: CliDeps): Promise<number> {
-  const repoRoot = await resolveRepoRoot(deps.exec, deps.cwd);
+  const facts = await detect({ exec: deps.exec, cwd: deps.cwd });
+  const existingHooksPath = foreignHooksPath(facts.hooksPath);
+  if (existingHooksPath !== undefined) {
+    deps.stderr(`guardrails: ${foreignHooksPathWarning(existingHooksPath)}\n`);
+    return 0;
+  }
   const result = await deps.exec(
     'git',
     ['config', 'core.hooksPath', HOOKS_DIRECTORY],
-    { cwd: repoRoot },
+    { cwd: facts.repoRoot },
   );
   if (result.code !== 0) {
     deps.stderr(
