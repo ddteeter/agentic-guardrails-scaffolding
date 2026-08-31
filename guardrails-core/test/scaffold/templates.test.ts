@@ -215,10 +215,11 @@ describe('canonicalKey', () => {
 
 describe('buildDesiredFiles — canonical keys', () => {
   it('emits repo-relative POSIX keys with no "./" prefix or backslash', () => {
-    // PRECONDITION of plan.ts's classifyFile, which matches SEED_ONCE_PATHS /
-    // SHARED_PATHS by exact string: a './guardrails.config.json' or a
-    // backslash-separated key silently classifies as OWNED, where --force
-    // would overwrite a file that must never be overwritten.
+    // PRECONDITION of plan.ts's classifyFile, which matches SEED_ONCE_PATHS
+    // and (via merge.ts's isSharedPath) SHARED_MERGERS by exact string: a
+    // './guardrails.config.json' or a backslash-separated key silently
+    // classifies as OWNED, where --force would overwrite a file that must
+    // never be overwritten.
     for (const key of Object.keys(
       buildDesiredFiles(
         facts({ declaredProviders: new Set(ANALYZER_PROVIDERS) }),

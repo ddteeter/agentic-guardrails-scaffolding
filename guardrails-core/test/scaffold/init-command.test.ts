@@ -316,6 +316,17 @@ describe('init --apply — seed-once analyzer configs', () => {
   });
 });
 
+describe('init --help', () => {
+  it('prints usage and exits 0, unlike an unrecognised flag', async () => {
+    // An explicit request for help asking `--help` is not a mistake the way
+    // `--nope` is -- it should read as "show me the usage", not fail the way
+    // every other unrecognised option does.
+    expect(await init('--help')).toBe(0);
+    expect(out.join('')).toContain('usage: guardrails init');
+    expect(readdirSync(root)).toEqual([]);
+  });
+});
+
 describe('init — flag validation', () => {
   it.each([['--nope'], ['--applyy'], ['-p'], ['--analyzers']])(
     'rejects %s with usage and a non-zero exit',

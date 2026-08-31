@@ -353,6 +353,13 @@ export async function initCommand(
   deps: InitDeps,
   rest: readonly string[],
 ): Promise<number> {
+  // An explicit request for help is not a mistake the way an unrecognised
+  // flag is -- short-circuits before flag validation so it prints usage and
+  // exits 0 regardless of what else is on the command line.
+  if (rest.includes('--help')) {
+    deps.stdout(INIT_USAGE);
+    return 0;
+  }
   const parsed = parseInitFlags(rest);
   if (parsed.kind === 'error') {
     deps.stderr(`guardrails init: ${parsed.message}\n`);

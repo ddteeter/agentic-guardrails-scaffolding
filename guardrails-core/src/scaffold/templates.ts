@@ -10,10 +10,11 @@
  *    no config already exists". `planScaffold` is pure and reads only the
  *    manifest, so the only way to express "do not write this at all" is to
  *    leave the path out of this map.
- * 2. CANONICAL KEYS. `plan.ts`'s `classifyFile` matches SEED_ONCE_PATHS /
- *    SHARED_PATHS by exact string, so a `./`-prefixed or backslash-separated
- *    key silently classifies as OWNED — where `--force` would overwrite a file
- *    that must never be overwritten. Every key goes through `canonicalKey`.
+ * 2. CANONICAL KEYS. `plan.ts`'s `classifyFile` matches SEED_ONCE_PATHS
+ *    (and, via `merge.ts`'s `isSharedPath`, `SHARED_MERGERS`) by exact
+ *    string, so a `./`-prefixed or backslash-separated key silently
+ *    classifies as OWNED — where `--force` would overwrite a file that must
+ *    never be overwritten. Every key goes through `canonicalKey`.
  */
 import { readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -21,6 +22,7 @@ import path from 'node:path';
 import { packageRoot } from '../package-root.js';
 import { analyzerMode, decideAnalyzer } from '../verify/analyzer-policy.js';
 import type { RepoFacts } from './detect.js';
+import type { SharedPath } from './merge.js';
 import type { ScaffoldDecisions } from './plan.js';
 import {
   DEPENDENCY_CRUISER_SEED,
@@ -95,14 +97,23 @@ const TEMPLATE_FILES: readonly DesiredEntry[] = [
  * present in `desired` for an action to be planned, and `applyScaffold` warns
  * on a planned path with no recorded content — so they carry this marker.
  *
- * It is never written anywhere: `applyScaffold` routes every SHARED path to its
- * merger and throws on one it does not recognise, so the only way this string
- * could reach a file is a SHARED path added to `plan.ts` without a merger,
- * which fails loudly there instead.
+ * It is never written anywhere given a path that STAYS classified `shared`:
+ * `applyScaffold` routes every SHARED path to its merger and throws on one it
+ * does not recognise. That throw does NOT cover every way this string could
+ * leak, though — it fires only for a path `plan.ts` already calls `shared`.
+ * REMOVING an entry from `merge.ts`'s `SHARED_MERGERS` instead demotes that
+ * path to OWNED (see `plan.ts`'s `classifyFile`), where this marker would be
+ * written to the consumer's file verbatim, silently. Typing this array as
+ * `readonly SharedPath[]` (not `string[]`) closes that gap at compile time:
+ * a path removed from `SHARED_MERGERS` also leaves the `SharedPath` union,
+ * so listing it here stops compiling instead of failing silently at runtime.
  */
 const MERGER_DERIVED = '(derived from the file already in the repository)';
 
-const SHARED_DERIVED_PATHS: readonly string[] = ['.gitignore', 'package.json'];
+const SHARED_DERIVED_PATHS: readonly SharedPath[] = [
+  '.gitignore',
+  'package.json',
+];
 
 /**
  * The two analyzers whose config `init` seeds. `hasConfig` reads the DETECTED

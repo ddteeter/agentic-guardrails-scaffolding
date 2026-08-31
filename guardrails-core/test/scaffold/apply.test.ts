@@ -309,10 +309,10 @@ describe('applyScaffold', () => {
   });
 
   it('throws rather than silently misrouting an unrecognised shared path', () => {
-    // `plan.ts`'s SHARED_PATHS is the source of truth for which paths are
-    // shared; this dispatcher is its mirror for how to merge each one. If
-    // they ever drift apart, failing loudly beats silently running the
-    // wrong merger against the file.
+    // `merge.ts`'s SHARED_MERGERS (via `isSharedPath`) is the source of truth
+    // for which paths are shared; this dispatcher is its mirror for how to
+    // merge each one. If they ever drift apart, failing loudly beats silently
+    // running the wrong merger against the file.
     const { deps } = makeHarness();
     const plan = planOf(
       action({
