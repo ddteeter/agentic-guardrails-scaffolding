@@ -69,6 +69,7 @@ for (const relative of [
   'copilot/agents/guardrail-fixer-thorough.agent.md',
   'copilot/hooks/guardrails.json',
   'githooks/pre-commit',
+  'workflows/guardrails.yml',
 ]) {
   if (!existsSync(path.join(installed, 'templates', relative))) {
     fail(`the tarball is missing templates/${relative}`);

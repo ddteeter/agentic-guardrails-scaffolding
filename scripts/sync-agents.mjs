@@ -292,4 +292,22 @@ copyFileSync(
   path.join(gitHooks, 'pre-commit'),
 );
 
+// Consumer CI workflow (spec §8.1). Unlike the wiring files above, this one
+// has no "this repo's own live wiring" source to copy from: this repo's own
+// `.github/workflows/ci.yml` pins commit SHAs and does far more than a
+// consumer needs (lint, typecheck, build, coverage, tarball smoke). So the
+// consumer-generic version is authored directly in the plugin, not derived.
+const workflowsFrom = path.join(
+  root,
+  'guardrails-plugin',
+  'templates',
+  'workflows',
+);
+const workflowsTo = path.join(templates, 'workflows');
+mkdirSync(workflowsTo, { recursive: true });
+copyFileSync(
+  path.join(workflowsFrom, 'guardrails.yml'),
+  path.join(workflowsTo, 'guardrails.yml'),
+);
+
 console.log(`synced consumer templates → guardrails-core/templates`);

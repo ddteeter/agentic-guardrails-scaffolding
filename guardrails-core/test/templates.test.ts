@@ -20,6 +20,7 @@ const EXPECTED_FILES = [
   'copilot/agents/guardrail-fixer-thorough.agent.md',
   'copilot/hooks/guardrails.json',
   'githooks/pre-commit',
+  'workflows/guardrails.yml',
 ] as const;
 
 describe('consumer templates', () => {
@@ -61,5 +62,27 @@ describe('consumer templates', () => {
       'utf8',
     );
     expect(hook).toContain('gate --mode=commit');
+  });
+
+  it('ships a CI workflow that runs the commit gate plus sanctions-check', () => {
+    const workflow = readFileSync(
+      path.join(templates, 'workflows', 'guardrails.yml'),
+      'utf8',
+    );
+    expect(workflow).toContain('gate --mode=commit');
+    expect(workflow).toContain('sanctions-check');
+  });
+
+  it('pins CI workflow actions to floating major tags, not a SHA', () => {
+    // A pinned SHA written into a consumer's repository would rot silently
+    // under THEIR Dependabot policy, unlike this repo's own workflows, which
+    // pin because they control their own supply chain.
+    const workflow = readFileSync(
+      path.join(templates, 'workflows', 'guardrails.yml'),
+      'utf8',
+    );
+    expect(workflow).toContain('actions/checkout@v4');
+    expect(workflow).toContain('actions/setup-node@v4');
+    expect(workflow).not.toMatch(/uses:\s*\S+@[0-9a-f]{40}/);
   });
 });

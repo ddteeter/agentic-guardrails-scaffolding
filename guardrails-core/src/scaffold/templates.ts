@@ -88,15 +88,12 @@ const TEMPLATE_FILES: readonly DesiredEntry[] = [
   ],
   ['copilot/hooks/guardrails.json', '.github/hooks/guardrails.json'],
   ['githooks/pre-commit', '.githooks/pre-commit'],
+  // OWNED, not SEED_ONCE or SHARED (spec §8.1): a consumer who edits this
+  // workflow gets drift-reported and left alone on the next `init`, same as
+  // any other owned file -- classifyFile's default, since this path is in
+  // neither SEED_ONCE_PATHS nor SHARED_MERGERS.
+  ['workflows/guardrails.yml', '.github/workflows/guardrails.yml'],
 ];
-
-/*
- * One path spec §6.4 lists that this map deliberately does NOT yet carry,
- * because its source is not in the tarball rather than because the
- * scaffolder cannot place it:
- *
- * - `.github/workflows/guardrails.yml` — the CI template is piece 6 (§8).
- */
 
 /**
  * SHARED paths whose merger derives the whole result from what is already on

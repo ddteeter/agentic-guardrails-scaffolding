@@ -1,0 +1,38 @@
+# Consumer-facing CI template, written into a target repo by `guardrails init`.
+# Uses floating major tags (@v4), not the pinned commit SHAs this repo's own
+# workflows use: a SHA pinned into a consumer's repository would rot silently
+# under THEIR Dependabot policy, and we cannot update it for them. This repo
+# pins because it controls its own supply chain; a consumer controls theirs.
+name: Guardrails
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  guardrails:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The commit gate diffs against the merge-base, which needs history.
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      # `gate --mode=commit` runs verify PLUS the diff-auditor PLUS the
+      # sanction budget. Bare `verify` runs none of the last two.
+      #
+      # `--mode=commit` verifies at `profile: 'commit'`, and no analyzer
+      # currently declares `minRung: 'ci'` -- so commit and ci coverage are
+      # identical today. The day one does, this workflow needs a
+      # `--mode=ci` step too.
+      - run: npx guardrails gate --mode=commit
+      - run: npx guardrails sanctions-check

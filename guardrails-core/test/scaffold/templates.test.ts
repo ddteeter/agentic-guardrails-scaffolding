@@ -108,6 +108,7 @@ describe('buildDesiredFiles — the shipped template tree', () => {
     '.github/agents/guardrail-fixer-thorough.agent.md',
     '.github/hooks/guardrails.json',
     '.githooks/pre-commit',
+    '.github/workflows/guardrails.yml',
     '.gitignore',
     'package.json',
     'guardrails.config.json',
@@ -120,6 +121,16 @@ describe('buildDesiredFiles — the shipped template tree', () => {
     expect(contentOf(desired, '.githooks/pre-commit')).toBe(
       readFileSync(
         path.join(templatesRoot(), 'githooks', 'pre-commit'),
+        'utf8',
+      ),
+    );
+  });
+
+  it('carries the CI workflow template bytes verbatim (spec §8.1)', () => {
+    const desired = buildDesiredFiles(facts(), decisions());
+    expect(contentOf(desired, '.github/workflows/guardrails.yml')).toBe(
+      readFileSync(
+        path.join(templatesRoot(), 'workflows', 'guardrails.yml'),
         'utf8',
       ),
     );
