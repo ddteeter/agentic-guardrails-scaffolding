@@ -75,27 +75,26 @@ for (const relative of [
   }
 }
 
-// 5. The bin must resolve and the ESM entry must load. `guardrails` with no
-//    subcommand prints usage and exits 1 — a real exercise of argv parsing and
-//    every top-level import, without needing a git repo or any analyzer.
-//    NOTE (piece 4): replace this with `init --plan` once that command exists;
-//    it exercises far more of the install path.
-let usage = '';
-try {
-  run(path.join(fixture, 'node_modules', '.bin', 'guardrails'), [], fixture);
-  fail(
-    '`guardrails` with no arguments exited 0; expected the usage banner and exit 1',
-  );
-} catch (error) {
-  usage = `${error.stdout ?? ''}${error.stderr ?? ''}`;
-  if (error.status !== 1) {
-    fail(
-      `\`guardrails\` exited ${error.status}, expected 1. Output:\n${usage}`,
-    );
-  }
+// 5. `guardrails init --plan` exercises far more of the install path than the
+//    usage banner does: template resolution from INSIDE the installed
+//    package (`packageRoot()` must find `templates/` and `guidance/` under
+//    `node_modules/guardrails-core`, not this repo's source tree), detection,
+//    and plan computation. This is precisely what a first adoption depends
+//    on. The fixture is not a git repo, so `resolveRepoRoot` falls back to
+//    `cwd` — that is a legitimate path (spec-sanctioned degrade, not a bug),
+//    and `init --plan` must still produce a plan rather than crash.
+const plan = run(
+  path.join(fixture, 'node_modules', '.bin', 'guardrails'),
+  ['init', '--plan'],
+  fixture,
+);
+if (!plan.startsWith('guardrails init: plan for ')) {
+  fail(`\`guardrails init --plan\` printed no plan header. Output:\n${plan}`);
 }
-if (!usage.includes('usage: guardrails')) {
-  fail(`the CLI ran but printed no usage banner. Output:\n${usage}`);
+if (!/^ {2}(create|update|merge|drift|unchanged): /m.test(plan)) {
+  fail(
+    `\`guardrails init --plan\` printed no planned action. Output:\n${plan}`,
+  );
 }
 
 console.log('smoke-tarball: OK — tarball installs and the CLI runs from it');
