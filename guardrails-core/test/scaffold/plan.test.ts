@@ -174,6 +174,24 @@ describe('planScaffold — the decision table', () => {
       current: '{"permissions": {"allow": ["Bash(npm test)"]}}',
     });
     expect(action.kind).toBe(MERGE);
+    // `decideShared`'s re-serialisation warning is a `package.json`-specific
+    // special case (see `sharedMergeReason`) -- pinning that another SHARED
+    // path gets the generic reason is what proves the special case is
+    // actually keyed on the path, not merely always true.
+    expect(action.reason).not.toContain('re-serial');
+  });
+
+  it("package.json's merge reason mentions re-serialisation, not just the merged entries", () => {
+    // `mergePackageJsonScripts` always re-serialises the whole file
+    // (JSON.stringify), unlike the text-splicing SHARED mergers -- a
+    // consumer whose own formatter disagrees (4-space, tabs) needs to know
+    // THAT is what a re-run touches, not just that guardrails' entries were
+    // merged in.
+    const action = planOneFile('package.json', {
+      current: '{"name":"consumer"}',
+    });
+    expect(action.kind).toBe(MERGE);
+    expect(action.reason).toContain('re-serial');
   });
 
   it('shared, present, edited beyond recognition, force -> still merge, never drift', () => {

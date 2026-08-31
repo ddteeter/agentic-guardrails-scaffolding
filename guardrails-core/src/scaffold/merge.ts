@@ -218,14 +218,22 @@ export function mergeCopilotInstructions(
   );
 }
 
-function serializeWithMergedPrepare(parsed: Record<string, unknown>): string {
+/** Builds the `scripts.prepare`-merged object, without serialising it --
+ *  split out so the caller can compare it against `parsed` BEFORE deciding
+ *  whether serialising is even necessary. */
+function withMergedPrepare(
+  parsed: Record<string, unknown>,
+): Record<string, unknown> {
   const scripts = isRecord(parsed.scripts) ? parsed.scripts : {};
   const preparedScript =
     typeof scripts.prepare === 'string' ? scripts.prepare : undefined;
-  const merged = {
+  return {
     ...parsed,
     scripts: { ...scripts, prepare: mergePrepareScript(preparedScript) },
   };
+}
+
+function serializePackageJson(merged: Record<string, unknown>): string {
   return `${JSON.stringify(merged, undefined, 2)}\n`;
 }
 
@@ -235,16 +243,35 @@ function serializeWithMergedPrepare(parsed: Record<string, unknown>): string {
  * current `scripts.prepare`, merging it, and writing the rest of the file
  * back untouched. Fails closed on unparseable JSON, matching every other
  * SHARED merger: the file comes back exactly as it was.
+ *
+ * Returns `current` unchanged (not a fresh re-serialisation) when `merged`
+ * deep-equals `parsed` -- this is what keeps a consumer whose own formatter
+ * disagrees with ours (4-space, tabs) from being reformatted by every
+ * `init --apply`, reformatted back by their own formatter, and rewritten
+ * again next run, forever. Comparing via `JSON.stringify` (rather than a
+ * recursive deep-equal) is sound here specifically because `merged` is built
+ * by SPREADING `parsed`: object-spread never reorders an already-present key,
+ * so whenever `mergePrepareScript` leaves `scripts.prepare` byte-identical,
+ * `merged`'s key order matches `parsed`'s exactly and the two compact-JSON
+ * strings coincide; any actual change (a new `scripts` key, a rewritten
+ * `prepare`) changes a value, which changes that string too. The comparison
+ * lives HERE rather than in a shared helper because it is only ever
+ * meaningful once `current` is known to be a real string: a from-scratch
+ * create (`current === undefined`) starts from `{}`, which can never already
+ * contain our entry, so there is no no-op case to check for there.
  */
 export function mergePackageJsonScripts(current: string | undefined): string {
   if (current === undefined) {
-    return serializeWithMergedPrepare({});
+    return serializePackageJson(withMergedPrepare({}));
   }
   const parsed = parseConsumerJson(current).parsed;
   if (!isRecord(parsed)) {
     return current;
   }
-  return serializeWithMergedPrepare(parsed);
+  const merged = withMergedPrepare(parsed);
+  return JSON.stringify(merged) === JSON.stringify(parsed)
+    ? current
+    : serializePackageJson(merged);
 }
 
 /**

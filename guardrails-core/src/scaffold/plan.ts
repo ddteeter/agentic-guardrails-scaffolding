@@ -140,6 +140,21 @@ function decideOwned(
 }
 
 /**
+ * `package.json` gets its own reason text because `mergePackageJsonScripts`
+ * re-serialises the whole file via `JSON.stringify` whenever anything
+ * actually changed (see `merge.ts`'s `mergePackageJsonScripts`) -- a
+ * consumer whose formatter disagrees with ours (4-space, tabs) needs `--plan`
+ * to say a merge here can change formatting, not just add guardrails'
+ * entries, or the reformat reads as `--plan` lying about what a merge does.
+ */
+function sharedMergeReason(path: string): string {
+  return path === 'package.json'
+    ? `${path} is shared; merging in guardrails' entries and re-serialising ` +
+        `the file (formatting may change)`
+    : `${path} is shared; merging in guardrails' entries`;
+}
+
+/**
  * SHARED: absent -> create; present -> merge, always. Never `drift` -- the
  * consumer owns these files, and merging touches only guardrails' own
  * entries, so `--force` changes nothing about this decision.
@@ -156,7 +171,7 @@ function decideShared(
   }
   return {
     kind: 'merge',
-    reason: `${path} is shared; merging in guardrails' entries`,
+    reason: sharedMergeReason(path),
   };
 }
 

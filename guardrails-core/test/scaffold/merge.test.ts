@@ -354,6 +354,24 @@ describe('mergePackageJsonScripts', () => {
     const twice = mergePackageJsonScripts(once);
     expect(twice).toBe(once);
   });
+
+  it('returns a foreign-formatted file byte-identical when it already has our entry', () => {
+    // The bug this pins: `mergePackageJsonScripts` used to ALWAYS
+    // re-serialise via `JSON.stringify(merged, undefined, 2)`, so a consumer
+    // whose own formatter disagrees (4-space here) would be reformatted by
+    // `init --apply`, reformatted back by their own formatter, and rewritten
+    // again by the next `init --apply` -- forever, each run reporting
+    // `wrote: package.json` even though nothing guardrails cares about
+    // actually changed. The above "is idempotent" test cannot catch this: it
+    // feeds THIS function's own 2-space output back into itself, so the
+    // formats already match on the second call regardless of the bug.
+    const current = `${JSON.stringify(
+      { name: 'consumer', scripts: { prepare: 'guardrails install-hooks' } },
+      undefined,
+      4,
+    )}\n`;
+    expect(mergePackageJsonScripts(current)).toBe(current);
+  });
 });
 
 describe('SHARED_MERGERS', () => {
