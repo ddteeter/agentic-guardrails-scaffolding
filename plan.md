@@ -1274,3 +1274,109 @@ was already dead.
   `SHARED_MERGERS`), listed above. This paragraph previously went stale for
   several commits after the fix shipped — a reminder to update this section
   in the same commit as the fix, not after.
+
+### Finding: the base branch never resolved in CI — every PR run was fail-open
+
+Surfaced by CI on PR #16, immediately after the fail-closed exit-code checks
+landed. `guardrails verify` failed with:
+
+```
+git exited with code 128 … fatal: ambiguous argument 'main':
+unknown revision or path not in the working tree.
+```
+
+**What was wrong.** `verify`, `gate`, and `sanctions-check` all passed
+`config.baseBranch` (`"main"`) straight to git. GitHub Actions checks a pull
+request out as a **detached merge ref** and populates `refs/remotes/origin/*`
+without ever creating the base branch locally, so `git diff main` cannot
+resolve while `origin/main` can. `fetch-depth: 0` does not help: it controls
+history depth, not which local branches exist.
+
+**This had been silently true on every PR.** Before the exit-code checks, a
+failing `git diff` returned empty stdout, which read as _zero changed files_ —
+so every `changed-files`-scoped analyzer (eslint, tsc, stryker) was **skipped**
+and CI reported clean. Only the two `whole-project` analyzers (knip,
+dependency-cruiser) ever actually ran on a PR. The comment at
+`verify/index.ts:161` had predicted exactly this case; it took the fail-closed
+change to make it visible.
+
+The same latent bug sat in the other two consumers, degrading quietly rather
+than failing:
+
+- **`sanctions-check`** falls back to the branch name when `merge-base` fails,
+  then `git show main:guardrails.config.json` fails too, leaving the known set
+  empty — so **all 40 exemptions would report as newly granted.** The one report
+  a reviewer relies on to spot a new suppression would have been 40 lines of
+  noise on every PR.
+- **`gate --mode=commit`** falls back to the staged diff, auditing a narrower
+  range than intended.
+
+**Fix (shipped).** `resolveBaseReference(exec, repoRoot, baseBranch)` in
+`verify/git.ts` tries the branch as given, then `origin/<branch>`, returning a
+`{ ref?, spawnFailed? }` result. All three call sites use it. An unresolvable
+base is now a **blocking** `guardrails/analyzer-failed` naming the branch and
+saying every diff-scoped check was skipped — never a silent empty diff.
+
+This belongs in the tool, not in each repo's workflow: every consumer running
+`verify` in GitHub Actions has this problem, and a fix in our own `ci.yml` would
+have left the shipped product broken for them.
+
+**Secondary cleanup.** With `resolveBaseReference` running two git calls before
+any diff, git is proven to start before `gitCallFailed` is reached, so its
+`spawnFailed !== true` half became unreachable. Mutation testing caught it as
+two survivors on otherwise-covered code. The guard was **removed** rather than
+suppressed; the "a tool that could not be STARTED is reported only as
+`analyzer-missing`" invariant still holds and is still tested.
+
+**Method note.** Two of these five survivors were nearly misdiagnosed. A quick
+check — replacing the whole `gitCallFailed` body with `return true` — failed 47
+tests, which looked like proof that Stryker was reporting a false survivor. It
+was not: the surviving mutants were on the **`result.spawnFailed !== true`
+sub-expression**, not the whole return, and the whole-expression mutants were
+in fact killed. Reading the mutant's `location` columns rather than its line
+number is what settled it. When a mutation result contradicts intuition,
+compare the exact mutated **span** before concluding the tool is wrong.
+
+### Hardening: sanction counts are now verified against the source
+
+Suggested by the automated review of PR #16, which observed that `count` is a
+hand-entered number with nothing re-checking it: a refactor removing a suppressed
+call site without touching `guardrails.config.json` leaves the budget
+over-provisioned. Not exploitable — the gate still spends per occurrence, so
+nothing net-new gets through — but it silently shrinks how much the auditor is
+watching, which is precisely what this escape hatch exists to keep visible.
+
+`sanctionCountDrift` sums each key's declared budget and compares it to the
+occurrences actually present, and `sanctions-check` now **fails** on any
+mismatch. It blocks for the same reason `malformed` blocks: both are _factual_
+errors about the policy file, not judgments about whether an exemption is
+deserved — which is the line this command already draws, and why a new grant
+still exits 0.
+
+**Counted with the auditor's own machinery.** `auditSource` presents a whole file
+to `auditDiff` as an all-additions hunk, so the lexer state (strings, regex,
+template literals) and the signature table are the ones the gate enforces with.
+Two reasons this matters more than convenience:
+
+- A directive mentioned inside a string literal is not a directive, and only the
+  real lexer knows that.
+- `// Stryker disable next-line ConditionalExpression` is a strict **prefix** of
+  `// Stryker disable next-line ConditionalExpression,BlockStatement`, both of
+  which are live keys in this repo. Naive substring counting would score the
+  wider directive as an occurrence of the narrower one and over-provision it.
+
+`findingKey` moved to `audit.ts` and is now shared by the gate's budget map and
+this guard, so the two cannot disagree about what "the same suppression" means —
+reimplementing it here would have been the very drift being guarded against.
+
+A key that escapes the repo (`../`) reads as absent rather than being followed:
+the policy file is checked-in text, but it is still input.
+
+**Verified against reality:** at the time this landed, the repo's 29 entries /
+28 distinct keys / 40 declared occurrences passed with zero drift, and
+artificially inflating one count produced `declared 6, found 1` and exit 1.
+Phase E's `json-file.ts` extraction later deleted the two `workspaces.ts`
+`BlockStatement` entries along with the code they covered, so the current
+figures are **27 entries / 26 distinct keys / 38 declared occurrences** — still
+zero drift, which is the guard doing its job across a merge rather than a
+number that needed hand-editing.

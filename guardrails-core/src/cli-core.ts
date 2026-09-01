@@ -4,6 +4,9 @@
  * `cli.ts` is a thin bootstrap that supplies the real dependencies.
  */
 
+import { existsSync, readFileSync } from 'node:fs';
+import path from 'node:path';
+
 import { auditDiff, type AuditFinding } from './audit.js';
 import { runAutofix } from './autofix.js';
 import {
@@ -17,6 +20,7 @@ import { runCommitGate, runStopGate } from './gate.js';
 import {
   formatGrantReport,
   newlySanctioned,
+  sanctionCountDrift,
   toMalformedViolations,
 } from './sanctions.js';
 import {
@@ -44,6 +48,7 @@ import {
 } from './state-store.js';
 import { hasErrors, type Violation } from './violation.js';
 import { runVerify } from './verify/index.js';
+import { resolveBaseReference } from './verify/git.js';
 
 export interface CliDeps {
   exec: Exec;
@@ -260,6 +265,20 @@ const CONFIG_FILE = 'guardrails.config.json';
  * constitutes its approval. The gate itself (`runCommitGate`) is what enforces
  * reality: an occurrence beyond the declared count still blocks the commit
  * regardless of what this check reports. See src/sanctions.ts. */
+/** Reads a repo-relative source file for the count drift-guard. A key that
+ *  escapes the repo (`../`) reads as absent rather than reaching outside it:
+ *  the policy file is checked-in text, but it is still input. */
+function repoSourceReader(
+  repoRoot: string,
+): (file: string) => string | undefined {
+  return (file) => {
+    const full = path.join(repoRoot, file);
+    return isWithinRepo(repoRoot, file) && existsSync(full)
+      ? readFileSync(full, 'utf8')
+      : undefined;
+  };
+}
+
 async function sanctionsCheckCommand(deps: CliDeps): Promise<number> {
   const headText = readConfigText(deps.cwd) ?? '';
   const { valid: headSanctions, malformed } = parseSanctionsJson(headText);
@@ -272,14 +291,46 @@ async function sanctionsCheckCommand(deps: CliDeps): Promise<number> {
     return 1;
   }
 
+  // Declared budgets must still match the source. Like `malformed`, this is a
+  // FACTUAL error rather than a judgment about whether an exemption is
+  // deserved, so it blocks -- an over-provisioned budget silently shrinks how
+  // much the auditor is watching.
+  const drift = sanctionCountDrift(headSanctions, repoSourceReader(deps.cwd));
+  if (drift.length > 0) {
+    for (const entry of drift) {
+      deps.stderr(
+        `  - ${entry.key}: declared ${entry.declared}, found ${entry.actual}\n`,
+      );
+    }
+    deps.stderr(
+      `guardrails: ${drift.length} sanctionedSuppressions entry(ies) in ` +
+        `${CONFIG_FILE} no longer match the source. Update \`count\` to the ` +
+        `number of occurrences that remain, or drop the entry if the ` +
+        `suppression is gone.\n`,
+    );
+    return 1;
+  }
+
   const config = loadConfig(deps.cwd);
+  // Resolve the base branch first: in a CI checkout it exists only as
+  // `origin/<branch>`, and an unresolved merge-base would silently make every
+  // entry read as newly granted -- turning the one report a reviewer relies on
+  // into 40 lines of noise.
+  const resolved = await resolveBaseReference(
+    deps.exec,
+    deps.cwd,
+    config.baseBranch,
+  );
+  const baseReference = resolved.ref ?? config.baseBranch;
   const mergeBase = await deps.exec(
     'git',
-    ['merge-base', config.baseBranch, 'HEAD'],
-    { cwd: deps.cwd },
+    ['merge-base', baseReference, 'HEAD'],
+    {
+      cwd: deps.cwd,
+    },
   );
   const sha = mergeBase.stdout.trim();
-  const ref = mergeBase.code === 0 && sha ? sha : config.baseBranch;
+  const ref = mergeBase.code === 0 && sha ? sha : baseReference;
   const base = await deps.exec('git', ['show', `${ref}:${CONFIG_FILE}`], {
     cwd: deps.cwd,
   });

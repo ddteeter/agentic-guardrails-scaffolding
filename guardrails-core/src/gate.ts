@@ -15,7 +15,7 @@
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
-import { auditDiff, type AuditFinding } from './audit.js';
+import { auditDiff, findingKey, type AuditFinding } from './audit.js';
 import type { SanctionedSuppression } from './config.js';
 import type { Exec } from './exec.js';
 import { withGuidance } from './guidance.js';
@@ -37,6 +37,7 @@ import {
 import { hasErrors, type Violation } from './violation.js';
 import { runVerify } from './verify/index.js';
 import { loadWorkspaceResolver, withPackages } from './workspaces.js';
+import { resolveBaseReference } from './verify/git.js';
 
 export interface StopGateOptions {
   repoRoot: string;
@@ -74,10 +75,6 @@ export interface CommitGateResult {
   violations: Violation[];
   findings: AuditFinding[];
   blocked: boolean;
-}
-
-function findingKey(finding: AuditFinding): string {
-  return `${finding.file}|${finding.kind}|${finding.text}`;
 }
 
 /**
@@ -245,9 +242,15 @@ export async function runStopGate(
  * inherited from the base branch are excluded. Falls back to the staged diff
  * when the merge-base can't be resolved (shallow clone / missing base). */
 async function branchDiff(options: CommitGateOptions): Promise<string> {
+  // `origin/<branch>` is the only form that resolves in a CI checkout.
+  const resolved = await resolveBaseReference(
+    options.exec,
+    options.repoRoot,
+    options.baseBranch,
+  );
   const mergeBase = await options.exec(
     'git',
-    ['merge-base', options.baseBranch, 'HEAD'],
+    ['merge-base', resolved.ref ?? options.baseBranch, 'HEAD'],
     { cwd: options.repoRoot },
   );
   const sha = mergeBase.stdout.trim();

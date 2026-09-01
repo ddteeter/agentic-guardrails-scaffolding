@@ -27,6 +27,7 @@
  * edits that must not read as a new grant.
  */
 
+import { auditSource, findingKey } from './audit.js';
 import type { SanctionedSuppression } from './config.js';
 import type { Violation } from './violation.js';
 
@@ -117,4 +118,99 @@ export function toMalformedViolations(
     fixable: false,
     tool: 'guardrails',
   }));
+}
+
+/** One key whose declared budget no longer matches the source. */
+export interface SanctionCountDrift {
+  key: string;
+  declared: number;
+  actual: number;
+}
+
+/**
+ * Compare each sanctioned key's declared budget against the occurrences that
+ * actually exist in the source.
+ *
+ * `count` is hand-entered, and nothing re-checks it once written. A refactor
+ * that deletes a suppressed call site without touching the policy file leaves
+ * the budget over-provisioned: not exploitable (it cannot let a NEW suppression
+ * through -- the gate still spends per occurrence) but it silently shrinks how
+ * much the auditor is watching, which is the whole thing this hatch is supposed
+ * to make visible.
+ *
+ * Occurrences are counted with `auditSource`, i.e. the auditor's own lexer and
+ * signature table, so this can never disagree with the gate about what counts.
+ * Reimplementing the match here would itself be a drift risk -- and a directive
+ * that is a strict prefix of a wider one (`...ConditionalExpression` inside
+ * `...ConditionalExpression,BlockStatement`) is exactly where naive substring
+ * counting would go wrong.
+ *
+ * A file that cannot be read counts as zero occurrences, which is the deleted-
+ * file case and should be reported, not skipped.
+ */
+/** Sum each key's declared budget (default 1) across every entry granting it. */
+function declaredTotals(
+  sanctions: readonly SanctionedSuppression[],
+): Map<string, number> {
+  const totals = new Map<string, number>();
+  for (const sanction of sanctions) {
+    totals.set(
+      sanction.key,
+      (totals.get(sanction.key) ?? 0) + (sanction.count ?? 1),
+    );
+  }
+  return totals;
+}
+
+/** Group keys by the file they name, so each file is read and audited once. */
+function groupKeysByFile(keys: Iterable<string>): Map<string, string[]> {
+  const byFile = new Map<string, string[]>();
+  for (const key of keys) {
+    const file = key.split('|')[0] ?? '';
+    const existing = byFile.get(file);
+    // Push into the existing list rather than rebuilding from a `?? []`
+    // default: the default-array form yields an equivalent mutant, this shape
+    // does not.
+    if (existing === undefined) {
+      byFile.set(file, [key]);
+    } else {
+      existing.push(key);
+    }
+  }
+  return byFile;
+}
+
+/** Occurrences of each suppression key actually present in one file. */
+function actualCounts(
+  file: string,
+  source: string | undefined,
+): Map<string, number> {
+  const counts = new Map<string, number>();
+  if (source === undefined) {
+    return counts;
+  }
+  for (const finding of auditSource(file, source)) {
+    const key = findingKey(finding);
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return counts;
+}
+
+export function sanctionCountDrift(
+  sanctions: readonly SanctionedSuppression[],
+  readSource: (file: string) => string | undefined,
+): SanctionCountDrift[] {
+  const declared = declaredTotals(sanctions);
+  const drift: SanctionCountDrift[] = [];
+  for (const [file, keys] of groupKeysByFile(declared.keys())) {
+    const actual = actualCounts(file, readSource(file));
+    for (const key of keys) {
+      const expected = declared.get(key) ?? 0;
+      const found = actual.get(key) ?? 0;
+      if (found !== expected) {
+        drift.push({ key, declared: expected, actual: found });
+      }
+    }
+  }
+  return drift;
 }

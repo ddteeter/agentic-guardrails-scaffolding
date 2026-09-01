@@ -108,6 +108,12 @@ a summary — and give them what they need to decide:
 If they approve, put the argument they accepted into `reason` — that text is what
 a PR reviewer reads later, so write it for them, not for yourself.
 
+`count` must equal how many times that exact suppression appears in that file.
+`sanctions-check` re-derives the real number with the auditor's own lexer and
+**fails** on any mismatch, so a stale entry left behind by a refactor is a build
+failure rather than a silently over-provisioned budget. When you delete a
+suppressed line, update or remove its entry in the same change.
+
 Do **not** record who approved it. An `approvedBy` field was tried and removed:
 local git identity is writable by whatever is running, and is often a bot or a
 placeholder, so it recorded a name that proved nothing while looking like a

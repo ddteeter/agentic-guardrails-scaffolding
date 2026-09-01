@@ -1314,3 +1314,84 @@ describe('stryker fails open twice (defect 3)', () => {
     expect(args.every((argument) => !argument.startsWith('/'))).toBe(true);
   });
 });
+
+describe('base branch resolution (the CI checkout case)', () => {
+  // GitHub Actions checks a PR out as a detached merge ref and never creates
+  // the base branch locally, so `git diff main` fails while `origin/main`
+  // resolves. This was silently fail-open: no changed files meant every
+  // diff-scoped analyzer was skipped and the run read clean.
+  it('diffs against origin/<branch> when the local branch does not exist', async () => {
+    const { exec, calls } = fakeExec({
+      'git rev-parse --verify --quiet main^{commit}': {
+        stdout: '',
+        stderr: '',
+        code: 1,
+      },
+      'git rev-parse --verify --quiet origin/main^{commit}': {
+        stdout: 'abc123',
+        stderr: '',
+        code: 0,
+      },
+      'git diff --name-only --diff-filter=ACM origin/main': {
+        stdout: 'src/changed.ts',
+        stderr: '',
+        code: 0,
+      },
+    });
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      profile: 'stop',
+    });
+    // The diff ran against the remote-qualified ref...
+    expect(
+      calls.some(
+        (call) =>
+          call.args.includes('origin/main') &&
+          call.args.includes('--name-only'),
+      ),
+    ).toBe(true);
+    // ...and the analyzers actually ran, rather than being skipped for want of
+    // a changed-file list.
+    expect(calls.some((call) => call.command.includes('eslint'))).toBe(true);
+    expect(
+      violations.some((v) => v.ruleId === 'guardrails/analyzer-failed'),
+    ).toBe(false);
+  });
+
+  it('fails closed when neither the local nor the origin ref resolves', async () => {
+    const { exec, calls } = fakeExec({
+      'git rev-parse --verify --quiet main^{commit}': {
+        stdout: '',
+        stderr: '',
+        code: 1,
+      },
+      'git rev-parse --verify --quiet origin/main^{commit}': {
+        stdout: '',
+        stderr: '',
+        code: 1,
+      },
+    });
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      profile: 'ci',
+      readFile: () => Promise.resolve('{}'),
+    });
+    const failed = violations.find(
+      (v) => v.ruleId === 'guardrails/analyzer-failed',
+    );
+    expect(failed?.message).toContain('base branch "main"');
+    expect(failed?.message).toContain('SKIPPED');
+    // An unresolvable base is a judgment call for a human (wrong config, or a
+    // clone too shallow), never something an autofixer should touch.
+    expect(failed?.fixable).toBe(false);
+    expect(failed?.severity).toBe('error');
+    // Paired with the positive case above: no diff was attempted, and the
+    // changed-file-scoped analyzers did not run.
+    expect(calls.some((call) => call.args.includes('--name-only'))).toBe(false);
+    expect(calls.some((call) => call.command.includes('eslint'))).toBe(false);
+  });
+});
