@@ -165,15 +165,38 @@ describe('loadConfig mutation-hardening', () => {
   it('falls back when an enum-valued field is outside its allowed set', () => {
     // Kills the `allowed && !allowed.includes(...)` mutant and the
     // `['solo','team']` -> `[]` mutant (an empty allowlist rejects everything).
+    // `enforcement` is deliberately NOT in this test: it does not fall back on
+    // a bad value — see the "enforcement" describe below.
     writeConfig(JSON.stringify({ distribution: 'enterprise' }));
     expect(loadConfig(root).distribution).toBe('solo');
-    writeConfig(JSON.stringify({ enforcement: 'shout' }));
-    expect(loadConfig(root).enforcement).toBe('warn');
     // ...while a legitimate non-default value IS honoured.
     writeConfig(JSON.stringify({ distribution: 'team', enforcement: 'block' }));
     expect(loadConfig(root)).toMatchObject({
       distribution: 'team',
       enforcement: 'block',
+    });
+  });
+
+  describe('enforcement', () => {
+    it('defaults to warn when the field is absent', () => {
+      writeConfig(JSON.stringify({ baseBranch: 'main' }));
+      expect(loadConfig(root).enforcement).toBe('warn');
+    });
+
+    it('honours both valid values', () => {
+      writeConfig(JSON.stringify({ enforcement: 'warn' }));
+      expect(loadConfig(root).enforcement).toBe('warn');
+      writeConfig(JSON.stringify({ enforcement: 'block' }));
+      expect(loadConfig(root).enforcement).toBe('block');
+    });
+
+    it('blocks — not warns — on a value that is present but invalid', () => {
+      // A field the author typed and got wrong must never be what silently
+      // turns the commit gate advisory.
+      for (const value of ['Block', 'blocked', true, 0]) {
+        writeConfig(JSON.stringify({ enforcement: value }));
+        expect(loadConfig(root).enforcement).toBe('block');
+      }
     });
   });
 
@@ -256,6 +279,60 @@ describe('readConfigText', () => {
 
   it('returns undefined when the file is missing', () => {
     expect(readConfigText(root)).toBeUndefined();
+  });
+});
+
+describe('analyzers', () => {
+  it('defaults to an empty map, so every analyzer is auto', () => {
+    const directory = mkdtempSync(path.join(tmpdir(), 'guardrails-config-'));
+    expect(loadConfig(directory).analyzers).toEqual({});
+  });
+
+  it('reads the three string modes', () => {
+    const directory = mkdtempSync(path.join(tmpdir(), 'guardrails-config-'));
+    writeFileSync(
+      path.join(directory, 'guardrails.config.json'),
+      JSON.stringify({
+        analyzers: { eslint: 'required', knip: 'auto', stryker: 'off' },
+      }),
+    );
+    expect(loadConfig(directory).analyzers).toEqual({
+      eslint: 'required',
+      knip: 'auto',
+      stryker: 'off',
+    });
+  });
+
+  it('accepts true/false as shorthand for required/off', () => {
+    const directory = mkdtempSync(path.join(tmpdir(), 'guardrails-config-'));
+    writeFileSync(
+      path.join(directory, 'guardrails.config.json'),
+      JSON.stringify({ analyzers: { eslint: true, knip: false } }),
+    );
+    expect(loadConfig(directory).analyzers).toEqual({
+      eslint: 'required',
+      knip: 'off',
+    });
+  });
+
+  it('drops an entry whose value is neither a known mode nor a boolean', () => {
+    const directory = mkdtempSync(path.join(tmpdir(), 'guardrails-config-'));
+    writeFileSync(
+      path.join(directory, 'guardrails.config.json'),
+      JSON.stringify({ analyzers: { knip: 'sometimes', eslint: 3 } }),
+    );
+    // Dropped, not defaulted to off: a malformed entry must never be the thing
+    // that silently disables a guard.
+    expect(loadConfig(directory).analyzers).toEqual({});
+  });
+
+  it('ignores an analyzers value that is not an object', () => {
+    const directory = mkdtempSync(path.join(tmpdir(), 'guardrails-config-'));
+    writeFileSync(
+      path.join(directory, 'guardrails.config.json'),
+      JSON.stringify({ analyzers: ['knip'] }),
+    );
+    expect(loadConfig(directory).analyzers).toEqual({});
   });
 });
 

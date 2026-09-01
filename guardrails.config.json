@@ -3,6 +3,13 @@
   "maxAttempts": 3,
   "recurThreshold": 3,
   "graduationThreshold": 3,
+  "analyzers": {
+    "eslint": "required",
+    "tsc": "required",
+    "knip": "required",
+    "dependency-cruiser": "required",
+    "stryker": "required"
+  },
   "sanctionedSuppressions": [
     {
       "key": "guardrails-core/src/audit.ts|mutation-suppress|// Stryker disable all",
@@ -77,14 +84,6 @@
       "count": 2
     },
     {
-      "key": "guardrails-core/src/workspaces.ts|mutation-suppress|// Stryker disable BlockStatement",
-      "reason": "Proven-equivalent mutant(s); equivalence argument recorded at the site. `manifest` is declared but never assigned before the try block runs, so if JSON.parse/readFileSync throws, that assignment never completes and manifest stays undefined either way; declaredPatterns(undefined) already returns [] (isRecord rejects undefined), so emptying the try or catch block changes nothing observable."
-    },
-    {
-      "key": "guardrails-core/src/workspaces.ts|mutation-suppress|// Stryker restore BlockStatement",
-      "reason": "Closes the try/catch exclusion above."
-    },
-    {
       "key": "guardrails-core/src/workspaces.ts|mutation-suppress|// Stryker disable next-line ArrayDeclaration",
       "reason": "Proven-equivalent mutant(s); equivalence argument recorded at both sites (the escape guard's early return and the accumulator's initial value). ancestorDirectories is never exported, so its return value is only ever probed by the resolver's existsSync check on each entry; a bogus placeholder entry is observationally identical to an empty/unpolluted list unless a real repo directory happens to be named after Stryker's literal placeholder, which no real repo has.",
       "count": 2
@@ -130,5 +129,5 @@
     }
   ],
   "distribution": "solo",
-  "enforcement": "warn"
+  "enforcement": "block"
 }

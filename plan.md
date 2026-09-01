@@ -81,14 +81,82 @@ full enforcement matrix and per-surface research grounding.
   (piece 4), workspaces / affected-package attribution (piece 6).
 - **D — Java pack + polyglot** (spotless, pmd, error-prone/nullaway, spotbugs,
   ArchUnit, pitest/descartes; Maven/Gradle report adapters).
-- **E — Scaffolder + team-flip** (detection/plan/confirm/idempotency skill;
-  solo→team config flip).
+- **E — Adoption: analyzer opt-in, `guardrails init`, team-flip.** Seven pieces:
+  (1) analyzer opt-in — shipped; (2) `enforcement` honored by the commit and
+  preToolUse gates — shipped; (3) packaging + release — shipped; (4)
+  `guardrails init` — shipped, see "Phase E status" below; (5) the scaffolding
+  skill; (6) CI template + adoption docs + team-flip verification; (7) cut the
+  release, adopt in a real project, record findings.
 
 ## Solo → team
 
 `guardrails.config.json` carries `distribution: "solo" | "team"` and
-`enforcement: "warn" | "block"`. The flip: commit `recurrence.json`, make CI a
-required check, publish core + plugin, standardize thresholds — no code changes.
+`enforcement: "warn" | "block"`. This section has asserted since Phase A that
+the flip is "config plus a publish, not a rewrite." Phase E piece 6 **tested**
+that claim (spec §8.3) instead of restating it — recorded here with the
+evidence, not just the verdict.
+
+**The prediction on record was half right.** It held that committing
+`recurrence.json` was the one non-config-only step, but for a different reason
+than predicted: `sweepStale` (`guardrails-core/src/state-store.ts`) already
+special-cases `name === 'recurrence.json'` — it is **not** on the 7-day TTL
+sweep and never was; `guardrails-core/test/state-store.test.ts`'s "spares
+recurrence.json from the TTL sweep, however stale" pins this. What broke the
+claim instead was `.gitignore`: `mergeGitignore` wrote a blanket
+`.guardrails/state/` directory-ignore with no carve-out, so committing the
+ledger required `git add -f` on every change (a tracked file inside an
+ignored directory keeps needing `-f` for each new hunk unless something
+excludes it explicitly) — that is a real, if small, procedural step a "config
+plus a publish" description hides.
+
+**The fix, applied:** `GITIGNORE_BLOCK` (`guardrails-core/src/scaffold/merge.ts`,
+shipped into every consumer repo via `mergeGitignore`) and this repo's own
+root `.gitignore` now read `.guardrails/state/*` plus
+`!.guardrails/state/recurrence.json`, instead of a bare `.guardrails/state/`.
+git never re-includes a path whose parent directory is itself excluded, so the
+fix wildcards the directory's _contents_ rather than excluding the directory,
+which is what lets the negation take effect. This is proven against real git
+behavior, not just against the string the merger produces, by
+`guardrails-core/test/scaffold/gitignore-recurrence.test.ts` — it spawns a
+throwaway repo and confirms `recurrence.json` is not reported by
+`git check-ignore`, that a sibling session file in the same directory still
+is, and that `git add .guardrails/state/recurrence.json` succeeds with no
+`-f`. Everything else in `.guardrails/state/` (session tallies, violation
+manifests) stays ignored, matching `sweepStale`'s own exemption.
+
+**What is genuinely config-only, verified against the two commands that
+actually consult it (`gateCommitCommand`, `gatePreToolUseCommand` in
+`cli-core.ts`):** setting `enforcement: "block"` in `guardrails.config.json`
+is the one flag that changes gate behavior — it flips `gate --mode=commit`
+(run by `.githooks/pre-commit` and by the CI template's
+`guardrails gate --mode=commit` step) and `gate --mode=pretooluse` from a
+zero exit with a "not blocking" note to an actual deny/non-zero. Marking that
+CI job "required" in GitHub branch protection is a GitHub-side setting, not a
+code change, and only does something once `enforcement` is `"block"` — under
+`"warn"` the job always exits 0 regardless of findings, so "required" and
+"warn" together is a check that can never fail. `distribution` itself is
+**not consulted by any code path** — grep confirms it is read only by
+`init`'s flag parser and `guardrailsConfigSeed` (the value it seeds into a
+fresh config); no gate, verify, or CI logic branches on it. It is a
+documentation field the team declares for humans, not a switch.
+
+**The verified procedure**, in order: (1) get `guardrails verify` clean
+(the clean-baseline prerequisite `docs/adoption.md` states applies here
+too — a team flip onto a dirty baseline just gives every teammate the same
+false-positive gate a solo dev would have hit); (2) set `enforcement: "block"`
+in `guardrails.config.json`; (3) `git add .guardrails/state/recurrence.json`
+— no `-f`: the wildcard-plus-negation `.gitignore` entry means the file was
+never ignored in the first place, so a plain `add` works the first time and
+every time after (`gitignore-recurrence.test.ts`'s third case proves exactly
+this: it calls `git add` with no `-f` and asserts the file lands in the
+index); (4) mark the `guardrails` CI job required in branch protection;
+(5) publish `guardrails-core` (and the plugin, for Claude Code teammates)
+somewhere every teammate's `npm install` can reach it, and have everyone
+reinstall so `prepare` re-runs `install-hooks`; (6) set `distribution: "team"`
+for the record, though nothing currently reads it. No step here is a code
+change to `guardrails-core` itself — the one code change this task found
+necessary (the gitignore fix above) was already shipped by the time this
+procedure needed it, closing the gap the original claim glossed over.
 
 ## Open questions surfaced in review — resolved in Phase B
 
@@ -289,12 +357,17 @@ core/src/audit.ts`) surfaced that it was a context-free text scan: it flagged
   documentation. (A template literal nested _inside_ another template's `${...}`
   interpolation is likewise skipped as an opaque string span rather than
   recursively lexed.) Both are structurally fixed by the roadmapped AST auditor
-  (below), which tracks open-comment state across lines. Also noted while auditing the commit path: **both
-  `gate --mode=commit` and `gate --mode=pretooluse` currently hard-block
-  unconditionally** on any finding — they do not yet consult
-  `RepoConfig.enforcement` (`"warn"` vs `"block"`). Honoring `enforcement` on
-  the commit/pretooluse gates is deferred; it's reserved for the solo→team
-  flip (Phase E), where `enforcement: "block"` becomes the team default.
+  (below), which tracks open-comment state across lines. Also noted while auditing the commit path — **now shipped (Phase E piece
+  2):** `gate --mode=commit` and `gate --mode=pretooluse` honor
+  `RepoConfig.enforcement` (`"warn"` vs `"block"`). Under `warn` both still
+  run the gate and report violations/findings in full; only the exit code
+  (`--mode=commit`) or the deny-payload-vs-stderr choice (`--mode=pretooluse`)
+  changes, and each says outright that it is not blocking. `enforcement` is
+  consulted only in `cli-core.ts` — it governs the commit/preToolUse surfaces
+  alone, `toGateConfig` still does not forward it, and the Claude Code Stop
+  loop is deliberately never softened by it. This repo sets its own
+  `enforcement` to `"block"` in `guardrails.config.json`, since the default is
+  `"warn"` and leaving it there would have made this repo's own gate advisory.
 
 - **Auditor soundness: text lexer → AST (decided, roadmapped).** The auditor is
   a hand-rolled single-line lexer + regex signatures operating on _diff
@@ -389,42 +462,40 @@ core/src/audit.ts`) surfaced that it was a context-free text scan: it flagged
   `fixerReadAllowlist: string[]` to `guardrails.config.json` (extra roots the
   fixer may read), mirroring how `looseRules` extends the built-in defaults.
 
-## Roadmap: analyzer opt-in (pack composition, not all-or-nothing)
+## Roadmap: analyzer opt-in (pack composition, not all-or-nothing) — shipped
 
-`ANALYZERS` is a hardcoded table, so every consumer runs the whole TS pack.
-Phase C piece 5 makes that bite: a pack tool that cannot run is now an
-error-severity `guardrails/analyzer-missing` violation, because a guard that
-silently did not run is worse than no guard. The corollary is that a consumer who
-deliberately does not want, say, knip would face a permanent blocking violation.
+Phase E piece 1 shipped the hybrid this section used to guess at:
+installed-means-enabled by default, with an explicit `guardrails.config.json`
+`analyzers` block (keyed by tool name, values `off` / `auto` / `required`, with
+`true`/`false` accepted as shorthand for `required`/`off`) that promotes a tool
+to `required` and so restores a hard `guardrails/analyzer-missing` error for
+anyone who wants it. The full truth table — off if the config says off,
+otherwise it runs if it is there, and a missing binary is an error only if it
+was asked for, in `analyzers` **or** in the repo's own `package.json` — is
+`decideAnalyzer` in `guardrails-core/src/verify/analyzer-policy.ts`; the design
+is `docs/superpowers/specs/2026-08-30-phase-e-adoption-design.md` §3. That
+declared-in-`package.json` clause is specifically what closes the
+silent-degradation hole this section worried about: a provider the repo names in
+its own manifest but whose binary will not start is a broken install and still
+errors, not a quiet opt-out.
 
-**Adoption should be opt-in per analyzer.** A repo should be able to take
-dependency-cruiser and stryker without knip, or start with eslint/tsc only and
-add the rest as it matures — the same graduated-adoption argument as the mutation
-survivor baseline. All-or-nothing is a bad default for a tool whose whole pitch is
-dropping into an existing repo.
-
-Two candidate policies, to be chosen when this is designed:
-
-- **Explicit config.** `guardrails.config.json` carries an analyzer allowlist or
-  per-analyzer `false`. Unambiguous, reviewable, and it composes with the
-  `minRung`/`scope` policy already in the table. Cost: a new config surface, and a
-  consumer who forgets to enable something gets no signal.
-- **Installed-means-enabled.** Run the analyzers that resolve, and raise
-  `analyzer-missing` only for ones the config explicitly _enables_. Zero-config
-  for the common case, and it makes `npm uninstall knip` a complete opt-out. Cost:
-  the default is implicit, so a tool that fails to install degrades silently — the
-  exact failure piece 5 exists to remove.
-
-The likely answer is a hybrid: installed-means-enabled as the default, with an
-explicit `analyzers` block that promotes a tool to _required_ (and so restores
-piece 5's hard error for anyone who wants it). Whichever is chosen, the
-**scaffolder owns the conversation** — its detect/plan/confirm flow is where a
-consumer should be asked which analyzers they want, and it is what installs the
-peer dependencies. Phase-E-owned.
+- **Known limit — root-manifest-only declared providers.** `declaredProviders`
+  reads `<repoRoot>/package.json` and nothing else. A monorepo that declares its
+  analyzer dependencies in member packages rather than at the root therefore has
+  an empty declared set: every analyzer is `auto`+undeclared, and a broken
+  install degrades silently instead of erroring — the exact failure the
+  declared-provider clause above exists to prevent, in a layout this project
+  otherwise supports. The workaround is to mark those analyzers `"required"` in
+  `guardrails.config.json`, which states the dependency explicitly and restores
+  the hard `guardrails/analyzer-missing` error. Fixing it properly means
+  deciding _which_ member manifests count (all workspaces? only those matching
+  the changed files?), which is a design question, not a cleanup — hence
+  recorded here rather than patched. See the comment at the `declaredProviders`
+  call site in `guardrails-core/src/verify/index.ts`.
 
 Related: the mutation **survivor baseline** (Phase C piece 4 findings) is the same
 shape of problem — a pack member that is unusable on day one of adoption unless
-there is a ramp.
+there is a ramp. That baseline remains out of scope for this phase.
 
 ## Phase A status
 
@@ -1072,6 +1143,138 @@ stryker analyzer will now see `stryker/no-coverage` on changed files that have
 untested lines. That is the intended behaviour, but it is a behaviour change to
 call out in release notes rather than ship silently.
 
+### Dogfooding finding: single-file `stryker --mutate` reports false survivors
+
+Found while executing Phase E pieces 1-2, where per-task mutation checks were
+run file-by-file to catch survivors early rather than at the commit gate.
+
+`npx stryker run --mutate <one file>` is **not** a faithful preview of what the
+commit gate will report. Two distinct problems:
+
+- **False survivors.** The vitest runner loads only the test files it considers
+  related to the mutated file, so mutants killed by a test elsewhere in the
+  suite are reported as surviving. The direction is safe — it over-reports, never
+  under-reports — so a clean `0 survived` from a single-file run can be trusted,
+  but a reported survivor must be re-checked before anyone spends time proving it
+  equivalent or (worse) asks for a suppression.
+- **Cache poisoning.** The run writes `reports/stryker-incremental.json`, and a
+  later run over a different file set reads that state back. Delete that file
+  before re-verifying, or the false survivor persists across runs.
+
+**Practice:** treat a single-file run as a cheap early filter. Before acting on
+any survivor it reports — and always before proposing a `sanctionedSuppressions`
+entry — delete `reports/stryker-incremental.json` and re-run over the gate's own
+changed-file set. Two of this plan's three escalations to the developer were
+resolved by restructuring instead of exemption; a false survivor that reached
+that conversation would have spent the developer's attention on a mutant that
+was already dead.
+
+## Phase E status (in progress)
+
+- **Piece 1 — analyzer opt-in (shipped).** See "Roadmap: analyzer opt-in"
+  above: `analyzers` in `guardrails.config.json` (`off`/`auto`/`required`, with
+  `true`/`false` accepted as shorthand), decided by `decideAnalyzer` in
+  `guardrails-core/src/verify/analyzer-policy.ts`.
+- **Piece 2 — `enforcement` honored by the commit and preToolUse gates
+  (shipped).** `gate --mode=commit` and `gate --mode=pretooluse` read
+  `RepoConfig.enforcement` (`"warn"` vs `"block"`); under `warn` both still run
+  the gate and report violations in full, only the exit code / deny-payload
+  choice changes. The Claude Code Stop loop is deliberately never softened by
+  it. See the note under "Roadmap: fixer-loop hardening" above.
+- **Piece 3 — packaging + release (shipped).** `guardrails-core` ships as a
+  GitHub Release asset (`npm i -D <release-url>/guardrails-core-X.Y.Z.tgz`),
+  built by a tag-triggered `.github/workflows/release.yml`.
+  `scripts/smoke-tarball.mjs` packs the real tarball, installs it into a
+  throwaway repo the way a consumer would, and runs the CLI from there — every
+  other test in the suite runs against the npm-workspace symlink, which
+  bypasses `files`, the bin shebang, and ESM resolution entirely.
+- **Piece 4 — `guardrails init` (shipped).** `detect()` reads the target repo
+  (base branch, which config files already exist, the scaffold manifest,
+  declared analyzer providers) with no writes; `planScaffold` is a pure
+  function from those facts plus the desired file map to a `ScaffoldPlan` —
+  every filesystem decision is provable without touching disk; `applyScaffold`
+  executes the plan through an injected filesystem seam. `init` alone never
+  writes: `--plan` (the default, including a non-TTY invocation — spec §6.2)
+  only prints the plan, and `--apply` is the only way past that. A separate
+  `guardrails install-hooks` command (invoked automatically via the
+  `package.json` `prepare` script `init --apply` wires in) is what actually
+  points `core.hooksPath` at `.githooks` on a fresh clone or a teammate's
+  checkout, so the pre-commit gate activates without anyone running a command
+  by hand.
+
+  Every path `init` manages falls into one of three classes (spec §6.4):
+
+  - **OWNED** (the fixer agent files, `.githooks/pre-commit`,
+    `.github/hooks/guardrails.json`, and the `docs/guardrails/*.md` guidance
+    docs copied from the packaged `guidance/` tree) — absent → create;
+    unmodified since it was scaffolded (its content still matches the sha256
+    recorded for it in `.guardrails/scaffold.json`) → silently rewritten on
+    upgrade; edited by the consumer → left alone and reported as `drift`,
+    unless `--force`, which always overwrites. Content that already matches
+    the desired bytes is `unchanged` regardless of what the manifest says,
+    checked before the checksum comparison.
+  - **SHARED** (`.claude/settings.json`, `.gitignore`, `package.json`,
+    `.github/copilot-instructions.md`) — absent → create the whole file;
+    present → always `merge`, never `drift` and never sensitive to `--force`.
+    Each path's merger touches only guardrails' own entries (hook blocks
+    identified by a command marker, the `scripts.prepare` string, a gitignore
+    stanza, a marked doc section) and leaves the rest of the consumer's file
+    untouched. `applyScaffold` skips the write entirely when the merged result
+    is byte-identical to what's already on disk, which is what keeps a re-run
+    of an up-to-date repo a no-op even though `--plan` reports `merge` for
+    these paths every time.
+  - **SEED-ONCE** (`guardrails.config.json`, and `.dependency-cruiser.cjs` /
+    `stryker.conf.json` when that analyzer is enabled and no config exists
+    yet) — absent → create; present → `unchanged`, forever, even with
+    `--force`. `guardrails.config.json` holds the consumer's policy and their
+    sanctioned suppressions, so it is the one class `--force` can never touch.
+
+  `.guardrails/scaffold.json` is the manifest behind OWNED drift-tracking: a
+  sha256 checksum per OWNED path plus `guardrailsVersion`, stamped from the
+  running package's own `package.json` (never from what was previously
+  recorded), rewritten whenever an `--apply` writes at least one OWNED file.
+
+  **Known limit — the `.claude/settings.json` merger always re-serialises.**
+  `mergeClaudeSettings` (`guardrails-core/src/scaffold/merge.ts`) calls
+  `JSON.stringify` on every merge unconditionally, unlike
+  `mergePackageJsonScripts`, which builds the merged object and returns
+  `current` unchanged when it deep-equals what was parsed. A consumer whose
+  formatter disagrees with ours (4-space indent, tabs, different key order)
+  gets `.claude/settings.json` reformatted on every `init --apply`, reformatted
+  back by their own tooling, and rewritten again next run — forever. The fix
+  is the same pattern already used for `package.json`: build the merged
+  object, compare its `JSON.stringify` against the parsed input, and return
+  `current` unchanged when they coincide. Out of scope for piece 4; recorded
+  here so it is not lost.
+
+  **Known limit — orphan files are never reported or removed, and their
+  manifest entry persists forever.** A file an earlier guardrails version
+  wrote that is no longer in `desired` (renamed, retired) is silently left in
+  place by `applyScaffold`. Worse, because `writeManifest` rebuilds
+  `.guardrails/scaffold.json` as `{ ...existing?.files, ...manifestUpdates }`,
+  that orphan's checksum entry survives every later `--apply` too — there is
+  no code path that ever drops a key. This is deliberate, not an oversight:
+  deleting a file inside a consumer's repository needs its own design (what if
+  they edited it first? what if it moved to a different path in the same
+  release?), and is pinned rather than left to silently regress by a labelled
+  characterisation test (`init — orphan files from an older scaffold`,
+  `guardrails-core/test/scaffold/init-command.test.ts`).
+
+  **Resolved — `.github/copilot-instructions.md` is scaffolded.** An earlier
+  draft of this section recorded its absence as a known limit: the block it
+  splices in is a progressive-disclosure index ("read this doc when this
+  trigger applies"), and the per-doc trigger text needed to live somewhere
+  the packaged `guidance/` tree didn't yet ship it. That shipped in `7a2b97a`
+  ("ship skill descriptions in guidance/, build the Copilot index"): the
+  packaged `guidance/index.json` now carries each skill's description,
+  `templates.ts`'s `copilotInstructionsBlock` builds the marked index block
+  from it (excluding `adopting-guardrails`, the one skill that explains
+  adoption rather than participating in it — see `ADOPTION_TIME_SKILL`), and
+  `.github/copilot-instructions.md` is a fourth SHARED path (`merge.ts`'s
+  `SHARED_MERGERS`), listed above. This paragraph previously went stale for
+  several commits after the fix shipped — a reminder to update this section
+  in the same commit as the fix, not after.
+
 ### Finding: the base branch never resolved in CI — every PR run was fail-open
 
 Surfaced by CI on PR #16, immediately after the fail-closed exit-code checks
@@ -1169,6 +1372,11 @@ reimplementing it here would have been the very drift being guarded against.
 A key that escapes the repo (`../`) reads as absent rather than being followed:
 the policy file is checked-in text, but it is still input.
 
-**Verified against reality:** the repo's 29 entries / 28 distinct keys / 40
-declared occurrences pass with zero drift, and artificially inflating one count
-produces `declared 6, found 1` and exit 1.
+**Verified against reality:** at the time this landed, the repo's 29 entries /
+28 distinct keys / 40 declared occurrences passed with zero drift, and
+artificially inflating one count produced `declared 6, found 1` and exit 1.
+Phase E's `json-file.ts` extraction later deleted the two `workspaces.ts`
+`BlockStatement` entries along with the code they covered, so the current
+figures are **27 entries / 26 distinct keys / 38 declared occurrences** — still
+zero drift, which is the guard doing its job across a merge rather than a
+number that needed hand-editing.

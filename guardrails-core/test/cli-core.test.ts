@@ -59,6 +59,37 @@ function violation(file: string): Violation {
   };
 }
 
+/** A repo whose commit gate blocks: one eslint error on a changed TS file.
+ *  `enforcement` is written into the config the command will load. */
+function blockingCommitDeps(enforcement: 'warn' | 'block'): CliDeps {
+  writeFileSync(
+    path.join(root, 'guardrails.config.json'),
+    JSON.stringify({ baseBranch: 'main', enforcement }),
+  );
+  const eslintJson = JSON.stringify([
+    {
+      filePath: path.join(root, 'src/foo.ts'),
+      messages: [
+        {
+          ruleId: 'no-console',
+          severity: 2,
+          message: 'Unexpected console.',
+          line: 1,
+        },
+      ],
+    },
+  ]);
+  const exec: Exec = (command, args) => {
+    const line = [command, ...args].join(' ');
+    if (line.includes('--name-only')) return Promise.resolve(ok('src/foo.ts'));
+    if (line.includes('eslint')) return Promise.resolve(ok(eslintJson));
+    // merge-base resolves to nothing, so branchDiff falls back to the staged
+    // diff, which is empty — the block comes from the violation, not a finding.
+    return Promise.resolve(ok(''));
+  };
+  return deps({ exec });
+}
+
 describe('runCommand — verify', () => {
   it('returns 0 when no TypeScript files changed', async () => {
     expect(await runCommand('verify', [], deps())).toBe(0);
@@ -186,6 +217,67 @@ describe('runCommand — scope-check', () => {
     expect(out.join('')).toBe('');
   });
 
+  // `guardrails/analyzer-missing`, `guardrails/analyzer-failed` (both
+  // `file: 'package.json'`) and `guardrails/analyzer-unknown`
+  // (`file: 'guardrails.config.json'`) are all error-severity, so a repo with
+  // clean code but a missing or crashing analyzer produces a manifest whose
+  // every entry names an undeditable policy file — and still spawns a fixer.
+  // That manifest must lock the fixer OUT, not disengage the lock.
+  describe('a manifest naming only denied files', () => {
+    beforeEach(() => {
+      writeViolations(stateDirectory(root), 'sid', [
+        violation('package.json'),
+        violation('guardrails.config.json'),
+      ]);
+    });
+
+    it('denies an edit to the denied file itself', async () => {
+      expect(
+        await runScopeCheck(
+          scopeStdin('edit', path.join(root, 'package.json')),
+        ),
+      ).toContain('deny');
+    });
+
+    it('denies an edit to an arbitrary unrelated file', async () => {
+      // THE regression pin: an all-denied manifest yields an empty file set,
+      // and a scope-lock keyed on "is the set non-empty" would read that as
+      // "no fixer is running" and hand the fixer the whole repo.
+      expect(
+        await runScopeCheck(
+          scopeStdin('edit', path.join(root, 'src/anything.ts')),
+        ),
+      ).toContain('deny');
+    });
+  });
+
+  it('keeps the non-denied files of a mixed manifest editable', async () => {
+    writeViolations(stateDirectory(root), 'sid', [
+      violation('src/allowed.ts'),
+      violation('package.json'),
+    ]);
+    expect(
+      await runScopeCheck(
+        scopeStdin('edit', path.join(root, 'src/allowed.ts')),
+      ),
+    ).toBe('');
+    expect(
+      await runScopeCheck(scopeStdin('edit', path.join(root, 'package.json'))),
+    ).toContain('deny');
+  });
+
+  it('denies a denied file named with different casing', async () => {
+    // macOS and Windows resolve `Package.json` to the real file on write, so a
+    // case-sensitive denylist lookup would be a way straight through it.
+    writeViolations(stateDirectory(root), 'sid', [
+      violation('src/allowed.ts'),
+      violation('Package.json'),
+    ]);
+    expect(
+      await runScopeCheck(scopeStdin('edit', path.join(root, 'Package.json'))),
+    ).toContain('deny');
+  });
+
   it('denies a Copilot `view` read outside the repo', async () => {
     const stdin = JSON.stringify({
       workingDirectory: root,
@@ -248,6 +340,12 @@ function gitExec(map: Record<string, string>): Exec {
 
 describe('runCommand — gate pretooluse (copilot commit/push gate)', () => {
   it('denies a git commit when the tree is dirty (copilot dialect)', async () => {
+    // Explicit 'block': this test is about the deny payload shape, not
+    // enforcement, and the default 'warn' would route it to stderr instead.
+    writeFileSync(
+      path.join(root, 'guardrails.config.json'),
+      JSON.stringify({ enforcement: 'block' }),
+    );
     const stdin = JSON.stringify({
       toolName: 'bash',
       toolArgs: { command: 'git commit -m wip' },
@@ -302,6 +400,11 @@ describe('runCommand — gate pretooluse (copilot commit/push gate)', () => {
     );
     expect(code).toBe(0);
     expect(out.join('')).toBe('');
+    // Also asserts stderr: a clean gate must stay fully silent. Without this,
+    // a mutant that skips the `!blocked` early return would still pass the
+    // stdout check above (the default 'warn' enforcement routes the deny to
+    // stderr, not stdout), leaving the mutant alive.
+    expect(errors.join('')).toBe('');
   });
 });
 
@@ -329,6 +432,93 @@ describe('runCommand — unknown', () => {
   });
 });
 
+/** git fake for install-hooks: `rev-parse --show-toplevel` always resolves to
+ *  the fixture `root`, regardless of the cwd it is asked from -- which is
+ *  exactly what lets a test prove the SECOND call (`git config`) used that
+ *  resolved root rather than whatever cwd it was invoked with. `configResult`
+ *  is what the `git config` call itself resolves to. */
+/**
+ * `install-hooks` reads the repo through `detect`, so its fake git has to
+ * answer everything `detect` asks: the toplevel, the base branch, and the
+ * `core.hooksPath` already configured (`existingHooksPath`, '' for none).
+ * Only the WRITE -- `git config core.hooksPath .githooks` -- gets
+ * `configResult`.
+ */
+function installHooksExec(
+  configResult: ExecResult,
+  existingHooksPath = '',
+): {
+  exec: Exec;
+  calls: { args: string[]; cwd: string | undefined }[];
+} {
+  const calls: { args: string[]; cwd: string | undefined }[] = [];
+  const exec: Exec = (command, args, execOptions) => {
+    calls.push({ args, cwd: execOptions?.cwd });
+    if (args[0] === 'rev-parse') {
+      return Promise.resolve(ok(`${root}\n`));
+    }
+    if (args[0] === 'symbolic-ref') {
+      return Promise.resolve(ok('origin/main\n'));
+    }
+    if (args[1] === '--get') {
+      return Promise.resolve(ok(existingHooksPath));
+    }
+    return Promise.resolve(configResult);
+  };
+  return { exec, calls };
+}
+
+const HOOKS_WRITE = ['config', 'core.hooksPath', '.githooks'];
+
+describe('runCommand — install-hooks', () => {
+  // `core.hooksPath` is per-clone LOCAL git config: setting it from anywhere
+  // but the resolved repo root configures the wrong repository (or none), so
+  // the whole point of this command lives in that cwd, not merely its argv.
+  it('resolves the repo root and runs git config core.hooksPath there, not from cwd', async () => {
+    const subdirectory = path.join(root, 'packages', 'app');
+    mkdirSync(subdirectory, { recursive: true });
+    const { exec, calls } = installHooksExec(ok(''));
+    expect(
+      await runCommand('install-hooks', [], deps({ exec, cwd: subdirectory })),
+    ).toBe(0);
+    expect(calls[0]).toEqual({
+      args: ['rev-parse', '--show-toplevel'],
+      cwd: subdirectory,
+    });
+    expect(calls).toContainEqual({ args: HOOKS_WRITE, cwd: root });
+  });
+
+  // `scripts.prepare` runs this on EVERY `npm install`, so an unconditional
+  // repoint does not merely break a husky consumer's hooks once -- it
+  // re-breaks them forever, immediately after `husky` restores them.
+  it('leaves an existing foreign core.hooksPath alone and warns instead', async () => {
+    const { exec, calls } = installHooksExec(ok(''), '.husky/_\n');
+    expect(await runCommand('install-hooks', [], deps({ exec }))).toBe(0);
+    expect(calls.map((call) => call.args)).not.toContainEqual(HOOKS_WRITE);
+    const warned = errors.join('');
+    expect(warned).toContain('.husky/_');
+    expect(warned).toContain('.githooks/pre-commit');
+  });
+
+  it('still repoints when core.hooksPath already points at .githooks', async () => {
+    const { exec, calls } = installHooksExec(ok(''), '.githooks\n');
+    expect(await runCommand('install-hooks', [], deps({ exec }))).toBe(0);
+    expect(calls.map((call) => call.args)).toContainEqual(HOOKS_WRITE);
+    expect(errors.join('')).toBe('');
+  });
+
+  it('reports a non-zero git exit and returns 1', async () => {
+    const { exec } = installHooksExec({
+      stdout: '',
+      stderr: 'error: could not lock config file\n',
+      code: 1,
+    });
+    expect(await runCommand('install-hooks', [], deps({ exec }))).toBe(1);
+    expect(errors.join('')).toContain('core.hooksPath');
+    expect(errors.join('')).toContain('could not lock config file');
+  });
+});
+
 /** stdin payload for the pretooluse gate. */
 function preToolUseStdin(toolName: unknown, command: unknown): string {
   return JSON.stringify({ toolName, toolArgs: { command }, cwd: root });
@@ -348,6 +538,13 @@ function dirtyExec(): Exec {
 }
 
 async function runPreToolUse(stdin: string): Promise<string> {
+  // These trigger-condition tests are about the shell-tool + git-write
+  // self-filter, not about enforcement, so make that assumption explicit:
+  // without it the default 'warn' would route the deny to stderr instead.
+  writeFileSync(
+    path.join(root, 'guardrails.config.json'),
+    JSON.stringify({ enforcement: 'block' }),
+  );
   await runCommand(
     'gate',
     ['--mode=pretooluse', '--dialect=copilot'],
@@ -523,8 +720,9 @@ describe('scope-check trigger conditions', () => {
   });
 
   it('allows any edit when no manifest is active', async () => {
-    // Kills `files.size > 0` -> `>= 0` / true: with no manifest the fixer is not
-    // running, and the scope-lock must not interfere.
+    // Kills `scope.active` -> true: with no manifest the fixer is not running,
+    // and the scope-lock must not interfere. This escape is what the all-denied
+    // manifest tests above must NOT be allowed to reuse.
     expect(
       await runScopeCheck(scopeStdin('edit', path.join(root, 'src/a.ts'))),
     ).toBe('');
@@ -667,7 +865,13 @@ describe('cli-core residual hardening', () => {
 
   it('routes --mode=commit to the commit gate', async () => {
     // Kills `mode === 'commit'` -> false, which would fall through to the stop
-    // gate and never block a dirty commit.
+    // gate and never block a dirty commit. `enforcement: 'block'` because the
+    // default is 'warn' (see "gate --mode=commit enforcement" below) and this
+    // test is about routing, not the enforcement policy.
+    writeFileSync(
+      path.join(root, 'guardrails.config.json'),
+      JSON.stringify({ enforcement: 'block' }),
+    );
     const exec = gitExec({
       'merge-base': 'BASESHA\n',
       'diff BASESHA': [
@@ -787,7 +991,13 @@ describe('cli-core final hardening', () => {
 
   it('prints each added suppression found by the commit gate', async () => {
     // Kills the findings-loop block removal: the gate would block with no
-    // explanation of WHICH suppression tripped it.
+    // explanation of WHICH suppression tripped it. `enforcement: 'block'`
+    // because the default is 'warn' and this test is about the findings
+    // message, not the enforcement policy.
+    writeFileSync(
+      path.join(root, 'guardrails.config.json'),
+      JSON.stringify({ enforcement: 'block' }),
+    );
     const exec = gitExec({
       'merge-base': 'BASESHA\n',
       'diff BASESHA': [
@@ -806,9 +1016,13 @@ describe('sanctioned suppressions reach the commit gate', () => {
     // Kills a dropped-forwarding mutant: if `--mode=commit` stopped passing
     // `config.sanctionedSuppressions` through to `runCommitGate`, this finding
     // would exempt nothing and the gate would still block.
+    // `enforcement: 'block'` here (rather than the default 'warn') proves the
+    // 0 comes from the exemption clearing the block, not from the enforcement
+    // policy silently downgrading a real block to a warning.
     writeFileSync(
       path.join(root, 'guardrails.config.json'),
       JSON.stringify({
+        enforcement: 'block',
         sanctionedSuppressions: [
           {
             key: 'src/a.ts|eslint-disable|// eslint-disable-next-line',
@@ -1199,6 +1413,77 @@ describe('autofix command', () => {
       (call) => call[0]?.includes('eslint') === true,
     );
     expect(eslintCall?.[0]).toBe(path.join(localBin, binName));
+  });
+});
+
+describe('gate --mode=commit enforcement', () => {
+  it('exits 1 on a blocking violation when enforcement is block', async () => {
+    const code = await runCommand(
+      'gate',
+      ['--mode=commit'],
+      blockingCommitDeps('block'),
+    );
+    expect(code).toBe(1);
+    expect(errors.join('')).not.toContain('enforcement: warn');
+  });
+
+  it('exits 0 when enforcement is warn, but still prints the violations', async () => {
+    const code = await runCommand(
+      'gate',
+      ['--mode=commit'],
+      blockingCommitDeps('warn'),
+    );
+    expect(code).toBe(0);
+    const output = errors.join('');
+    expect(output).toContain('not blocking (enforcement: warn)');
+    // A passing exit code must never be mistakable for a clean gate.
+    expect(output).toContain('no-console');
+  });
+});
+
+/** As blockingCommitDeps, plus the preToolUse hook payload that gets past the
+ *  command's shell-tool + git-commit self-filter. */
+function blockingPreToolUseDeps(enforcement: 'warn' | 'block'): CliDeps {
+  const base = blockingCommitDeps(enforcement);
+  return {
+    ...base,
+    readStdin: () =>
+      Promise.resolve(
+        JSON.stringify({
+          cwd: root,
+          tool_name: 'bash',
+          tool_input: { command: 'git commit -m x' },
+        }),
+      ),
+  };
+}
+
+describe('gate --mode=pretooluse enforcement', () => {
+  it('emits a deny payload when enforcement is block', async () => {
+    await runCommand(
+      'gate',
+      ['--mode=pretooluse'],
+      blockingPreToolUseDeps('block'),
+    );
+    expect(out.join('')).toContain('deny');
+  });
+
+  it('writes feedback to stderr and emits no deny payload when enforcement is warn', async () => {
+    await runCommand(
+      'gate',
+      ['--mode=pretooluse'],
+      blockingPreToolUseDeps('warn'),
+    );
+    // A deny payload IS the block in both hook dialects, so there is no
+    // allow-with-message channel: stdout must stay empty.
+    expect(out.join('')).toBe('');
+    const output = errors.join('');
+    expect(output).toContain('not blocking (enforcement: warn)');
+    // Counts alone would leave a zero-exit hook mistakable for a clean gate, so
+    // this path prints the same per-violation detail its commit-gate sibling
+    // does, and the same pointer at the setting that makes it enforce.
+    expect(output).toContain('src/foo.ts:1 [no-console] Unexpected console.');
+    expect(output).toContain('"enforcement": "block"');
   });
 });
 

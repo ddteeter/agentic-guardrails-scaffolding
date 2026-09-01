@@ -25,6 +25,7 @@
     "check:graph": "fallow --coverage coverage/coverage-final.json --fail-on-issues",
     "check:graph:full": "fallow --coverage coverage/coverage-final.json",
     "depcruise": "depcruise --output-type err .",
+    "smoke:tarball": "node scripts/smoke-tarball.mjs",
     "prepare": "husky && npm run build"
   },
   "lint-staged": {

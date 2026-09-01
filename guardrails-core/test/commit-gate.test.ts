@@ -159,6 +159,23 @@ describe('runCommitGate', () => {
     expect(result.findings).toHaveLength(0);
     expect(result.blocked).toBe(false);
   });
+
+  it('passes the configured analyzer policy through to verify', async () => {
+    const commands: string[] = [];
+    // Only the command name matters here, so the args parameter is omitted --
+    // the house eslint config rejects an unused parameter.
+    const exec: Exec = (command) => {
+      commands.push(command);
+      return Promise.resolve({ stdout: '', stderr: '', code: 0 });
+    };
+    await runCommitGate({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      analyzers: { knip: 'off' },
+    });
+    expect(commands).not.toContain('knip');
+  });
 });
 
 // Same CI-checkout shape as verify: the base branch may exist only as

@@ -113,6 +113,27 @@ if (skillList.length > 0) {
     writeFileSync(path.join(skillDocs, `${skill.name}.md`), content);
     writeFileSync(path.join(packageGuidance, `${skill.name}.md`), content);
   }
+
+  // guidance/ ships only each skill's BODY (parseSkill strips the
+  // frontmatter before writing it above), so a consumer's installed
+  // docs/guardrails/*.md land with no trigger text of their own -- `init`
+  // has nothing to build a Copilot index from. This index carries exactly
+  // the piece parseSkill stripped: name -> description, so templates.ts can
+  // rebuild both the .claude/skills/*/SKILL.md frontmatter and the
+  // .github/copilot-instructions.md index at install time. Deterministic
+  // (sorted keys, two-space indent, trailing newline) for the same reason
+  // manifest.ts's serializeManifest is: the committed file stays out of
+  // every diff and the CI drift-guard can work on it.
+  const index = {};
+  for (const skill of [...skillList].sort((left, right) =>
+    left.name.localeCompare(right.name),
+  )) {
+    index[skill.name] = skill.description;
+  }
+  writeFileSync(
+    path.join(packageGuidance, 'index.json'),
+    `${JSON.stringify(index, undefined, 2)}\n`,
+  );
 }
 
 // Replace only the marked block, so hand-written Copilot instructions around it
@@ -218,3 +239,81 @@ for (const file of agents) {
 console.log(
   `synced ${agents.length} agent(s): guardrails-plugin/agents → .github/agents (.agent.md)`,
 );
+
+// Consumer-facing templates, shipped in the npm tarball (`files`) and written
+// into a target repo by `guardrails init` (piece 4). The sources are all
+// consumer-generic — they reference `${CLAUDE_PROJECT_DIR}` / `./node_modules`,
+// never a path specific to this repo. Committed and CI drift-guarded, like
+// .github/agents.
+//
+// For the agents, the Claude hook block and the Copilot hooks, the source IS
+// this repo's own live wiring: what we dogfood is exactly what we ship, so the
+// two cannot drift. `.githooks/pre-commit` is the exception and should not be
+// read as dogfooded — this repo's `core.hooksPath` is `.husky/_`, so that file
+// never executes here; `.husky/pre-commit` runs the same `gate --mode=commit`
+// line instead. It is authored here and shipped, not proven here.
+const templates = path.join(root, 'guardrails-core', 'templates');
+rmSync(templates, { recursive: true, force: true });
+
+const claudeAgents = path.join(templates, 'claude', 'agents');
+mkdirSync(claudeAgents, { recursive: true });
+for (const file of agents) {
+  copyFileSync(path.join(from, file), path.join(claudeAgents, file));
+}
+
+const copilotAgents = path.join(templates, 'copilot', 'agents');
+mkdirSync(copilotAgents, { recursive: true });
+for (const file of agents) {
+  const target = file.replace(/\.md$/, '.agent.md');
+  // toCopilotAgent takes the file CONTENTS, not a path -- match the existing
+  // .github/agents emitter above, which reads the file first.
+  writeFileSync(
+    path.join(copilotAgents, target),
+    toCopilotAgent(readFileSync(path.join(from, file), 'utf8')),
+  );
+}
+
+// Only the `hooks` block: a consumer's .claude/settings.json is THEIR file, and
+// `init` merges this in rather than replacing it.
+const claudeSettings = JSON.parse(
+  readFileSync(path.join(root, '.claude', 'settings.json'), 'utf8'),
+);
+mkdirSync(path.join(templates, 'claude'), { recursive: true });
+writeFileSync(
+  path.join(templates, 'claude', 'settings.hooks.json'),
+  `${JSON.stringify({ hooks: claudeSettings.hooks }, undefined, 2)}\n`,
+);
+
+const copilotHooks = path.join(templates, 'copilot', 'hooks');
+mkdirSync(copilotHooks, { recursive: true });
+copyFileSync(
+  path.join(root, '.github', 'hooks', 'guardrails.json'),
+  path.join(copilotHooks, 'guardrails.json'),
+);
+
+const gitHooks = path.join(templates, 'githooks');
+mkdirSync(gitHooks, { recursive: true });
+copyFileSync(
+  path.join(root, '.githooks', 'pre-commit'),
+  path.join(gitHooks, 'pre-commit'),
+);
+
+// Consumer CI workflow (spec §8.1). Unlike the wiring files above, this one
+// has no "this repo's own live wiring" source to copy from: this repo's own
+// `.github/workflows/ci.yml` pins commit SHAs and does far more than a
+// consumer needs (lint, typecheck, build, coverage, tarball smoke). So the
+// consumer-generic version is authored directly in the plugin, not derived.
+const workflowsFrom = path.join(
+  root,
+  'guardrails-plugin',
+  'templates',
+  'workflows',
+);
+const workflowsTo = path.join(templates, 'workflows');
+mkdirSync(workflowsTo, { recursive: true });
+copyFileSync(
+  path.join(workflowsFrom, 'guardrails.yml'),
+  path.join(workflowsTo, 'guardrails.yml'),
+);
+
+console.log(`synced consumer templates → guardrails-core/templates`);

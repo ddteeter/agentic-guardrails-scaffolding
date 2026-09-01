@@ -7,7 +7,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
-import { auditDiff } from './audit.js';
+import { auditDiff, type AuditFinding } from './audit.js';
 import { runAutofix } from './autofix.js';
 import {
   loadConfig,
@@ -31,7 +31,14 @@ import {
   parseHookInput,
   resolveLocalBin,
 } from './hook-io.js';
-import { collectManifestFiles, isPathAllowed, isWithinRepo } from './scope.js';
+import { detect } from './scaffold/detect.js';
+import {
+  foreignHooksPath,
+  foreignHooksPathWarning,
+  HOOKS_DIRECTORY,
+} from './scaffold/hooks-path.js';
+import { initCommand } from './scaffold/init.js';
+import { collectManifestScope, isPathAllowed, isWithinRepo } from './scope.js';
 import {
   deleteSession,
   loadRecurrence,
@@ -69,6 +76,28 @@ function printViolations(
   }
 }
 
+/** The stderr detail the two `enforcement`-governed gates share: every
+ *  violation, then every added suppression the diff-auditor found. */
+function printGateDetail(
+  deps: CliDeps,
+  violations: readonly Violation[],
+  findings: readonly AuditFinding[],
+): void {
+  printViolations(deps, violations);
+  for (const finding of findings) {
+    deps.stderr(
+      `${finding.file}:${finding.line} added ${finding.kind}: ${finding.text}\n`,
+    );
+  }
+}
+
+/** Said outright on both `warn` paths: a zero exit (or a silent allow) must
+ *  never be mistakable for a clean gate, and the reader is told exactly which
+ *  setting makes it enforce. */
+const NOT_BLOCKING_NOTE =
+  'guardrails: not blocking (enforcement: warn). Set "enforcement": ' +
+  '"block" in guardrails.config.json to make this gate enforce.\n';
+
 async function verifyCommand(deps: CliDeps): Promise<number> {
   const repoRoot = deps.cwd;
   const config = loadConfig(repoRoot);
@@ -78,6 +107,7 @@ async function verifyCommand(deps: CliDeps): Promise<number> {
     exec: deps.exec,
     profile: 'ci',
     resolveBin: binResolver(repoRoot),
+    analyzers: config.analyzers,
   });
   printViolations(deps, violations);
   deps.stderr(
@@ -126,6 +156,7 @@ async function gateStopCommand(
     exec: deps.exec,
     config: toGateConfig(config),
     resolveBin: binResolver(repoRoot),
+    analyzers: config.analyzers,
   });
   const output =
     dialect === 'copilot'
@@ -146,14 +177,21 @@ async function gateCommitCommand(deps: CliDeps): Promise<number> {
     exec: deps.exec,
     resolveBin: binResolver(repoRoot),
     sanctionedSuppressions: config.sanctionedSuppressions,
+    analyzers: config.analyzers,
   });
-  printViolations(deps, violations);
-  for (const finding of findings) {
-    deps.stderr(
-      `${finding.file}:${finding.line} added ${finding.kind}: ${finding.text}\n`,
-    );
+  printGateDetail(deps, violations, findings);
+  if (!blocked) {
+    return 0;
   }
-  return blocked ? 1 : 0;
+  // `enforcement` governs the commit and preToolUse gates only; the Claude Code
+  // Stop loop is deliberately never softened (see RepoConfig.enforcement). Under
+  // `warn` the findings are still printed in full above — a zero exit must never
+  // be mistakable for a clean gate, so it is stated outright.
+  if (config.enforcement === 'warn') {
+    deps.stderr(NOT_BLOCKING_NOTE);
+    return 0;
+  }
+  return 1;
 }
 
 const SHELL_TOOLS = /^(?:bash|shell|powershell)$/i;
@@ -192,6 +230,7 @@ async function gatePreToolUseCommand(
     exec: deps.exec,
     resolveBin: binResolver(repoRoot),
     sanctionedSuppressions: config.sanctionedSuppressions,
+    analyzers: config.analyzers,
   });
   if (!blocked) {
     return; // allow (silent)
@@ -200,6 +239,18 @@ async function gatePreToolUseCommand(
     `guardrails: ${violations.length} violation(s), ` +
     `${findings.length} added suppression(s). ` +
     `Resolve them before committing (run 'guardrails verify').`;
+  // Under `warn` the gate reports and allows. stderr rather than a deny payload,
+  // because both hook dialects treat a deny payload as the block itself — there
+  // is no "allow, but say this" channel — and stderr still surfaces in the
+  // transcript. It prints the same detail its commit-gate sibling does: counts
+  // alone on a hook that then allows the commit through are exactly what makes
+  // a warn read as a pass.
+  if (config.enforcement === 'warn') {
+    printGateDetail(deps, violations, findings);
+    deps.stderr(`${reason}\n`);
+    deps.stderr(NOT_BLOCKING_NOTE);
+    return;
+  }
   deps.stdout(JSON.stringify(formatPreToolUseDeny(reason, dialect)));
 }
 
@@ -371,13 +422,20 @@ async function scopeCheckCommand(
     return;
   }
   // Edit/Write: only the files named in the violations manifest. No active
-  // manifest → the fixer isn't running; don't interfere.
-  const files = collectManifestFiles(stateDirectory(repoRoot));
-  if (files.size > 0 && !isPathAllowed(files, repoRoot, input.filePath)) {
+  // manifest → the fixer isn't running; don't interfere. Keyed on `active`
+  // rather than on the file set being non-empty, because those two differ in
+  // exactly the case that matters: a manifest whose every violation named a
+  // denied policy file (see DENIED_FILE_NAMES) yields NO editable files while a
+  // fixer IS running, and reading that as "no fixer" would hand it the whole
+  // repo. Such a fixer has nothing it may legitimately edit, so every write is
+  // denied and the attempt escalates to the main agent.
+  const scope = collectManifestScope(stateDirectory(repoRoot));
+  if (scope.active && !isPathAllowed(scope.files, repoRoot, input.filePath)) {
     denyPreToolUse(
       deps,
-      `Fixer scope-lock: ${input.filePath} is not in the violations ` +
-        `manifest. The fixer may only edit files listed there.`,
+      `Fixer scope-lock: ${input.filePath} is not editable. The fixer may ` +
+        `only edit files named in the violations manifest, and never ` +
+        `package.json or guardrails.config.json.`,
       dialect,
     );
   }
@@ -387,6 +445,46 @@ async function sessionEndCommand(deps: CliDeps): Promise<number> {
   const input = parseHookInput(await deps.readStdin());
   const sessionId = input.sessionId ?? 'default';
   deleteSession(stateDirectory(input.cwd ?? deps.cwd), sessionId);
+  return 0;
+}
+
+/**
+ * `install-hooks`: activates the git-native pre-commit gate that
+ * `.githooks/pre-commit` does nothing without. `scripts.prepare` (wired by
+ * `init --apply`'s `package.json` merger) invokes this on every
+ * `npm install`, which is what gets a fresh clone or a teammate's checkout
+ * onto the gate without them running anything by hand.
+ *
+ * Reads the repo through `detect` rather than trusting `deps.cwd`, for two
+ * reasons that are really one: `core.hooksPath` is per-clone LOCAL git
+ * config, so it has to be read AND written at the repo root git resolved
+ * (setting it from a subdirectory — `npm install` inside a monorepo package —
+ * configures the wrong repository, or none), and `detect` is the one place
+ * that reads it. Running on every `npm install` is exactly why the
+ * foreign-hooksPath check belongs here too: without it this command does not
+ * merely break a husky consumer's hooks once, it re-breaks them immediately
+ * after `husky` restores them, forever. That refusal exits 0 — a warning, not
+ * a failed `npm install`.
+ */
+async function installHooksCommand(deps: CliDeps): Promise<number> {
+  const facts = await detect({ exec: deps.exec, cwd: deps.cwd });
+  const existingHooksPath = foreignHooksPath(facts.hooksPath);
+  if (existingHooksPath !== undefined) {
+    deps.stderr(`guardrails: ${foreignHooksPathWarning(existingHooksPath)}\n`);
+    return 0;
+  }
+  const result = await deps.exec(
+    'git',
+    ['config', 'core.hooksPath', HOOKS_DIRECTORY],
+    { cwd: facts.repoRoot },
+  );
+  if (result.code !== 0) {
+    deps.stderr(
+      `guardrails: git config core.hooksPath failed (exit ${result.code}): ` +
+        `${result.stderr}\n`,
+    );
+    return 1;
+  }
   return 0;
 }
 
@@ -446,9 +544,15 @@ export async function runCommand(
     case 'session-end': {
       return sessionEndCommand(deps);
     }
+    case 'init': {
+      return initCommand(deps, rest);
+    }
+    case 'install-hooks': {
+      return installHooksCommand(deps);
+    }
     default: {
       deps.stderr(
-        'usage: guardrails <verify|autofix|audit|gate [--mode=stop|commit|pretooluse] [--dialect=copilot]|sanctions-check|state|scope-check|session-start|session-end>\n',
+        'usage: guardrails <init [--plan|--apply] [--json] [--force]|verify|autofix|audit|gate [--mode=stop|commit|pretooluse] [--dialect=copilot]|sanctions-check|state|scope-check|session-start|session-end|install-hooks>\n',
       );
       return 1;
     }

@@ -10,6 +10,7 @@ import path from 'node:path';
 
 import type { GateConfig } from './gate-decision.js';
 import { makeIsLoose } from './loose-rules.js';
+import type { AnalyzerMode } from './verify/analyzer-policy.js';
 
 /** One reviewed diff-auditor exemption: the finding key plus why it is allowed. */
 export interface SanctionedSuppression {
@@ -47,6 +48,15 @@ export interface RepoConfig {
    */
   looseRules: string[];
   /**
+   * Per-analyzer opt-in (Phase E piece 1). Keyed by the analyzer's `tool` name
+   * (`eslint`, `tsc`, `knip`, `dependency-cruiser`, `stryker`). An unlisted
+   * analyzer is `auto`: it runs if its binary resolves, and a failure to
+   * resolve is an error only when the repo's own `package.json` declares the
+   * provider. `required` restores the unconditional hard error; `off` skips it
+   * entirely. Empty by default. See `verify/analyzer-policy.ts`.
+   */
+  analyzers: Record<string, AnalyzerMode>;
+  /**
    * Reviewed, checked-in escape hatch for the diff-auditor: exact
    * `file|kind|text` keys of suppressions a human has deliberately sanctioned
    * (e.g. a mutation-exclusion around a hand-written lexer). ONLY the commit
@@ -67,13 +77,39 @@ export interface RepoConfig {
   sanctionedSuppressions: SanctionedSuppression[];
   distribution: 'solo' | 'team';
   /**
-   * RESERVED — read by the CI gate and the Copilot commit-gate, both Phase B;
-   * not yet consumed. It governs whether a *failing gate on those surfaces*
-   * blocks (`block` → CI required status check / commit-gate deny) or only warns
-   * (`warn` → non-blocking CI). It deliberately does NOT gate the Claude Code
-   * Stop-loop — that loop is the flagship local feature and always runs; its
-   * safety comes from the bounded attempt counter and the `--no-verify` bypass,
-   * not from this flag. `toGateConfig` intentionally does not forward it.
+   * Consumed by exactly two commands in `cli-core.ts`: `gateCommitCommand`
+   * (`gate --mode=commit`, run by `.husky/pre-commit`) and
+   * `gatePreToolUseCommand` (`gate --mode=pretooluse`, the Copilot commit/push
+   * gate). It governs whether a *failing gate on those two surfaces* blocks
+   * (`block` → non-zero exit from `gate --mode=commit`; a deny payload from
+   * `gate --mode=pretooluse`) or only warns (`warn` → zero exit; an allow with
+   * a stderr note from `gate --mode=pretooluse`, since a deny payload IS the
+   * block on both hook dialects — there is no "allow, but say this" channel).
+   * Under `warn`, both commands still print every violation and every added
+   * suppression in full — `gateCommitCommand` before returning 0,
+   * `gatePreToolUseCommand` on stderr — and both then state outright that they
+   * are not blocking and which setting makes them enforce, so a passing result
+   * is never mistakable for a clean gate.
+   * This repo's own CI does not currently invoke either command — its
+   * `Guardrails verify` step calls bare `verify`, which does not consult this
+   * field at all and always fails the build on an error-severity violation.
+   *
+   * Enforcement lives entirely in those two commands' exit code / deny
+   * payload: no hook definition or workflow template encodes the policy
+   * separately, so config and wiring cannot drift apart — anything that later
+   * shells out to `gate --mode=commit` (a CI step, a different git hook)
+   * inherits the enforcement decision for free, without reading this field.
+   *
+   * It deliberately does NOT gate the Claude Code Stop loop — that loop is the
+   * flagship local feature and always runs regardless of `enforcement`; its
+   * safety comes from the bounded attempt counter and the `--no-verify`
+   * bypass, not from this flag. Softening the Stop loop under `warn` would be
+   * switching the feature off rather than making it advisory, which is a
+   * different decision than this field exists to make. `toGateConfig`
+   * intentionally does not forward it.
+   *
+   * Parsed asymmetrically: absent → `warn`, present but invalid → `block`.
+   * See `pickEnforcement`.
    */
   enforcement: 'warn' | 'block';
   /** Copilot model id for the fast/thorough fixer .agent.md (the tier ladder on
@@ -91,6 +127,7 @@ export function defaultConfig(): RepoConfig {
     fastFixer: 'guardrail-fixer',
     thoroughFixer: 'guardrail-fixer-thorough',
     looseRules: [],
+    analyzers: {},
     sanctionedSuppressions: [],
     distribution: 'solo',
     enforcement: 'warn',
@@ -205,6 +242,54 @@ function pickString<T extends string>(
   return value as T;
 }
 
+function isAnalyzerMode(value: unknown): value is AnalyzerMode {
+  return value === 'off' || value === 'auto' || value === 'required';
+}
+
+/**
+ * Parse the `analyzers` block. `true`/`false` are accepted as the natural
+ * shorthand for `required`/`off`. Anything else is DROPPED rather than
+ * defaulted, so a typo'd value falls back to `auto` (the analyzer keeps
+ * running) instead of silently disabling a guard — failing toward more
+ * checking, like every other defensive path in this file.
+ */
+function pickAnalyzers(value: unknown): Record<string, AnalyzerMode> {
+  if (!isRecord(value)) {
+    return {};
+  }
+  const modes: Record<string, AnalyzerMode> = {};
+  for (const [tool, raw] of Object.entries(value)) {
+    if (raw === true) {
+      modes[tool] = 'required';
+    } else if (raw === false) {
+      modes[tool] = 'off';
+    } else if (isAnalyzerMode(raw)) {
+      modes[tool] = raw;
+    }
+  }
+  return modes;
+}
+
+/**
+ * Parse `enforcement`, asymmetrically and on purpose. ABSENT falls back to the
+ * caller's default (`'warn'`): a new adopter should not be blocked by a gate
+ * they never asked for, and that humane default is deliberate. PRESENT but not
+ * one of the two valid values — `"Block"`, `"blocked"`, `true` — resolves to
+ * `'block'` instead, because an author who typed the field meant to configure
+ * enforcement, and a typo must never be the thing that silently turns a gate
+ * advisory. Both directions fail toward more checking, like every other
+ * defensive path in this file; only the absent case can produce `'warn'`.
+ */
+function pickEnforcement(
+  value: unknown,
+  fallback: RepoConfig['enforcement'],
+): RepoConfig['enforcement'] {
+  if (value === undefined) {
+    return fallback;
+  }
+  return value === 'warn' ? 'warn' : 'block';
+}
+
 function pickNumber(value: unknown, fallback: number): number {
   // Equivalent mutant on the `typeof value === 'number'` half: Number.isFinite
   // does NOT coerce, so a non-number is rejected by the second half regardless.
@@ -258,15 +343,13 @@ export function loadConfig(repoRoot: string): RepoConfig {
     fastFixer: pickString(raw.fastFixer, defaults.fastFixer),
     thoroughFixer: pickString(raw.thoroughFixer, defaults.thoroughFixer),
     looseRules: pickStringArray(raw.looseRules),
+    analyzers: pickAnalyzers(raw.analyzers),
     sanctionedSuppressions: pickSanctions(raw.sanctionedSuppressions).valid,
     distribution: pickString(raw.distribution, defaults.distribution, [
       'solo',
       'team',
     ]),
-    enforcement: pickString(raw.enforcement, defaults.enforcement, [
-      'warn',
-      'block',
-    ]),
+    enforcement: pickEnforcement(raw.enforcement, defaults.enforcement),
     ...(typeof raw.copilotFastModel === 'string'
       ? { copilotFastModel: raw.copilotFastModel }
       : {}),

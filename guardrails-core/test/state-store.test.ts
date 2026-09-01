@@ -161,6 +161,23 @@ describe('sweepStale', () => {
     expect(loadSession(directory, 'fresh')).toEqual(createSession());
   });
 
+  it('spares recurrence.json from the TTL sweep, however stale', () => {
+    // recurrence.json is the cross-session ledger, not a per-session tally --
+    // it must survive the sweep regardless of age, or a team that commits it
+    // (see plan.md's "Solo -> team") would find their own CI silently erasing
+    // it on the next SessionStart.
+    const now = 1_000_000_000_000;
+    const dayMs = 86_400_000;
+    saveRecurrence(directory, { 'ts/no-stub': 4 });
+    const ancientTime = new Date(now - 365 * dayMs);
+    utimesSync(recurrenceFile(directory), ancientTime, ancientTime);
+
+    const deleted = sweepStale(directory, dayMs, now);
+
+    expect(deleted).toEqual([]);
+    expect(loadRecurrence(directory)).toEqual({ 'ts/no-stub': 4 });
+  });
+
   it('is a no-op on a missing directory', () => {
     expect(sweepStale(path.join(root, 'absent'), 1000, Date.now())).toEqual([]);
   });
