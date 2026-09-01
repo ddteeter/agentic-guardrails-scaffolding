@@ -27,6 +27,13 @@ import {
   parseHookInput,
   resolveLocalBin,
 } from './hook-io.js';
+import { detect } from './scaffold/detect.js';
+import {
+  foreignHooksPath,
+  foreignHooksPathWarning,
+  HOOKS_DIRECTORY,
+} from './scaffold/hooks-path.js';
+import { initCommand } from './scaffold/init.js';
 import { collectManifestScope, isPathAllowed, isWithinRepo } from './scope.js';
 import {
   deleteSession,
@@ -390,6 +397,46 @@ async function sessionEndCommand(deps: CliDeps): Promise<number> {
   return 0;
 }
 
+/**
+ * `install-hooks`: activates the git-native pre-commit gate that
+ * `.githooks/pre-commit` does nothing without. `scripts.prepare` (wired by
+ * `init --apply`'s `package.json` merger) invokes this on every
+ * `npm install`, which is what gets a fresh clone or a teammate's checkout
+ * onto the gate without them running anything by hand.
+ *
+ * Reads the repo through `detect` rather than trusting `deps.cwd`, for two
+ * reasons that are really one: `core.hooksPath` is per-clone LOCAL git
+ * config, so it has to be read AND written at the repo root git resolved
+ * (setting it from a subdirectory — `npm install` inside a monorepo package —
+ * configures the wrong repository, or none), and `detect` is the one place
+ * that reads it. Running on every `npm install` is exactly why the
+ * foreign-hooksPath check belongs here too: without it this command does not
+ * merely break a husky consumer's hooks once, it re-breaks them immediately
+ * after `husky` restores them, forever. That refusal exits 0 — a warning, not
+ * a failed `npm install`.
+ */
+async function installHooksCommand(deps: CliDeps): Promise<number> {
+  const facts = await detect({ exec: deps.exec, cwd: deps.cwd });
+  const existingHooksPath = foreignHooksPath(facts.hooksPath);
+  if (existingHooksPath !== undefined) {
+    deps.stderr(`guardrails: ${foreignHooksPathWarning(existingHooksPath)}\n`);
+    return 0;
+  }
+  const result = await deps.exec(
+    'git',
+    ['config', 'core.hooksPath', HOOKS_DIRECTORY],
+    { cwd: facts.repoRoot },
+  );
+  if (result.code !== 0) {
+    deps.stderr(
+      `guardrails: git config core.hooksPath failed (exit ${result.code}): ` +
+        `${result.stderr}\n`,
+    );
+    return 1;
+  }
+  return 0;
+}
+
 function flag(rest: string[], name: string): string | undefined {
   const prefix = `--${name}=`;
   return rest
@@ -446,9 +493,15 @@ export async function runCommand(
     case 'session-end': {
       return sessionEndCommand(deps);
     }
+    case 'init': {
+      return initCommand(deps, rest);
+    }
+    case 'install-hooks': {
+      return installHooksCommand(deps);
+    }
     default: {
       deps.stderr(
-        'usage: guardrails <verify|autofix|audit|gate [--mode=stop|commit|pretooluse] [--dialect=copilot]|sanctions-check|state|scope-check|session-start|session-end>\n',
+        'usage: guardrails <init [--plan|--apply] [--json] [--force]|verify|autofix|audit|gate [--mode=stop|commit|pretooluse] [--dialect=copilot]|sanctions-check|state|scope-check|session-start|session-end|install-hooks>\n',
       );
       return 1;
     }

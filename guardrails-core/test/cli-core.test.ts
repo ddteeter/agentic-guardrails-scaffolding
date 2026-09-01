@@ -432,6 +432,93 @@ describe('runCommand — unknown', () => {
   });
 });
 
+/** git fake for install-hooks: `rev-parse --show-toplevel` always resolves to
+ *  the fixture `root`, regardless of the cwd it is asked from -- which is
+ *  exactly what lets a test prove the SECOND call (`git config`) used that
+ *  resolved root rather than whatever cwd it was invoked with. `configResult`
+ *  is what the `git config` call itself resolves to. */
+/**
+ * `install-hooks` reads the repo through `detect`, so its fake git has to
+ * answer everything `detect` asks: the toplevel, the base branch, and the
+ * `core.hooksPath` already configured (`existingHooksPath`, '' for none).
+ * Only the WRITE -- `git config core.hooksPath .githooks` -- gets
+ * `configResult`.
+ */
+function installHooksExec(
+  configResult: ExecResult,
+  existingHooksPath = '',
+): {
+  exec: Exec;
+  calls: { args: string[]; cwd: string | undefined }[];
+} {
+  const calls: { args: string[]; cwd: string | undefined }[] = [];
+  const exec: Exec = (command, args, execOptions) => {
+    calls.push({ args, cwd: execOptions?.cwd });
+    if (args[0] === 'rev-parse') {
+      return Promise.resolve(ok(`${root}\n`));
+    }
+    if (args[0] === 'symbolic-ref') {
+      return Promise.resolve(ok('origin/main\n'));
+    }
+    if (args[1] === '--get') {
+      return Promise.resolve(ok(existingHooksPath));
+    }
+    return Promise.resolve(configResult);
+  };
+  return { exec, calls };
+}
+
+const HOOKS_WRITE = ['config', 'core.hooksPath', '.githooks'];
+
+describe('runCommand — install-hooks', () => {
+  // `core.hooksPath` is per-clone LOCAL git config: setting it from anywhere
+  // but the resolved repo root configures the wrong repository (or none), so
+  // the whole point of this command lives in that cwd, not merely its argv.
+  it('resolves the repo root and runs git config core.hooksPath there, not from cwd', async () => {
+    const subdirectory = path.join(root, 'packages', 'app');
+    mkdirSync(subdirectory, { recursive: true });
+    const { exec, calls } = installHooksExec(ok(''));
+    expect(
+      await runCommand('install-hooks', [], deps({ exec, cwd: subdirectory })),
+    ).toBe(0);
+    expect(calls[0]).toEqual({
+      args: ['rev-parse', '--show-toplevel'],
+      cwd: subdirectory,
+    });
+    expect(calls).toContainEqual({ args: HOOKS_WRITE, cwd: root });
+  });
+
+  // `scripts.prepare` runs this on EVERY `npm install`, so an unconditional
+  // repoint does not merely break a husky consumer's hooks once -- it
+  // re-breaks them forever, immediately after `husky` restores them.
+  it('leaves an existing foreign core.hooksPath alone and warns instead', async () => {
+    const { exec, calls } = installHooksExec(ok(''), '.husky/_\n');
+    expect(await runCommand('install-hooks', [], deps({ exec }))).toBe(0);
+    expect(calls.map((call) => call.args)).not.toContainEqual(HOOKS_WRITE);
+    const warned = errors.join('');
+    expect(warned).toContain('.husky/_');
+    expect(warned).toContain('.githooks/pre-commit');
+  });
+
+  it('still repoints when core.hooksPath already points at .githooks', async () => {
+    const { exec, calls } = installHooksExec(ok(''), '.githooks\n');
+    expect(await runCommand('install-hooks', [], deps({ exec }))).toBe(0);
+    expect(calls.map((call) => call.args)).toContainEqual(HOOKS_WRITE);
+    expect(errors.join('')).toBe('');
+  });
+
+  it('reports a non-zero git exit and returns 1', async () => {
+    const { exec } = installHooksExec({
+      stdout: '',
+      stderr: 'error: could not lock config file\n',
+      code: 1,
+    });
+    expect(await runCommand('install-hooks', [], deps({ exec }))).toBe(1);
+    expect(errors.join('')).toContain('core.hooksPath');
+    expect(errors.join('')).toContain('could not lock config file');
+  });
+});
+
 /** stdin payload for the pretooluse gate. */
 function preToolUseStdin(toolName: unknown, command: unknown): string {
   return JSON.stringify({ toolName, toolArgs: { command }, cwd: root });

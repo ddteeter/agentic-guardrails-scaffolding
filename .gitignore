@@ -6,6 +6,7 @@ reports/
 .fallow/
 *.log
 .DS_Store
-.guardrails/state/
+.guardrails/state/*
+!.guardrails/state/recurrence.json
 .claude/agents/
 .claude/skills/
