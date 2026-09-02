@@ -22,7 +22,12 @@ import path from 'node:path';
 import { packageRoot } from '../package-root.js';
 import { analyzerMode, decideAnalyzer } from '../verify/analyzer-policy.js';
 import type { RepoFacts } from './detect.js';
-import { COPILOT_SKILLS_END, COPILOT_SKILLS_START } from './merge.js';
+import {
+  AGENTS_GUARDRAILS_END,
+  AGENTS_GUARDRAILS_START,
+  COPILOT_SKILLS_END,
+  COPILOT_SKILLS_START,
+} from './merge.js';
 import type { SharedPath } from './merge.js';
 import type { ScaffoldDecisions } from './plan.js';
 import {
@@ -78,6 +83,13 @@ const TEMPLATE_FILES: readonly DesiredEntry[] = [
   // SHARED: the merger splices this hooks block into the consumer's own
   // settings file rather than replacing it.
   ['claude/settings.hooks.json', '.claude/settings.json'],
+  ['codex/agents/guardrail-fixer.toml', '.codex/agents/guardrail-fixer.toml'],
+  [
+    'codex/agents/guardrail-fixer-thorough.toml',
+    '.codex/agents/guardrail-fixer-thorough.toml',
+  ],
+  // SHARED: consumers can define their own Codex hooks alongside ours.
+  ['codex/hooks.json', '.codex/hooks.json'],
   [
     'copilot/agents/guardrail-fixer.agent.md',
     '.github/agents/guardrail-fixer.agent.md',
@@ -324,6 +336,28 @@ function copilotInstructionsBlock(directory: string): string {
   ].join('\n');
 }
 
+/** Portable instruction index used by Codex and any other AGENTS.md host. */
+function agentsInstructionsBlock(directory: string): string {
+  return [
+    AGENTS_GUARDRAILS_START,
+    '',
+    '## Guardrails',
+    '',
+    'If `CLAUDE.md` exists, read and follow it as additional project instructions.',
+    '',
+    'Read the linked reference **when its trigger applies** — not up front.',
+    '',
+    ...Object.entries(runtimeSkillIndex(directory)).map(
+      ([name, description]) =>
+        `- [\`${name}\`](docs/guardrails/${name}.md) — ${description}`,
+    ),
+    '',
+    'When a guardrails Stop hook asks for a fixer, delegate only the violations-manifest path to the named fixer agent.',
+    '',
+    AGENTS_GUARDRAILS_END,
+  ].join('\n');
+}
+
 /**
  * True when the repo actually asked for this analyzer — `required`, or an
  * unlisted/`auto` analyzer whose provider package the repo's own
@@ -381,6 +415,10 @@ export function buildDesiredFiles(
     [
       '.github/copilot-instructions.md',
       copilotInstructionsBlock(guidanceRoot()),
+    ] satisfies DesiredEntry,
+    [
+      'AGENTS.md',
+      agentsInstructionsBlock(guidanceRoot()),
     ] satisfies DesiredEntry,
     ...SHARED_DERIVED_PATHS.map((shared): DesiredEntry => [
       shared,

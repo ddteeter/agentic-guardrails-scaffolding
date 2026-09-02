@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   isSharedPath,
+  mergeAgentsInstructions,
   mergeClaudeSettings,
   mergeCopilotInstructions,
   mergeGitignore,
@@ -154,6 +155,31 @@ describe('mergeClaudeSettings', () => {
     // Failing closed: better to report than to destroy a file we cannot parse.
     const current = '{ this is not json';
     expect(mergeClaudeSettings(current, HOOKS_BLOCK)).toBe(current);
+  });
+});
+
+describe('mergeAgentsInstructions', () => {
+  const block = [
+    '<!-- guardrails:instructions:start -->',
+    'new guardrails index',
+    '<!-- guardrails:instructions:end -->',
+  ].join('\n');
+
+  it('preserves consumer prose while replacing the guardrails block', () => {
+    const current = [
+      '# Project instructions',
+      '',
+      '<!-- guardrails:instructions:start -->',
+      'old index',
+      '<!-- guardrails:instructions:end -->',
+      '',
+      'Consumer tail.',
+    ].join('\n');
+    const merged = mergeAgentsInstructions(current, block);
+    expect(merged).toContain('# Project instructions');
+    expect(merged).toContain('new guardrails index');
+    expect(merged).toContain('Consumer tail.');
+    expect(merged).not.toContain('old index');
   });
 });
 

@@ -3,9 +3,9 @@
  *
  * `planScaffold` decides that a SHARED path (`.claude/settings.json`,
  * `.gitignore`, `package.json`'s `prepare` script,
- * `.github/copilot-instructions.md`) always gets `merge`, never `drift`: the
+ * `.github/copilot-instructions.md`, `AGENTS.md`) always gets `merge`, never `drift`: the
  * consumer owns the file, and guardrails only ever touches its own entries in
- * it. These four functions ARE that touch. Every one is pure -- no I/O, no
+ * it. The functions below ARE that touch. Every one is pure -- no I/O, no
  * filesystem -- so the sharpest edge in the whole piece (a wrong merge here
  * either silently disables the guardrail loop or clobbers a consumer's own
  * hooks) is provable by fast unit tests instead of filesystem fixtures.
@@ -215,6 +215,8 @@ export function mergePrepareScript(current: string | undefined): string {
 // instead of splice, with no error.
 export const COPILOT_SKILLS_START = '<!-- guardrails:skills:start -->';
 export const COPILOT_SKILLS_END = '<!-- guardrails:skills:end -->';
+export const AGENTS_GUARDRAILS_START = '<!-- guardrails:instructions:start -->';
+export const AGENTS_GUARDRAILS_END = '<!-- guardrails:instructions:end -->';
 
 /**
  * Merges the guardrails skills index into `.github/copilot-instructions.md`,
@@ -230,6 +232,19 @@ export function mergeCopilotInstructions(
     current ?? '',
     COPILOT_SKILLS_START,
     COPILOT_SKILLS_END,
+    block,
+  );
+}
+
+/** Merges the portable guardrails index into the repository's AGENTS.md. */
+export function mergeAgentsInstructions(
+  current: string | undefined,
+  block: string,
+): string {
+  return replaceMarkedBlock(
+    current ?? '',
+    AGENTS_GUARDRAILS_START,
+    AGENTS_GUARDRAILS_END,
     block,
   );
 }
@@ -353,7 +368,9 @@ function textMerger(
  * apart the way two independently maintained lists could.
  */
 export const SHARED_MERGERS = {
+  'AGENTS.md': textMerger(mergeAgentsInstructions),
   '.claude/settings.json': jsonMerger(mergeClaudeSettings),
+  '.codex/hooks.json': jsonMerger(mergeClaudeSettings),
   '.github/copilot-instructions.md': textMerger(mergeCopilotInstructions),
   '.gitignore': textMerger((current: string | undefined) =>
     mergeGitignore(current),

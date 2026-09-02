@@ -16,6 +16,9 @@ const EXPECTED_FILES = [
   'claude/agents/guardrail-fixer.md',
   'claude/agents/guardrail-fixer-thorough.md',
   'claude/settings.hooks.json',
+  'codex/agents/guardrail-fixer.toml',
+  'codex/agents/guardrail-fixer-thorough.toml',
+  'codex/hooks.json',
   'copilot/agents/guardrail-fixer.agent.md',
   'copilot/agents/guardrail-fixer-thorough.agent.md',
   'copilot/hooks/guardrails.json',
@@ -44,6 +47,39 @@ describe('consumer templates', () => {
       'SessionStart',
       'Stop',
     ]);
+  });
+
+  it('ships all five Codex lifecycle hooks with the Codex dialect', () => {
+    const hooks = readFileSync(
+      path.join(templates, 'codex', 'hooks.json'),
+      'utf8',
+    );
+    for (const event of [
+      'SessionStart',
+      'SessionEnd',
+      'PreToolUse',
+      'PostToolUse',
+      'Stop',
+    ]) {
+      expect(hooks).toContain(`"${event}"`);
+    }
+    expect(hooks).toContain('--dialect=codex');
+    expect(hooks).toContain('apply_patch');
+  });
+
+  it('ships valid-looking Codex custom agent definitions', () => {
+    for (const agent of [
+      'guardrail-fixer.toml',
+      'guardrail-fixer-thorough.toml',
+    ]) {
+      const content = readFileSync(
+        path.join(templates, 'codex', 'agents', agent),
+        'utf8',
+      );
+      expect(content).toContain('name = "guardrail-fixer');
+      expect(content).toContain('sandbox_mode = "workspace-write"');
+      expect(content).toContain("developer_instructions = '''");
+    }
   });
 
   it('ships the self-filtering Claude scope-lock hook', () => {

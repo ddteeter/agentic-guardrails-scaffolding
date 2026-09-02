@@ -1,7 +1,7 @@
 # Agent Guardrails
 
-An initial TypeScript guardrail pack for Claude Code, with a headless GitHub
-Copilot channel and Java support on the roadmap. Mechanically-fixable violations
+An initial TypeScript guardrail pack for Claude Code, ChatGPT Codex CLI, and a
+headless GitHub Copilot channel, with Java support on the roadmap. Mechanically-fixable violations
 are corrected silently; judgment-requiring violations are diverted to disk and
 the main agent is handed a **terse pointer** to delegate the fix to a restricted
 subagent — keeping the main agent's context clean while a session-scoped memory
@@ -44,8 +44,8 @@ npx guardrails init --plan   # see what it would write; nothing touches disk
 npx guardrails init --apply  # write it
 ```
 
-`init` is re-runnable: on a fresh repo it creates the fixer agents,
-`.githooks/pre-commit`, `.github/hooks/guardrails.json`, and a seeded
+`init` is re-runnable: on a fresh repo it creates the Claude, Codex, and Copilot
+fixer agents, `.githooks/pre-commit`, host hook configuration, and a seeded
 `guardrails.config.json`; on a repo it already scaffolded, an untouched file
 is upgraded in place, and a file you edited is reported as drifted and left
 alone (pass `--force` to overwrite it anyway) — except `guardrails.config.json`
@@ -55,7 +55,7 @@ overwritten again once it exists, `--force` included. A file you own outright �
 `init` merges only its own entries into whatever is already there. See
 `plan.md`'s "Phase E status" for what that merge does and does not preserve.
 
-## The control loop (Claude Code)
+## The control loop (Claude Code and Codex CLI)
 
 ```
 main agent finishes turn
@@ -88,7 +88,7 @@ Everything is authored in strict TypeScript, compiled to pure-Node ESM
 - **verify orchestrator** (`src/verify/`) — diff-scoping + eslint/tsc adapters.
 - **Gate** (`src/gate-decision.ts`, `src/gate.ts`) — the clean/delegate/escalate
   engine + snapshot-based fixer audit, shared by the CC stop-gate and (Phase B)
-  the Copilot commit-gate.
+  the Codex and Copilot commit gates.
 - **CLI** (`src/cli.ts`, `src/cli-core.ts`) — `verify | autofix | audit | gate |
 state | scope-check | session-start | session-end`.
 - **Plugin** (`guardrails-plugin/`) — `hooks.json`, two fixer subagents, and a
@@ -126,11 +126,11 @@ runs and never reports, so a repo can adopt eslint/tsc first and add the
 whole-graph analyzers (knip, dependency-cruiser, stryker) once its baseline is
 clean.
 
-## Verifying the live Claude Code loop
+## Verifying the live agent loop
 
 The headless tests prove verify → gate → delegate → audit → re-verify →
 recurrence at the logic and real-`git`/real-spawn integration level. The one
-thing that needs a real Claude Code session (a subagent actually being spawned)
+thing that needs a real host session (a subagent actually being spawned)
 is documented as a manual acceptance test in
 [`docs/live-loop-verification.md`](./docs/live-loop-verification.md).
 
@@ -138,10 +138,12 @@ is documented as a manual acceptance test in
 
 This repo **self-hosts** the guardrail loop on its own development: the
 `scaffold-typescript-project` bootstrap tooling gave way to `guardrails` itself.
-`.claude/settings.json` wires `guardrails autofix` (PostToolUse) and
-`guardrails gate --mode=stop` (Stop), with the two fixer agents in
-`.claude/agents/`; the `vitest/expect-expect` house rule exercises the recurrence
-path. Beneath that loop sits the tool-agnostic floor: this repo's
+`.claude/settings.json` and `.codex/hooks.json` wire `guardrails autofix`
+(PostToolUse) and `guardrails gate --mode=stop` (Stop), with generated fixer
+agents in `.claude/agents/` and `.codex/agents/`; the `vitest/expect-expect`
+house rule exercises the recurrence path. Codex asks for one-time repository
+hook trust; inspect and approve `.codex/hooks.json` with `/hooks` in a fresh
+session. Beneath that loop sits the tool-agnostic floor: this repo's
 `.husky/pre-commit` runs `guardrails gate --mode=commit` on every commit;
 consumer repos activate the identical check via
 `git config core.hooksPath .githooks` (see `.githooks/pre-commit`). Husky

@@ -66,7 +66,7 @@ jobs:
       # wiring, so drift here means the shipped template no longer matches
       # what this repo runs.
       - name: Skill docs in sync (generated docs committed)
-        run: git diff --exit-code -- docs/guardrails guardrails-core/guidance guardrails-core/templates .github/copilot-instructions.md
+        run: git diff --exit-code -- docs/guardrails guardrails-core/guidance guardrails-core/templates .github/copilot-instructions.md .codex/agents AGENTS.md
 
       # `gate --mode=commit` runs verify PLUS the diff-auditor PLUS the
       # sanction budget -- bare `verify` runs neither of the last two, so a

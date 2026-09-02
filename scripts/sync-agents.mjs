@@ -25,6 +25,7 @@ const root = path.resolve(import.meta.dirname, '..');
 const from = path.join(root, 'guardrails-plugin', 'agents');
 const to = path.join(root, '.claude', 'agents');
 const githubAgents = path.join(root, '.github', 'agents');
+const codexAgents = path.join(root, '.codex', 'agents');
 
 // Clear the destination first so a source file that was renamed or deleted
 // can't leave a stale generated copy behind (`.claude/agents/` is gitignored, so
@@ -164,6 +165,40 @@ const merged =
     ? `${existing.trimEnd()}\n\n${index}\n`
     : `${existing.slice(0, startAt)}${index}${existing.slice(endAt + END.length)}`;
 writeFileSync(copilotInstructions, merged);
+
+// AGENTS.md is shared across agent hosts. Keep only this marker-delimited
+// index under guardrails ownership so a repository's own instructions survive.
+const AGENTS_START = '<!-- guardrails:instructions:start -->';
+const AGENTS_END = '<!-- guardrails:instructions:end -->';
+const agentsIndex = [
+  AGENTS_START,
+  '',
+  '## Guardrails',
+  '',
+  'If `CLAUDE.md` exists, read and follow it as additional project instructions.',
+  '',
+  'Read the linked reference **when its trigger applies** — not up front.',
+  '',
+  ...skillList.map(
+    (skill) =>
+      `- [\`${skill.name}\`](docs/guardrails/${skill.name}.md) — ${skill.description}`,
+  ),
+  '',
+  'When a guardrails Stop hook asks for a fixer, delegate only the violations-manifest path to the named fixer agent.',
+  '',
+  AGENTS_END,
+].join('\n');
+const agentsInstructions = path.join(root, 'AGENTS.md');
+const existingAgents = existsSync(agentsInstructions)
+  ? readFileSync(agentsInstructions, 'utf8')
+  : `${AGENTS_START}\n${AGENTS_END}\n`;
+const agentsStartAt = existingAgents.indexOf(AGENTS_START);
+const agentsEndAt = existingAgents.indexOf(AGENTS_END);
+const mergedAgents =
+  agentsStartAt === -1 || agentsEndAt === -1
+    ? `${existingAgents.trimEnd()}\n\n${agentsIndex}\n`
+    : `${existingAgents.slice(0, agentsStartAt)}${agentsIndex}${existingAgents.slice(agentsEndAt + AGENTS_END.length)}`;
+writeFileSync(agentsInstructions, mergedAgents);
 console.log(
   `synced ${skillList.length} skill doc(s): guardrails-plugin/skills → docs/guardrails + guardrails-core/guidance + .github/copilot-instructions.md`,
 );
@@ -229,6 +264,23 @@ function toCopilotAgent(source) {
   return lines.join('\n');
 }
 
+function toCodexAgent(source) {
+  const parts = source.split(/^---$/m);
+  const fm = parts[1];
+  const body = parts.slice(2).join('---').replace(/^\n+/, '').trimEnd();
+  const name = frontmatterField(fm, 'name');
+  const description = frontmatterField(fm, 'description');
+  return [
+    `name = ${JSON.stringify(name)}`,
+    `description = ${JSON.stringify(description)}`,
+    'sandbox_mode = "workspace-write"',
+    "developer_instructions = '''",
+    body,
+    "'''",
+    '',
+  ].join('\n');
+}
+
 rmSync(githubAgents, { recursive: true, force: true });
 mkdirSync(githubAgents, { recursive: true });
 for (const file of agents) {
@@ -238,6 +290,19 @@ for (const file of agents) {
 }
 console.log(
   `synced ${agents.length} agent(s): guardrails-plugin/agents → .github/agents (.agent.md)`,
+);
+
+rmSync(codexAgents, { recursive: true, force: true });
+mkdirSync(codexAgents, { recursive: true });
+for (const file of agents) {
+  const source = readFileSync(path.join(from, file), 'utf8');
+  writeFileSync(
+    path.join(codexAgents, file.replace(/\.md$/, '.toml')),
+    toCodexAgent(source),
+  );
+}
+console.log(
+  `synced ${agents.length} agent(s): guardrails-plugin/agents → .codex/agents (.toml)`,
 );
 
 // Consumer-facing templates, shipped in the npm tarball (`files`) and written
@@ -273,6 +338,16 @@ for (const file of agents) {
   );
 }
 
+const codexTemplateAgents = path.join(templates, 'codex', 'agents');
+mkdirSync(codexTemplateAgents, { recursive: true });
+for (const file of agents) {
+  const target = file.replace(/\.md$/, '.toml');
+  writeFileSync(
+    path.join(codexTemplateAgents, target),
+    toCodexAgent(readFileSync(path.join(from, file), 'utf8')),
+  );
+}
+
 // Only the `hooks` block: a consumer's .claude/settings.json is THEIR file, and
 // `init` merges this in rather than replacing it.
 const claudeSettings = JSON.parse(
@@ -282,6 +357,12 @@ mkdirSync(path.join(templates, 'claude'), { recursive: true });
 writeFileSync(
   path.join(templates, 'claude', 'settings.hooks.json'),
   `${JSON.stringify({ hooks: claudeSettings.hooks }, undefined, 2)}\n`,
+);
+
+mkdirSync(path.join(templates, 'codex'), { recursive: true });
+copyFileSync(
+  path.join(root, '.codex', 'hooks.json'),
+  path.join(templates, 'codex', 'hooks.json'),
 );
 
 const copilotHooks = path.join(templates, 'copilot', 'hooks');

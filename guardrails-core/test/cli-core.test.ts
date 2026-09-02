@@ -701,6 +701,33 @@ function failingVerifyExec(): Exec {
 }
 
 describe('scope-check trigger conditions', () => {
+  it('denies a multi-file Codex patch when any path is outside the manifest', async () => {
+    writeActiveViolations('default', [violation('src/allowed.ts')]);
+    const command = [
+      '*** Begin Patch',
+      '*** Update File: src/allowed.ts',
+      '*** Add File: src/forbidden.ts',
+      '*** End Patch',
+    ].join('\n');
+    const stdin = JSON.stringify({
+      cwd: root,
+      tool_name: 'apply_patch',
+      tool_input: { command },
+    });
+    expect(await runScopeCheck(stdin)).toContain('src/forbidden.ts');
+  });
+
+  it('denies shell and MCP tools while a fixer manifest is active', async () => {
+    writeActiveViolations('default', [violation('src/a.ts')]);
+    expect(await runScopeCheck(scopeStdin('Bash', undefined))).toContain(
+      'deny',
+    );
+    out.length = 0;
+    expect(
+      await runScopeCheck(scopeStdin('mcp__server__write', undefined)),
+    ).toContain('deny');
+  });
+
   it('treats only exact read-tool names as reads', async () => {
     // Kills the READ_TOOLS anchor mutants. An unanchored pattern would classify
     // `my-read` / `read-only` as reads and deny them for being outside the repo,
@@ -962,6 +989,8 @@ describe('cli-core final hardening', () => {
     // present, which only happens on the run that crosses recurThreshold.
     const copilot = await primeStopGate(3, ['--dialect=copilot']);
     rmSync(stateDirectory(root), { recursive: true, force: true });
+    const codex = await primeStopGate(3, ['--dialect=codex']);
+    rmSync(stateDirectory(root), { recursive: true, force: true });
     const claude = await primeStopGate(3, []);
 
     expect(copilot).not.toBe('');
@@ -970,6 +999,8 @@ describe('cli-core final hardening', () => {
     // it into `reason` because its hook host has no such field.
     expect(claude).toContain('hookSpecificOutput');
     expect(copilot).not.toContain('hookSpecificOutput');
+    expect(codex).not.toContain('hookSpecificOutput');
+    expect(codex).toContain('reason');
   });
 
   it('defaults the session id to "default" across stop, state and session-end', async () => {
@@ -1374,6 +1405,38 @@ function execRecorder(): { exec: Exec; calls: string[][] } {
 // and had no test at all: stryker reported its whole body as NoCoverage, which
 // the mutation gate did not flag before this change.
 describe('autofix command', () => {
+  it('runs eslint --fix on every TypeScript file in a Codex apply_patch', async () => {
+    const { exec, calls } = execRecorder();
+    const command = [
+      '*** Begin Patch',
+      '*** Update File: src/a.ts',
+      '*** Add File: src/b.tsx',
+      '*** Update File: README.md',
+      '*** End Patch',
+    ].join('\n');
+    await runCommand(
+      'autofix',
+      [],
+      deps({
+        exec,
+        readStdin: () =>
+          Promise.resolve(
+            JSON.stringify({
+              cwd: root,
+              tool_name: 'apply_patch',
+              tool_input: { command },
+            }),
+          ),
+      }),
+    );
+    const eslintCall = calls.find(
+      (call) => call[0]?.includes('eslint') === true,
+    );
+    expect(eslintCall).toContain('src/a.ts');
+    expect(eslintCall).toContain('src/b.tsx');
+    expect(eslintCall).not.toContain('README.md');
+  });
+
   it('runs eslint --fix on the edited file named by the hook payload', async () => {
     const { exec, calls } = execRecorder();
     const stdin = JSON.stringify({

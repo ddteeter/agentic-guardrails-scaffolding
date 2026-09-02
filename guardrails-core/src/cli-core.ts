@@ -130,10 +130,12 @@ async function autofixCommand(deps: CliDeps): Promise<number> {
   // mutant: `[x].filter(...)` and the ternary form each move the equivalence
   // from the `true` variant to the `false` one rather than removing it.
   // Stryker disable next-line ConditionalExpression
-  if (input.filePath !== undefined) {
+  const files =
+    input.filePaths ?? (input.filePath === undefined ? [] : [input.filePath]);
+  if (files.length > 0) {
     await runAutofix({
       repoRoot,
-      files: [input.filePath],
+      files: [...files],
       exec: deps.exec,
       resolveBin: binResolver(repoRoot),
     });
@@ -160,9 +162,9 @@ async function gateStopCommand(
     isRetry: input.stopHookActive,
   });
   const output =
-    dialect === 'copilot'
-      ? formatCopilotStopOutput(decision)
-      : formatStopHookOutput(decision);
+    dialect === 'claude'
+      ? formatStopHookOutput(decision)
+      : formatCopilotStopOutput(decision);
   if (output) {
     deps.stdout(JSON.stringify(output));
   }
@@ -403,19 +405,37 @@ async function scopeCheckCommand(
 ): Promise<void> {
   const input = parseHookInput(await deps.readStdin());
   const repoRoot = input.cwd ?? deps.cwd;
-  if (input.filePath === undefined) {
+  const scope = collectManifestScope(stateDirectory(repoRoot), input.sessionId);
+  // Codex custom agents do not expose a per-agent tool allowlist. While a
+  // fixer manifest is active, the repo-level hook therefore enforces the same
+  // no-shell/no-MCP boundary that Claude and Copilot express declaratively.
+  if (
+    scope.active &&
+    (SHELL_TOOLS.test(input.toolName ?? '') ||
+      (input.toolName?.startsWith('mcp__') ?? false))
+  ) {
+    denyPreToolUse(
+      deps,
+      'Fixer capability-lock: shell and MCP tools are unavailable while a ' +
+        'guardrail fixer is active.',
+      dialect,
+    );
     return;
   }
+  const filePaths =
+    input.filePaths ?? (input.filePath === undefined ? [] : [input.filePath]);
+  if (filePaths.length === 0) return;
   // Read: the fixer may read anything WITHIN the repo (manifest, edited files,
   // even node_modules rule sources — that in-repo exploration is how the
   // thorough tier diagnoses subtle rules), but nothing OUTSIDE it (e.g. the
   // user's ~/.claude project memory). Covers both dialects' read tool: Claude's
   // `Read` and Copilot's `view`.
   if (isReadTool(input.toolName)) {
-    if (!isWithinRepo(repoRoot, input.filePath)) {
+    const outside = filePaths.find((file) => !isWithinRepo(repoRoot, file));
+    if (outside !== undefined) {
       denyPreToolUse(
         deps,
-        `Fixer read-scope: ${input.filePath} is outside the repository. ` +
+        `Fixer read-scope: ${outside} is outside the repository. ` +
           `The fixer may only read files within the repo.`,
         dialect,
       );
@@ -430,11 +450,13 @@ async function scopeCheckCommand(
   // fixer IS running, and reading that as "no fixer" would hand it the whole
   // repo. Such a fixer has nothing it may legitimately edit, so every write is
   // denied and the attempt escalates to the main agent.
-  const scope = collectManifestScope(stateDirectory(repoRoot), input.sessionId);
-  if (scope.active && !isPathAllowed(scope.files, repoRoot, input.filePath)) {
+  const denied = filePaths.find(
+    (file) => !isPathAllowed(scope.files, repoRoot, file),
+  );
+  if (scope.active && denied !== undefined) {
     denyPreToolUse(
       deps,
-      `Fixer scope-lock: ${input.filePath} is not editable. The fixer may ` +
+      `Fixer scope-lock: ${denied} is not editable. The fixer may ` +
         `only edit files named in the violations manifest, and never ` +
         `package.json or guardrails.config.json.`,
       dialect,
@@ -497,7 +519,8 @@ function flag(rest: string[], name: string): string | undefined {
 }
 
 function resolveDialect(rest: string[]): Dialect {
-  return flag(rest, 'dialect') === 'copilot' ? 'copilot' : 'claude';
+  const dialect = flag(rest, 'dialect');
+  return dialect === 'copilot' || dialect === 'codex' ? dialect : 'claude';
 }
 
 export async function runCommand(
@@ -553,7 +576,7 @@ export async function runCommand(
     }
     default: {
       deps.stderr(
-        'usage: guardrails <init [--plan|--apply] [--json] [--force]|verify|autofix|audit|gate [--mode=stop|commit|pretooluse] [--dialect=copilot]|sanctions-check|state|scope-check|session-start|session-end|install-hooks>\n',
+        'usage: guardrails <init [--plan|--apply] [--json] [--force]|verify|autofix|audit|gate [--mode=stop|commit|pretooluse] [--dialect=codex|copilot]|sanctions-check|state|scope-check|session-start|session-end|install-hooks>\n',
       );
       return 1;
     }

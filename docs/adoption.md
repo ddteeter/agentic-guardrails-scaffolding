@@ -53,11 +53,11 @@ files you have edited — never SEED-ONCE), `--analyzers=<tool>=<off|auto|requir
 `init` writes three kinds of files, and the difference matters the moment you
 edit one of them by hand.
 
-| Class         | Behavior                                                                                                                                                                                                                                                                                              | Examples                                                                                                                                                                                                                                                                                                                                                                                               |
-| ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **OWNED**     | Absent → created. Unmodified since scaffolding (checksum in `.guardrails/scaffold.json` still matches) → silently rewritten on the next `init --apply`, so upgrades land automatically. Edited by you → left alone and reported as `drift` in the plan; `--force` overwrites it anyway.               | `.claude/agents/guardrail-fixer.md`, `.claude/agents/guardrail-fixer-thorough.md`, `.github/agents/guardrail-fixer*.agent.md`, `.github/hooks/guardrails.json`, `.githooks/pre-commit`, `.github/workflows/guardrails.yml`, `docs/guardrails/crushing-mutants.md`, `docs/guardrails/boundary-validation.md`, `.claude/skills/crushing-mutants/SKILL.md`, `.claude/skills/boundary-validation/SKILL.md` |
-| **SHARED**    | Absent → the whole file is created. Present → always `merge`: guardrails splices in only its own entries (a hooks block, a gitignore stanza, the `prepare` script line, a marked doc section) and leaves everything else in your file untouched. Never reports `drift`, never sensitive to `--force`. | `.claude/settings.json`, `.gitignore`, `package.json`, `.github/copilot-instructions.md`                                                                                                                                                                                                                                                                                                               |
-| **SEED-ONCE** | Absent → created once. Present → left alone, forever — `--force` included.                                                                                                                                                                                                                            | `guardrails.config.json`, `.dependency-cruiser.cjs` (only if dependency-cruiser is enabled and no config exists yet), `stryker.conf.json` (same, for stryker)                                                                                                                                                                                                                                          |
+| Class         | Behavior                                                                                                                                                                                                                                                                                              | Examples                                                                                                                                                                                                                                                                  |
+| ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **OWNED**     | Absent → created. Unmodified since scaffolding (checksum in `.guardrails/scaffold.json` still matches) → silently rewritten on the next `init --apply`, so upgrades land automatically. Edited by you → left alone and reported as `drift` in the plan; `--force` overwrites it anyway.               | `.claude/agents/guardrail-fixer*.md`, `.codex/agents/guardrail-fixer*.toml`, `.github/agents/guardrail-fixer*.agent.md`, `.github/hooks/guardrails.json`, `.githooks/pre-commit`, `.github/workflows/guardrails.yml`, `docs/guardrails/*.md`, `.claude/skills/*/SKILL.md` |
+| **SHARED**    | Absent → the whole file is created. Present → always `merge`: guardrails splices in only its own entries (a hooks block, a gitignore stanza, the `prepare` script line, a marked doc section) and leaves everything else in your file untouched. Never reports `drift`, never sensitive to `--force`. | `.claude/settings.json`, `.codex/hooks.json`, `AGENTS.md`, `.gitignore`, `package.json`, `.github/copilot-instructions.md`                                                                                                                                                |
+| **SEED-ONCE** | Absent → created once. Present → left alone, forever — `--force` included.                                                                                                                                                                                                                            | `guardrails.config.json`, `.dependency-cruiser.cjs` (only if dependency-cruiser is enabled and no config exists yet), `stryker.conf.json` (same, for stryker)                                                                                                             |
 
 `guardrails.config.json` is the one file `--force` can never touch: it holds
 your policy and your `sanctionedSuppressions`, and losing it is the worst
@@ -150,7 +150,7 @@ merging only when the job actually fails — and under `enforcement: "warn"`,
 `gate --mode=commit` exits 0 regardless of what it found. Flip
 `enforcement` to `"block"` before a required check does anything.
 
-**The Claude Code Stop loop is never softened by this field.** The
+**The Claude Code and Codex Stop loops are never softened by this field.** The
 per-turn Stop hook (`gate --mode=stop`) always blocks on a violation, bounded
 by `maxAttempts`, from the moment it is wired in — `warn`/`block` has no
 effect on it. That loop's safety comes from the attempt counter and the
@@ -215,6 +215,15 @@ your edit and manually reconcile.
 
 `--json` gives the same information as `{ actions, warnings }` for scripting.
 
+## Codex CLI activation and trust
+
+Codex discovers `.codex/hooks.json`, `.codex/agents/*.toml`, and `AGENTS.md`
+from the repository. Start a fresh Codex session after scaffolding, run
+`/hooks`, inspect the commands, and approve the repository hook hash. Codex
+will not execute newly added or changed repository hooks until they are trusted.
+The generated commands resolve `guardrails-core` from the Git top-level, so a
+session launched in a subdirectory still uses the repository's pinned package.
+
 ## The kill-switch
 
 To turn off the Claude Code Stop loop specifically: edit `.claude/settings.json`
@@ -222,6 +231,11 @@ and remove (or empty) the `hooks.Stop` entry that runs
 `guardrails gate --mode=stop`. `.githooks/pre-commit` and the CI workflow are
 untouched by this — they are separate hook/workflow files, not gated by
 `.claude/settings.json` at all.
+
+For Codex, remove (or empty) the `.codex/hooks.json` `Stop` entry that runs
+`gate --mode=stop --dialect=codex`. This is likewise re-added by the next
+`init --apply`, because `.codex/hooks.json` is SHARED and guardrails owns only
+its own hook entries.
 
 **This is not durable across upgrades.** `.claude/settings.json` is a SHARED
 file: `init --apply` always re-merges guardrails' `Stop` entry back in on the

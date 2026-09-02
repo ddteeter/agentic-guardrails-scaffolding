@@ -100,6 +100,10 @@ describe('buildDesiredFiles — the shipped template tree', () => {
     '.claude/agents/guardrail-fixer.md',
     '.claude/agents/guardrail-fixer-thorough.md',
     '.claude/settings.json',
+    '.codex/agents/guardrail-fixer.toml',
+    '.codex/agents/guardrail-fixer-thorough.toml',
+    '.codex/hooks.json',
+    'AGENTS.md',
     '.github/agents/guardrail-fixer.agent.md',
     '.github/agents/guardrail-fixer-thorough.agent.md',
     '.github/hooks/guardrails.json',
@@ -234,6 +238,28 @@ describe('buildDesiredFiles — .github/copilot-instructions.md (spec §7 Task 3
     // be a dead link in a consumer repo, since that doc is never installed.
     const desired = buildDesiredFiles(facts(), decisions());
     const content = contentOf(desired, '.github/copilot-instructions.md');
+    expect(content).not.toContain('adopting-guardrails');
+  });
+});
+
+describe('buildDesiredFiles — Codex', () => {
+  it('installs Codex hooks and both custom fixer agents', () => {
+    const desired = buildDesiredFiles(facts(), decisions());
+    expect(desired).toHaveProperty('.codex/hooks.json');
+    expect(desired).toHaveProperty('.codex/agents/guardrail-fixer.toml');
+    expect(desired).toHaveProperty(
+      '.codex/agents/guardrail-fixer-thorough.toml',
+    );
+  });
+
+  it('adds a marker-owned AGENTS.md index with runtime triggers', () => {
+    const content = contentOf(
+      buildDesiredFiles(facts(), decisions()),
+      'AGENTS.md',
+    );
+    expect(content).toContain('<!-- guardrails:instructions:start -->');
+    expect(content).toContain('(docs/guardrails/crushing-mutants.md)');
+    expect(content).toContain('stryker/survived');
     expect(content).not.toContain('adopting-guardrails');
   });
 });

@@ -1,7 +1,7 @@
 # Live-loop verification (manual acceptance test)
 
 The automated suite proves the guardrail machinery end-to-end **except** the one
-step that requires a running Claude Code session: the main agent actually
+step that requires a running Claude Code or Codex CLI session: the main agent actually
 spawning the `guardrail-fixer` subagent in response to the Stop-gate pointer.
 This document is the manual acceptance test for that last mile.
 
@@ -18,6 +18,13 @@ SessionEnd hooks, and `.claude/agents/` holds the two fixer subagents. They load
 automatically at the start of a fresh Claude Code session — no marketplace step.
 Confirm with `/hooks` that `Stop` is bound to
 `node ".../guardrails-core/dist/cli.mjs" gate --mode=stop`.
+
+For Codex CLI, the equivalent live wiring is `.codex/hooks.json`, with custom
+fixers in `.codex/agents/` and shared guidance in `AGENTS.md`. Start a fresh
+session, use `/hooks` to inspect and trust the repository hooks, and confirm
+that `Stop` invokes `gate --mode=stop --dialect=codex`. Codex's `apply_patch`
+payload may name several files; the adapter scopes and autofixes every path in
+that patch.
 
 `guardrails.config.json` is already present (solo/warn, base `main`, thresholds
 3/3). `guardrails-core` must be built (`npm run build`) so `dist/cli.mjs` exists

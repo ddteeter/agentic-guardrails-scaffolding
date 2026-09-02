@@ -28,9 +28,27 @@ export interface HookInput {
   sessionId?: string;
   cwd?: string;
   filePath?: string;
+  /** Every path named by a Codex `apply_patch` payload. */
+  filePaths?: readonly string[];
   toolName?: string;
   command?: string;
   stopHookActive?: boolean;
+}
+
+/** Paths named by Codex's canonical `apply_patch` envelope. Update+move
+ * operations intentionally return both paths: the source is deleted and the
+ * destination is written, so both must pass the fixer's manifest scope. */
+export function parseApplyPatchFilePaths(command: string): string[] {
+  const paths: string[] = [];
+  const header =
+    /^\*\*\* (?:Add File|Delete File|Update File|Move to): (.+)$/gm;
+  for (const match of command.matchAll(header)) {
+    const candidate = match[1]?.trim();
+    if (candidate !== undefined && !paths.includes(candidate)) {
+      paths.push(candidate);
+    }
+  }
+  return paths;
 }
 
 /** The raw payload fields we read, typed against the SDK schema. */
@@ -111,7 +129,10 @@ export function parseHookInput(stdin: string): HookInput {
   const args = selectArguments(claude, copilot);
 
   // (field, [candidates in precedence order]) — Claude first, Copilot fallback.
-  type StringHookField = Exclude<keyof HookInput, 'stopHookActive'>;
+  type StringHookField = Exclude<
+    keyof HookInput,
+    'filePaths' | 'stopHookActive'
+  >;
   const fields: readonly [StringHookField, readonly unknown[]][] = [
     ['sessionId', [claude.session_id, copilot.sessionId]],
     ['cwd', [claude.cwd, copilot.workingDirectory]],
@@ -133,6 +154,12 @@ export function parseHookInput(stdin: string): HookInput {
       : copilot.stopHookActive;
   if (typeof stopHookActive === 'boolean') {
     input.stopHookActive = stopHookActive;
+  }
+  if (input.toolName === 'apply_patch' && input.command !== undefined) {
+    const filePaths = parseApplyPatchFilePaths(input.command);
+    if (filePaths.length > 0) {
+      input.filePaths = filePaths;
+    }
   }
   return input;
 }
@@ -166,7 +193,7 @@ export function formatStopHookOutput(
   return output;
 }
 
-export type Dialect = 'claude' | 'copilot';
+export type Dialect = 'claude' | 'codex' | 'copilot';
 
 /**
  * A Copilot `preToolUse` deny: `permissionDecision`/`permissionDecisionReason`
@@ -200,8 +227,9 @@ export function formatPreToolUseDeny(
   };
 }
 
-/** Copilot agentStop block: correction folded into `reason` (Copilot has no
- * additionalContext channel). `null` lets the turn end. This duplicates the
+/** Flat Stop block for Copilot and Codex: correction folded into `reason`
+ * because neither host has Claude's additionalContext channel. `null` lets
+ * the turn end. This duplicates the
  * one-liner in gate.ts's `stopHookReason` rather than importing it, to avoid
  * a hook-io -> gate dependency (gate.ts is the higher-level module that
  * orchestrates verify/audit/state and is expected to depend on hook-io, not

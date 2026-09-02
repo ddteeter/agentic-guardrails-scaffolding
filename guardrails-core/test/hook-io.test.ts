@@ -15,6 +15,7 @@ import {
   formatCopilotStopOutput,
   formatPreToolUseDeny,
   formatStopHookOutput,
+  parseApplyPatchFilePaths,
   parseHookInput,
   resolveLocalBin,
 } from '../src/hook-io.js';
@@ -152,6 +153,34 @@ describe('parseHookInput', () => {
     );
     expect(parsed.command).toBe('git push');
   });
+
+  it('extracts every path from a Codex apply_patch payload', () => {
+    const command = [
+      '*** Begin Patch',
+      '*** Update File: src/old.ts',
+      '*** Move to: src/new.ts',
+      '*** Add File: src/added.ts',
+      '*** Delete File: src/deleted.ts',
+      '*** End Patch',
+    ].join('\n');
+    const parsed = parseHookInput(
+      JSON.stringify({ tool_name: 'apply_patch', tool_input: { command } }),
+    );
+    expect(parsed.filePaths).toEqual([
+      'src/old.ts',
+      'src/new.ts',
+      'src/added.ts',
+      'src/deleted.ts',
+    ]);
+  });
+
+  it('deduplicates repeated apply_patch paths and ignores other lines', () => {
+    expect(
+      parseApplyPatchFilePaths(
+        '*** Update File: src/a.ts\n+line\n*** Update File: src/a.ts',
+      ),
+    ).toEqual(['src/a.ts']);
+  });
 });
 
 describe('formatStopHookOutput', () => {
@@ -204,6 +233,16 @@ describe('formatPreToolUseDeny', () => {
     expect(formatPreToolUseDeny('nope', 'copilot')).toEqual({
       permissionDecision: 'deny',
       permissionDecisionReason: 'nope',
+    });
+  });
+
+  it('emits the Claude-compatible nested shape for Codex', () => {
+    expect(formatPreToolUseDeny('nope', 'codex')).toEqual({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+        permissionDecisionReason: 'nope',
+      },
     });
   });
 });
