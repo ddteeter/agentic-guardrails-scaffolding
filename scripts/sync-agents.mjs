@@ -235,6 +235,10 @@ const MODEL_FOR = {
   haiku: cfg.copilotFastModel,
   sonnet: cfg.copilotThoroughModel,
 };
+const CODEX_SHAPE_FOR = {
+  haiku: { model: 'gpt-5.6-luna', reasoning: 'low' },
+  sonnet: { model: 'gpt-5.6', reasoning: 'high' },
+};
 
 function frontmatterField(fm, key) {
   const m = fm.match(new RegExp(`^${key}:\\s*(.+)$`, 'm'));
@@ -270,15 +274,23 @@ function toCodexAgent(source) {
   const body = parts.slice(2).join('---').replace(/^\n+/, '').trimEnd();
   const name = frontmatterField(fm, 'name');
   const description = frontmatterField(fm, 'description');
-  return [
+  const shape = CODEX_SHAPE_FOR[frontmatterField(fm, 'model')];
+  const lines = [
     `name = ${JSON.stringify(name)}`,
     `description = ${JSON.stringify(description)}`,
+  ];
+  if (shape) {
+    lines.push(`model = ${JSON.stringify(shape.model)}`);
+    lines.push(`model_reasoning_effort = ${JSON.stringify(shape.reasoning)}`);
+  }
+  lines.push(
     'sandbox_mode = "workspace-write"',
     "developer_instructions = '''",
     body,
     "'''",
     '',
-  ].join('\n');
+  );
+  return lines.join('\n');
 }
 
 rmSync(githubAgents, { recursive: true, force: true });

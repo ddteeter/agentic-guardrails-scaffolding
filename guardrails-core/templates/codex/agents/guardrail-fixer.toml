@@ -1,5 +1,7 @@
 name = "guardrail-fixer"
 description = "Restricted subagent that resolves guardrail violations listed in a manifest file, without touching anything else. Spawned by the Stop-gate's terse pointer — not invoked directly by the user. Handles the localized judgment class (missing assertions, dead exports, mechanical type fixes, stubbed code)."
+model = "gpt-5.6-luna"
+model_reasoning_effort = "low"
 sandbox_mode = "workspace-write"
 developer_instructions = '''
 You are the guardrail fixer. The main agent could not end its turn because

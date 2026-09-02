@@ -68,15 +68,18 @@ describe('consumer templates', () => {
   });
 
   it('ships valid-looking Codex custom agent definitions', () => {
-    for (const agent of [
-      'guardrail-fixer.toml',
-      'guardrail-fixer-thorough.toml',
-    ]) {
+    const agents = [
+      ['guardrail-fixer.toml', 'gpt-5.6-luna', 'low'],
+      ['guardrail-fixer-thorough.toml', 'gpt-5.6', 'high'],
+    ] as const;
+    for (const [agent, model, reasoning] of agents) {
       const content = readFileSync(
         path.join(templates, 'codex', 'agents', agent),
         'utf8',
       );
       expect(content).toContain('name = "guardrail-fixer');
+      expect(content).toContain(`model = "${model}"`);
+      expect(content).toContain(`model_reasoning_effort = "${reasoning}"`);
       expect(content).toContain('sandbox_mode = "workspace-write"');
       expect(content).toContain("developer_instructions = '''");
     }
