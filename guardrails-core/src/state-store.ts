@@ -151,6 +151,12 @@ export function sweepStale(
   directory: string,
   maxAgeMs: number,
   now: number,
+  removeFile: (file: string, options: { force: true }) => void = (
+    file,
+    options,
+  ) => {
+    rmSync(file, options);
+  },
 ): string[] {
   let entries: string[];
   try {
@@ -176,7 +182,10 @@ export function sweepStale(
       continue;
     }
     if (now - mtimeMs > maxAgeMs) {
-      rmSync(file);
+      // Another session can sweep the same entry after our stat. `force`
+      // makes that ordinary race an idempotent delete rather than an ENOENT
+      // that bricks SessionStart.
+      removeFile(file, { force: true });
       if (!name.endsWith('.last.json')) {
         deleted.push(name);
       }

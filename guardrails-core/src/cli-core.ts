@@ -165,6 +165,12 @@ async function gateStopCommand(
     dialect === 'claude'
       ? formatStopHookOutput(decision)
       : formatCopilotStopOutput(decision);
+  if (decision.outcome === 'release') {
+    deps.stderr(
+      'guardrails: releasing Stop retry with unresolved violations; ' +
+        'the commit and CI gates remain active.\n',
+    );
+  }
   if (output) {
     deps.stdout(JSON.stringify(output));
   }

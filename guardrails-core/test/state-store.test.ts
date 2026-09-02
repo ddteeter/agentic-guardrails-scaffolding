@@ -248,6 +248,21 @@ describe('sweepStale', () => {
     expect(sweepStale(directory, 1000, Date.now())).toEqual([]);
   });
 
+  it('tolerates another session deleting a stale file after stat', () => {
+    const now = 1_000_000_000_000;
+    const file = sessionFile(directory, 'raced');
+    saveSession(directory, 'raced', createSession());
+    const oldTime = new Date(now - 2000);
+    utimesSync(file, oldTime, oldTime);
+
+    expect(() =>
+      sweepStale(directory, 1000, now, (candidate, options) => {
+        rmSync(candidate);
+        rmSync(candidate, options);
+      }),
+    ).not.toThrow();
+  });
+
   it('is a no-op on a missing directory', () => {
     expect(sweepStale(path.join(root, 'absent'), 1000, Date.now())).toEqual([]);
   });

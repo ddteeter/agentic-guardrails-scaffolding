@@ -15,6 +15,7 @@ import { type CliDeps, runCommand } from '../src/cli-core.js';
 import type { Exec, ExecResult } from '../src/exec.js';
 import {
   loadSession,
+  saveSession,
   sessionFile,
   stateDirectory,
   writeViolations,
@@ -1054,6 +1055,35 @@ describe('cli-core final hardening', () => {
     ).ruleCounts;
     expect(counts['no-console']).toBe(1);
     expect(counts['guardrails/analyzer-failed']).toBe(1);
+  });
+
+  it('warns when an unresolved terminal retry is released', async () => {
+    saveSession(stateDirectory(root), 'release-session', {
+      attempts: 0,
+      escalated: true,
+      ruleCounts: {},
+      corrected: [],
+    });
+    await runCommand(
+      'gate',
+      ['--mode=stop'],
+      deps({
+        exec: failingVerifyExec(),
+        readStdin: () =>
+          Promise.resolve(
+            JSON.stringify({
+              cwd: root,
+              session_id: 'release-session',
+              stop_hook_active: true,
+            }),
+          ),
+      }),
+    );
+    expect(out.join('')).toBe('');
+    expect(errors.join('')).toContain(
+      'releasing Stop retry with unresolved violations',
+    );
+    expect(errors.join('')).toContain('commit and CI gates remain active');
   });
 
   it('prints each added suppression found by the commit gate', async () => {

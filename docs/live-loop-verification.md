@@ -113,8 +113,9 @@ Force a violation the fixer cannot resolve honestly for `maxAttempts` cycles.
 **Expected:** on `attempt > MAX` the gate stops hiding, blocks with the **full
 dump** (not a pointer), and hands it to the main agent (top model, full context).
 If the main agent still cannot resolve it and tries to stop again, that retry is
-released instead of restarting the fixer ladder. The commit and CI gates remain
-the hard backstop. A later user turn gets a fresh bounded loop.
+released instead of restarting the fixer ladder. The hook emits a non-blocking
+stderr warning that unresolved violations remain and the commit and CI gates
+are still active. A later user turn gets a fresh bounded loop.
 
 Confirm recurrence separately: retry cycles must not increment the rule's
 per-turn count. Only the first Stop of a new turn counts as another occurrence.
@@ -136,7 +137,8 @@ Against a clean tarball-installed disposable TypeScript repo with Claude Code
   `guardrail-fixer-thorough`.
 - With an intentionally unavailable analyzer and `maxAttempts: 1`, the next
   Stop emitted the full-dump escalation; the following host retry terminated
-  successfully with no further Stop feedback.
+  successfully with no further blocking Stop payload. Current builds also emit
+  the non-blocking terminal-release warning described above.
 - A controlled `acceptEdits` run proved repo-local agent-frontmatter
   `PreToolUse` did **not** fire: the forbidden `package.json` edit landed. The
   fixture was restored and scope enforcement was moved to the self-filtering
