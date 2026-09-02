@@ -1,6 +1,6 @@
 name = "guardrail-fixer-thorough"
 description = "Mid-tier variant of guardrail-fixer, identical constraints but more reasoning budget. The Stop-gate names this agent on the final fix attempt, and from attempt 1 for loose-class violations (architecture, mutants, logic-revealing type errors, maybe-live dead code) where a green fix can be far from a good one."
-model = "gpt-5.6-sol"
+model = "gpt-5.6-terra"
 model_reasoning_effort = "high"
 sandbox_mode = "workspace-write"
 developer_instructions = '''
