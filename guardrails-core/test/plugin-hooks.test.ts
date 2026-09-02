@@ -9,16 +9,14 @@ import { describe, expect, it } from 'vitest';
  * is what a CONSUMER repo installs, so a missing event there is a guard that
  * silently does not run in the product.
  *
- * It also pins WHERE the scope-lock lives, which is easy to get wrong: the
- * PreToolUse scope-check is declared in each fixer AGENT's frontmatter, not in
- * the session-level hooks. That is deliberate — it must confine the fixer
- * subagents, and wiring it session-wide would confine the MAIN agent too (no
- * ~/.claude memory, no scratchpad, no sibling repos). Copilot cannot express
- * per-agent hooks, which is why `.github/hooks/guardrails.json` wires the same
- * check session-wide there instead: richest-per-surface, not an inconsistency.
+ * It also pins WHERE the scope-lock lives. Live Claude Code 2.1.258 did not
+ * execute repo-local agent-frontmatter hooks, so scope-check is session-level
+ * and self-activates only while the exact session's fix loop marker exists.
+ * That makes it enforceable without confining later main-agent turns.
  */
 const here = path.dirname(fileURLToPath(import.meta.url));
 const pluginDirectory = path.resolve(here, '../../guardrails-plugin');
+const repoDirectory = path.resolve(here, '../..');
 
 interface HookEntry {
   matcher?: string;
@@ -40,16 +38,22 @@ describe('guardrails-plugin hook wiring', () => {
   it('wires every session-level event the control loop depends on', () => {
     expect(
       Object.keys(wiring.hooks).sort((a, b) => a.localeCompare(b)),
-    ).toEqual(['PostToolUse', 'SessionEnd', 'SessionStart', 'Stop']);
+    ).toEqual([
+      'PostToolUse',
+      'PreToolUse',
+      'SessionEnd',
+      'SessionStart',
+      'Stop',
+    ]);
   });
 
-  it('does NOT wire the scope-check session-wide', () => {
-    // A session-level PreToolUse would apply to the MAIN agent, not just the
-    // fixers. The scope-lock is fixer-only by design.
-    expect(wiring.hooks.PreToolUse).toBeUndefined();
+  it('wires the self-filtering scope-check session-wide', () => {
+    expect(commandsFor('PreToolUse')).toContain(
+      'node "${CLAUDE_PROJECT_DIR}/node_modules/guardrails-core/dist/cli.mjs" scope-check',
+    );
   });
 
-  it('declares the scope-check in each fixer agent instead', () => {
+  it('does not rely on unsupported fixer-agent frontmatter hooks', () => {
     const agentsDirectory = path.join(pluginDirectory, 'agents');
     const agents = readdirSync(agentsDirectory).filter((file) =>
       file.endsWith('.md'),
@@ -60,14 +64,29 @@ describe('guardrails-plugin hook wiring', () => {
         readFileSync(path.join(agentsDirectory, file), 'utf8').split(
           '---',
         )[1] ?? '';
-      expect(frontmatter, file).toContain('PreToolUse');
-      expect(frontmatter, file).toContain('scope-check');
-      expect(frontmatter, file).toContain("matcher: 'Read|Edit|Write'");
+      expect(frontmatter, file).not.toContain('PreToolUse');
+      expect(frontmatter, file).not.toContain('scope-check');
     }
+  });
+
+  it('dogfoods the same session-level scope-check wiring', () => {
+    const settings = JSON.parse(
+      readFileSync(
+        path.join(repoDirectory, '.claude', 'settings.json'),
+        'utf8',
+      ),
+    ) as { hooks: Record<string, HookEntry[]> };
+    const commands = (settings.hooks.PreToolUse ?? []).flatMap((entry) =>
+      entry.hooks.map((hook) => hook.command),
+    );
+    expect(commands).toContain(
+      'node "${CLAUDE_PROJECT_DIR}/node_modules/guardrails-core/dist/cli.mjs" scope-check',
+    );
   });
 
   it('dispatches each event to its own guardrails command', () => {
     expect(commandsFor('PostToolUse').join(' ')).toContain('autofix');
+    expect(commandsFor('PreToolUse').join(' ')).toContain('scope-check');
     expect(commandsFor('Stop').join(' ')).toContain('gate --mode=stop');
     expect(commandsFor('SessionStart').join(' ')).toContain('session-start');
     expect(commandsFor('SessionEnd').join(' ')).toContain('session-end');

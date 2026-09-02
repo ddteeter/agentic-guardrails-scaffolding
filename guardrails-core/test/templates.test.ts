@@ -28,7 +28,7 @@ describe('consumer templates', () => {
     expect(existsSync(path.join(templates, relative))).toBe(true);
   });
 
-  it('carries all four Claude hook events', () => {
+  it('carries all five Claude hook events', () => {
     const raw: unknown = JSON.parse(
       readFileSync(
         path.join(templates, 'claude', 'settings.hooks.json'),
@@ -39,10 +39,20 @@ describe('consumer templates', () => {
     const { hooks } = raw as { hooks: Record<string, unknown> };
     expect(Object.keys(hooks).sort((a, b) => a.localeCompare(b))).toEqual([
       'PostToolUse',
+      'PreToolUse',
       'SessionEnd',
       'SessionStart',
       'Stop',
     ]);
+  });
+
+  it('ships the self-filtering Claude scope-lock hook', () => {
+    const hooks = readFileSync(
+      path.join(templates, 'claude', 'settings.hooks.json'),
+      'utf8',
+    );
+    expect(hooks).toContain('"matcher": "Read|Edit|Write"');
+    expect(hooks).toContain('scope-check');
   });
 
   it('references guardrails-core through node_modules, never a repo-local path', () => {

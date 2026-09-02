@@ -16,6 +16,7 @@ import path from 'node:path';
 import type {
   BaseHookInput,
   PreToolUseHookInput,
+  StopHookInput,
   StopHookSpecificOutput,
   SyncHookJSONOutput,
 } from '@anthropic-ai/claude-agent-sdk';
@@ -29,12 +30,14 @@ export interface HookInput {
   filePath?: string;
   toolName?: string;
   command?: string;
+  stopHookActive?: boolean;
 }
 
 /** The raw payload fields we read, typed against the SDK schema. */
 type RawHookPayload = Partial<
   Pick<BaseHookInput, 'session_id' | 'cwd'> &
-    Pick<PreToolUseHookInput, 'tool_name' | 'tool_input'>
+    Pick<PreToolUseHookInput, 'tool_name' | 'tool_input'> &
+    Pick<StopHookInput, 'stop_hook_active'>
 >;
 
 /**
@@ -54,6 +57,7 @@ interface CopilotHookPayload {
   workingDirectory?: unknown;
   toolName?: unknown;
   toolArgs?: unknown;
+  stopHookActive?: unknown;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -86,9 +90,14 @@ function selectArguments(
 
 export function parseHookInput(stdin: string): HookInput {
   let parsed: unknown;
+  // prettier-ignore
   try {
     parsed = JSON.parse(stdin);
-  } catch {
+  }
+  // Emptying this catch leaves `parsed` undefined, which the isRecord guard
+  // immediately rejects with the same empty HookInput.
+  // Stryker disable next-line BlockStatement
+  catch {
     return {};
   }
   if (!isRecord(parsed)) {
@@ -102,7 +111,8 @@ export function parseHookInput(stdin: string): HookInput {
   const args = selectArguments(claude, copilot);
 
   // (field, [candidates in precedence order]) — Claude first, Copilot fallback.
-  const fields: readonly [keyof HookInput, readonly unknown[]][] = [
+  type StringHookField = Exclude<keyof HookInput, 'stopHookActive'>;
+  const fields: readonly [StringHookField, readonly unknown[]][] = [
     ['sessionId', [claude.session_id, copilot.sessionId]],
     ['cwd', [claude.cwd, copilot.workingDirectory]],
     ['toolName', [claude.tool_name, copilot.toolName]],
@@ -116,6 +126,13 @@ export function parseHookInput(stdin: string): HookInput {
     if (value !== undefined) {
       input[key] = value;
     }
+  }
+  const stopHookActive =
+    typeof claude.stop_hook_active === 'boolean'
+      ? claude.stop_hook_active
+      : copilot.stopHookActive;
+  if (typeof stopHookActive === 'boolean') {
+    input.stopHookActive = stopHookActive;
   }
   return input;
 }

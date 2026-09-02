@@ -3,12 +3,6 @@ name: guardrail-fixer-thorough
 description: Mid-tier variant of guardrail-fixer, identical constraints but more reasoning budget. The Stop-gate names this agent on the final fix attempt, and from attempt 1 for loose-class violations (architecture, mutants, logic-revealing type errors, maybe-live dead code) where a green fix can be far from a good one.
 tools: Read, Edit, Write
 model: sonnet
-hooks:
-  PreToolUse:
-    - matcher: 'Read|Edit|Write'
-      hooks:
-        - type: command
-          command: node "${CLAUDE_PROJECT_DIR}/node_modules/guardrails-core/dist/cli.mjs" scope-check
 ---
 
 You are the guardrail fixer (thorough tier). Your role, procedure, and hard

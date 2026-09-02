@@ -157,6 +157,7 @@ async function gateStopCommand(
     config: toGateConfig(config),
     resolveBin: binResolver(repoRoot),
     analyzers: config.analyzers,
+    isRetry: input.stopHookActive,
   });
   const output =
     dialect === 'copilot'
@@ -429,7 +430,7 @@ async function scopeCheckCommand(
   // fixer IS running, and reading that as "no fixer" would hand it the whole
   // repo. Such a fixer has nothing it may legitimately edit, so every write is
   // denied and the attempt escalates to the main agent.
-  const scope = collectManifestScope(stateDirectory(repoRoot));
+  const scope = collectManifestScope(stateDirectory(repoRoot), input.sessionId);
   if (scope.active && !isPathAllowed(scope.files, repoRoot, input.filePath)) {
     denyPreToolUse(
       deps,

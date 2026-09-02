@@ -36,15 +36,36 @@ function v(file: string, ruleId = 'x'): Violation {
   };
 }
 
+function activate(sessionId: string): void {
+  writeFileSync(path.join(directory, `${sessionId}.pre-fix.json`), '[]');
+}
+
+function writeActiveViolations(
+  sessionId: string,
+  violations: readonly Violation[],
+): void {
+  writeViolations(directory, sessionId, violations);
+  activate(sessionId);
+}
+
 describe('collectManifestScope', () => {
-  it('unions the files across every session manifest', () => {
-    writeViolations(directory, 's1', [v('src/a.ts'), v('src/b.ts')]);
-    writeViolations(directory, 's2', [v('src/c.ts')]);
+  it('selects only the exact session manifest', () => {
+    writeActiveViolations('s1', [v('src/a.ts'), v('src/b.ts')]);
+    writeActiveViolations('s2', [v('src/c.ts')]);
     expect(
-      [...collectManifestScope(directory).files].toSorted((a, b) =>
+      [...collectManifestScope(directory, 's2').files].toSorted((a, b) =>
         a.localeCompare(b),
       ),
-    ).toEqual(['src/a.ts', 'src/b.ts', 'src/c.ts']);
+    ).toEqual(['src/c.ts']);
+  });
+
+  it('fails closed when several manifests exist and no session id is available', () => {
+    writeActiveViolations('s1', [v('src/a.ts')]);
+    expect([...collectManifestScope(directory).files]).toEqual(['src/a.ts']);
+    writeActiveViolations('s2', [v('src/b.ts')]);
+    const scope = collectManifestScope(directory);
+    expect(scope.active).toBe(true);
+    expect(scope.files.size).toBe(0);
   });
 
   it('is empty and INACTIVE when there are no manifests', () => {
@@ -53,6 +74,20 @@ describe('collectManifestScope', () => {
     // `active` is what the scope-lock keys on: no manifest means no fixer is
     // running, so the lock stands aside.
     expect(scope.active).toBe(false);
+  });
+
+  it('ignores a stale manifest after its fix-loop marker is removed', () => {
+    writeViolations(directory, 'old', [v('src/stale.ts')]);
+    const scope = collectManifestScope(directory, 'old');
+    expect(scope.active).toBe(false);
+    expect(scope.files.size).toBe(0);
+  });
+
+  it('does not confine an exact session because another session is active', () => {
+    writeActiveViolations('other', [v('src/other.ts')]);
+    const scope = collectManifestScope(directory, 'current');
+    expect(scope.active).toBe(false);
+    expect(scope.files.size).toBe(0);
   });
 
   it('is empty and inactive when the state directory does not exist', () => {
@@ -64,7 +99,7 @@ describe('collectManifestScope', () => {
   it('is ACTIVE with no editable files when every violation names a denied file', () => {
     // The two empty cases must stay distinguishable: this one denies every
     // write, where "no manifest" allows them all.
-    writeViolations(directory, 's1', [
+    writeActiveViolations('s1', [
       v('package.json', 'guardrails/analyzer-missing'),
       v('guardrails.config.json', 'guardrails/analyzer-unknown'),
     ]);
@@ -74,7 +109,7 @@ describe('collectManifestScope', () => {
   });
 
   it('is active for a manifest that names editable files', () => {
-    writeViolations(directory, 's1', [v('src/a.ts')]);
+    writeActiveViolations('s1', [v('src/a.ts')]);
     expect(collectManifestScope(directory).active).toBe(true);
   });
 
@@ -85,7 +120,7 @@ describe('collectManifestScope', () => {
   });
 
   it('denies a denied filename whatever its casing', () => {
-    writeViolations(directory, 's1', [
+    writeActiveViolations('s1', [
       v('Package.json'),
       v('GUARDRAILS.CONFIG.JSON'),
       v('packages/a/PACKAGE.JSON'),
@@ -97,7 +132,7 @@ describe('collectManifestScope', () => {
     // guardrails/analyzer-missing points at package.json. Letting the fixer
     // edit it would let it delete the provider dependency, which flips the
     // analyzer to auto+undeclared and makes the violation vanish.
-    writeViolations(directory, 's1', [
+    writeActiveViolations('s1', [
       v('package.json', 'guardrails/analyzer-missing'),
     ]);
     expect(collectManifestScope(directory).files.size).toBe(0);
@@ -106,14 +141,14 @@ describe('collectManifestScope', () => {
   it('never makes guardrails.config.json editable, whatever names it', () => {
     // guardrails/analyzer-unknown points at the config, which holds
     // sanctionedSuppressions, maxAttempts, analyzers and enforcement.
-    writeViolations(directory, 's1', [
+    writeActiveViolations('s1', [
       v('guardrails.config.json', 'guardrails/analyzer-unknown'),
     ]);
     expect(collectManifestScope(directory).files.size).toBe(0);
   });
 
   it('denies a workspace member package.json at any depth', () => {
-    writeViolations(directory, 's1', [
+    writeActiveViolations('s1', [
       v('packages/a/package.json', 'guardrails/analyzer-missing'),
     ]);
     expect(collectManifestScope(directory).files.size).toBe(0);
@@ -123,7 +158,7 @@ describe('collectManifestScope', () => {
     // The state directory also holds session tallies and recurrence counts, and
     // a consumer may leave anything else there. Without the suffix filter this
     // array-shaped stray would widen the fixer's allowlist.
-    writeViolations(directory, 's1', [v('src/a.ts')]);
+    writeActiveViolations('s1', [v('src/a.ts')]);
     writeFileSync(
       path.join(directory, 'notes.json'),
       JSON.stringify([v('src/stray.ts')]),
@@ -133,6 +168,7 @@ describe('collectManifestScope', () => {
 
   it('yields nothing for a manifest that is not a JSON array', () => {
     writeFileSync(path.join(directory, 's1.last.json'), '{"not":"an array"}');
+    activate('s1');
     expect(collectManifestScope(directory).files.size).toBe(0);
   });
 
@@ -141,11 +177,12 @@ describe('collectManifestScope', () => {
       path.join(directory, 's1.last.json'),
       JSON.stringify([{ nonsense: true }, v('src/a.ts')]),
     );
+    activate('s1');
     expect([...collectManifestScope(directory).files]).toEqual(['src/a.ts']);
   });
 
   it('keeps every non-denied file editable alongside a denied one', () => {
-    writeViolations(directory, 's1', [
+    writeActiveViolations('s1', [
       v('src/foo.ts'),
       v('package.json', 'guardrails/analyzer-missing'),
     ]);
@@ -196,7 +233,7 @@ describe('isWithinRepo', () => {
 
 describe('collectManifestScope normalization', () => {
   it('stores normalized manifest paths', () => {
-    writeViolations(directory, 's1', [v('src/nested/../a.ts')]);
+    writeActiveViolations('s1', [v('src/nested/../a.ts')]);
     expect(collectManifestScope(directory).files.has('src/a.ts')).toBe(true);
   });
 });

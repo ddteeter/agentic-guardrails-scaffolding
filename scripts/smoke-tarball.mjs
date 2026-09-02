@@ -10,8 +10,15 @@
  *
  * Failure here means a first adoption fails at the first command.
  */
-import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readdirSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -99,3 +106,108 @@ if (!/^ {2}(create|update|merge|drift|unchanged): /m.test(plan)) {
 }
 
 console.log('smoke-tarball: OK — tarball installs and the CLI runs from it');
+
+// 6. Greenfield acceptance: Vite's react-ts shape is an unborn repository with
+// a solution-style root tsconfig. This is the combination the first adoption
+// actually hits, and neither a workspace test nor `init --plan` proves it.
+run('git', ['init', '-b', 'main'], fixture);
+run(
+  'git',
+  ['config', 'user.email', 'guardrails-smoke@example.invalid'],
+  fixture,
+);
+run('git', ['config', 'user.name', 'Guardrails smoke'], fixture);
+// Model a normal TypeScript greenfield repository. Without these standard
+// ignores, `git add .` would intentionally stage the installed package and its
+// compiled Stryker directives; the commit audit is correct to inspect anything
+// the user actually asks Git to commit.
+writeFileSync(
+  path.join(fixture, '.gitignore'),
+  'node_modules/\n*.tsbuildinfo\n',
+);
+run(
+  'npm',
+  [
+    'install',
+    '--save-dev',
+    '--no-audit',
+    '--no-fund',
+    path.join(root, 'node_modules', 'typescript'),
+  ],
+  fixture,
+);
+writeFileSync(
+  path.join(fixture, 'tsconfig.json'),
+  `${JSON.stringify(
+    {
+      files: [],
+      references: [{ path: './tsconfig.app.json' }],
+    },
+    undefined,
+    2,
+  )}\n`,
+);
+writeFileSync(
+  path.join(fixture, 'tsconfig.app.json'),
+  `${JSON.stringify(
+    {
+      compilerOptions: {
+        composite: true,
+        strict: true,
+        target: 'ES2023',
+        module: 'NodeNext',
+        moduleResolution: 'NodeNext',
+      },
+      include: ['src'],
+    },
+    undefined,
+    2,
+  )}\n`,
+);
+const sourceDirectory = path.join(fixture, 'src');
+mkdirSync(sourceDirectory, { recursive: true });
+writeFileSync(
+  path.join(sourceDirectory, 'main.ts'),
+  'const answer: string = 42;\nconsole.log(answer);\n',
+);
+const guardrails = path.join(fixture, 'node_modules', '.bin', 'guardrails');
+run(
+  guardrails,
+  [
+    'init',
+    '--apply',
+    '--enforcement=block',
+    '--analyzers=eslint=off,tsc=required,knip=off,dependency-cruiser=off,stryker=off',
+  ],
+  fixture,
+);
+const claudeSettings = readFileSync(
+  path.join(fixture, '.claude', 'settings.json'),
+  'utf8',
+);
+if (!claudeSettings.includes('scope-check')) {
+  fail('scaffolded Claude settings omitted the fixer scope-lock hook');
+}
+const failingVerify = spawnSync(guardrails, ['verify'], {
+  cwd: fixture,
+  encoding: 'utf8',
+});
+if (failingVerify.status === 0 || !failingVerify.stderr.includes('[TS2322]')) {
+  fail(
+    'solution-style tsconfig did not fail closed on a referenced-project type error. ' +
+      `stdout:\n${failingVerify.stdout}\nstderr:\n${failingVerify.stderr}`,
+  );
+}
+
+// Correct the error, then prove the same unborn repo can make its first commit
+// under enforcement:block through the scaffolded pre-commit hook.
+writeFileSync(
+  path.join(sourceDirectory, 'main.ts'),
+  'const answer: string = "42";\nconsole.log(answer);\n',
+);
+run(guardrails, ['verify'], fixture);
+run('git', ['add', '.'], fixture);
+run('git', ['commit', '-m', 'initial greenfield commit'], fixture);
+console.log(
+  'smoke-tarball: OK — solution tsconfig, unborn branch, and first blocking commit work',
+);

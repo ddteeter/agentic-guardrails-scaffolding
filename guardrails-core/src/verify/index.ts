@@ -178,32 +178,47 @@ async function changedTypeScriptFiles(
 ): Promise<{ files: string[]; violations: Violation[] }> {
   const { exec, repoRoot, baseBranch } = options;
   const base = await resolveBaseReference(exec, repoRoot, baseBranch);
-  if (base.ref === undefined) {
+  if (base.spawnFailed === true) {
     // A spawn failure is git being absent entirely; runVerify reports that
     // separately via its own tracker, so stay silent here rather than blaming
     // the base branch for it.
-    return {
-      files: [],
-      violations:
-        base.spawnFailed === true
-          ? []
-          : [unresolvableBaseViolation(baseBranch)],
-    };
+    return { files: [], violations: [] };
   }
-  const tracked = await exec(
-    'git',
-    ['diff', '--name-only', '--diff-filter=ACM', base.ref],
-    { cwd: repoRoot },
-  );
+
+  let tracked: ExecResult;
+  if (base.ref === undefined) {
+    const head = await exec(
+      'git',
+      ['rev-parse', '--verify', '--quiet', 'HEAD'],
+      { cwd: repoRoot },
+    );
+    if (head.spawnFailed === true) {
+      return { files: [], violations: [] };
+    }
+    if (head.code === 0) {
+      return {
+        files: [],
+        violations: [unresolvableBaseViolation(baseBranch)],
+      };
+    }
+    // An unborn repository has no base or HEAD yet. Its truthful changed set
+    // is the whole index plus every untracked file; treating the absent base as
+    // a configuration error would make the first guarded commit impossible.
+    tracked = await exec('git', ['ls-files'], { cwd: repoRoot });
+  } else {
+    tracked = await exec(
+      'git',
+      ['diff', '--name-only', '--diff-filter=ACM', base.ref],
+      { cwd: repoRoot },
+    );
+  }
   const untracked = await exec(
     'git',
     ['ls-files', '--others', '--exclude-standard'],
     { cwd: repoRoot },
   );
-  // A missing/unfetched base branch exits non-zero with empty stdout; treated
-  // as zero changed files that would silently skip every diff-scoped analyzer
-  // and read clean. Neither invocation's exit code carries a "findings" case
-  // (unlike the analyzers above) — a non-zero git exit is always a failure.
+  // Neither invocation's exit code carries a "findings" case (unlike the
+  // analyzers above) — a non-zero git exit is always a failure.
   const failedGitCall = [tracked, untracked].find((result) =>
     gitCallFailed(result),
   );
@@ -294,12 +309,93 @@ async function runTsc(
 ): Promise<Violation[]> {
   const { exec, repoRoot } = options;
   const tsconfig = options.tsconfig ?? 'tsconfig.json';
+  const tscBin = resolveBin('tsc');
   const tsc = await exec(
-    resolveBin('tsc'),
+    tscBin,
     ['--noEmit', '--pretty', 'false', '-p', tsconfig],
     { cwd: repoRoot },
   );
-  return withExitCodeCheck('tsc', tsc, parseTscOutput(tsc.stdout, repoRoot));
+  const violations = withExitCodeCheck(
+    'tsc',
+    tsc,
+    parseTscOutput(tsc.stdout, repoRoot),
+  );
+  if (tsc.spawnFailed === true) {
+    return violations;
+  }
+  // A nonzero, non-spawn exit has already produced either a parsed diagnostic
+  // or guardrails/analyzer-failed, so the following violations-length guard
+  // returns the same array if this early return is emptied or forced false.
+  // Stryker disable next-line ConditionalExpression,BlockStatement
+  if (tsc.code !== 0) {
+    return violations;
+  }
+  if (violations.length > 0) {
+    return violations;
+  }
+
+  // `tsc -p` exits 0 while checking zero files for a solution-style root
+  // config (`files: []`, `references: [...]`) such as Vite's react-ts starter.
+  // Ask TypeScript for the resolved shape only after an apparently-clean run;
+  // referenced projects require build mode so "clean" means they were checked.
+  const shown = await exec(tscBin, ['--showConfig', '-p', tsconfig], {
+    cwd: repoRoot,
+  });
+  if (shown.spawnFailed === true) {
+    return [
+      analyzerFailedViolation('tsc --showConfig', shown.code, shown.stderr),
+    ];
+  }
+  if (shown.code !== 0) {
+    return [
+      analyzerFailedViolation('tsc --showConfig', shown.code, shown.stderr),
+    ];
+  }
+  const references = resolvedProjectReferences(shown.stdout);
+  if (references === undefined) {
+    return [
+      analyzerFailedViolation(
+        'tsc --showConfig',
+        0,
+        'TypeScript produced an unreadable resolved configuration.',
+      ),
+    ];
+  }
+  if (!references) {
+    return violations;
+  }
+
+  const built = await exec(
+    tscBin,
+    ['--build', '--noEmit', '--pretty', 'false', tsconfig],
+    { cwd: repoRoot },
+  );
+  return withExitCodeCheck(
+    'tsc --build',
+    built,
+    parseTscOutput(built.stdout, repoRoot),
+  );
+}
+
+/** Whether TypeScript's resolved project has references. `undefined` means the
+ * supposedly machine-readable `--showConfig` output could not be validated. */
+function resolvedProjectReferences(stdout: string): boolean | undefined {
+  let parsed: unknown;
+  // prettier-ignore
+  try {
+    parsed = JSON.parse(stdout);
+  }
+  // Emptying this catch leaves parsed undefined, which the shape guard below
+  // rejects with the same undefined result.
+  // Stryker disable next-line BlockStatement
+  catch {
+    return undefined;
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    return undefined;
+  }
+  const references = Reflect.get(parsed, 'references');
+  return Array.isArray(references) && references.length > 0;
 }
 
 /** Stryker's own default JSON-reporter path. There is no supported way to
@@ -310,6 +406,10 @@ async function runTsc(
  *  is fixed, gitignored, and persists across runs — which is exactly why
  *  `runStryker` deletes it before every run rather than trying to avoid it. */
 const STRYKER_REPORT_PATH = path.join('reports', 'mutation', 'mutation.json');
+const STRYKER_INCREMENTAL_PATH = path.join(
+  'reports',
+  'stryker-incremental.json',
+);
 
 function strykerReportMissingViolation(reportPath: string): Violation {
   return {
@@ -333,10 +433,11 @@ function strykerReportMissingViolation(reportPath: string): Violation {
  *  the `--mutate` list is the consumer's own changed files. The report is read
  *  from stryker's own default, gitignored, cross-run-persistent location
  *  (`STRYKER_REPORT_PATH`) — there is no flag to relocate it per run (see that
- *  constant's comment) — so a stale report from a PRIOR run could otherwise be
- *  misread as this run's. `removeFile` deletes that path BEFORE stryker runs,
- *  which makes that impossible: nothing at the path afterward means nothing
- *  else could have written it in between.
+ *  constant's comment) — so stale output from a PRIOR run could otherwise be
+ *  misread as this run's. `removeFile` deletes both the JSON report and
+ *  Stryker's incremental cache BEFORE stryker runs. The latter is essential:
+ *  Stryker can reuse survivor results when tests change but production does
+ *  not, exactly the fixer-loop case where a new test is meant to kill a mutant.
  *
  *  Unlike the analyzers above, stryker exits 0 even with surviving mutants
  *  unless a `break` threshold is configured (this pack sets none) — so ANY
@@ -366,6 +467,7 @@ async function runStryker(
   const reportPath = STRYKER_REPORT_PATH;
 
   await removeFile(path.join(repoRoot, reportPath));
+  await removeFile(path.join(repoRoot, STRYKER_INCREMENTAL_PATH));
 
   const result = await exec(
     resolveBin('stryker'),

@@ -3,12 +3,6 @@ name: guardrail-fixer
 description: Restricted subagent that resolves guardrail violations listed in a manifest file, without touching anything else. Spawned by the Stop-gate's terse pointer — not invoked directly by the user. Handles the localized judgment class (missing assertions, dead exports, mechanical type fixes, stubbed code).
 tools: Read, Edit, Write
 model: haiku
-hooks:
-  PreToolUse:
-    - matcher: 'Read|Edit|Write'
-      hooks:
-        - type: command
-          command: node "${CLAUDE_PROJECT_DIR}/node_modules/guardrails-core/dist/cli.mjs" scope-check
 ---
 
 You are the guardrail fixer. The main agent could not end its turn because

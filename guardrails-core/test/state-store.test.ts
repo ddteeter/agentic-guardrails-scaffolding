@@ -2,6 +2,7 @@ import {
   mkdirSync,
   mkdtempSync,
   rmSync,
+  symlinkSync,
   utimesSync,
   writeFileSync,
 } from 'node:fs';
@@ -60,6 +61,7 @@ describe('session round-trip', () => {
   it('saves and loads a session', () => {
     const state = {
       attempts: 2,
+      escalated: false,
       ruleCounts: { 'ts/no-stub': 3 },
       corrected: [],
     };
@@ -89,9 +91,45 @@ describe('session round-trip', () => {
     );
     expect(loadSession(directory, 'sid1')).toEqual({
       attempts: 1,
+      escalated: false,
       ruleCounts: { good: 2 },
       corrected: ['ok'],
     });
+  });
+
+  it('preserves a real escalation flag and defaults malformed flags to false', () => {
+    const file = sessionFile(directory, 'sid1');
+    writeFileSync(
+      file,
+      JSON.stringify({
+        attempts: 1,
+        escalated: true,
+        ruleCounts: {},
+        corrected: [],
+      }),
+    );
+    expect(loadSession(directory, 'sid1').escalated).toBe(true);
+    writeFileSync(
+      file,
+      JSON.stringify({
+        attempts: 1,
+        escalated: 'true',
+        ruleCounts: {},
+        corrected: [],
+      }),
+    );
+    expect(loadSession(directory, 'sid1').escalated).toBe(false);
+  });
+
+  it.each([
+    null,
+    [],
+    { attempts: '1', ruleCounts: {}, corrected: [] },
+    { attempts: 1, ruleCounts: [], corrected: [] },
+    { attempts: 1, ruleCounts: {}, corrected: {} },
+  ])('rejects a malformed session shape: %j', (raw) => {
+    writeFileSync(sessionFile(directory, 'sid1'), JSON.stringify(raw));
+    expect(loadSession(directory, 'sid1')).toEqual(createSession());
   });
 });
 
@@ -176,6 +214,38 @@ describe('sweepStale', () => {
 
     expect(deleted).toEqual([]);
     expect(loadRecurrence(directory)).toEqual({ 'ts/no-stub': 4 });
+  });
+
+  it('removes stale manifests without reporting them as deleted sessions', () => {
+    const now = 1_000_000_000_000;
+    const dayMs = 86_400_000;
+    writeViolations(directory, 'old', [sample]);
+    const manifest = path.join(directory, 'old.last.json');
+    const oldTime = new Date(now - 2 * dayMs);
+    utimesSync(manifest, oldTime, oldTime);
+    expect(sweepStale(directory, dayMs, now)).toEqual([]);
+    expect(readViolations(directory, 'old')).toEqual([]);
+  });
+
+  it('keeps a session exactly on the TTL boundary', () => {
+    const now = 1_000_000_000_000;
+    const dayMs = 86_400_000;
+    saveSession(directory, 'boundary', {
+      ...createSession(),
+      attempts: 2,
+    });
+    const boundaryTime = new Date(now - dayMs);
+    utimesSync(sessionFile(directory, 'boundary'), boundaryTime, boundaryTime);
+    expect(sweepStale(directory, dayMs, now)).toEqual([]);
+    expect(loadSession(directory, 'boundary').attempts).toBe(2);
+  });
+
+  it('continues past a dangling state symlink whose metadata cannot be read', () => {
+    symlinkSync(
+      path.join(directory, 'missing-target'),
+      path.join(directory, 'dangling.json'),
+    );
+    expect(sweepStale(directory, 1000, Date.now())).toEqual([]);
   });
 
   it('is a no-op on a missing directory', () => {

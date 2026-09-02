@@ -5,10 +5,12 @@
  * calls `guardrails scope-check`, which denies any write to a path absent from
  * the manifest.
  *
- * Files are collected across every active manifest (union), so the check holds
- * regardless of whether a subagent's hook payload carries the main session id —
- * minus `DENIED_FILE_NAMES`, the policy/manifest files no violation may ever
- * make editable.
+ * Scope resolves to the hook payload's exact session manifest while its
+ * `.pre-fix.json` loop marker exists. If a runtime omits the session id, one
+ * active manifest is unambiguous; several active manifests fail closed with an
+ * empty scope instead of unioning concurrent permissions. Stale manifests do
+ * not confine later main-agent turns. `DENIED_FILE_NAMES` are removed in every
+ * case.
  *
  * The result reports `active` separately from `files` because the two empty
  * cases mean opposite things: NO manifest means no fixer is running and the
@@ -66,6 +68,7 @@ export interface ManifestScope {
 }
 
 const MANIFEST_SUFFIX = '.last.json';
+const ACTIVE_SUFFIX = '.pre-fix.json';
 
 /**
  * The violations recorded in ONE manifest, read by that manifest's own path.
@@ -83,33 +86,49 @@ function readManifest(file: string): Violation[] {
     : [];
 }
 
-export function collectManifestScope(directory: string): ManifestScope {
+export function collectManifestScope(
+  directory: string,
+  sessionId?: string,
+): ManifestScope {
   let entries: string[];
   try {
     entries = readdirSync(directory);
   } catch {
     return { files: new Set(), active: false };
   }
-  const files = new Set<string>();
-  let active = false;
-  for (const name of entries) {
-    // Only `<session>.last.json` files are manifests. The same directory holds
-    // session tallies (`<session>.json`) and `recurrence.json`, and a consumer
-    // may leave anything else there; reading one of those as a manifest would
-    // let an unrelated JSON array widen the fixer's allowlist.
-    if (!name.endsWith(MANIFEST_SUFFIX)) {
-      continue;
+  const entrySet = new Set(entries);
+  const manifests = entries.filter(
+    (name) =>
+      name.endsWith(MANIFEST_SUFFIX) &&
+      entrySet.has(`${name.slice(0, -MANIFEST_SUFFIX.length)}${ACTIVE_SUFFIX}`),
+  );
+  let selected: string | undefined;
+  if (sessionId === undefined) {
+    if (manifests.length === 1) {
+      selected = manifests[0];
     }
-    active = true;
-    for (const violation of readManifest(path.join(directory, name))) {
-      const file = path.normalize(violation.file);
-      if (isDeniedFile(file)) {
-        continue;
-      }
+  } else {
+    selected = manifests.find(
+      (name) => name === `${sessionId}${MANIFEST_SUFFIX}`,
+    );
+  }
+  if (selected === undefined) {
+    // Several manifests with no session id are ambiguous, not additive. An
+    // empty active scope denies every edit and cannot inherit permissions from
+    // a crashed or concurrently-running session.
+    return {
+      files: new Set(),
+      active: sessionId === undefined && manifests.length > 0,
+    };
+  }
+  const files = new Set<string>();
+  for (const violation of readManifest(path.join(directory, selected))) {
+    const file = path.normalize(violation.file);
+    if (!isDeniedFile(file)) {
       files.add(file);
     }
   }
-  return { files, active };
+  return { files, active: true };
 }
 
 /**

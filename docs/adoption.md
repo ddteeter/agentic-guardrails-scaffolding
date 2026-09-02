@@ -134,8 +134,8 @@ analyzers in the commit/CI gate.
 
 ## Starting in `warn`, graduating to `block`
 
-`guardrails.config.json`'s `enforcement` field (`"warn"` by default, or
-`"block"`) governs exactly two commands: `gate --mode=commit` (run by
+`guardrails.config.json`'s `enforcement` field (`"warn"` at the bare CLI
+default, or `"block"`) governs exactly two commands: `gate --mode=commit` (run by
 `.githooks/pre-commit`, and by the `guardrails gate --mode=commit` step in the
 shipped `.github/workflows/guardrails.yml`) and `gate --mode=pretooluse` (the
 Copilot commit/push self-gate). Under `warn`, both still run the full check —
@@ -156,14 +156,27 @@ by `maxAttempts`, from the moment it is wired in — `warn`/`block` has no
 effect on it. That loop's safety comes from the attempt counter and the
 `--no-verify`-equivalent bypass at the commit boundary, not from `enforcement`.
 
-A reasonable adoption path: scaffold with `enforcement: "warn"`, let the
-commit/CI gate run and report for a while without blocking anyone, then flip
-to `"block"` once the team is used to what it reports. Do this by editing
-`enforcement` in `guardrails.config.json` directly — `init`'s
+For a greenfield repo, or an existing repo that already verifies clean, start
+with `enforcement: "block"`. `warn` is only a migration tool for an existing
+backlog: let the commit/CI gate report while that backlog is cleared, then flip
+to `"block"` immediately. Letting a violation commit to the configured base
+branch removes it from later diff-scoped checks, so a clean repo gains nothing
+from a calibration window and can create its own dirty baseline under `warn`.
+Change this by editing `enforcement` in `guardrails.config.json` directly — `init`'s
 `--enforcement=block` flag only affects the _first_ time the file is seeded;
 because `guardrails.config.json` is SEED-ONCE, a later `init --apply
 --enforcement=block` has no effect on an already-existing config, `--force`
 included.
+
+### Solution-style TypeScript configurations
+
+Vite and other project-reference layouts commonly use a root `tsconfig.json`
+with `files: []` and one or more `references`. Plain `tsc -p tsconfig.json`
+checks no source files in that shape and exits successfully. Guardrails detects
+the references from `tsc --showConfig` and follows an apparently-clean project
+check with `tsc --build --noEmit`, so referenced projects are part of the gate.
+If TypeScript cannot produce a readable resolved configuration, verification
+fails closed rather than treating an unknown input set as clean.
 
 **Do not trim `fetch-depth` on the shipped CI workflow.**
 `.github/workflows/guardrails.yml` checks out with `fetch-depth: 0` on

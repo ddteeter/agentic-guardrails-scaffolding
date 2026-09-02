@@ -79,6 +79,8 @@ describe('runStopGate', () => {
       if (line.includes('--others')) return ok('');
       if (line.includes('diff') && line.includes('HEAD')) return ok('');
       if (line.includes('eslint')) return ok(eslintError());
+      if (line.includes('--showConfig'))
+        return ok(JSON.stringify({ files: ['src/foo.ts'] }));
       return ok('');
     });
 
@@ -110,6 +112,117 @@ describe('runStopGate', () => {
     });
     const { decision } = await runStopGate(options(exec));
     expect(decision.outcome).toBe('clean');
+  });
+
+  it('audits suppressions in an untracked new file', async () => {
+    const source = path.join(root, 'src', 'new.ts');
+    mkdirSync(path.dirname(source), { recursive: true });
+    writeFileSync(
+      source,
+      '// eslint-disable-next-line no-console\nconsole.log(1);\n',
+    );
+    const exec = makeExec((line) => {
+      if (line.includes('--name-only')) return ok('');
+      if (line.includes('--others')) return ok('src/new.ts');
+      if (line.includes('diff') && line.includes('HEAD')) return ok('');
+      if (line.includes('eslint')) return ok('[]');
+      if (line.includes('--showConfig'))
+        return ok(JSON.stringify({ files: ['src/new.ts'] }));
+      return ok('');
+    });
+    const { decision } = await runStopGate(options(exec));
+    expect(decision.outcome).toBe('delegate');
+    expect(
+      readViolations(stateDirectory(root), 'sid').map((v) => v.ruleId),
+    ).toContain('guardrails/added-suppression');
+  });
+
+  it('falls back to the index for an unborn branch and audits its staged diff', async () => {
+    const { exec, calls } = recordingExec((line) => {
+      if (line === 'git diff HEAD')
+        return { stdout: '', stderr: 'bad revision HEAD', code: 128 };
+      if (line === 'git diff --cached') return ok(SNEAKY_DIFF);
+      if (line.includes('--name-only') || line.includes('--others'))
+        return ok('');
+      return ok('');
+    });
+    const result = await runStopGate(options(exec));
+    expect(result.auditFindings.map((finding) => finding.kind)).toEqual([
+      'eslint-disable',
+    ]);
+    expect(calls.map((call) => call.line)).toContain('git diff --cached');
+    expect(calls.find((call) => call.line === 'git diff --cached')?.cwd).toBe(
+      root,
+    );
+  });
+
+  it('does not treat a git spawn failure as an unborn-branch revision error', async () => {
+    const { exec, calls } = recordingExec((line) => {
+      if (line === 'git diff HEAD')
+        return {
+          stdout: '',
+          stderr: 'spawn ENOENT',
+          code: 1,
+          spawnFailed: true,
+        };
+      if (line.includes('--name-only') || line.includes('--others'))
+        return ok('');
+      return ok('');
+    });
+    await runStopGate(options(exec));
+    expect(calls.map((call) => call.line)).not.toContain('git diff --cached');
+  });
+
+  it('does not hide a successful HEAD diff behind the unborn fallback', async () => {
+    const { exec, calls } = recordingExec((line) => {
+      if (line === 'git diff HEAD') return ok(SNEAKY_DIFF);
+      if (line.includes('--name-only') || line.includes('--others'))
+        return ok('');
+      return ok('');
+    });
+    const result = await runStopGate(options(exec));
+    expect(result.auditFindings).toHaveLength(1);
+    expect(calls.map((call) => call.line)).not.toContain('git diff --cached');
+  });
+
+  it('audits an untracked final line even when the file has no trailing newline', async () => {
+    mkdirSync(path.join(root, 'src'), { recursive: true });
+    writeFileSync(path.join(root, 'src', 'new.ts'), '// @ts-ignore');
+    const exec = makeExec((line) => {
+      if (line.includes('--others')) return ok('src/new.ts\n');
+      if (line.includes('--name-only')) return ok('');
+      return ok('');
+    });
+    const result = await runStopGate(options(exec));
+    expect(result.auditFindings).toHaveLength(1);
+    expect(result.auditFindings[0]?.text).toBe('// @ts-ignore');
+  });
+
+  it('combines tracked and untracked audit input without dropping either', async () => {
+    mkdirSync(path.join(root, 'src'), { recursive: true });
+    writeFileSync(path.join(root, 'src', 'new.ts'), '// @ts-ignore\n');
+    const exec = makeExec((line) => {
+      if (line === 'git diff HEAD') return ok(SNEAKY_DIFF);
+      if (line.includes('--others')) return ok('src/new.ts');
+      if (line.includes('--name-only')) return ok('');
+      return ok('');
+    });
+    const result = await runStopGate(options(exec));
+    expect(
+      result.auditFindings
+        .map((finding) => finding.kind)
+        .toSorted((left, right) => left.localeCompare(right)),
+    ).toEqual(['eslint-disable', 'ts-suppress']);
+  });
+
+  it('ignores an untracked path that disappears before it can be read', async () => {
+    const exec = makeExec((line) => {
+      if (line.includes('--others')) return ok('src/disappeared.ts');
+      if (line.includes('--name-only')) return ok('');
+      return ok('');
+    });
+    const result = await runStopGate(options(exec));
+    expect(result.auditFindings).toEqual([]);
   });
 
   it('exits clean when verify finds nothing and resets attempts', async () => {
@@ -311,6 +424,21 @@ describe('runStopGate mutation-hardening', () => {
     });
     await runStopGate({ ...options(exec), analyzers: { eslint: 'off' } });
     expect(calls.some((call) => call.line.includes('eslint'))).toBe(false);
+  });
+
+  it('forwards retry state so one turn is tallied only once', async () => {
+    const failing = makeExec((line) => {
+      if (line.includes('--name-only')) return ok('src/foo.ts');
+      if (line.includes('--others')) return ok('');
+      if (line.includes('eslint')) return ok(eslintError());
+      if (line.includes('--showConfig')) return ok('{"compilerOptions":{}}');
+      return ok('');
+    });
+    await runStopGate(options(failing));
+    await runStopGate({ ...options(failing), isRetry: true });
+    expect(loadSession(stateDirectory(root), 'sid').ruleCounts).toEqual({
+      'no-console': 1,
+    });
   });
 });
 

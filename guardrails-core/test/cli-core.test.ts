@@ -59,6 +59,15 @@ function violation(file: string): Violation {
   };
 }
 
+function writeActiveViolations(
+  sessionId: string,
+  violations: readonly Violation[],
+): void {
+  const directory = stateDirectory(root);
+  writeViolations(directory, sessionId, violations);
+  writeFileSync(path.join(directory, `${sessionId}.pre-fix.json`), '[]');
+}
+
 /** A repo whose commit gate blocks: one eslint error on a changed TS file.
  *  `enforcement` is written into the config the command will load. */
 function blockingCommitDeps(enforcement: 'warn' | 'block'): CliDeps {
@@ -142,7 +151,7 @@ describe('runCommand — state', () => {
 
 describe('runCommand — scope-check', () => {
   it('denies an edit to a file outside the manifest', async () => {
-    writeViolations(stateDirectory(root), 'sid', [violation('src/allowed.ts')]);
+    writeActiveViolations('sid', [violation('src/allowed.ts')]);
     const stdin = JSON.stringify({
       cwd: root,
       tool_input: { file_path: path.join(root, 'src/forbidden.ts') },
@@ -156,7 +165,7 @@ describe('runCommand — scope-check', () => {
   });
 
   it('stays silent for a file inside the manifest', async () => {
-    writeViolations(stateDirectory(root), 'sid', [violation('src/allowed.ts')]);
+    writeActiveViolations('sid', [violation('src/allowed.ts')]);
     const stdin = JSON.stringify({
       cwd: root,
       tool_input: { file_path: path.join(root, 'src/allowed.ts') },
@@ -203,7 +212,7 @@ describe('runCommand — scope-check', () => {
     // A manifest IS active (for a different file) — this is the regression
     // case: a `view` read must not fall through to the edit-family
     // manifest-lock, which would wrongly deny it.
-    writeViolations(stateDirectory(root), 'sid', [violation('src/allowed.ts')]);
+    writeActiveViolations('sid', [violation('src/allowed.ts')]);
     const stdin = JSON.stringify({
       workingDirectory: root,
       toolName: 'view',
@@ -225,7 +234,7 @@ describe('runCommand — scope-check', () => {
   // That manifest must lock the fixer OUT, not disengage the lock.
   describe('a manifest naming only denied files', () => {
     beforeEach(() => {
-      writeViolations(stateDirectory(root), 'sid', [
+      writeActiveViolations('sid', [
         violation('package.json'),
         violation('guardrails.config.json'),
       ]);
@@ -252,7 +261,7 @@ describe('runCommand — scope-check', () => {
   });
 
   it('keeps the non-denied files of a mixed manifest editable', async () => {
-    writeViolations(stateDirectory(root), 'sid', [
+    writeActiveViolations('sid', [
       violation('src/allowed.ts'),
       violation('package.json'),
     ]);
@@ -269,7 +278,7 @@ describe('runCommand — scope-check', () => {
   it('denies a denied file named with different casing', async () => {
     // macOS and Windows resolve `Package.json` to the real file on write, so a
     // case-sensitive denylist lookup would be a way straight through it.
-    writeViolations(stateDirectory(root), 'sid', [
+    writeActiveViolations('sid', [
       violation('src/allowed.ts'),
       violation('Package.json'),
     ]);
@@ -715,7 +724,7 @@ describe('scope-check trigger conditions', () => {
   it('returns early when no filePath is supplied', async () => {
     // Kills `input.filePath === undefined` -> false: continuing would pass
     // undefined into the path checks.
-    writeViolations(stateDirectory(root), 'default', [violation('src/a.ts')]);
+    writeActiveViolations('default', [violation('src/a.ts')]);
     expect(await runScopeCheck(scopeStdin('edit', undefined))).toBe('');
   });
 
@@ -846,7 +855,7 @@ describe('cli-core residual hardening', () => {
     // treated as a read would be allowed anywhere in-repo) and the
     // `input.cwd ?? deps.cwd` -> `&&` mutant (a lost repoRoot finds no manifest,
     // so the scope-lock silently disengages).
-    writeViolations(stateDirectory(root), 'default', [violation('src/a.ts')]);
+    writeActiveViolations('default', [violation('src/a.ts')]);
     await runCommand(
       'scope-check',
       [],
@@ -987,6 +996,33 @@ describe('cli-core final hardening', () => {
       deps({ readStdin: () => Promise.resolve('{}') }),
     );
     expect(existsSync(sessionFile(directory, 'default'))).toBe(false);
+  });
+
+  it('forwards the host retry marker into the stop decision', async () => {
+    const run = (stopHookActive: boolean) =>
+      runCommand(
+        'gate',
+        ['--mode=stop'],
+        deps({
+          exec: failingVerifyExec(),
+          readStdin: () =>
+            Promise.resolve(
+              JSON.stringify({
+                cwd: root,
+                session_id: 'retry-session',
+                stop_hook_active: stopHookActive,
+              }),
+            ),
+        }),
+      );
+    await run(false);
+    await run(true);
+    const counts = loadSession(
+      stateDirectory(root),
+      'retry-session',
+    ).ruleCounts;
+    expect(counts['no-console']).toBe(1);
+    expect(counts['guardrails/analyzer-failed']).toBe(1);
   });
 
   it('prints each added suppression found by the commit gate', async () => {

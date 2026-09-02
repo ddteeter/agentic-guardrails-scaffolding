@@ -1,19 +1,19 @@
 # Agent Guardrails
 
-A guardrail system for coding agents (Claude Code and GitHub Copilot) targeting
-TypeScript and Java repos. Mechanically-fixable violations are corrected
-silently; judgment-requiring violations are diverted to disk and the main agent
-is handed a **terse pointer** to delegate the fix to a restricted subagent —
-keeping the main agent's context clean while a session-scoped memory tracks
-recurring mistakes.
+An initial TypeScript guardrail pack for Claude Code, with a headless GitHub
+Copilot channel and Java support on the roadmap. Mechanically-fixable violations
+are corrected silently; judgment-requiring violations are diverted to disk and
+the main agent is handed a **terse pointer** to delegate the fix to a restricted
+subagent — keeping the main agent's context clean while a session-scoped memory
+tracks recurring mistakes.
 
 This repository is the **development home** for three artifacts:
 
-| Artifact                                    | What it is                                     | Status                                           |
-| ------------------------------------------- | ---------------------------------------------- | ------------------------------------------------ |
-| [`guardrails-core/`](./guardrails-core)     | npm package — all machinery, CLI `guardrails`  | **Phase A: built**                               |
-| [`guardrails-plugin/`](./guardrails-plugin) | thin Claude Code plugin (hooks + fixer agents) | **Phase A: built**                               |
-| per-repo footprint                          | policy + state a target repo checks in         | **`guardrails init` ships it (Phase E piece 4)** |
+| Artifact                                    | What it is                                     | Status                         |
+| ------------------------------------------- | ---------------------------------------------- | ------------------------------ |
+| [`guardrails-core/`](./guardrails-core)     | npm package — all machinery, CLI `guardrails`  | **v0.1 release candidate**     |
+| [`guardrails-plugin/`](./guardrails-plugin) | thin Claude Code plugin (hooks + fixer agents) | **v0.1 release candidate**     |
+| per-repo footprint                          | policy + state a target repo checks in         | **`guardrails init` ships it** |
 
 See [`plan.md`](./plan.md) for the full design and phase breakdown, and
 [`docs/adoption.md`](./docs/adoption.md) for how to adopt guardrails in
@@ -63,10 +63,11 @@ main agent finishes turn
         1. verify (diff-scoped) → normalized Violation[] on disk
         2. clean?  → reset attempts, turn ends
         3. else    → tally rule-ids, bump attempt counter
-        4. attempt > MAX → block with FULL dump (stop hiding), reset
-        5. else          → block with TERSE pointer: "N violations at <path>.
+        4. attempt > MAX → block once with FULL dump (stop hiding)
+        5. still unfixable → release retry; commit/CI remain the backstop
+        6. else          → block with TERSE pointer: "N violations at <path>.
                             Do NOT read it. Spawn the guardrail-fixer subagent."
-        6. rule crossed recurrence threshold → attach a behavioral correction
+        7. rule crossed recurrence threshold → attach a behavioral correction
    └─ main agent spawns guardrail-fixer (restricted: Read/Edit/Write, no fan-out)
         reads the manifest, fixes, returns one line
    └─ main agent tries to stop again → gate re-runs verify (never trusts the fixer)
@@ -90,8 +91,9 @@ Everything is authored in strict TypeScript, compiled to pure-Node ESM
   the Copilot commit-gate.
 - **CLI** (`src/cli.ts`, `src/cli-core.ts`) — `verify | autofix | audit | gate |
 state | scope-check | session-start | session-end`.
-- **Plugin** (`guardrails-plugin/`) — `hooks.json`, and the two fixer subagents
-  with a fixer-scoped scope-lock hook.
+- **Plugin** (`guardrails-plugin/`) — `hooks.json`, two fixer subagents, and a
+  session hook whose exact-session fix-loop marker makes the scope-lock active
+  only during delegation.
 
 ## Development
 

@@ -35,6 +35,7 @@ import {
   writeViolations,
 } from './state-store.js';
 import { hasErrors, type Violation } from './violation.js';
+import { parseFileList } from './verify/git.js';
 import { runVerify } from './verify/index.js';
 import { loadWorkspaceResolver, withPackages } from './workspaces.js';
 import { resolveBaseReference } from './verify/git.js';
@@ -48,6 +49,8 @@ export interface StopGateOptions {
   resolveBin?: (tool: string) => string;
   /** Per-analyzer opt-in (`RepoConfig.analyzers`), forwarded to `runVerify`. */
   analyzers?: Readonly<Record<string, AnalyzerMode>>;
+  /** Claude/Copilot says this Stop is a retry caused by an earlier block. */
+  isRetry?: boolean | undefined;
 }
 
 export interface StopGateResult {
@@ -151,10 +154,47 @@ async function workingDiff(options: StopGateOptions): Promise<string> {
   // committed in an earlier turn is already past this point — it would have been
   // audited while it was uncommitted, and the Copilot commit-gate re-checks the
   // staged diff at commit time.
-  const result = await options.exec('git', ['diff', 'HEAD'], {
+  let result = await options.exec('git', ['diff', 'HEAD'], {
     cwd: options.repoRoot,
   });
-  return result.stdout;
+  if (result.code !== 0 && result.spawnFailed !== true) {
+    // Unborn branch: there is no HEAD to diff, but staged content already lives
+    // in the index and must still be audited before the first commit.
+    result = await options.exec('git', ['diff', '--cached'], {
+      cwd: options.repoRoot,
+    });
+  }
+  const untracked = await options.exec(
+    'git',
+    ['ls-files', '--others', '--exclude-standard'],
+    { cwd: options.repoRoot },
+  );
+  const addedFiles = parseFileList(untracked.stdout)
+    .map((file) => untrackedFileDiff(options.repoRoot, file))
+    .join('\n');
+  return `${result.stdout}\n${addedFiles}`;
+}
+
+/** `git diff HEAD` omits untracked files entirely. Present each one as a
+ * synthetic all-additions diff so the auditor applies its normal lexer and
+ * signatures to new files too. A read failure narrows the audit input; verify's
+ * independent untracked-file path still reports analyzer failures. */
+function untrackedFileDiff(repoRoot: string, file: string): string {
+  let content: string;
+  try {
+    content = readFileSync(path.join(repoRoot, file), 'utf8');
+  } catch {
+    return '';
+  }
+  const lines = content.split('\n');
+  return [
+    `diff --git a/${file} b/${file}`,
+    'new file mode 100644',
+    '--- /dev/null',
+    `+++ b/${file}`,
+    `@@ -0,0 +1,${lines.length} @@`,
+    ...lines.map((line) => `+${line}`),
+  ].join('\n');
 }
 
 function toViolation(finding: AuditFinding): Violation {
@@ -219,6 +259,7 @@ export async function runStopGate(
     recurrence,
     manifestPath,
     config,
+    isRetry: options.isRetry,
   });
 
   saveSession(directory, sessionId, decision.nextSession);

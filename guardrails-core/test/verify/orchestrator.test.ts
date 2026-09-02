@@ -618,6 +618,268 @@ describe('runVerify analyzer invocation contract', () => {
     );
   });
 
+  it('checks referenced projects for a solution-style tsconfig', async () => {
+    const { exec, calls } = fakeExec({
+      'tsc --noEmit --pretty false -p tsconfig.json': {
+        stdout: '',
+        stderr: '',
+        code: 0,
+      },
+      'tsc --showConfig -p tsconfig.json': {
+        stdout: JSON.stringify({
+          files: [],
+          references: [{ path: './tsconfig.app.json' }],
+        }),
+        stderr: '',
+        code: 0,
+      },
+      'tsc --build --noEmit --pretty false tsconfig.json': {
+        stdout: tscOut,
+        stderr: '',
+        code: 1,
+      },
+    });
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+    });
+    expect(calls.some((call) => call.args.includes('--build'))).toBe(true);
+    expect(
+      calls
+        .filter(
+          (call) =>
+            call.args.includes('--showConfig') || call.args.includes('--build'),
+        )
+        .every((call) => call.options?.cwd === '/repo'),
+    ).toBe(true);
+    expect(violations.map((violation) => violation.ruleId)).toContain('TS2304');
+    expect(
+      violations.some(
+        (violation) => violation.ruleId === 'guardrails/analyzer-failed',
+      ),
+    ).toBe(false);
+  });
+
+  it('fails closed when an apparently-clean tsc emits unreadable showConfig output', async () => {
+    const { exec } = fakeExec({
+      'tsc --noEmit --pretty false -p tsconfig.json': {
+        stdout: '',
+        stderr: '',
+        code: 0,
+      },
+      'tsc --showConfig -p tsconfig.json': {
+        stdout: 'not-json',
+        stderr: '',
+        code: 0,
+      },
+    });
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+    });
+    expect(violations.map((violation) => violation.ruleId)).toContain(
+      'guardrails/analyzer-failed',
+    );
+  });
+
+  it.each(['null', '[]', '42', '"string"'])(
+    'fails closed when showConfig returns the valid JSON value %s',
+    async (stdout) => {
+      const { exec, calls } = fakeExec({
+        'tsc --noEmit --pretty false -p tsconfig.json': {
+          stdout: '',
+          stderr: '',
+          code: 0,
+        },
+        'tsc --showConfig -p tsconfig.json': { stdout, stderr: '', code: 0 },
+      });
+      const { violations } = await runVerify({
+        repoRoot: '/repo',
+        baseBranch: 'main',
+        exec,
+      });
+      expect(violations.map((violation) => violation.ruleId)).toContain(
+        'guardrails/analyzer-failed',
+      );
+      expect(calls.some((call) => call.args.includes('--build'))).toBe(false);
+    },
+  );
+
+  it('does not enter build mode when the resolved config has no references', async () => {
+    const { exec, calls } = fakeExec({
+      'tsc --noEmit --pretty false -p tsconfig.json': {
+        stdout: '',
+        stderr: '',
+        code: 0,
+      },
+      'tsc --showConfig -p tsconfig.json': {
+        stdout: '{"compilerOptions":{}}',
+        stderr: '',
+        code: 0,
+      },
+    });
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+    });
+    expect(calls.some((call) => call.args.includes('--build'))).toBe(false);
+    expect(violations.filter((violation) => violation.tool === 'tsc')).toEqual(
+      [],
+    );
+  });
+
+  it('fails closed when showConfig exits nonzero and never builds', async () => {
+    const { exec, calls } = fakeExec({
+      'tsc --noEmit --pretty false -p tsconfig.json': {
+        stdout: '',
+        stderr: '',
+        code: 0,
+      },
+      'tsc --showConfig -p tsconfig.json': {
+        stdout: '',
+        stderr: 'bad config',
+        code: 2,
+      },
+    });
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      analyzers: {
+        tsc: 'required',
+        eslint: 'off',
+        knip: 'off',
+        'dependency-cruiser': 'off',
+        stryker: 'off',
+      },
+    });
+    expect(violations).toEqual([
+      expect.objectContaining({
+        ruleId: 'guardrails/analyzer-failed',
+        message: expect.stringContaining('code 2'),
+      }),
+    ]);
+    expect(violations[0]?.message).toContain('bad config');
+    expect(calls.some((call) => call.args.includes('--build'))).toBe(false);
+  });
+
+  it('does not build after showConfig cannot be spawned', async () => {
+    const { exec, calls } = fakeExec({
+      'tsc --noEmit --pretty false -p tsconfig.json': {
+        stdout: '',
+        stderr: '',
+        code: 0,
+      },
+      'tsc --showConfig -p tsconfig.json': {
+        stdout: '',
+        stderr: 'spawn ENOENT',
+        code: 0,
+        spawnFailed: true,
+      },
+    });
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      analyzers: {
+        tsc: 'required',
+        eslint: 'off',
+        knip: 'off',
+        'dependency-cruiser': 'off',
+        stryker: 'off',
+      },
+    });
+    expect(new Set(violations.map((violation) => violation.ruleId))).toEqual(
+      new Set(['guardrails/analyzer-failed', 'guardrails/analyzer-missing']),
+    );
+    expect(
+      violations.find(
+        (violation) => violation.ruleId === 'guardrails/analyzer-failed',
+      )?.message,
+    ).toContain('spawn ENOENT');
+    expect(calls.some((call) => call.args.includes('--build'))).toBe(false);
+  });
+
+  it('does not inspect showConfig after the normal typecheck already failed', async () => {
+    const { exec, calls } = fakeExec({
+      'tsc --noEmit --pretty false -p tsconfig.json': {
+        stdout: tscOut,
+        stderr: '',
+        code: 1,
+      },
+    });
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+    });
+    expect(violations.map((violation) => violation.ruleId)).toContain('TS2304');
+    expect(calls.some((call) => call.args.includes('--showConfig'))).toBe(
+      false,
+    );
+  });
+
+  it('stops after the normal tsc executable cannot be spawned', async () => {
+    const { exec, calls } = fakeExec({
+      'tsc --noEmit --pretty false -p tsconfig.json': {
+        stdout: '',
+        stderr: 'spawn ENOENT',
+        code: 0,
+        spawnFailed: true,
+      },
+    });
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      analyzers: {
+        tsc: 'required',
+        eslint: 'off',
+        knip: 'off',
+        'dependency-cruiser': 'off',
+        stryker: 'off',
+      },
+    });
+    expect(violations).toEqual([
+      expect.objectContaining({ ruleId: 'guardrails/analyzer-missing' }),
+    ]);
+    expect(calls.some((call) => call.args.includes('--showConfig'))).toBe(
+      false,
+    );
+  });
+
+  it('treats an empty references array as an ordinary non-solution config', async () => {
+    const { exec, calls } = fakeExec({
+      'tsc --noEmit --pretty false -p tsconfig.json': {
+        stdout: '',
+        stderr: '',
+        code: 0,
+      },
+      'tsc --showConfig -p tsconfig.json': {
+        stdout: '{"references":[]}',
+        stderr: '',
+        code: 0,
+      },
+    });
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      analyzers: {
+        tsc: 'required',
+        eslint: 'off',
+        knip: 'off',
+        'dependency-cruiser': 'off',
+        stryker: 'off',
+      },
+    });
+    expect(violations).toEqual([]);
+    expect(calls.some((call) => call.args.includes('--build'))).toBe(false);
+  });
+
   it('returns no violations when stryker has nothing to mutate', async () => {
     // Kills the `return []` -> non-empty mutant on runStryker's early exit.
     const { exec } = fakeExec({
@@ -1263,7 +1525,7 @@ describe('stryker fails open twice (defect 3)', () => {
     expect(violations.some((v) => v.ruleId === 'stryker/survived')).toBe(false);
   });
 
-  it('deletes the report before running stryker, and passes no path flag', async () => {
+  it('deletes the report and incremental cache before running stryker', async () => {
     // The redesign: `--jsonReporter.fileName` is a config-file-only key, never
     // registered as a CLI flag, so the report path cannot be relocated per run.
     // Staleness is closed by DELETING the default path first instead — nothing
@@ -1288,9 +1550,11 @@ describe('stryker fails open twice (defect 3)', () => {
     });
     // Deleted BEFORE the run — ordering is the property, not merely that a
     // delete happened at some point.
-    expect(order[0]).toMatch(/^remove:/);
-    expect(order[0]).toContain('mutation.json');
-    expect(order[1]).toBe('run');
+    expect(order.slice(0, 2)).toEqual([
+      expect.stringContaining('mutation.json'),
+      expect.stringContaining('stryker-incremental.json'),
+    ]);
+    expect(order[2]).toBe('run');
     expect(violations.filter((v) => v.tool === 'stryker')).toEqual([]);
   });
 
@@ -1393,5 +1657,150 @@ describe('base branch resolution (the CI checkout case)', () => {
     // changed-file-scoped analyzers did not run.
     expect(calls.some((call) => call.args.includes('--name-only'))).toBe(false);
     expect(calls.some((call) => call.command.includes('eslint'))).toBe(false);
+  });
+
+  it('checks every indexed and untracked TypeScript file on an unborn branch', async () => {
+    const { exec, calls } = fakeExec({
+      'git rev-parse --verify --quiet main^{commit}': {
+        stdout: '',
+        stderr: '',
+        code: 1,
+      },
+      'git rev-parse --verify --quiet origin/main^{commit}': {
+        stdout: '',
+        stderr: '',
+        code: 1,
+      },
+      'git rev-parse --verify --quiet HEAD': {
+        stdout: '',
+        stderr: 'fatal: Needed a single revision',
+        code: 1,
+      },
+      'git ls-files': {
+        stdout: 'src/index.ts\nREADME.md',
+        stderr: '',
+        code: 0,
+      },
+      'git ls-files --others --exclude-standard': {
+        stdout: 'src/new.ts',
+        stderr: '',
+        code: 0,
+      },
+    });
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      profile: 'stop',
+    });
+    const eslintCall = calls.find((call) => call.command === 'eslint');
+    expect(eslintCall?.args).toContain('src/index.ts');
+    expect(eslintCall?.args).toContain('src/new.ts');
+    expect(
+      calls.find(
+        (call) =>
+          call.command === 'git' &&
+          call.args.length === 1 &&
+          call.args[0] === 'ls-files',
+      )?.options?.cwd,
+    ).toBe('/repo');
+    expect(
+      violations.some((violation) =>
+        violation.message.includes('base branch "main"'),
+      ),
+    ).toBe(false);
+  });
+
+  it('stops changed-file discovery when the base git process cannot spawn', async () => {
+    const { exec, calls } = fakeExec({
+      'git rev-parse --verify --quiet main^{commit}': {
+        stdout: '',
+        stderr: 'spawn ENOENT',
+        code: 1,
+        spawnFailed: true,
+      },
+    });
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      profile: 'stop',
+    });
+    expect(violations).toEqual([
+      expect.objectContaining({ ruleId: 'guardrails/analyzer-missing' }),
+    ]);
+    expect(calls.some((call) => call.args.includes('HEAD'))).toBe(false);
+    expect(calls.some((call) => call.args.includes('ls-files'))).toBe(false);
+  });
+
+  it('stops changed-file discovery when the HEAD probe cannot spawn', async () => {
+    const { exec, calls } = fakeExec({
+      'git rev-parse --verify --quiet main^{commit}': {
+        stdout: '',
+        stderr: '',
+        code: 1,
+      },
+      'git rev-parse --verify --quiet origin/main^{commit}': {
+        stdout: '',
+        stderr: '',
+        code: 1,
+      },
+      'git rev-parse --verify --quiet HEAD': {
+        stdout: '',
+        stderr: 'spawn ENOENT',
+        code: 1,
+        spawnFailed: true,
+      },
+    });
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      profile: 'stop',
+    });
+    expect(violations).toEqual([
+      expect.objectContaining({ ruleId: 'guardrails/analyzer-missing' }),
+    ]);
+    expect(calls.some((call) => call.args.includes('ls-files'))).toBe(false);
+    expect(calls.find((call) => call.args.includes('HEAD'))?.options?.cwd).toBe(
+      '/repo',
+    );
+  });
+
+  it('fails closed when HEAD exists but the configured base cannot resolve', async () => {
+    const { exec, calls } = fakeExec({
+      'git rev-parse --verify --quiet main^{commit}': {
+        stdout: '',
+        stderr: '',
+        code: 1,
+      },
+      'git rev-parse --verify --quiet origin/main^{commit}': {
+        stdout: '',
+        stderr: '',
+        code: 1,
+      },
+      'git rev-parse --verify --quiet HEAD': {
+        stdout: 'abc123',
+        stderr: '',
+        code: 0,
+      },
+    });
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      profile: 'stop',
+    });
+    expect(violations).toEqual([
+      expect.objectContaining({
+        ruleId: 'guardrails/analyzer-failed',
+        message: expect.stringContaining('base branch "main"'),
+      }),
+    ]);
+    expect(
+      calls.some(
+        (call) => call.command === 'git' && call.args.includes('ls-files'),
+      ),
+    ).toBe(false);
   });
 });

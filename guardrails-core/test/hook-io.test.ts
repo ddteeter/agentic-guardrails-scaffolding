@@ -36,9 +36,14 @@ describe('parseHookInput', () => {
         session_id: 'abc',
         cwd: '/repo',
         hook_event_name: 'Stop',
+        stop_hook_active: true,
       }),
     );
-    expect(parsed).toEqual({ sessionId: 'abc', cwd: '/repo' });
+    expect(parsed).toEqual({
+      sessionId: 'abc',
+      cwd: '/repo',
+      stopHookActive: true,
+    });
   });
 
   it('extracts the edited file path from a PostToolUse payload', () => {
@@ -66,6 +71,35 @@ describe('parseHookInput', () => {
   it('degrades to empty fields on malformed input', () => {
     expect(parseHookInput('not json')).toEqual({});
     expect(parseHookInput('')).toEqual({});
+    expect(parseHookInput('null')).toEqual({});
+    expect(parseHookInput('[]')).toEqual({});
+  });
+
+  it('omits fields whose runtime values have the wrong types', () => {
+    const parsed = parseHookInput(
+      JSON.stringify({
+        session_id: 42,
+        cwd: false,
+        tool_name: {},
+        stop_hook_active: 'yes',
+      }),
+    );
+    expect(parsed).toEqual({});
+    expect(Object.keys(parsed)).toEqual([]);
+  });
+
+  it('uses Claude retry state ahead of Copilot fallback state', () => {
+    expect(
+      parseHookInput(
+        JSON.stringify({ stop_hook_active: false, stopHookActive: true }),
+      ).stopHookActive,
+    ).toBe(false);
+    expect(
+      parseHookInput(JSON.stringify({ stopHookActive: false })).stopHookActive,
+    ).toBe(false);
+    expect(
+      Object.keys(parseHookInput(JSON.stringify({ stopHookActive: 'false' }))),
+    ).toEqual([]);
   });
 
   it('extracts fields from a Copilot camelCase preToolUse payload', () => {
@@ -194,6 +228,13 @@ describe('formatCopilotStopOutput', () => {
       formatCopilotStopOutput({ ...base, additionalContext: 'stop that' }),
     ).toEqual({ decision: 'block', reason: 'spawn the fixer\n\nstop that' });
   });
+
+  it('uses the message verbatim when there is no correction', () => {
+    expect(formatCopilotStopOutput(base)).toEqual({
+      decision: 'block',
+      reason: 'spawn the fixer',
+    });
+  });
 });
 
 describe('resolveLocalBin', () => {
@@ -208,5 +249,25 @@ describe('resolveLocalBin', () => {
 
   it('falls back to the bare tool name when not installed locally', () => {
     expect(resolveLocalBin(root, 'eslint')).toBe('eslint');
+  });
+
+  it('resolves the Windows command shim suffix', () => {
+    const original = process.platform;
+    Object.defineProperty(process, 'platform', {
+      configurable: true,
+      value: 'win32',
+    });
+    try {
+      const binDirectory = path.join(root, 'node_modules', '.bin');
+      mkdirSync(binDirectory, { recursive: true });
+      const eslint = path.join(binDirectory, 'eslint.cmd');
+      writeFileSync(eslint, '');
+      expect(resolveLocalBin(root, 'eslint')).toBe(eslint);
+    } finally {
+      Object.defineProperty(process, 'platform', {
+        configurable: true,
+        value: original,
+      });
+    }
   });
 });

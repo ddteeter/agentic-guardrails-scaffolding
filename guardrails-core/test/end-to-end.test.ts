@@ -107,6 +107,18 @@ function writeStub(name: string, output: string): string {
   return file;
 }
 
+/** Write a tsc stub that emits a valid config only for `--showConfig`. */
+function writeTscStub(name: string): string {
+  const file = path.join(root, name);
+  writeFileSync(
+    file,
+    '#!/usr/bin/env node\n' +
+      "if (process.argv.includes('--showConfig')) process.stdout.write('{\"compilerOptions\":{}}');\n",
+  );
+  chmodSync(file, 0o755);
+  return file;
+}
+
 beforeEach(async () => {
   root = mkdtempSync(path.join(tmpdir(), 'guardrails-e2e-'));
   await git('init', '-b', 'main');
@@ -147,7 +159,7 @@ describe('end-to-end Stop gate', () => {
         },
       ]),
     );
-    const tscStub = writeStub('tsc-stub.mjs', '');
+    const tscStub = writeTscStub('tsc-stub.mjs');
     const resolveBin = (tool: string): string =>
       tool === 'eslint' ? eslintStub : tscStub;
 
@@ -172,7 +184,7 @@ describe('end-to-end Stop gate', () => {
 
   it('exits clean when the changed file has no violations', async () => {
     writeFileSync(path.join(root, 'src', 'ok.ts'), 'export const ok = 2;\n');
-    const resolveBin = (): string => writeStub('empty.mjs', '');
+    const tscStub = writeTscStub('tsc-empty.mjs');
     // eslint stub returns an empty result set; tsc stub empty too.
     const eslintStub = writeStub('eslint-empty.mjs', '[]');
     const { decision } = await runStopGate({
@@ -181,7 +193,7 @@ describe('end-to-end Stop gate', () => {
       baseBranch: 'main',
       exec: isolatedExec,
       config,
-      resolveBin: (tool) => (tool === 'eslint' ? eslintStub : resolveBin()),
+      resolveBin: (tool) => (tool === 'eslint' ? eslintStub : tscStub),
     });
     expect(decision.outcome).toBe('clean');
     expect(decision.block).toBe(false);

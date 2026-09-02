@@ -68,9 +68,11 @@ they can override, not an open questionnaire:
   `stryker` needs a test suite worth mutating; recommending it for a repo with
   thin coverage just produces noise, and mutation testing is genuinely slow —
   say so.
-- Default `enforcement: warn` for a first adoption. `block` before the team has
-  seen what the gate finds turns the first week into a fire drill instead of a
-  calibration.
+- Default `enforcement: block` for a greenfield repo or an existing repo that
+  already passes `guardrails verify` clean. There is no backlog to calibrate in
+  a greenfield project, and `warn` can let the first violation land on `main`,
+  where diff-scoped checks no longer see it. Use `warn` only for an existing
+  backlog, then flip to `block` as soon as the baseline is green.
 
 State the reasoning in terms of _this_ repo's facts from step 2, not the
 general case.

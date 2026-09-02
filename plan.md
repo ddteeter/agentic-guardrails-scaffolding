@@ -41,15 +41,19 @@ Recurrence memory keys on `package:ruleId` in workspace layouts.
 ## Control loop
 
 Stop hook (main agent only, never agent frontmatter) → `verify` (diff-scoped) →
-clean/delegate/escalate. Bounded attempt counter (no `stop_hook_active`
-shortcut). Fixer is a restricted subagent (Read/Edit/Write, no Agent/Task, no
-Bash) that reads the manifest into _its own_ context. Guards that hold
+clean/delegate/escalate/release. `stop_hook_active` distinguishes retries from
+new turns: retries spend the bounded attempt budget but do not inflate
+recurrence, the exhausted loop gives the main agent one full dump, and its next
+still-failing retry is released instead of restarting forever. Fixer is a
+restricted subagent (Read/Edit/Write, no Agent/Task, no Bash) that reads the
+manifest into _its own_ context. Guards that hold
 regardless of model tier: the **diff-auditor** (snapshot-based, rejects added
 suppressions/casts/skips), **no-deletion** (fixer comments-and-flags), **hidden-
 fix logging**, and **recurrence-as-signal** auto-promotion.
 
 Model ladder: attempts `1..MAX-1` → fast fixer; final attempt → thorough fixer;
-exhausted → main agent (top model, full context). Loose classes (architecture,
+exhausted → main agent (top model, full context) → terminal release if still
+unfixable. Loose classes (architecture,
 mutants, logic-revealing type errors, maybe-live dead code) route to the
 thorough tier from attempt 1 — a **safety** mechanism, not an optimization.
 
@@ -994,16 +998,15 @@ single one reaches every runtime:
 
 ### Correction to the Phase B notes
 
-The `PreToolUse` scope-check is declared in **each fixer agent's frontmatter** for
-Claude Code, not in the session-level plugin hooks — and that is correct. A
-session-level hook would confine the **main** agent too (its `~/.claude` memory,
-scratchpad, sibling repos), including during escalation when the main agent is
-the one fixing. This was mis-diagnosed as a gap during piece 4, "fixed", and
-reverted; a wiring drift-guard now pins the real invariant. Phase B's own
-research already implied it: per-agent `hooks` frontmatter is **VS-Code-Preview
-only and unconfirmed on Copilot CLI/cloud**, which is precisely why
-`.github/hooks/guardrails.json` wires the same check session-wide for Copilot —
-richest-per-surface, not an inconsistency.
+Release-candidate live testing on 2026-09-02 disproved the prior assumption:
+Claude Code 2.1.258 did not execute the repo-local fixer-agent frontmatter
+`PreToolUse` hook. In `acceptEdits` mode a forbidden `package.json` edit landed.
+Scope-check now lives in the session-level plugin/project hooks, like Copilot's
+repo hook. It does **not** confine ordinary main-agent work: it activates only
+when the payload's exact session has both a violations manifest and the
+`.pre-fix.json` marker created for a delegated loop. Clean and escalation remove
+that marker; stale and other-session manifests are inactive. A wiring
+drift-guard pins this enforceable placement.
 
 - **Piece 6 — workspaces / affected-package attribution (shipped).** The last
   piece of Phase C. A hybrid `loadWorkspaceResolver(repoRoot)`: declared

@@ -126,6 +126,23 @@
       "key": "guardrails-core/src/cli-core.ts|mutation-suppress|// Stryker disable next-line ConditionalExpression",
       "reason": "Proven-equivalent mutant, equivalence argument recorded at the site: the `if (input.filePath !== undefined)` guard in autofixCommand is redundant with runAutofix's own isTypeScriptFile filter, which rejects `undefined` safely, so the mutated branch spawns nothing and is observationally identical. COST, stated plainly: Stryker directives match by mutator name and LINE, not by replacement, so this also silences the `false` variant on the same line -- a mutant that IS currently killed (by 'runs eslint --fix on the edited file named by the hook payload'). That test still exists and still asserts; what is lost is the mutation-level proof that it protects this branch. Accepted because the alternative shapes relocate the equivalence rather than remove it.",
       "count": 1
+    },
+    {
+      "key": "guardrails-core/src/hook-io.ts|mutation-suppress|// Stryker disable next-line BlockStatement",
+      "reason": "Proven-equivalent JSON.parse catch mutant. Emptying the catch leaves `parsed` undefined; the immediately following isRecord guard returns the same empty HookInput. The directive is line-scoped to the catch block, leaving the real try-block mutant active."
+    },
+    {
+      "key": "guardrails-core/src/state-store.ts|mutation-suppress|// Stryker disable next-line BlockStatement",
+      "reason": "Two proven-equivalent catch mutants. In readJson, an empty catch reaches the same implicit undefined return. In sweepStale, an empty stat catch leaves mtimeMs undefined, making the age comparison false and skipping the entry exactly as continue does. Both directives are line-scoped; their real try-block mutants remain active.",
+      "count": 2
+    },
+    {
+      "key": "guardrails-core/src/verify/index.ts|mutation-suppress|// Stryker disable next-line BlockStatement",
+      "reason": "Proven-equivalent resolved-tsconfig JSON.parse catch mutant. Emptying the catch leaves `parsed` undefined, which the immediately following shape guard rejects with the same undefined result. The directive is line-scoped to the catch block, leaving the real parse try-block mutant active."
+    },
+    {
+      "key": "guardrails-core/src/verify/index.ts|mutation-suppress|// Stryker disable next-line ConditionalExpression,BlockStatement",
+      "reason": "Proven-equivalent nonzero-tsc early-return mutants. withExitCodeCheck has already converted every non-spawn nonzero exit into either parsed TypeScript diagnostics or guardrails/analyzer-failed, and the immediately following violations-length guard returns that identical array. The spawn-failure branch remains independently mutated and tested."
     }
   ],
   "distribution": "solo",
