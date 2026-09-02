@@ -70,7 +70,7 @@ describe('consumer templates', () => {
   it('ships valid-looking Codex custom agent definitions', () => {
     const agents = [
       ['guardrail-fixer.toml', 'gpt-5.6-luna', 'low'],
-      ['guardrail-fixer-thorough.toml', 'gpt-5.6', 'high'],
+      ['guardrail-fixer-thorough.toml', 'gpt-5.6-sol', 'high'],
     ] as const;
     for (const [agent, model, reasoning] of agents) {
       const content = readFileSync(

@@ -237,7 +237,7 @@ const MODEL_FOR = {
 };
 const CODEX_SHAPE_FOR = {
   haiku: { model: 'gpt-5.6-luna', reasoning: 'low' },
-  sonnet: { model: 'gpt-5.6', reasoning: 'high' },
+  sonnet: { model: 'gpt-5.6-sol', reasoning: 'high' },
 };
 
 function frontmatterField(fm, key) {
