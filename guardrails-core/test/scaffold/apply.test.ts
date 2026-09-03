@@ -215,7 +215,7 @@ describe('applyScaffold', () => {
               {
                 type: 'command',
                 command:
-                  'node "${CLAUDE_PROJECT_DIR}/node_modules/guardrails-core/dist/cli.mjs" gate --mode=stop',
+                  'node -e "import(\'guardrails-core/cli\')" guardrails gate --mode=stop',
               },
             ],
           },
@@ -714,7 +714,7 @@ describe('applyScaffold', () => {
               {
                 type: 'command',
                 command:
-                  'node "${CLAUDE_PROJECT_DIR}/node_modules/guardrails-core/dist/cli.mjs" gate --mode=stop',
+                  'node -e "import(\'guardrails-core/cli\')" guardrails gate --mode=stop',
               },
             ],
           },

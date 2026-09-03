@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$(git rev-parse --show-toplevel)/node_modules/guardrails-core/dist/cli.mjs\" session-start",
+            "command": "node -e \"import('guardrails-core/cli')\" guardrails session-start",
             "timeout": 60
           }
         ]
@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$(git rev-parse --show-toplevel)/node_modules/guardrails-core/dist/cli.mjs\" session-end",
+            "command": "node -e \"import('guardrails-core/cli')\" guardrails session-end",
             "timeout": 3
           }
         ]
@@ -28,7 +28,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$(git rev-parse --show-toplevel)/node_modules/guardrails-core/dist/cli.mjs\" scope-check --dialect=codex",
+            "command": "node -e \"import('guardrails-core/cli')\" guardrails scope-check --dialect=codex",
             "timeout": 60
           }
         ]
@@ -38,7 +38,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$(git rev-parse --show-toplevel)/node_modules/guardrails-core/dist/cli.mjs\" gate --mode=pretooluse --dialect=codex",
+            "command": "node -e \"import('guardrails-core/cli')\" guardrails gate --mode=pretooluse --dialect=codex",
             "timeout": 300
           }
         ]
@@ -48,7 +48,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$(git rev-parse --show-toplevel)/node_modules/guardrails-core/dist/cli.mjs\" scope-check --dialect=codex",
+            "command": "node -e \"import('guardrails-core/cli')\" guardrails scope-check --dialect=codex",
             "timeout": 60
           }
         ]
@@ -60,7 +60,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$(git rev-parse --show-toplevel)/node_modules/guardrails-core/dist/cli.mjs\" autofix",
+            "command": "node -e \"import('guardrails-core/cli')\" guardrails autofix",
             "timeout": 120
           }
         ]
@@ -71,7 +71,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$(git rev-parse --show-toplevel)/node_modules/guardrails-core/dist/cli.mjs\" gate --mode=stop --dialect=codex",
+            "command": "node -e \"import('guardrails-core/cli')\" guardrails gate --mode=stop --dialect=codex",
             "timeout": 300
           }
         ]

@@ -4,6 +4,8 @@ import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
+import { CLI_PREFIX, cliCommand } from './hook-command.js';
+
 /**
  * Wiring guard for the Claude Code plugin. `guardrails-plugin/hooks/hooks.json`
  * is what a CONSUMER repo installs, so a missing event there is a guard that
@@ -48,9 +50,7 @@ describe('guardrails-plugin hook wiring', () => {
   });
 
   it('wires the self-filtering scope-check session-wide', () => {
-    expect(commandsFor('PreToolUse')).toContain(
-      'node "${CLAUDE_PROJECT_DIR}/node_modules/guardrails-core/dist/cli.mjs" scope-check',
-    );
+    expect(commandsFor('PreToolUse')).toContain(cliCommand('scope-check'));
   });
 
   it('does not rely on unsupported fixer-agent frontmatter hooks', () => {
@@ -79,9 +79,7 @@ describe('guardrails-plugin hook wiring', () => {
     const commands = (settings.hooks.PreToolUse ?? []).flatMap((entry) =>
       entry.hooks.map((hook) => hook.command),
     );
-    expect(commands).toContain(
-      'node "${CLAUDE_PROJECT_DIR}/node_modules/guardrails-core/dist/cli.mjs" scope-check',
-    );
+    expect(commands).toContain(cliCommand('scope-check'));
   });
 
   it('dispatches each event to its own guardrails command', () => {
@@ -94,18 +92,12 @@ describe('guardrails-plugin hook wiring', () => {
 
   it('resolves the CLI consumer-generically, with a timeout on every hook', () => {
     // Ships into other repos: the command must resolve through the consumer's
-    // own CLAUDE_PROJECT_DIR and node_modules, never this repo's layout.
+    // package resolution, never a constructed path or this repo's layout.
     const every = Object.keys(wiring.hooks).flatMap((event) =>
       commandsFor(event),
     );
     expect(every.length).toBeGreaterThan(0);
-    expect(
-      every.every((command) =>
-        command.includes(
-          '${CLAUDE_PROJECT_DIR}/node_modules/guardrails-core/dist/cli.mjs',
-        ),
-      ),
-    ).toBe(true);
+    expect(every.every((command) => command.includes(CLI_PREFIX))).toBe(true);
     expect(every.some((command) => command.includes('guardrails-plugin'))).toBe(
       false,
     );
