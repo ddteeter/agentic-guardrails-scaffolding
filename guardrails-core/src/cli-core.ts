@@ -558,9 +558,10 @@ function outsideRepoMessage(deps: CliDeps): string | undefined {
   }
   return (
     `guardrails: resolved from ${selfPath}, which is outside ` +
-    `${repoRoot}. Install guardrails-core in this repository ` +
-    `(npm install) rather than relying on a parent directory's ` +
-    `node_modules.\n`
+    `${repoRoot}. This happens when guardrails-core comes from an ` +
+    `ancestor directory's node_modules, or from a linked install ` +
+    `(npm link, or a file: dependency) pointing outside the repo. ` +
+    `Install guardrails-core in this repository (npm install) instead.\n`
   );
 }
 
