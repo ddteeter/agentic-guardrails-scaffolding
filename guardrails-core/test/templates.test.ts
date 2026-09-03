@@ -10,8 +10,6 @@ import path from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import { CLI_PREFIX } from './hook-command.js';
-
 const templates = path.join(import.meta.dirname, '..', 'templates');
 
 const EXPECTED_FILES = [
@@ -96,9 +94,12 @@ describe('consumer templates', () => {
     expect(hooks).toContain('scope-check');
   });
 
-  it('references guardrails-core through node_modules, never a repo-local path', () => {
+  it('resolves guardrails-core through package resolution, never a repo-local path', () => {
     // A template that pointed at this repo's own layout would break in every
-    // consumer. The hook commands must resolve through the installed package.
+    // consumer. The hook commands must resolve the guardrails-core package
+    // through Node's module resolution (either by name via `-e "import(...)"`,
+    // or through any path-based form from a previous upgrade), never this
+    // repository's own source directory.
     const hooks = readFileSync(
       path.join(templates, 'claude', 'settings.hooks.json'),
       'utf8',

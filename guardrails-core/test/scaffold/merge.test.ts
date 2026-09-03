@@ -98,9 +98,9 @@ describe('mergeClaudeSettings', () => {
   });
 
   it('replaces a stale guardrails hook rather than duplicating it', () => {
-    // Guardrails entries are identified by their command containing
-    // `guardrails-core/dist/cli.mjs`. Re-running init must not append a second
-    // copy of every hook.
+    // Guardrails entries are identified by their command containing any of the
+    // known markers (current form, legacy forms across upgrades). Re-running init
+    // must not append a second copy of every hook.
     const alreadyMerged = mergeClaudeSettings(undefined, HOOKS_BLOCK);
     const result = mergeClaudeSettings(alreadyMerged, HOOKS_BLOCK);
     const parsed = JSON.parse(result) as {
@@ -125,6 +125,40 @@ describe('mergeClaudeSettings', () => {
     expect(parsed.permissions).toEqual({ allow: ['Bash(npm test)'] });
     expect(parsed.model).toBe('opus');
     expect(parsed.hooks.PostToolUse).toHaveLength(1);
+  });
+
+  it('replaces an old-form guardrails entry rather than duplicating it on upgrade', () => {
+    // An adopter who ran `init` under the old command form has entries with
+    // `guardrails-core/dist/cli.mjs`. After upgrade, they re-run init. The new
+    // command form and old both present means: either idempotency broke (we kept
+    // the old as "foreign" and appended new), or we correctly recognised it as
+    // ours and replaced it. This test covers the case the production code must
+    // handle: old-form entry in current, new-form entry in template, one survivor.
+    const currentWithOldForm = JSON.stringify({
+      hooks: {
+        Stop: [
+          {
+            hooks: [
+              {
+                type: 'command',
+                command:
+                  'node "${CLAUDE_PROJECT_DIR}/node_modules/guardrails-core/dist/cli.mjs" gate --mode=stop',
+              },
+            ],
+          },
+        ],
+      },
+    });
+    const result = mergeClaudeSettings(currentWithOldForm, HOOKS_BLOCK);
+    const parsed = JSON.parse(result) as {
+      hooks: { Stop: { hooks: { command: string }[] }[] };
+    };
+    // Must have exactly one Stop entry (the old was replaced, not kept beside new)
+    expect(parsed.hooks.Stop).toHaveLength(1);
+    // That entry must be the new form
+    expect(parsed.hooks.Stop[0]?.hooks[0]?.command).toContain(
+      'import(\'guardrails-core/cli\')',
+    );
   });
 
   it('is idempotent: merging twice equals merging once', () => {
