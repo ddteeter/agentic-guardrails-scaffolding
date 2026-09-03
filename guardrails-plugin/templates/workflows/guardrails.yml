@@ -40,9 +40,10 @@ jobs:
       # identical today. The day one does, this workflow needs a
       # `--mode=ci` step too.
       #
-      # Invoked by explicit path rather than `npx guardrails`: npx resolves a
-      # bin NAME, and on a misconfigured install it falls through to fetching
-      # a registry package called `guardrails`, which this project does not
-      # own. The path form can only ever run what `npm ci` installed.
+      # Invoked by explicit path rather than `npx guardrails-core`. The bin is
+      # named after the package, so an npx miss resolves THIS package rather
+      # than a stranger's -- but it can still fetch a different VERSION than
+      # `npm ci` installed. CI must run exactly what it installed, and only the
+      # path form guarantees that.
       - run: node ./node_modules/guardrails-core/dist/cli.mjs gate --mode=commit
       - run: node ./node_modules/guardrails-core/dist/cli.mjs sanctions-check

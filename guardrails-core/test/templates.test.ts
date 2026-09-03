@@ -138,10 +138,11 @@ describe('consumer templates', () => {
   });
 
   it('invokes the CLI by local path, never through npx', () => {
-    // `npx guardrails` resolves a BIN NAME. On a misconfigured install --
-    // hoisting gone wrong, a partial `npm ci` -- npx falls through to fetching
-    // a registry package called `guardrails`, which this project does not own.
-    // This repo's own ci.yml uses the explicit path for exactly that reason.
+    // npx resolves a BIN NAME and falls through to the registry when nothing
+    // local provides it. The bin is named after the package, so a miss lands on
+    // this package -- but it can still fetch a different VERSION than `npm ci`
+    // installed. CI must run exactly what it installed, so it uses the path
+    // form, as this repo's own ci.yml does.
     const workflow = readFileSync(
       path.join(templates, 'workflows', 'guardrails.yml'),
       'utf8',

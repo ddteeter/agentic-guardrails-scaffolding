@@ -21,10 +21,20 @@ describe('guardrails-core package exports', () => {
     expect(manifest.exports['./cli']).toBe('./dist/cli.mjs');
   });
 
-  it('points ./cli at the same file the guardrails bin runs', () => {
-    // Two ways in, one entry point. If they ever diverge, `npx guardrails` and
-    // the hook command would run different files.
-    expect(manifest.exports['./cli']).toBe(manifest.bin.guardrails);
+  it('names the bin after the package, so an npx miss cannot fetch a stranger', () => {
+    // `npx <name>` resolves a bin NAME, and falls through to the registry when
+    // nothing local provides it. While the bin was `guardrails`, that fallthrough
+    // fetched `guardrails@2.4.1` -- a real, unrelated, and since-2022 dormant
+    // package owned by someone else -- and executed it. Naming the bin after the
+    // package is what makes the miss land on US: `npx guardrails-core` can only
+    // ever resolve this package.
+    expect(Object.keys(manifest.bin)).toEqual(['guardrails-core']);
+  });
+
+  it('points ./cli at the same file the bin runs', () => {
+    // Two ways in, one entry point. If they ever diverge, the bin and the hook
+    // command would run different files.
+    expect(manifest.exports['./cli']).toBe(manifest.bin['guardrails-core']);
   });
 
   it('keeps the package root export intact', () => {

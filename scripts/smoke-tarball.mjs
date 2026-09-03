@@ -118,7 +118,7 @@ if (resolveProbe.status !== 0 || !resolveProbe.stdout.includes('cli.mjs')) {
 //    `cwd` — that is a legitimate path (spec-sanctioned degrade, not a bug),
 //    and `init --plan` must still produce a plan rather than crash.
 const plan = run(
-  path.join(fixture, 'node_modules', '.bin', 'guardrails'),
+  path.join(fixture, 'node_modules', '.bin', 'guardrails-core'),
   ['init', '--plan'],
   fixture,
 );
@@ -196,7 +196,12 @@ writeFileSync(
   path.join(sourceDirectory, 'main.ts'),
   'const answer: string = 42;\nconsole.log(answer);\n',
 );
-const guardrails = path.join(fixture, 'node_modules', '.bin', 'guardrails');
+const guardrails = path.join(
+  fixture,
+  'node_modules',
+  '.bin',
+  'guardrails-core',
+);
 run(
   guardrails,
   [

@@ -34,10 +34,12 @@ node ./node_modules/guardrails-core/dist/cli.mjs init --plan   # print what woul
 node ./node_modules/guardrails-core/dist/cli.mjs init --apply  # write it
 ```
 
-Invoked by path rather than `npx guardrails`: npx resolves a bin NAME, and
-`guardrails` is a package on the public registry that this project does not own.
-On a broken or missing install, npx fetches and runs that one. The path form can
-only ever run what you installed.
+Invoked by path rather than `npx guardrails-core`. npx resolves a bin NAME and
+falls through to the registry when nothing local provides it, so the bin is
+named after the package: a miss can only ever fetch this package, never someone
+else's. (It was `guardrails` until the rename — a real, unrelated package sits
+under that name.) A miss can still fetch a different VERSION than you installed,
+which is why the path form is the one documented here and the one CI uses.
 
 There is no interactive mode and no TTY probe: a non-TTY invocation of `init`
 (no `--apply`) behaves identically to `--plan`. `--apply` is the only way past
