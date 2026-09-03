@@ -154,7 +154,7 @@ describe('consumer templates', () => {
       'node ./node_modules/guardrails-core/dist/cli.mjs sanctions-check',
     );
     // Matched against the `run:` STEPS, not the file text: the template's own
-    // comment names `npx guardrails` in order to explain why it is not used.
+    // comment names `npx guardrails-core` in order to explain why it is not used.
     expect(workflow).not.toMatch(/^ *- run: npx\b/m);
   });
 
