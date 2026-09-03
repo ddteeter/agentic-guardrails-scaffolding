@@ -157,7 +157,7 @@ describe('mergeClaudeSettings', () => {
     expect(parsed.hooks.Stop).toHaveLength(1);
     // That entry must be the new form
     expect(parsed.hooks.Stop[0]?.hooks[0]?.command).toContain(
-      'import(\'guardrails-core/cli\')',
+      "import('guardrails-core/cli')",
     );
   });
 
