@@ -42,7 +42,7 @@ documented but its live proof is deferred (§5).
 ## 1. VS Code loop (primary) — a second-runtime proof of the same wiring
 
 Copilot's hook mechanism natively ingests Claude-format (PascalCase) events,
-and VS Code reads `.claude/settings.json` and per-agent frontmatter directly —
+and VS Code reads `.claude/settings.json` plus the agent definitions directly —
 so pointing a Copilot agent-mode session at this repo exercises the **exact
 same** `.claude/settings.json` and `.claude/agents/*.md` that
 `docs/live-loop-verification.md` exercises for Claude Code. No new config is
@@ -112,17 +112,15 @@ Procedure, during a fixer run (reuse §1.1's or start a fresh one):
   `~/.claude/projects/.../memory/*.md` or any absolute path outside the
   checked-out worktree.
 
-**Expected:** `.claude/agents/guardrail-fixer.md`'s frontmatter `PreToolUse`
-hook (matcher `Read|Edit|Write`) runs `guardrails scope-check` and **denies**
-the read with a scope-lock reason:
+**Expected:** `.claude/settings.json`'s `PreToolUse` hook (matcher
+`Read|Edit|Write`) runs `guardrails scope-check` and **denies** the read with a
+scope-lock reason while the exact session's fix-loop marker is active:
 
 > `Fixer read-scope: <path> is outside the repository. The fixer may only read
 files within the repo.`
 
-The **denied out-of-repo read is the confirming signal** — not just that the
-read-scope guard works, but that repo-local per-agent frontmatter hooks fire
-under VS Code's Copilot host at all (the mechanism the earlier Claude Code
-run never actually exercised).
+The **denied out-of-repo read is the confirming signal** that VS Code forwards
+the session id and executes the self-filtering project hook.
 
 Record PASS/FAIL — and any deviation from the expected denial — in `plan.md`.
 That write-up is Task 11, not this document.

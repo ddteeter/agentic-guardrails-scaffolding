@@ -27,6 +27,7 @@ describe('createSession', () => {
   it('starts with zero attempts and empty tallies', () => {
     expect(createSession()).toEqual({
       attempts: 0,
+      escalated: false,
       ruleCounts: {},
       corrected: [],
     });

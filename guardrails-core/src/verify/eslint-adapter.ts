@@ -28,23 +28,32 @@ function isResultArray(value: unknown): value is RawEslintResult[] {
     Array.isArray(value) &&
     value.every(
       (r) =>
-        typeof r === 'object' &&
+        // `r !== null` leads (not `typeof r === 'object'`) so the equivalent
+        // mutant below sits on its own line: Stryker's disable comments match
+        // by mutator + line, and the leftmost clause of a chain always shares
+        // its start line with every combined-clause mutant on that chain, so
+        // a directive there would silence real coverage too (measured; see
+        // guardrails.config.json).
         r !== null &&
+        // Equivalent mutant: no value JSON.parse can produce is both
+        // non-object and carries a string `filePath` / array `messages`, so
+        // this clause can never be false while the two below it are true.
+        // Stryker disable next-line ConditionalExpression
+        typeof r === 'object' &&
         typeof (r as RawEslintResult).filePath === 'string' &&
         Array.isArray((r as RawEslintResult).messages),
     )
   );
 }
 
-export function parseEslintJson(
-  stdout: string,
-  repoRoot: string,
-  packageId?: string,
-): Violation[] {
+export function parseEslintJson(stdout: string, repoRoot: string): Violation[] {
   let parsed: unknown;
+  // prettier-ignore
   try {
     parsed = JSON.parse(stdout);
-  } catch {
+  }
+  // Stryker disable next-line BlockStatement
+  catch {
     return [];
   }
   if (!isResultArray(parsed)) {
@@ -63,7 +72,6 @@ export function parseEslintJson(
         fixable: message.fix !== undefined,
         tool: 'eslint',
         ...(message.line === undefined ? {} : { line: message.line }),
-        ...(packageId === undefined ? {} : { package: packageId }),
       };
       violations.push(violation);
     }

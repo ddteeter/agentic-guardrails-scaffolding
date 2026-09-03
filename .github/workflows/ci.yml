@@ -56,8 +56,38 @@ jobs:
       - name: Agents in sync (generated .github/agents committed)
         run: git diff --exit-code -- .github/agents
 
-      - name: Guardrails verify
-        run: node ./node_modules/guardrails-core/dist/cli.mjs verify
+      # The skill docs and the Copilot index are generated from
+      # guardrails-plugin/skills/ and COMMITTED, because Copilot has no skill
+      # mechanism and its cloud agent reads from the default branch.
+      # guardrails-core/guidance/ is the same skill docs, emitted a second time
+      # so they ship with the npm package (`files`) and resolve via
+      # node_modules in a consumer repo, where docs/guardrails does not exist.
+      # guardrails-core/templates/ is generated from this repo's own live
+      # wiring, so drift here means the shipped template no longer matches
+      # what this repo runs.
+      - name: Skill docs in sync (generated docs committed)
+        run: git diff --exit-code -- docs/guardrails guardrails-core/guidance guardrails-core/templates .github/copilot-instructions.md .codex/agents AGENTS.md
+
+      # `gate --mode=commit` runs verify PLUS the diff-auditor PLUS the
+      # sanction budget -- bare `verify` runs neither of the last two, so a
+      # suppression added on a branch was previously caught by the commit
+      # gate locally but never by CI.
+      - name: Guardrails gate (commit)
+        run: node ./node_modules/guardrails-core/dist/cli.mjs gate --mode=commit
+
+      # Visibility + well-formedness gate for the diff-auditor's ONLY escape
+      # hatch. It can only FAIL on a malformed `sanctionedSuppressions` entry
+      # (bad/missing key, reason, or count) in this PR's config. A newly-granted
+      # exemption — a key absent from the merge-base config, or a key whose
+      # count increased — is never a failure here: it is printed prominently in
+      # this step's log for the reviewer, and the step exits 0, because merging
+      # this PR *is* the human approval; a required check that failed on every
+      # legitimate grant would deadlock the merge that constitutes it. The
+      # commit gate is what enforces reality: an occurrence beyond the declared
+      # count still blocks the commit regardless of what this check reports.
+      # Needs the full history fetched above for `git merge-base`.
+      - name: Guardrails sanctions approval
+        run: node ./node_modules/guardrails-core/dist/cli.mjs sanctions-check
 
       - name: Test (with coverage)
         run: npm run test:coverage
@@ -66,3 +96,10 @@ jobs:
       # complexity. Reads coverage/coverage-final.json from the step above.
       - name: Fallow graph gate
         run: npm run check:graph
+
+      # The only check that exercises the artifact a consumer installs. Every
+      # other step runs against the workspace, where guardrails-core is
+      # symlinked into node_modules — so `files`, the bin shebang and ESM
+      # resolution are all bypassed here and only here.
+      - name: Tarball smoke test
+        run: npm run smoke:tarball

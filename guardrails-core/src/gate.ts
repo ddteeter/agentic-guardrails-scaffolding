@@ -15,13 +15,16 @@
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
-import { auditDiff, type AuditFinding } from './audit.js';
+import { auditDiff, findingKey, type AuditFinding } from './audit.js';
+import type { SanctionedSuppression } from './config.js';
 import type { Exec } from './exec.js';
+import { withGuidance } from './guidance.js';
 import {
   decideGate,
   type GateConfig,
   type GateDecision,
 } from './gate-decision.js';
+import type { AnalyzerMode } from './verify/analyzer-policy.js';
 import {
   loadRecurrence,
   loadSession,
@@ -32,7 +35,10 @@ import {
   writeViolations,
 } from './state-store.js';
 import { hasErrors, type Violation } from './violation.js';
+import { parseFileList } from './verify/git.js';
 import { runVerify } from './verify/index.js';
+import { loadWorkspaceResolver, withPackages } from './workspaces.js';
+import { resolveBaseReference } from './verify/git.js';
 
 export interface StopGateOptions {
   repoRoot: string;
@@ -41,6 +47,10 @@ export interface StopGateOptions {
   exec: Exec;
   config: GateConfig;
   resolveBin?: (tool: string) => string;
+  /** Per-analyzer opt-in (`RepoConfig.analyzers`), forwarded to `runVerify`. */
+  analyzers?: Readonly<Record<string, AnalyzerMode>>;
+  /** Claude/Copilot says this Stop is a retry caused by an earlier block. */
+  isRetry?: boolean | undefined;
 }
 
 export interface StopGateResult {
@@ -53,6 +63,15 @@ export interface CommitGateOptions {
   baseBranch: string;
   exec: Exec;
   resolveBin?: (tool: string) => string;
+  /**
+   * Reviewed exemptions (RepoConfig.sanctionedSuppressions). Each grant spends
+   * a budget of `count` (default 1) occurrences of its `file|kind|text` key —
+   * NOT every occurrence of that key in the file — so a second identical
+   * directive beyond the granted count still blocks. See `sanctionBudget`.
+   */
+  sanctionedSuppressions?: readonly SanctionedSuppression[];
+  /** Per-analyzer opt-in (`RepoConfig.analyzers`), forwarded to `runVerify`. */
+  analyzers?: Readonly<Record<string, AnalyzerMode>>;
 }
 
 export interface CommitGateResult {
@@ -61,8 +80,43 @@ export interface CommitGateResult {
   blocked: boolean;
 }
 
-function findingKey(finding: AuditFinding): string {
-  return `${finding.file}|${finding.kind}|${finding.text}`;
+/**
+ * Sum each sanction's `count` (default 1) per key, so several entries granting
+ * the same key (or one entry granting several occurrences) combine into one
+ * spendable budget. This is what turns membership-testing (one grant exempts
+ * every occurrence, forever) into budget-spending (one grant exempts exactly
+ * that many occurrences).
+ */
+function sanctionBudget(
+  sanctions: readonly SanctionedSuppression[],
+): Map<string, number> {
+  const budget = new Map<string, number>();
+  for (const sanction of sanctions) {
+    const amount = sanction.count ?? 1;
+    budget.set(sanction.key, (budget.get(sanction.key) ?? 0) + amount);
+  }
+  return budget;
+}
+
+/**
+ * Filter findings against a spendable budget: a finding whose key still has
+ * budget remaining is exempted and decrements that budget by one; once the
+ * budget for a key is exhausted, every further occurrence of that same key is
+ * reported. `budget` is mutated in place — private to one `runCommitGate` call.
+ */
+function spendBudget(
+  findings: readonly AuditFinding[],
+  budget: Map<string, number>,
+): AuditFinding[] {
+  return findings.filter((finding) => {
+    const key = findingKey(finding);
+    const remaining = budget.get(key) ?? 0;
+    if (remaining <= 0) {
+      return true;
+    }
+    budget.set(key, remaining - 1);
+    return false;
+  });
 }
 
 function snapshotFile(directory: string, sessionId: string): string {
@@ -74,11 +128,20 @@ function readSnapshot(file: string): Set<string> {
     const parsed: unknown = JSON.parse(readFileSync(file, 'utf8'));
     // Filter to strings rather than casting — consistent with the strict
     // validation in state-store, and keeps the baseline a true Set<string>.
-    return new Set(
-      Array.isArray(parsed)
-        ? parsed.filter((entry): entry is string => typeof entry === 'string')
-        : [],
-    );
+    //
+    // Equivalent mutants on this expression: the baseline is only ever probed
+    // with `.has(<string key>)`, so a non-string entry that survives the filter
+    // can never match; and calling `.filter` on a non-array throws straight into
+    // the catch below, which returns the same empty Set.
+    //
+    // The Stryker restore must always follow a statement (not a return), so the
+    // directive attaches and does not run to end of file; we hoist to const for this.
+    // Stryker disable ConditionalExpression,MethodExpression,ArrayDeclaration
+    const strings = Array.isArray(parsed)
+      ? parsed.filter((entry): entry is string => typeof entry === 'string')
+      : [];
+    // Stryker restore ConditionalExpression,MethodExpression,ArrayDeclaration
+    return new Set(strings);
   } catch {
     return new Set();
   }
@@ -91,10 +154,47 @@ async function workingDiff(options: StopGateOptions): Promise<string> {
   // committed in an earlier turn is already past this point — it would have been
   // audited while it was uncommitted, and the Copilot commit-gate re-checks the
   // staged diff at commit time.
-  const result = await options.exec('git', ['diff', 'HEAD'], {
+  let result = await options.exec('git', ['diff', 'HEAD'], {
     cwd: options.repoRoot,
   });
-  return result.stdout;
+  if (result.code !== 0 && result.spawnFailed !== true) {
+    // Unborn branch: there is no HEAD to diff, but staged content already lives
+    // in the index and must still be audited before the first commit.
+    result = await options.exec('git', ['diff', '--cached'], {
+      cwd: options.repoRoot,
+    });
+  }
+  const untracked = await options.exec(
+    'git',
+    ['ls-files', '--others', '--exclude-standard'],
+    { cwd: options.repoRoot },
+  );
+  const addedFiles = parseFileList(untracked.stdout)
+    .map((file) => untrackedFileDiff(options.repoRoot, file))
+    .join('\n');
+  return `${result.stdout}\n${addedFiles}`;
+}
+
+/** `git diff HEAD` omits untracked files entirely. Present each one as a
+ * synthetic all-additions diff so the auditor applies its normal lexer and
+ * signatures to new files too. A read failure narrows the audit input; verify's
+ * independent untracked-file path still reports analyzer failures. */
+function untrackedFileDiff(repoRoot: string, file: string): string {
+  let content: string;
+  try {
+    content = readFileSync(path.join(repoRoot, file), 'utf8');
+  } catch {
+    return '';
+  }
+  const lines = content.split('\n');
+  return [
+    `diff --git a/${file} b/${file}`,
+    'new file mode 100644',
+    '--- /dev/null',
+    `+++ b/${file}`,
+    `@@ -0,0 +1,${lines.length} @@`,
+    ...lines.map((line) => `+${line}`),
+  ].join('\n');
 }
 
 function toViolation(finding: AuditFinding): Violation {
@@ -132,12 +232,20 @@ export async function runStopGate(
     exec,
     profile: 'stop' as const,
     ...(options.resolveBin ? { resolveBin: options.resolveBin } : {}),
+    ...(options.analyzers ? { analyzers: options.analyzers } : {}),
   };
   const { violations } = await runVerify(verifyOptions);
-  const combined = [
-    ...violations,
-    ...auditFindings.map((finding) => toViolation(finding)),
-  ];
+  // Guidance rides on the violation so it reaches the fixer through the
+  // manifest — the one channel every runtime reads. `runVerify`'s violations
+  // are already attributed; `withPackages` is idempotent, so re-applying is a
+  // no-op — this call is what attributes the audit-derived findings, which
+  // carry files too.
+  const combined = withGuidance(
+    withPackages(
+      [...violations, ...auditFindings.map((finding) => toViolation(finding))],
+      loadWorkspaceResolver(repoRoot),
+    ),
+  );
 
   writeViolations(directory, sessionId, combined);
   const manifestPath = path.relative(
@@ -151,6 +259,7 @@ export async function runStopGate(
     recurrence,
     manifestPath,
     config,
+    isRetry: options.isRetry,
   });
 
   saveSession(directory, sessionId, decision.nextSession);
@@ -174,9 +283,15 @@ export async function runStopGate(
  * inherited from the base branch are excluded. Falls back to the staged diff
  * when the merge-base can't be resolved (shallow clone / missing base). */
 async function branchDiff(options: CommitGateOptions): Promise<string> {
+  // `origin/<branch>` is the only form that resolves in a CI checkout.
+  const resolved = await resolveBaseReference(
+    options.exec,
+    options.repoRoot,
+    options.baseBranch,
+  );
   const mergeBase = await options.exec(
     'git',
-    ['merge-base', options.baseBranch, 'HEAD'],
+    ['merge-base', resolved.ref ?? options.baseBranch, 'HEAD'],
     { cwd: options.repoRoot },
   );
   const sha = mergeBase.stdout.trim();
@@ -205,12 +320,27 @@ export async function runCommitGate(
     exec: options.exec,
     profile: 'commit',
     ...(options.resolveBin ? { resolveBin: options.resolveBin } : {}),
+    ...(options.analyzers ? { analyzers: options.analyzers } : {}),
   });
-  const findings = auditDiff(await branchDiff(options));
+  // The commit gate audits the branch's CUMULATIVE diff and has no per-loop
+  // snapshot baseline (unlike runStopGate), so a deliberately-sanctioned
+  // suppression introduced on this branch would re-flag on every subsequent
+  // commit — permanently wedging the branch. The allowlist is that baseline:
+  // explicit, checked-in, and reviewable, in the same spirit as the commented
+  // knip/fallow ignore entries. It is NOT applied to the Stop gate, whose
+  // snapshot already distinguishes fixer-added suppressions from pre-existing
+  // ones — so this cannot become a fixer escape hatch.
+  // Equivalent mutant on the `[]` default: the budget is only probed with real
+  // `file|kind|text` finding keys, and a placeholder entry's `.key` reads as
+  // `undefined` (not a string), so it can never match and grants no budget.
+  // Stryker disable next-line ArrayDeclaration
+  const budget = sanctionBudget(options.sanctionedSuppressions ?? []);
+  const findings = spendBudget(auditDiff(await branchDiff(options)), budget);
+  const guided = withGuidance(violations);
   return {
-    violations,
+    violations: guided,
     findings,
-    blocked: hasErrors(violations) || findings.length > 0,
+    blocked: hasErrors(guided) || findings.length > 0,
   };
 }
 

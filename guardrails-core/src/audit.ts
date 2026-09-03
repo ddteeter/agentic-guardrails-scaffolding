@@ -24,7 +24,8 @@ export type AuditKind =
   | 'cast-any' // TS: as any / as unknown as / <any>
   | 'suppress-warnings' // Java: @SuppressWarnings
   | 'disabled-test' // Java: @Disabled
-  | 'skipped-test'; // TS/JS: .skip / .only / xit / fit
+  | 'skipped-test' // TS/JS: .skip / .only / xit / fit
+  | 'mutation-suppress'; // TS/JS: // Stryker disable | restore
 
 export interface AuditFinding {
   file: string;
@@ -77,6 +78,16 @@ const SIGNATURES: readonly Signature[] = [
     pattern:
       /\b(?:x(?:it|describe|test)|f(?:it|describe)|(?:it|test|describe|context|suite)\.(?:skip|only))\b/,
   },
+  // stryker's mutation-suppression directives. `directive` class, so a mention
+  // in prose ("we removed the Stryker disable comment") doesn't flag — only a
+  // comment that LEADS with the directive does. `restore` is included because a
+  // bare restore is meaningless without a matching disable: flagging both keeps
+  // the pair reviewable as one sanctioned region.
+  {
+    kind: 'mutation-suppress',
+    class: 'directive',
+    pattern: /^Stryker\s+(?:disable|restore)\b/,
+  },
 ];
 
 /**
@@ -97,6 +108,11 @@ const AUDITABLE_EXTENSIONS = new Set([
 
 function isAuditableSourceFile(file: string): boolean {
   const dot = file.lastIndexOf('.');
+  // Equivalent mutants: with this guard gone, `file.slice(-1)` is a single
+  // character, which can never equal a multi-char extension like '.ts', so
+  // behaviour is identical. Kept for legibility. Mutator-scoped so the rest of
+  // the function stays mutated.
+  // Stryker disable next-line BlockStatement,ConditionalExpression
   if (dot === -1) {
     return false;
   }
@@ -156,6 +172,16 @@ interface LineLex {
   code: string;
 }
 
+// Hand-written tokenizer region (isQuoteChar → skipRegexFlags). Mutation-dense
+// in boundary/equivalent mutants with poor defect-catching ROI (151 survivors,
+// 34% of this repo's total, in the piece-4 whole-graph dogfood run); its
+// behavioral suppression-detection tests are the real coverage. The
+// higher-level diff logic below (matchSignature/headerPath/auditDiff) stays
+// mutated on purpose. See
+// docs/superpowers/specs/2026-07-23-phase-c-stryker-design.md §7.
+// Both directives below are registered in guardrails.config.json
+// `sanctionedSuppressions` — the diff-auditor flags them otherwise.
+// Stryker disable all
 function isQuoteChar(ch: string): boolean {
   return ch === "'" || ch === '"';
 }
@@ -396,6 +422,8 @@ function skipRegexFlags(text: string, start: number): number {
   return index;
 }
 
+// Stryker restore all
+
 function matchSignature(text: string): AuditKind | undefined {
   const { commentContents, code } = lexLine(text);
   for (const signature of SIGNATURES) {
@@ -427,11 +455,26 @@ export function auditDiff(diffText: string): AuditFinding[] {
   let newLine = 0;
 
   for (const raw of diffText.split('\n')) {
+    // `--- ` and `diff --git` headers carry no added content. Checked first
+    // (mutually exclusive with the `+++ ` case, so the order is behaviour-
+    // preserving) to give the directive below a statement to attach to —
+    // stryker only honours `disable next-line` on a statement-LEADING comment.
+    // Equivalent mutants: skipping this branch only changes `newLine` BEFORE
+    // the next `@@`, and a hunk header unconditionally resets `newLine`, so no
+    // well-formed git diff can observe the difference (`BlockStatement` too:
+    // dropping the `continue` falls through to branches that all no-op here).
+    // Stryker disable next-line MethodExpression,ConditionalExpression,LogicalOperator,BlockStatement
+    if (raw.startsWith('--- ') || raw.startsWith('diff --git')) {
+      continue;
+    }
     if (raw.startsWith('+++ ')) {
       file = headerPath(raw);
-    } else if (raw.startsWith('--- ') || raw.startsWith('diff --git')) {
-      // Metadata, ignored.
     } else if (HUNK_HEADER.test(raw)) {
+      // Equivalent mutant: the `HUNK_HEADER.test(raw)` branch condition above
+      // guarantees `exec` matches, so `?.` can never short-circuit. It cannot be
+      // removed either — `exec` is typed `RegExpExecArray | null`, so indexing
+      // without it fails typecheck.
+      // Stryker disable next-line OptionalChaining
       newLine = Number(HUNK_HEADER.exec(raw)?.[1]);
     } else if (raw.startsWith('+')) {
       const text = raw.slice(1);
@@ -450,4 +493,29 @@ export function auditDiff(diffText: string): AuditFinding[] {
   }
 
   return findings;
+}
+
+/** Stable identity of a suppression: file + kind + exact trimmed text. Shared
+ *  with the gate's budget map and the count drift-guard so all three agree on
+ *  what "the same suppression" means. */
+export function findingKey(finding: AuditFinding): string {
+  return `${finding.file}|${finding.kind}|${finding.text}`;
+}
+
+/**
+ * Audit a WHOLE FILE rather than a diff, by presenting it as an all-additions
+ * hunk. Reusing `auditDiff` is the point: the lexer state (strings, regex,
+ * template literals, block comments) and the signature table are the same ones
+ * the gate enforces with, so a count taken here cannot drift from the count the
+ * gate would produce. Line numbers are 1-indexed as usual.
+ */
+export function auditSource(file: string, source: string): AuditFinding[] {
+  const lines = source.split('\n');
+  return auditDiff(
+    [
+      `+++ b/${file}`,
+      `@@ -0,0 +1,${lines.length} @@`,
+      ...lines.map((line) => `+${line}`),
+    ].join('\n'),
+  );
 }

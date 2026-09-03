@@ -44,17 +44,20 @@ export interface GateInput {
   recurrence: RecurrenceCounts;
   manifestPath: string;
   config: GateConfig;
+  /** True when the host is retrying because this Stop hook already blocked the
+   * turn. Retry cycles spend attempts but are not separate recurring mistakes. */
+  isRetry?: boolean | undefined;
 }
 
-export type GateOutcome = 'clean' | 'delegate' | 'escalate';
+export type GateOutcome = 'clean' | 'delegate' | 'escalate' | 'release';
 
 export interface GateDecision {
   outcome: GateOutcome;
   /** Whether to block the Stop (Claude Code) / deny the commit (Copilot). */
   block: boolean;
   message: string;
-  additionalContext?: string;
-  fixerAgent?: string;
+  additionalContext?: string | undefined;
+  fixerAgent?: string | undefined;
   nextSession: SessionState;
   nextRecurrence: RecurrenceCounts;
 }
@@ -90,7 +93,7 @@ function buildContext(
 ): string | undefined {
   const parts: string[] = [];
   for (const key of crossed) {
-    const count = session.ruleCounts[key] ?? 0;
+    const count = session.ruleCounts[key];
     parts.push(
       `Rule "${key}" has failed verification in ${count} separate turns this ` +
         `session. Address the underlying pattern rather than patching each ` +
@@ -115,29 +118,55 @@ function withOptional(
 ): GateDecision {
   return {
     ...base,
-    ...(extras.additionalContext === undefined
-      ? {}
-      : { additionalContext: extras.additionalContext }),
-    ...(extras.fixerAgent === undefined
-      ? {}
-      : { fixerAgent: extras.fixerAgent }),
+    additionalContext: extras.additionalContext,
+    fixerAgent: extras.fixerAgent,
   };
 }
 
 export function decideGate(input: GateInput): GateDecision {
-  const { violations, session, recurrence, manifestPath, config } = input;
+  const {
+    violations,
+    session,
+    recurrence,
+    manifestPath,
+    config,
+    isRetry = false,
+  } = input;
 
   if (!hasErrors(violations)) {
     return {
       outcome: 'clean',
       block: false,
       message: '',
-      nextSession: resetAttempts(session),
+      nextSession: { ...resetAttempts(session), escalated: false },
       nextRecurrence: recurrence,
     };
   }
 
-  const tallied = recordViolations(session, violations);
+  // The main agent received the full dump on the preceding blocked Stop. If it
+  // still cannot resolve the violation, release this retry and leave the
+  // commit/CI gate as the hard backstop. Without this terminal state, resetting
+  // attempts after escalation restarts the fixer ladder forever.
+  if (session.escalated && isRetry) {
+    return {
+      outcome: 'release',
+      block: false,
+      message: fullDump(violations),
+      nextSession: session,
+      nextRecurrence: recurrence,
+    };
+  }
+
+  // A later user turn gets a fresh bounded attempt rather than permanently
+  // disabling the Stop gate after one hard case.
+  const activeSession = session.escalated
+    ? { ...session, escalated: false }
+    : session;
+  // One mistake may cause several fixer retries. Recurrence is intended to
+  // measure separate turns, so only the host's first Stop tallies the rule.
+  const tallied = isRetry
+    ? activeSession
+    : recordViolations(activeSession, violations);
   const bumped = incrementAttempt(tallied);
   const attempt = bumped.attempts;
 
@@ -156,7 +185,7 @@ export function decideGate(input: GateInput): GateDecision {
         outcome: 'escalate',
         block: true,
         message: fullDump(violations),
-        nextSession: resetAttempts(corrected),
+        nextSession: { ...resetAttempts(corrected), escalated: true },
         nextRecurrence,
       },
       { additionalContext },

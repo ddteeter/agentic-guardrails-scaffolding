@@ -67,10 +67,37 @@ describe('parseTscOutput', () => {
     expect(parseTscOutput('\n\n', root)).toEqual([]);
   });
 
-  it('carries the package id through when provided', () => {
-    const out = "src/foo.ts(1,1): error TS2304: Cannot find name 'x'.";
-    expect(parseTscOutput(out, root, 'packages/api')[0]?.package).toBe(
-      'packages/api',
-    );
+  it('parses a diagnostic with a multi-digit column number', () => {
+    // The column group is `\d+` (one or more digits) but never captured, so a
+    // narrowed `\d` (single digit) fails to match once the column reaches two
+    // digits — this pins the `+` quantifier.
+    const out = 'src/foo.ts(100,42): error TS2554: Expected 1 argument.';
+    expect(parseTscOutput(out, root)).toEqual([
+      {
+        ruleId: 'TS2554',
+        file: 'src/foo.ts',
+        line: 100,
+        message: 'Expected 1 argument.',
+        severity: 'error',
+        fixable: false,
+        tool: 'tsc',
+      },
+    ]);
+  });
+
+  it('does not match a line with a stray trailing carriage return', () => {
+    // `stdout.split('\n')` can leave a trailing '\r' from CRLF output; `.`
+    // never matches a line terminator (including '\r'), so the trailing `$`
+    // anchor correctly fails to match here — this pins the `$` anchor.
+    const out = 'src/foo.ts(1,1): error TS2304: msg\r';
+    expect(parseTscOutput(out, root)).toEqual([]);
+  });
+
+  it('does not match a diagnostic preceded by unanchored content containing a carriage return', () => {
+    // The leading `^` anchor forces the match to start at index 0; a '\r'
+    // before the diagnostic blocks the greedy `.+` from reaching across it to
+    // find a match starting later — this pins the `^` anchor.
+    const out = 'prefix\rsrc/foo.ts(1,1): error TS2304: msg';
+    expect(parseTscOutput(out, root)).toEqual([]);
   });
 });

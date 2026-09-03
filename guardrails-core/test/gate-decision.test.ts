@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { decideGate, type GateConfig } from '../src/gate-decision.js';
 import { createSession } from '../src/state.js';
-import type { Violation } from '../src/violation.js';
+import { recurrenceKey, type Violation } from '../src/violation.js';
 
 function v(partial: Partial<Violation> & Pick<Violation, 'ruleId'>): Violation {
   return {
@@ -47,6 +47,7 @@ describe('decideGate — clean', () => {
     expect(decision.outcome).toBe('clean');
     expect(decision.block).toBe(false);
     expect(decision.nextSession.attempts).toBe(0);
+    expect(decision.nextSession.escalated).toBe(false);
   });
 });
 
@@ -59,6 +60,7 @@ describe('decideGate — delegate', () => {
     expect(decision.message).toContain(manifestPath);
     expect(decision.message).toContain('Do NOT read');
     expect(decision.message).toContain('guardrail-fixer');
+    expect(decision.additionalContext).toBeUndefined();
   });
 
   it('tallies rule-keys and bumps the attempt counter', () => {
@@ -78,7 +80,10 @@ describe('decideGate — delegate', () => {
   it('routes a loose-class violation to the thorough fixer from attempt 1', () => {
     const decision = decideGate(
       input({
-        violations: [v({ ruleId: 'arch/layer-access' })],
+        violations: [
+          v({ ruleId: 'ordinary' }),
+          v({ ruleId: 'arch/layer-access' }),
+        ],
         config: {
           ...config,
           isLoose: (violation) => violation.ruleId.startsWith('arch/'),
@@ -103,12 +108,66 @@ describe('decideGate — escalate', () => {
     expect(decision.fixerAgent).toBeUndefined();
     expect(decision.message).toContain('no-console');
     expect(decision.message).toContain('src/a.ts');
-    // Counter resets so the next cycle starts fresh.
+    expect(decision.additionalContext).toBeUndefined();
+    // The full dump arms a terminal release instead of restarting forever.
     expect(decision.nextSession.attempts).toBe(0);
+    expect(decision.nextSession.escalated).toBe(true);
+  });
+
+  it('renders an unknown line explicitly in the terminal dump', () => {
+    const decision = decideGate(
+      input({ session: { ...createSession(), attempts: 3 } }),
+    );
+    expect(decision.message).toContain('src/foo.ts:?');
+  });
+
+  it('releases the retry after the main agent received the full dump', () => {
+    const decision = decideGate(
+      input({
+        session: {
+          ...createSession(),
+          escalated: true,
+        },
+        isRetry: true,
+      }),
+    );
+    expect(decision.outcome).toBe('release');
+    expect(decision.block).toBe(false);
+    expect(decision.nextSession.escalated).toBe(true);
+  });
+
+  it('starts a fresh bounded loop on a later non-retry turn', () => {
+    const decision = decideGate(
+      input({
+        session: {
+          ...createSession(),
+          escalated: true,
+        },
+        isRetry: false,
+      }),
+    );
+    expect(decision.outcome).toBe('delegate');
+    expect(decision.nextSession.escalated).toBe(false);
   });
 });
 
 describe('decideGate — recurrence injection', () => {
+  it('does not count fixer retries as separate recurring mistakes', () => {
+    const decision = decideGate(
+      input({
+        session: {
+          ...createSession(),
+          attempts: 1,
+          ruleCounts: { 'no-console': 1 },
+        },
+        isRetry: true,
+      }),
+    );
+    expect(decision.nextSession.attempts).toBe(2);
+    expect(decision.nextSession.ruleCounts).toEqual({ 'no-console': 1 });
+    expect(decision.additionalContext).toBeUndefined();
+  });
+
   it('injects a behavioral correction when a rule crosses the session threshold', () => {
     // Two prior turns already tallied this rule; this is the third.
     const decision = decideGate(
@@ -121,10 +180,25 @@ describe('decideGate — recurrence injection', () => {
       }),
     );
     expect(decision.additionalContext).toBeDefined();
+    expect(decision).toHaveProperty('additionalContext');
     expect(decision.additionalContext).toContain('no-console');
     expect(decision.nextSession.corrected).toContain('no-console');
     // Cross-session recurrence incremented for the crossed key.
     expect(decision.nextRecurrence['no-console']).toBe(1);
+  });
+
+  it('retains recurrence context when escalation happens on the same stop', () => {
+    const decision = decideGate(
+      input({
+        session: {
+          ...createSession(),
+          attempts: 3,
+          ruleCounts: { 'no-console': 2 },
+        },
+      }),
+    );
+    expect(decision.outcome).toBe('escalate');
+    expect(decision.additionalContext).toContain('3 separate turns');
   });
 
   it('does not re-inject a correction already given this session', () => {
@@ -153,5 +227,29 @@ describe('decideGate — recurrence injection', () => {
     );
     // bumped to 3 === graduationThreshold → suggest graduation.
     expect(decision.additionalContext).toContain('CLAUDE.md');
+  });
+});
+
+describe('per-package recurrence', () => {
+  const base = {
+    ruleId: 'no-console',
+    file: 'a.ts',
+    message: 'msg',
+    severity: 'error' as const,
+    fixable: false,
+    tool: 'eslint',
+  };
+
+  it('keys the same rule separately in different packages', () => {
+    // The whole point of attribution: a rule recurring in one package must not
+    // be diluted across the repo, which is what recurrence-as-signal measures.
+    const api: Violation = { ...base, package: 'packages/api' };
+    const web: Violation = { ...base, package: 'packages/web' };
+    expect(recurrenceKey(api)).not.toBe(recurrenceKey(web));
+    expect(recurrenceKey(api)).toBe('packages/api:no-console');
+  });
+
+  it('keys on the bare ruleId when there is no package', () => {
+    expect(recurrenceKey(base)).toBe('no-console');
   });
 });

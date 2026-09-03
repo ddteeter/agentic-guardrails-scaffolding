@@ -35,6 +35,18 @@ let root: string;
 // `test:coverage`), so a plain `git` here would target the REAL repo instead of
 // the temp one and commit into it. Strip all GIT_* vars so every git call this
 // test makes is pinned to `root` regardless of the ambient environment.
+// Close the INHERITANCE channel, at module scope, before anything spawns.
+// `isolatedGitEnvironment()` below only takes effect when `spawnExec` honours
+// `options.env` — which is exactly what a mutant removes, leaving the child to
+// inherit this worker's environment. Under a git hook that environment carries
+// an absolute GIT_INDEX_FILE (`git commit -a` points it at `.git/index.lock`),
+// and no argv flag overrides it: a fully `--git-dir`/`--work-tree`-pinned
+// `git add` will still rewrite whatever index that variable names. Scrubbing it
+// here works because stryker never mutates test files.
+process.env = Object.fromEntries(
+  Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')),
+);
+
 function isolatedGitEnvironment(): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(process.env)) {
@@ -48,8 +60,32 @@ function isolatedGitEnvironment(): NodeJS.ProcessEnv {
 const isolatedExec: Exec = (command, args, options) =>
   spawnExec(command, args, { ...options, env: isolatedGitEnvironment() });
 
+/**
+ * Pin every git call to the temp repo in ARGV.
+ *
+ * `cwd` and `env` both live in `src/exec.ts` — which the mutation gate mutates.
+ * A mutant that drops either one sends these commands at whatever repository
+ * git discovers instead, and stryker's sandbox sits INSIDE this repo, so
+ * discovery walks straight up to it. That is not hypothetical: a mutation run
+ * committed the temp repo's tree onto this branch, deleting 122 files, before
+ * the mutant was (correctly) reported killed. Killing the mutant does not undo
+ * the side effect it had while being evaluated.
+ *
+ * Argv comes from this test file, and stryker never mutates test files, so
+ * these flags hold no matter what happens to exec.ts. They also override any
+ * inherited GIT_DIR / GIT_WORK_TREE, making them a superset of the env
+ * scrubbing above rather than a replacement for it.
+ *
+ * Only the destructive calls need this: the gate under test issues read-only
+ * git (`diff`, `merge-base`, `ls-files`), where an escape costs a wrong answer
+ * and a failed test, not a corrupted repository.
+ */
+function pinnedToTemporaryRepo(args: string[]): string[] {
+  return ['--git-dir', path.join(root, '.git'), '--work-tree', root, ...args];
+}
+
 async function git(...args: string[]): Promise<void> {
-  await isolatedExec('git', args, { cwd: root });
+  await isolatedExec('git', pinnedToTemporaryRepo(args), { cwd: root });
 }
 
 const config: GateConfig = {
@@ -66,6 +102,18 @@ function writeStub(name: string, output: string): string {
   writeFileSync(
     file,
     `#!/usr/bin/env node\nprocess.stdout.write(${JSON.stringify(output)});\n`,
+  );
+  chmodSync(file, 0o755);
+  return file;
+}
+
+/** Write a tsc stub that emits a valid config only for `--showConfig`. */
+function writeTscStub(name: string): string {
+  const file = path.join(root, name);
+  writeFileSync(
+    file,
+    '#!/usr/bin/env node\n' +
+      "if (process.argv.includes('--showConfig')) process.stdout.write('{\"compilerOptions\":{}}');\n",
   );
   chmodSync(file, 0o755);
   return file;
@@ -111,7 +159,7 @@ describe('end-to-end Stop gate', () => {
         },
       ]),
     );
-    const tscStub = writeStub('tsc-stub.mjs', '');
+    const tscStub = writeTscStub('tsc-stub.mjs');
     const resolveBin = (tool: string): string =>
       tool === 'eslint' ? eslintStub : tscStub;
 
@@ -136,7 +184,7 @@ describe('end-to-end Stop gate', () => {
 
   it('exits clean when the changed file has no violations', async () => {
     writeFileSync(path.join(root, 'src', 'ok.ts'), 'export const ok = 2;\n');
-    const resolveBin = (): string => writeStub('empty.mjs', '');
+    const tscStub = writeTscStub('tsc-empty.mjs');
     // eslint stub returns an empty result set; tsc stub empty too.
     const eslintStub = writeStub('eslint-empty.mjs', '[]');
     const { decision } = await runStopGate({
@@ -145,7 +193,7 @@ describe('end-to-end Stop gate', () => {
       baseBranch: 'main',
       exec: isolatedExec,
       config,
-      resolveBin: (tool) => (tool === 'eslint' ? eslintStub : resolveBin()),
+      resolveBin: (tool) => (tool === 'eslint' ? eslintStub : tscStub),
     });
     expect(decision.outcome).toBe('clean');
     expect(decision.block).toBe(false);

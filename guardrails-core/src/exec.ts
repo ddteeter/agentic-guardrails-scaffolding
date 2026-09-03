@@ -10,6 +10,15 @@ export interface ExecResult {
   stdout: string;
   stderr: string;
   code: number;
+  /**
+   * `true` when the process could not be STARTED (e.g. the binary is missing).
+   * Exit code cannot carry this: a non-zero code is the normal case for these
+   * tools — eslint exits 1 on findings, tsc on type errors — so without this
+   * flag an absent analyzer is indistinguishable from a clean one, and the gate
+   * fails open. Absent (not `false`) on a process that ran, so existing test
+   * fakes stay valid.
+   */
+  spawnFailed?: true;
 }
 
 export type Exec = (
@@ -38,7 +47,12 @@ export const spawnExec: Exec = (command, args, options) =>
       stderr += chunk.toString();
     });
     child.on('error', (error: Error) => {
-      resolve({ stdout, stderr: `${stderr}${error.message}`, code: 1 });
+      resolve({
+        stdout,
+        stderr: `${stderr}${error.message}`,
+        code: 1,
+        spawnFailed: true,
+      });
     });
     child.on('close', (code) => {
       resolve({ stdout, stderr, code: code ?? 0 });

@@ -12,7 +12,10 @@ import { recurrenceKey, type Violation } from './violation.js';
 export interface SessionState {
   /** Bounded fix-attempt counter for the current Stop loop. */
   attempts: number;
-  /** Distinct rule-key → number of attempts/turns it has appeared in. */
+  /** The full dump has already been handed to the main agent. The next Stop
+   * retry releases the turn instead of starting the fixer ladder again. */
+  escalated?: boolean;
+  /** Distinct rule-key → number of separate turns it has appeared in. */
   ruleCounts: Record<string, number>;
   /** Rule-keys already given a behavioral correction this session. */
   corrected: string[];
@@ -22,12 +25,13 @@ export interface SessionState {
 export type RecurrenceCounts = Record<string, number>;
 
 export function createSession(): SessionState {
-  return { attempts: 0, ruleCounts: {}, corrected: [] };
+  return { attempts: 0, escalated: false, ruleCounts: {}, corrected: [] };
 }
 
 /**
- * Tally the distinct rule-keys in one verify batch, incrementing each by one.
- * Counting distinct-per-call (not per occurrence) makes the recurrence
+ * Tally the distinct rule-keys in one turn, incrementing each by one. The gate
+ * calls this only when `stop_hook_active` is false, never on fixer retries.
+ * Counting distinct-per-turn (not per occurrence) makes the recurrence
  * threshold measure "how many turns this rule kept coming back", not how many
  * files it touched in a single messy turn.
  */

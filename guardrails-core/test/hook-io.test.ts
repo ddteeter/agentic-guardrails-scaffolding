@@ -11,10 +11,13 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import type { GateDecision } from '../src/gate-decision.js';
+import type { HookInput } from '../src/hook-io.js';
 import {
   formatCopilotStopOutput,
   formatPreToolUseDeny,
   formatStopHookOutput,
+  hookFilePaths,
+  parseApplyPatchFilePaths,
   parseHookInput,
   resolveLocalBin,
 } from '../src/hook-io.js';
@@ -36,9 +39,14 @@ describe('parseHookInput', () => {
         session_id: 'abc',
         cwd: '/repo',
         hook_event_name: 'Stop',
+        stop_hook_active: true,
       }),
     );
-    expect(parsed).toEqual({ sessionId: 'abc', cwd: '/repo' });
+    expect(parsed).toEqual({
+      sessionId: 'abc',
+      cwd: '/repo',
+      stopHookActive: true,
+    });
   });
 
   it('extracts the edited file path from a PostToolUse payload', () => {
@@ -66,6 +74,35 @@ describe('parseHookInput', () => {
   it('degrades to empty fields on malformed input', () => {
     expect(parseHookInput('not json')).toEqual({});
     expect(parseHookInput('')).toEqual({});
+    expect(parseHookInput('null')).toEqual({});
+    expect(parseHookInput('[]')).toEqual({});
+  });
+
+  it('omits fields whose runtime values have the wrong types', () => {
+    const parsed = parseHookInput(
+      JSON.stringify({
+        session_id: 42,
+        cwd: false,
+        tool_name: {},
+        stop_hook_active: 'yes',
+      }),
+    );
+    expect(parsed).toEqual({});
+    expect(Object.keys(parsed)).toEqual([]);
+  });
+
+  it('uses Claude retry state ahead of Copilot fallback state', () => {
+    expect(
+      parseHookInput(
+        JSON.stringify({ stop_hook_active: false, stopHookActive: true }),
+      ).stopHookActive,
+    ).toBe(false);
+    expect(
+      parseHookInput(JSON.stringify({ stopHookActive: false })).stopHookActive,
+    ).toBe(false);
+    expect(
+      Object.keys(parseHookInput(JSON.stringify({ stopHookActive: 'false' }))),
+    ).toEqual([]);
   });
 
   it('extracts fields from a Copilot camelCase preToolUse payload', () => {
@@ -117,6 +154,113 @@ describe('parseHookInput', () => {
       }),
     );
     expect(parsed.command).toBe('git push');
+  });
+
+  it('extracts every path from a Codex apply_patch payload', () => {
+    const command = [
+      '*** Begin Patch',
+      '*** Update File: src/old.ts',
+      '*** Move to: src/new.ts',
+      '*** Add File: src/added.ts',
+      '*** Delete File: src/deleted.ts',
+      '*** End Patch',
+    ].join('\n');
+    const parsed = parseHookInput(
+      JSON.stringify({ tool_name: 'apply_patch', tool_input: { command } }),
+    );
+    expect(parsed.filePaths).toEqual([
+      'src/old.ts',
+      'src/new.ts',
+      'src/added.ts',
+      'src/deleted.ts',
+    ]);
+  });
+
+  it('deduplicates repeated apply_patch paths and ignores other lines', () => {
+    expect(
+      parseApplyPatchFilePaths(
+        '*** Update File: src/a.ts\n+line\n*** Update File: src/a.ts',
+      ),
+    ).toEqual(['src/a.ts']);
+  });
+
+  // The `^` anchor is the scope-lock's defence against a patch BODY line that
+  // merely looks like a header: added content is prefixed (`+`), so an attacker
+  // controlling patch text cannot smuggle an extra path past the manifest.
+  it('ignores an apply_patch header that is not at the start of a line', () => {
+    expect(
+      parseApplyPatchFilePaths(
+        '*** Update File: src/a.ts\n+*** Add File: src/injected.ts',
+      ),
+    ).toEqual(['src/a.ts']);
+  });
+
+  it('trims surrounding whitespace off an apply_patch path', () => {
+    expect(parseApplyPatchFilePaths('*** Add File:   src/a.ts  ')).toEqual([
+      'src/a.ts',
+    ]);
+  });
+
+  it('ignores an apply_patch header whose path is only whitespace', () => {
+    expect(parseApplyPatchFilePaths('*** Add File:    ')).toEqual([]);
+  });
+
+  it('leaves filePaths unset for an apply_patch payload with no command', () => {
+    const parsed = parseHookInput(JSON.stringify({ tool_name: 'apply_patch' }));
+    expect(parsed.toolName).toBe('apply_patch');
+    expect(parsed.filePaths).toBeUndefined();
+  });
+
+  it('leaves filePaths unset when an apply_patch command names no file', () => {
+    const parsed = parseHookInput(
+      JSON.stringify({
+        tool_name: 'apply_patch',
+        tool_input: { command: '*** Begin Patch\n*** End Patch' },
+      }),
+    );
+    expect(parsed.filePaths).toBeUndefined();
+  });
+
+  // Only apply_patch payloads get the header treatment: a shell command whose
+  // heredoc body happens to contain a header line must not widen scope.
+  it("does not read apply_patch headers out of another tool's command", () => {
+    const parsed = parseHookInput(
+      JSON.stringify({
+        tool_name: 'Bash',
+        tool_input: {
+          command: "cat <<'EOF'\n*** Add File: src/injected.ts\nEOF",
+        },
+      }),
+    );
+    expect(parsed.command).toContain('*** Add File');
+    expect(parsed.filePaths).toBeUndefined();
+  });
+});
+
+describe('hookFilePaths', () => {
+  it('returns an empty list when the payload names no file', () => {
+    expect(hookFilePaths({})).toEqual([]);
+  });
+
+  it('returns the single edited path when only filePath is set', () => {
+    expect(hookFilePaths({ filePath: '/repo/src/a.ts' })).toEqual([
+      '/repo/src/a.ts',
+    ]);
+  });
+
+  it('prefers the multi-path list over the single path', () => {
+    expect(
+      hookFilePaths({
+        filePath: '/repo/src/a.ts',
+        filePaths: ['/repo/src/b.ts'],
+      }),
+    ).toEqual(['/repo/src/b.ts']);
+  });
+
+  it('returns a copy the caller cannot use to mutate the payload', () => {
+    const input: HookInput = { filePaths: ['/repo/src/a.ts'] };
+    hookFilePaths(input).push('/repo/src/b.ts');
+    expect(input.filePaths).toEqual(['/repo/src/a.ts']);
   });
 });
 
@@ -172,6 +316,16 @@ describe('formatPreToolUseDeny', () => {
       permissionDecisionReason: 'nope',
     });
   });
+
+  it('emits the Claude-compatible nested shape for Codex', () => {
+    expect(formatPreToolUseDeny('nope', 'codex')).toEqual({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+        permissionDecisionReason: 'nope',
+      },
+    });
+  });
 });
 
 describe('formatCopilotStopOutput', () => {
@@ -194,6 +348,13 @@ describe('formatCopilotStopOutput', () => {
       formatCopilotStopOutput({ ...base, additionalContext: 'stop that' }),
     ).toEqual({ decision: 'block', reason: 'spawn the fixer\n\nstop that' });
   });
+
+  it('uses the message verbatim when there is no correction', () => {
+    expect(formatCopilotStopOutput(base)).toEqual({
+      decision: 'block',
+      reason: 'spawn the fixer',
+    });
+  });
 });
 
 describe('resolveLocalBin', () => {
@@ -208,5 +369,25 @@ describe('resolveLocalBin', () => {
 
   it('falls back to the bare tool name when not installed locally', () => {
     expect(resolveLocalBin(root, 'eslint')).toBe('eslint');
+  });
+
+  it('resolves the Windows command shim suffix', () => {
+    const original = process.platform;
+    Object.defineProperty(process, 'platform', {
+      configurable: true,
+      value: 'win32',
+    });
+    try {
+      const binDirectory = path.join(root, 'node_modules', '.bin');
+      mkdirSync(binDirectory, { recursive: true });
+      const eslint = path.join(binDirectory, 'eslint.cmd');
+      writeFileSync(eslint, '');
+      expect(resolveLocalBin(root, 'eslint')).toBe(eslint);
+    } finally {
+      Object.defineProperty(process, 'platform', {
+        configurable: true,
+        value: original,
+      });
+    }
   });
 });

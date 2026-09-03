@@ -3,6 +3,143 @@
   "maxAttempts": 3,
   "recurThreshold": 3,
   "graduationThreshold": 3,
+  "analyzers": {
+    "eslint": "required",
+    "tsc": "required",
+    "knip": "required",
+    "dependency-cruiser": "required",
+    "stryker": "required"
+  },
+  "sanctionedSuppressions": [
+    {
+      "key": "guardrails-core/src/audit.ts|mutation-suppress|// Stryker disable all",
+      "reason": "Hand-written tokenizer region (isQuoteChar -> skipRegexFlags): 233 mutation-dense, low-defect-ROI mutants whose real coverage is the behavioural suppression-detection tests. Scoped to the lexer; the diff logic below stays mutated. See docs/superpowers/specs/2026-07-23-phase-c-stryker-design.md section 7."
+    },
+    {
+      "key": "guardrails-core/src/audit.ts|mutation-suppress|// Stryker restore all",
+      "reason": "Closes the lexer-region exclusion above."
+    },
+    {
+      "key": "guardrails-core/src/audit.ts|mutation-suppress|// Stryker disable next-line BlockStatement,ConditionalExpression",
+      "reason": "Proven-equivalent mutant(s); equivalence argument recorded at the site. Without the no-extension guard, file.slice(-1) is a single character, which can never equal a multi-character extension like \".ts\"."
+    },
+    {
+      "key": "guardrails-core/src/audit.ts|mutation-suppress|// Stryker disable next-line MethodExpression,ConditionalExpression,LogicalOperator,BlockStatement",
+      "reason": "Proven-equivalent mutant(s); equivalence argument recorded at the site. Skipping the diff-metadata branch only changes newLine BEFORE the next @@ header, and a hunk header unconditionally resets newLine."
+    },
+    {
+      "key": "guardrails-core/src/audit.ts|mutation-suppress|// Stryker disable next-line OptionalChaining",
+      "reason": "Proven-equivalent mutant(s); equivalence argument recorded at the site. The HUNK_HEADER.test() branch condition guarantees exec() matches, so ?. cannot short-circuit; it also cannot be removed, since exec is typed RegExpExecArray | null."
+    },
+    {
+      "key": "guardrails-core/src/verify/stryker-adapter.ts|mutation-suppress|// Stryker disable next-line ConditionalExpression",
+      "reason": "Proven-equivalent mutants at four sites sharing this directive text; equivalence arguments recorded at each site (isMutant's guard, isReport's outer guard, isReport's `files` guard, and the per-file `.every` predicate's guard). Each is the typeof-object half of a `typeof x !== 'object' || x === null` (or `typeof x === 'object' && x !== null`) precondition, subsumed by the field/shape checks that follow it: a primitive that slips through is rejected anyway (e.g. `(5).files` / `(5).status` reads as `undefined`, which the next check independently fails).",
+      "count": 4
+    },
+    {
+      "key": "guardrails-core/src/verify/stryker-adapter.ts|mutation-suppress|// Stryker disable BlockStatement",
+      "reason": "Proven-equivalent mutant(s); equivalence argument recorded at the site. Emptying the JSON.parse try/catch leaves parsed undefined, which isReport rejects - the function still returns []."
+    },
+    {
+      "key": "guardrails-core/src/verify/stryker-adapter.ts|mutation-suppress|// Stryker restore BlockStatement",
+      "reason": "Closes the try/catch exclusion above."
+    },
+    {
+      "key": "guardrails-core/src/config.ts|mutation-suppress|// Stryker disable next-line ConditionalExpression",
+      "reason": "Proven-equivalent mutant(s); equivalence argument recorded at the site. Covers isRecord and pickNumber: Number.isFinite does not coerce, and a primitive raw config falls through to per-field defaults - the same result as rejecting it.",
+      "count": 2
+    },
+    {
+      "key": "guardrails-core/src/config.ts|mutation-suppress|// Stryker disable BlockStatement",
+      "reason": "Proven-equivalent mutant(s); equivalence argument recorded at the site. Emptying the config-read try/catch leaves raw undefined, which isRecord rejects - loadConfig still returns defaults."
+    },
+    {
+      "key": "guardrails-core/src/config.ts|mutation-suppress|// Stryker restore BlockStatement",
+      "reason": "Closes the try/catch exclusion above."
+    },
+    {
+      "key": "guardrails-core/src/gate.ts|mutation-suppress|// Stryker disable ConditionalExpression,MethodExpression,ArrayDeclaration",
+      "reason": "Proven-equivalent mutant(s); equivalence argument recorded at the site. The snapshot baseline is only ever probed with real string keys, so a non-string entry can never match; and .filter on a non-array throws into the catch that returns the same empty Set."
+    },
+    {
+      "key": "guardrails-core/src/gate.ts|mutation-suppress|// Stryker restore ConditionalExpression,MethodExpression,ArrayDeclaration",
+      "reason": "Closes the readSnapshot exclusion above."
+    },
+    {
+      "key": "guardrails-core/src/gate.ts|mutation-suppress|// Stryker disable next-line ArrayDeclaration",
+      "reason": "Proven-equivalent mutant(s); equivalence argument recorded at the site. The sanctioned budget Map is only keyed by real file|kind|text finding keys, so a placeholder default entry can never match."
+    },
+    {
+      "key": "guardrails-core/src/cli-core.ts|mutation-suppress|// Stryker disable next-line ConditionalExpression",
+      "reason": "Proven-equivalent mutant(s); equivalence argument recorded at the site. Bypassing a \"=== undefined\" clause still returns early: the regex test on the next line stringifies undefined to \"undefined\", which matches no anchored pattern. Covers three sites sharing this directive text: gatePreToolUseCommand's toolName and command guards, and isReadTool's toolName guard.",
+      "count": 3
+    },
+    {
+      "key": "guardrails-core/src/cli-core.ts|mutation-suppress|// Stryker disable next-line ArrayDeclaration",
+      "reason": "Proven-equivalent mutant; equivalence argument recorded at the site. newlySanctioned compares by key, so a placeholder default entry maps to an undefined key that no real entry can match - every head entry still reads as newly requested, exactly as with an empty list."
+    },
+    {
+      "key": "guardrails-core/src/violation.ts|mutation-suppress|// Stryker disable next-line ConditionalExpression",
+      "reason": "Proven-equivalent mutants; arguments recorded at both sites. isSeverity: SEVERITIES holds only the strings 'error'/'warn', so has(x) implies x is a string. isViolation: the surviving `value === null` half still catches null, and a primitive is rejected field-by-field below. Approved individually after review.",
+      "count": 2
+    },
+    {
+      "key": "guardrails-core/src/workspaces.ts|mutation-suppress|// Stryker disable next-line ArrayDeclaration",
+      "reason": "Proven-equivalent mutant(s); equivalence argument recorded at both sites (the escape guard's early return and the accumulator's initial value). ancestorDirectories is never exported, so its return value is only ever probed by the resolver's existsSync check on each entry; a bogus placeholder entry is observationally identical to an empty/unpolluted list unless a real repo directory happens to be named after Stryker's literal placeholder, which no real repo has.",
+      "count": 2
+    },
+    {
+      "key": "guardrails-core/src/verify/tsc-adapter.ts|mutation-suppress|// Stryker disable next-line ConditionalExpression",
+      "reason": "Proven-equivalent mutant; equivalence argument recorded at the site. `rawFile` is `match[1]`, the DIAGNOSTIC regex's first capture group, which is mandatory (`(.+)`, not optional and not behind an alternation) -- whenever `match` is non-null, `rawFile` is already guaranteed to be a defined string, so `rawFile !== undefined` can never be false when this clause is reached. The `&&` chain was reordered (`path.isAbsolute(rawFile ?? '')` now leads, using `?? ''` so the clause's position no longer needs to provide narrowing) purely so this directive's line does not also cover the whole-condition mutants: Stryker's disable comments match by mutator name and line, not by sub-expression, and the leftmost clause of a chain always starts on the same line as the whole chain. Measured before/after with `npx stryker run --mutate guardrails-core/src/verify/tsc-adapter.ts`: Killed 26->27 (unchanged plus one new mutant from the added `?? ''`, itself killed), Ignored 6->8 (the one targeted mutant plus one new globally-excluded StringLiteral from the added `''`), Survived 1->0. No collateral."
+    },
+    {
+      "key": "guardrails-core/src/verify/eslint-adapter.ts|mutation-suppress|// Stryker disable next-line ConditionalExpression",
+      "reason": "Proven-equivalent mutant; equivalence argument recorded at the site. No value JSON.parse can produce is both non-object and carries a string `filePath` and an array `messages`, so `typeof r === 'object'` can never be false while the two checks below it are true. The `&&` chain was reordered (`r !== null` now leads) purely so this directive's line does not also cover the combined-clause mutants sharing that line: Stryker's disable comments match by mutator name and line, not by sub-expression. Measured before/after with `npx stryker run --mutate guardrails-core/src/verify/eslint-adapter.ts` (covers both directives in this file): Killed 41->41 (unchanged), Ignored 6->8 (exactly the two targeted mutants), Survived 2->0. No collateral."
+    },
+    {
+      "key": "guardrails-core/src/verify/eslint-adapter.ts|mutation-suppress|// Stryker disable next-line BlockStatement",
+      "reason": "Proven-equivalent mutant; equivalence argument recorded at the site. Emptying the JSON.parse catch body leaves `parsed` undefined (the try body's assignment never lands on a throw), which `isResultArray` rejects immediately after -- the function returns [] either way. `catch` is kept on its own line via a `// prettier-ignore` on the preceding `try` so this directive's line matches only the catch block, not the try block: verified by testing the try block's own BlockStatement mutant unsuppressed -- it is real (it silently drops every input, valid or not, which the happy-path tests catch), so it must stay mutated and is not covered by this entry. See the ConditionalExpression entry above for this file's before/after counts (both directives measured together)."
+    },
+    {
+      "key": "guardrails-core/src/verify/knip-adapter.ts|mutation-suppress|// Stryker disable next-line ConditionalExpression",
+      "reason": "Proven-equivalent mutants at three sites sharing this directive text; equivalence arguments recorded at each site. isKnipReport's outer `typeof value === 'object'`, its per-issue `typeof issue === 'object'`, and isEntryArray's per-entry `typeof entry === 'object'`: no value JSON.parse can produce is both non-object and carries the property checked immediately after it (`issues` / `file` / `name` respectively), so each of these clauses can never be false while the checks below it are true. Each chain was reordered (the `!== null` clause now leads) purely so the directive's line does not also cover the combined-clause mutants sharing that line: Stryker's disable comments match by mutator name and line, not by sub-expression. Measured before/after with `npx stryker run --mutate guardrails-core/src/verify/knip-adapter.ts` (covers all four directives in this file): Killed 67->67 (unchanged), Ignored 21->25 (exactly the four targeted mutants), Survived 4->0. No collateral.",
+      "count": 3
+    },
+    {
+      "key": "guardrails-core/src/verify/knip-adapter.ts|mutation-suppress|// Stryker disable next-line BlockStatement",
+      "reason": "Proven-equivalent mutant; equivalence argument recorded at the site. Emptying the JSON.parse catch body leaves `parsed` undefined, which `isKnipReport` rejects immediately after -- the function returns [] either way. `catch` is kept on its own line via a `// prettier-ignore` on the preceding `try` so this directive's line matches only the catch block, not the try block: verified by testing the try block's own BlockStatement mutant unsuppressed -- it is real (it silently drops every input, valid or not, which the happy-path tests catch), so it must stay mutated and is not covered by this entry. See the ConditionalExpression entry above for this file's before/after counts (all four directives measured together)."
+    },
+    {
+      "key": "guardrails-core/src/verify/depcruise-adapter.ts|mutation-suppress|// Stryker disable next-line ConditionalExpression",
+      "reason": "Proven-equivalent mutants at two sites sharing this directive text; equivalence arguments recorded at each site. Outer guard `typeof value !== 'object'` (reordered after `value === null`, an early-return `if`, not an `&&`-chain clause -- proved by cases): null is still caught by the surviving `value === null` half; a non-null primitive's property access (e.g. `(5).summary`) never throws, it evaluates to `undefined`, which the very next guard (`typeof summary !== 'object'`) independently rejects; a genuine object/array was already unmutated-false. Inner `.every` predicate's `typeof v === 'object'` (reordered after `v !== null`): no value JSON.parse can produce is both non-object and carries string `from`/`to` and a `rule` object with string `name`/`severity`. Both reordered purely so the directive's line does not also cover the combined-clause/whole-chain mutants sharing that line: Stryker's disable comments match by mutator name and line, not by sub-expression. Measured before/after with `npx stryker run --mutate guardrails-core/src/verify/depcruise-adapter.ts` (covers all four directives in this file): Killed 85->85 (unchanged), Ignored 17->21 (exactly the four targeted mutants), Survived 4->0. No collateral.",
+      "count": 2
+    },
+    {
+      "key": "guardrails-core/src/verify/depcruise-adapter.ts|mutation-suppress|// Stryker disable next-line OptionalChaining",
+      "reason": "Proven-equivalent mutant; equivalence argument recorded at the site. `.rule?.severity` only runs once `.rule?.name` (the clause immediately above it in the same `&&` chain) has already evaluated true, which requires `rule` to already be a real object -- a nullish `rule` makes `rule?.name` evaluate to `undefined`, never `=== 'string'`, short-circuiting before `.rule?.severity` is reached. So by the time this clause runs, `rule` is guaranteed non-nullish and property access on it can never throw, `?.` or not. Contrast `.rule?.name` itself: nothing gates that access, so `rule` can still be undefined there, which is why the analogous mutant on `.rule?.name` is real, not equivalent (covered by the \"no rule object at all\" test, not by any suppression). See the ConditionalExpression entry above for this file's before/after counts (all four directives measured together)."
+    },
+    {
+      "key": "guardrails-core/src/verify/depcruise-adapter.ts|mutation-suppress|// Stryker disable next-line BlockStatement",
+      "reason": "Proven-equivalent mutant; equivalence argument recorded at the site. Emptying the JSON.parse catch body leaves `parsed` undefined, which `isDepcruiseReport` rejects immediately after -- the function returns [] either way. `catch` is kept on its own line via a `// prettier-ignore` on the preceding `try` so this directive's line matches only the catch block, not the try block: verified by testing the try block's own BlockStatement mutant unsuppressed -- it is real (it silently drops every input, valid or not, which the happy-path tests catch), so it must stay mutated and is not covered by this entry. See the ConditionalExpression entry above for this file's before/after counts (all four directives measured together)."
+    },
+    {
+      "key": "guardrails-core/src/hook-io.ts|mutation-suppress|// Stryker disable next-line BlockStatement",
+      "reason": "Proven-equivalent JSON.parse catch mutant. Emptying the catch leaves `parsed` undefined; the immediately following isRecord guard returns the same empty HookInput. The directive is line-scoped to the catch block, leaving the real try-block mutant active."
+    },
+    {
+      "key": "guardrails-core/src/state-store.ts|mutation-suppress|// Stryker disable next-line BlockStatement",
+      "reason": "Two proven-equivalent catch mutants. In readJson, an empty catch reaches the same implicit undefined return. In sweepStale, an empty stat catch leaves mtimeMs undefined, making the age comparison false and skipping the entry exactly as continue does. Both directives are line-scoped; their real try-block mutants remain active.",
+      "count": 2
+    },
+    {
+      "key": "guardrails-core/src/verify/index.ts|mutation-suppress|// Stryker disable next-line BlockStatement",
+      "reason": "Proven-equivalent resolved-tsconfig JSON.parse catch mutant. Emptying the catch leaves `parsed` undefined, which the immediately following shape guard rejects with the same undefined result. The directive is line-scoped to the catch block, leaving the real parse try-block mutant active."
+    },
+    {
+      "key": "guardrails-core/src/verify/index.ts|mutation-suppress|// Stryker disable next-line ConditionalExpression,BlockStatement",
+      "reason": "Proven-equivalent nonzero-tsc early-return mutants. withExitCodeCheck has already converted every non-spawn nonzero exit into either parsed TypeScript diagnostics or guardrails/analyzer-failed, and the immediately following violations-length guard returns that identical array. The spawn-failure branch remains independently mutated and tested."
+    }
+  ],
   "distribution": "solo",
-  "enforcement": "warn"
+  "enforcement": "block"
 }

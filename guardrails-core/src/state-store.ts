@@ -41,9 +41,14 @@ export function recurrenceFile(directory: string): string {
 }
 
 function readJson(file: string): unknown {
+  // prettier-ignore
   try {
     return JSON.parse(readFileSync(file, 'utf8'));
-  } catch {
+  }
+  // Emptying this catch reaches the function's implicit undefined return, the
+  // same value returned explicitly here.
+  // Stryker disable next-line BlockStatement
+  catch {
     return undefined;
   }
 }
@@ -76,7 +81,7 @@ export function loadSession(
   if (!isRecord(raw)) {
     return createSession();
   }
-  const { attempts, ruleCounts, corrected } = raw;
+  const { attempts, escalated, ruleCounts, corrected } = raw;
   if (
     typeof attempts !== 'number' ||
     !isRecord(ruleCounts) ||
@@ -88,6 +93,9 @@ export function loadSession(
   // count would make `"oops" + 1 = "oops1"` and silently break tallying.
   return {
     attempts,
+    // Backward-compatible with state written before terminal escalation was
+    // tracked: an absent flag means no escalation is armed.
+    escalated: typeof escalated === 'boolean' ? escalated : false,
     ruleCounts: numberRecord(ruleCounts),
     corrected: corrected.filter((entry) => typeof entry === 'string'),
   };
@@ -143,6 +151,12 @@ export function sweepStale(
   directory: string,
   maxAgeMs: number,
   now: number,
+  removeFile: (file: string, options: { force: true }) => void = (
+    file,
+    options,
+  ) => {
+    rmSync(file, options);
+  },
 ): string[] {
   let entries: string[];
   try {
@@ -157,13 +171,21 @@ export function sweepStale(
     }
     const file = path.join(directory, name);
     let mtimeMs: number;
+    // prettier-ignore
     try {
       mtimeMs = statSync(file).mtimeMs;
-    } catch {
+    }
+    // Emptying this catch leaves mtimeMs undefined; the age comparison is then
+    // false and skips the entry, exactly as this explicit continue does.
+    // Stryker disable next-line BlockStatement
+    catch {
       continue;
     }
     if (now - mtimeMs > maxAgeMs) {
-      rmSync(file, { force: true });
+      // Another session can sweep the same entry after our stat. `force`
+      // makes that ordinary race an idempotent delete rather than an ENOENT
+      // that bricks SessionStart.
+      removeFile(file, { force: true });
       if (!name.endsWith('.last.json')) {
         deleted.push(name);
       }

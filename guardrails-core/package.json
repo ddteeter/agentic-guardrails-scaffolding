@@ -1,6 +1,6 @@
 {
   "name": "guardrails-core",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Runtime-agnostic machinery for the agent-guardrail system: verify, autofix, diff-audit, gate, and recurrence-memory for coding agents (TypeScript + Java).",
   "type": "module",
   "license": "MIT",
@@ -17,12 +17,39 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "guidance",
+    "templates"
   ],
   "scripts": {
     "build": "tsup"
   },
   "devDependencies": {
-    "@eslint/js": "^9.39.5"
+    "@eslint/js": "^9.39.5",
+    "mutation-testing-report-schema": "^3.7.3"
+  },
+  "peerDependencies": {
+    "eslint": ">=9",
+    "typescript": ">=5",
+    "knip": ">=6",
+    "dependency-cruiser": ">=18",
+    "@stryker-mutator/core": ">=9"
+  },
+  "peerDependenciesMeta": {
+    "eslint": {
+      "optional": true
+    },
+    "typescript": {
+      "optional": true
+    },
+    "knip": {
+      "optional": true
+    },
+    "dependency-cruiser": {
+      "optional": true
+    },
+    "@stryker-mutator/core": {
+      "optional": true
+    }
   }
 }

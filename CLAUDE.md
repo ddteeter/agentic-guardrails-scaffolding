@@ -93,6 +93,40 @@ loose id or knip issue type no longer exists upstream. You must still review the
 (`loose-rules.ts`) or changed a suppression syntax the auditor watches
 (`audit.ts`); the guard checks existence, not completeness.
 
+## Asking before you sanction a suppression
+
+`guardrails.config.json`'s `sanctionedSuppressions` is the **only** escape hatch
+from the diff-auditor. Never add an entry on your own initiative. Ask the
+developer first — using your interactive question ability, not a note buried in
+a summary — and give them what they need to decide:
+
+- **What** the exemption covers (the exact `file|kind|text` key).
+- **Why** it is unavoidable: for an equivalent mutant, the argument for why no
+  test can kill it; for anything else, what you tried first.
+- **What it costs**: what stops being checked once it is granted.
+
+If they approve, put the argument they accepted into `reason` — that text is what
+a PR reviewer reads later, so write it for them, not for yourself.
+
+`count` must equal how many times that exact suppression appears in that file.
+`sanctions-check` re-derives the real number with the auditor's own lexer and
+**fails** on any mismatch, so a stale entry left behind by a refactor is a build
+failure rather than a silently over-provisioned budget. When you delete a
+suppressed line, update or remove its entry in the same change.
+
+Do **not** record who approved it. An `approvedBy` field was tried and removed:
+local git identity is writable by whatever is running, and is often a bot or a
+placeholder, so it recorded a name that proved nothing while looking like a
+guarantee.
+
+The ask is the point. CI catches a _missing_ approval eventually; asking catches
+a _wrong_ exemption now, while you still have the context to explain it and the
+developer can still say "no — fix the code instead."
+
+The fixer subagents cannot reach this file at all (the scope-lock confines them
+to the violations manifest), so this instruction is for the **main agent** —
+which is the only thing that can grant itself an exemption.
+
 ## Strictness (non-negotiable)
 
 - **TDD** — no production code without a failing test first.

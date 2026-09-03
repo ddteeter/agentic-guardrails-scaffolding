@@ -6,7 +6,16 @@
       // Self-contained knip drift-probe fixture, excluded the same way it's
       // excluded from tsconfig.json/eslint.config.js/.fallowrc.jsonc — keep
       // the four exclusions in sync.
-      "ignore": ["test/drift/knip-fixture/**"]
+      "ignore": ["test/drift/knip-fixture/**"],
+      // PERMANENT (was a Task-6 stopgap): mutation-testing-report-schema IS
+      // used — test/drift/registry.test.ts resolves its public subpath via
+      // `createRequire(import.meta.url).resolve(...)` to read the MutantStatus
+      // enum. Neither knip nor fallow can statically follow a require.resolve
+      // string argument, so both report it unused; verified by removing this
+      // entry (knip then flags it) rather than assumed. If the probe ever
+      // switches to a static `import ... from '.../mutation-testing-report-schema.json'`,
+      // delete this entry and .fallowrc.jsonc's matching one.
+      "ignoreDependencies": ["mutation-testing-report-schema"]
     }
   }
 }
