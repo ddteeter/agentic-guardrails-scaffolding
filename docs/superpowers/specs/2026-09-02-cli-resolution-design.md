@@ -29,9 +29,9 @@ unnoticed.
   handled natively.
 - **`guardrails-core/cli` becomes public API** (an `exports` subpath) and gets a
   test, because every adopter's hooks now depend on it.
-- **Two consumer-facing footguns fixed**: `foreignHooksPathWarning()` hands
-  adopters a path that cannot resolve under hoisting, and `docs/adoption.md`
-  tells them to run `npx guardrails`, which can execute a stranger's package.
+- **One consumer-facing footgun fixed**: `docs/adoption.md` and `README.md` tell
+  adopters to run `npx guardrails`, which on a broken install can execute a
+  stranger's package.
 - **Out of scope:** the git-hook, husky and CI invocations keep their relative
   path. Those contexts genuinely guarantee cwd, and there a hard failure is the
   correct behaviour.
@@ -232,14 +232,20 @@ migration lands. This design deliberately does not finish it.
 - `src/hook-io.ts` — `resolveLocalBin` bounded upward walk
 - `src/repo-root.ts` — findUp-first
 - `src/cli-core.ts`, `src/cli.ts` — the self-check and `selfPath`
-- `src/scaffold/hooks-path.ts` — `foreignHooksPathWarning()`, which today hands
-  a hoisted-subpackage adopter a path that cannot resolve
 - `docs/adoption.md`, `README.md` — replace `npx guardrails init|verify` with
   the relative-path form. All three sites run after the tarball install with cwd
   at the repo root, the same context as the git-hook and CI invocations, so the
   relative path is both correct and the loud-failure behaviour we want there
 
-**Deliberately unchanged:** `.githooks/pre-commit`, `.husky/pre-commit`,
+**Deliberately unchanged**, and this now includes
+`foreignHooksPathWarning()` in `src/scaffold/hooks-path.ts`: it suggests a line
+for the adopter's own **git** pre-commit hook, which runs at the git root — the
+same guaranteed-cwd context as the files below. In the one layout where its
+relative path fails there (deps only in a subpackage), the `-e` form fails
+identically; that is case D, not a hoisting problem. Changing it would buy
+nothing and contradict the rule in the paragraph that follows.
+
+`.githooks/pre-commit`, `.husky/pre-commit`,
 `templates/workflows/guardrails.yml`, `docs/adoption.md:85`. Git sets cwd to the
 working-tree root and CI checks out at the workspace root, so cwd is genuinely
 guaranteed. There, `npm ci` either installed it or it did not, and an upward
