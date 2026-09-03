@@ -66,9 +66,7 @@ export function parseConsumerJson(text: string): ParsedJson {
  */
 function isGuardrailsEntry(entry: unknown): boolean {
   const serialized = JSON.stringify(entry);
-  return GUARDRAILS_HOOK_MARKERS.some((marker) =>
-    serialized.includes(marker),
-  );
+  return GUARDRAILS_HOOK_MARKERS.some((marker) => serialized.includes(marker));
 }
 
 /** One hook event: keep every consumer entry that is not ours, then append
