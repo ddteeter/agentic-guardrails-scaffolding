@@ -43,6 +43,13 @@ function deps(over: Partial<CliDeps> = {}): CliDeps {
     cwd: root,
     exec: () => Promise.resolve(ok('')),
     readStdin: () => Promise.resolve(''),
+    selfPath: path.join(
+      root,
+      'node_modules',
+      'guardrails-core',
+      'dist',
+      'cli.mjs',
+    ),
     stdout: (text) => out.push(text),
     stderr: (text) => errors.push(text),
     ...over,
@@ -1711,5 +1718,73 @@ describe('sanctions-check count drift-guard', () => {
     } finally {
       rmSync(escapee, { force: true });
     }
+  });
+});
+
+describe('out-of-repo self-check', () => {
+  it('refuses to run when resolved from outside the repository', async () => {
+    // Node's node_modules walk does not stop at the repo, so an install in an
+    // ancestor directory satisfies it. Guarding a repo with a version nobody
+    // in it chose, silently, is worse than not running.
+    mkdirSync(path.join(root, '.git'));
+    const outside = path.join(
+      path.dirname(root),
+      'node_modules',
+      'guardrails-core',
+      'dist',
+      'cli.mjs',
+    );
+
+    const code = await runCommand('verify', [], deps({ selfPath: outside }));
+
+    expect(code).not.toBe(0);
+    expect(errors.join('')).toContain(outside);
+    expect(errors.join('')).toContain(root);
+  });
+
+  it('runs normally when resolved from inside the repository', async () => {
+    mkdirSync(path.join(root, '.git'));
+    const inside = path.join(
+      root,
+      'node_modules',
+      'guardrails-core',
+      'dist',
+      'cli.mjs',
+    );
+
+    const code = await runCommand('verify', [], deps({ selfPath: inside }));
+
+    expect(code).toBe(0);
+    expect(errors.join('')).not.toContain('outside');
+  });
+
+  it('skips the check when there is no repository to bound', async () => {
+    // Advisory, not authoritative: a non-git directory has no boundary, so the
+    // check must degrade to today's behaviour rather than reject a directory
+    // it cannot bound. `root` has no .git here.
+    const outside = path.join(path.dirname(root), 'elsewhere', 'cli.mjs');
+
+    const code = await runCommand('verify', [], deps({ selfPath: outside }));
+
+    expect(code).toBe(0);
+    expect(errors.join('')).not.toContain('outside');
+  });
+
+  it('falls back to import.meta.url when selfPath is not injected', async () => {
+    // Production-only path: cli.ts is a logic-free wire that must stay out of
+    // the mutation gate's diff scope, so it cannot inject selfPath itself.
+    // outsideRepoMessage falls back to reading import.meta.url from inside
+    // this already-covered module instead. Under vitest that resolves to
+    // cli-core.ts's own real source path, so the fixture directory must be
+    // this real repository (not a disposable temp directory the way the
+    // other tests here use) for that path to land inside the bound.
+    const { selfPath: _selfPath, ...withoutSelfPath } = deps({
+      cwd: process.cwd(),
+    });
+
+    const code = await runCommand('verify', [], withoutSelfPath);
+
+    expect(code).toBe(0);
+    expect(errors.join('')).not.toContain('outside');
   });
 });

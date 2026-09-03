@@ -76,6 +76,13 @@ function deps(over: Partial<CliDeps> = {}): CliDeps {
     cwd: root,
     exec: gitExec,
     readStdin: () => Promise.resolve(''),
+    selfPath: path.join(
+      root,
+      'node_modules',
+      'guardrails-core',
+      'dist',
+      'cli.mjs',
+    ),
     stdout: (text) => out.push(text),
     stderr: (text) => errors.push(text),
     ...over,
