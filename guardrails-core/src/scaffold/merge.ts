@@ -13,7 +13,7 @@
 import { isRecord } from './record.js';
 
 /** Identifies a guardrails-owned hook entry, wherever it nests inside one. */
-const GUARDRAILS_HOOK_MARKER = 'guardrails-core/dist/cli.mjs';
+const GUARDRAILS_HOOK_MARKER = "import('guardrails-core/cli')";
 
 /** The desired shape of the template's hooks block, trusted as-authored: it
  * ships with guardrails-core itself and is never consumer-supplied, so unlike

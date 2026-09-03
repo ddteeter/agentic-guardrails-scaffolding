@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PROJECT_DIR}/node_modules/guardrails-core/dist/cli.mjs\" scope-check",
+            "command": "node -e \"import('guardrails-core/cli')\" guardrails scope-check",
             "timeout": 60
           }
         ]
@@ -18,7 +18,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PROJECT_DIR}/node_modules/guardrails-core/dist/cli.mjs\" autofix",
+            "command": "node -e \"import('guardrails-core/cli')\" guardrails autofix",
             "timeout": 120
           }
         ]
@@ -29,7 +29,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PROJECT_DIR}/node_modules/guardrails-core/dist/cli.mjs\" gate --mode=stop",
+            "command": "node -e \"import('guardrails-core/cli')\" guardrails gate --mode=stop",
             "timeout": 300
           }
         ]
@@ -40,7 +40,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PROJECT_DIR}/node_modules/guardrails-core/dist/cli.mjs\" session-start",
+            "command": "node -e \"import('guardrails-core/cli')\" guardrails session-start",
             "timeout": 60
           }
         ]
@@ -51,7 +51,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PROJECT_DIR}/node_modules/guardrails-core/dist/cli.mjs\" session-end",
+            "command": "node -e \"import('guardrails-core/cli')\" guardrails session-end",
             "timeout": 60
           }
         ]

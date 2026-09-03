@@ -3,6 +3,8 @@ import path from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
+import { CLI_PREFIX, cliCommand } from './hook-command.js';
+
 interface HookCommand {
   readonly command: string;
   readonly timeout?: number;
@@ -47,15 +49,26 @@ describe('Codex hooks config', () => {
     );
   });
 
-  it('resolves the installed CLI from the Git top-level', () => {
+  it('resolves the CLI by package name, never by a constructed path', () => {
     for (const event of Object.keys(config.hooks)) {
       for (const hook of commands(event)) {
-        expect(hook.command).toContain('$(git rev-parse --show-toplevel)');
-        expect(hook.command).toContain(
-          'node_modules/guardrails-core/dist/cli.mjs',
-        );
+        expect(hook.command).toContain(CLI_PREFIX);
+        expect(hook.command).not.toContain('node_modules');
+        expect(hook.command).not.toContain('git rev-parse');
+        expect(hook.command).not.toContain('CLAUDE_PROJECT_DIR');
       }
     }
+  });
+
+  it('spells each lifecycle command exactly', () => {
+    expect(commands('SessionStart')[0]?.command).toBe(
+      cliCommand('session-start'),
+    );
+    expect(commands('SessionEnd')[0]?.command).toBe(cliCommand('session-end'));
+    expect(commands('PostToolUse')[0]?.command).toBe(cliCommand('autofix'));
+    expect(commands('Stop')[0]?.command).toBe(
+      cliCommand('gate --mode=stop --dialect=codex'),
+    );
   });
 
   it('covers apply_patch and locks shell/MCP capabilities during fixing', () => {
