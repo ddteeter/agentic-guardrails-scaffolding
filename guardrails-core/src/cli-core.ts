@@ -6,6 +6,7 @@
 
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { auditDiff, type AuditFinding } from './audit.js';
 import { runAutofix } from './autofix.js';
@@ -17,6 +18,7 @@ import {
 } from './config.js';
 import type { Exec } from './exec.js';
 import { runCommitGate, runStopGate } from './gate.js';
+import { findGitRoot } from './repo-root.js';
 import {
   formatGrantReport,
   newlySanctioned,
@@ -55,6 +57,17 @@ export interface CliDeps {
   exec: Exec;
   readStdin: () => Promise<string>;
   cwd: string;
+  /**
+   * Where this CLI was resolved from, as a filesystem path. Injected rather
+   * than read from `import.meta.url` here so the check has a test seam.
+   * Optional because `cli.ts` — the only real caller — must stay a
+   * logic-free wire kept out of the mutation gate's diff scope: any change to
+   * it charges that file's entire (currently zero) mutation coverage to
+   * whatever diff touches it. `outsideRepoMessage` falls back to reading
+   * `import.meta.url` itself, from inside `cli-core.ts`, which is already
+   * fully covered.
+   */
+  selfPath?: string;
   stdout: (text: string) => void;
   stderr: (text: string) => void;
 }
@@ -522,11 +535,45 @@ function resolveDialect(rest: string[]): Dialect {
   return dialect === 'copilot' || dialect === 'codex' ? dialect : 'claude';
 }
 
+/**
+ * The message for a CLI that resolved from outside the repository it is about
+ * to guard, or `undefined` when it did not — or when there is no repository to
+ * bound it against.
+ *
+ * Node resolves `guardrails-core` by walking up from the hook's cwd, and that
+ * walk does not stop at the repository (spec §3, layout F). So a stray install
+ * in an ancestor — `~/node_modules`, typically — satisfies every hook in a repo
+ * that never installed guardrails, at whatever version that ancestor holds,
+ * with no signal at all.
+ *
+ * `findGitRoot` rather than `resolveRepoRoot`: the latter falls back to `cwd`,
+ * which would make "no repository here" indistinguishable from "the root is
+ * cwd" and reject the hoisted-subpackage layout the walk exists to support.
+ */
+function outsideRepoMessage(deps: CliDeps): string | undefined {
+  const selfPath = deps.selfPath ?? fileURLToPath(import.meta.url);
+  const repoRoot = findGitRoot(deps.cwd);
+  if (repoRoot === undefined || isWithinRepo(repoRoot, selfPath)) {
+    return undefined;
+  }
+  return (
+    `guardrails: resolved from ${selfPath}, which is outside ` +
+    `${repoRoot}. Install guardrails-core in this repository ` +
+    `(npm install) rather than relying on a parent directory's ` +
+    `node_modules.\n`
+  );
+}
+
 export async function runCommand(
   command: string | undefined,
   rest: string[],
   deps: CliDeps,
 ): Promise<number> {
+  const outside = outsideRepoMessage(deps);
+  if (outside !== undefined) {
+    deps.stderr(outside);
+    return 1;
+  }
   switch (command) {
     case 'verify': {
       return verifyCommand(deps);
