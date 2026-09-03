@@ -22,6 +22,7 @@ import type {
 } from '@anthropic-ai/claude-agent-sdk';
 
 import type { GateDecision } from './gate-decision.js';
+import { upwardFrom } from './path-walk.js';
 
 /** Our normalized (camelCase) view of the fields we read from the payload. */
 export interface HookInput {
@@ -275,9 +276,27 @@ export function formatCopilotStopOutput(
  * wrapper (`./mvnw` / `./gradlew`, e.g. `pmd:check`, `-Dtest=ArchitectureTest`)
  * so the tool versions are pinned by the build, which is exactly why the
  * reviewer's instinct is right: for Java we lean on the build tool, not a bin.
+ *
+ * The lookup walks UP from `repoRoot`, because npm hoisting leaves a
+ * subpackage with no `node_modules` of its own — before that, eslint and tsc
+ * fell through to PATH there and ran an unpinned version. It stops at the
+ * repository root: no `.git` anywhere above means no bound to apply, which
+ * degrades to a full walk rather than to a failure.
  */
 export function resolveLocalBin(repoRoot: string, tool: string): string {
   const suffix = process.platform === 'win32' ? '.cmd' : '';
-  const local = path.join(repoRoot, 'node_modules', '.bin', `${tool}${suffix}`);
-  return existsSync(local) ? local : tool;
+  const name = `${tool}${suffix}`;
+  for (const directory of upwardFrom(repoRoot)) {
+    const candidate = path.join(directory, 'node_modules', '.bin', name);
+    if (existsSync(candidate)) {
+      return candidate;
+    }
+    // Inclusive bound: this directory's node_modules was just checked, and a
+    // bin ABOVE the repository is not the version this repo pinned. Running it
+    // would silently change what counts as a violation.
+    if (existsSync(path.join(directory, '.git'))) {
+      break;
+    }
+  }
+  return tool;
 }
