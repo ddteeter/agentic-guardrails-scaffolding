@@ -235,6 +235,17 @@ const MODEL_FOR = {
   haiku: cfg.copilotFastModel,
   sonnet: cfg.copilotThoroughModel,
 };
+// Codex, by contrast, IS pinned — the tradeoff runs the other way here. OpenAI
+// publishes a stable, enumerated, account-agnostic model-id list (no per-account
+// drift like Copilot's), and Codex honors `model`/`model_reasoning_effort` from
+// agent TOML on every surface, so a pin actually takes effect — where Copilot's
+// is ignored by the CLI and not honored by the cloud agent. Pinning buys the
+// fast-tier cost saving the Copilot channel has to forgo, and holds the thorough
+// tier at a genuinely higher reasoning budget instead of whatever the session
+// happens to be running. The cost is hardcoded third-party ids: re-check them
+// when bumping the Codex CLI, the same obligation as the rule-ids in
+// loose-rules.ts/audit.ts (see CLAUDE.md's "Upgrading leveraged tools").
+// templates.test.ts asserts the generated TOML still carries both lines per tier.
 const CODEX_SHAPE_FOR = {
   haiku: { model: 'gpt-5.6-luna', reasoning: 'low' },
   sonnet: { model: 'gpt-5.6-terra', reasoning: 'high' },
