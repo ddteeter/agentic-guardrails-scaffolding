@@ -97,9 +97,8 @@ describe('consumer templates', () => {
   it('resolves guardrails-core through package resolution, never a repo-local path', () => {
     // A template that pointed at this repo's own layout would break in every
     // consumer. The hook commands must resolve the guardrails-core package
-    // through Node's module resolution (either by name via `-e "import(...)"`,
-    // or through any path-based form from a previous upgrade), never this
-    // repository's own source directory.
+    // through Node's module resolution, by name via `-e "import(...)"`, never
+    // this repository's own source directory.
     const hooks = readFileSync(
       path.join(templates, 'claude', 'settings.hooks.json'),
       'utf8',
