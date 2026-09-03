@@ -12,8 +12,19 @@
  */
 import { isRecord } from './record.js';
 
-/** Identifies a guardrails-owned hook entry, wherever it nests inside one. */
-const GUARDRAILS_HOOK_MARKER = "import('guardrails-core/cli')";
+/**
+ * Markers that identify guardrails-owned hook entries, wherever they nest
+ * inside one. The command form has changed once (old path-based form to new
+ * package-name form); entries from each form are owned by guardrails and must
+ * be replaced on merge, not kept as "foreign" entries beside the new form.
+ * This list exists because the command form changed once and consumers upgrade
+ * across that change: a consumer with old-form entries must see them replaced
+ * by the new form, not duplicated.
+ */
+const GUARDRAILS_HOOK_MARKERS = [
+  "import('guardrails-core/cli')", // current form (package resolution)
+  'guardrails-core/dist/cli.mjs', // legacy form (path-based)
+] as const;
 
 /** The desired shape of the template's hooks block, trusted as-authored: it
  * ships with guardrails-core itself and is never consumer-supplied, so unlike
@@ -54,7 +65,10 @@ export function parseConsumerJson(text: string): ParsedJson {
  * still correctly drops a stale guardrails entry of any past template version.
  */
 function isGuardrailsEntry(entry: unknown): boolean {
-  return JSON.stringify(entry).includes(GUARDRAILS_HOOK_MARKER);
+  const serialized = JSON.stringify(entry);
+  return GUARDRAILS_HOOK_MARKERS.some((marker) =>
+    serialized.includes(marker),
+  );
 }
 
 /** One hook event: keep every consumer entry that is not ours, then append
