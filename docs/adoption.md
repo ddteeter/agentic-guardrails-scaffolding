@@ -30,9 +30,14 @@ Installing the tarball does not wire anything up. `guardrails init` does that.
 ## `init --plan`, then `init --apply`
 
 ```bash
-npx guardrails init --plan   # print what would be written; touches nothing
-npx guardrails init --apply  # write it
+node ./node_modules/guardrails-core/dist/cli.mjs init --plan   # print what would be written; touches nothing
+node ./node_modules/guardrails-core/dist/cli.mjs init --apply  # write it
 ```
+
+Invoked by path rather than `npx guardrails`: npx resolves a bin NAME, and
+`guardrails` is a package on the public registry that this project does not own.
+On a broken or missing install, npx fetches and runs that one. The path form can
+only ever run what you installed.
 
 There is no interactive mode and no TTY probe: a non-TTY invocation of `init`
 (no `--apply`) behaves identically to `--plan`. `--apply` is the only way past
@@ -125,7 +130,7 @@ adopter never wrote, which is worse than no gate at all: it trains the habit
 of ignoring the gate.
 
 ```bash
-npx guardrails verify
+node ./node_modules/guardrails-core/dist/cli.mjs verify
 ```
 
 Fix (or explicitly turn off, via `analyzers`) whatever it reports before
@@ -195,7 +200,7 @@ catches that edit for you.
 
 ## Re-running `init` after an upgrade
 
-Bump the tarball URL, run `npx guardrails init --plan` again. Each line is one
+Bump the tarball URL, run `node ./node_modules/guardrails-core/dist/cli.mjs init --plan` again. Each line is one
 of:
 
 ```

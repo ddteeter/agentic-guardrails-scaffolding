@@ -20,7 +20,7 @@ documented but its live proof is deferred (§5).
 
 - `npm install` in the repo root (the `prepare` script builds
   `guardrails-core/dist/cli.mjs`, which every hook below shells out to). If any
-  hook errors with a missing `cli.mjs`, run `npm run build`.
+  hook errors with `ERR_MODULE_NOT_FOUND` for `guardrails-core`, run `npm run build`.
 - Confirm the `.claude/` wiring is present and current — `.claude/settings.json`
   (`PostToolUse` → `autofix`, `Stop` → `gate --mode=stop`) and
   `.claude/agents/guardrail-fixer.md` / `guardrail-fixer-thorough.md`. These are

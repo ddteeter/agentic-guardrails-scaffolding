@@ -40,9 +40,11 @@ Installing the package does not wire anything up by itself — run
 `guardrails init` to do that:
 
 ```bash
-npx guardrails init --plan   # see what it would write; nothing touches disk
-npx guardrails init --apply  # write it
+node ./node_modules/guardrails-core/dist/cli.mjs init --plan   # see what it would write; nothing touches disk
+node ./node_modules/guardrails-core/dist/cli.mjs init --apply  # write it
 ```
+
+(Invoked by path, not `npx` — see `docs/adoption.md` for why.)
 
 `init` is re-runnable: on a fresh repo it creates the Claude, Codex, and Copilot
 fixer agents, `.githooks/pre-commit`, host hook configuration, and a seeded
