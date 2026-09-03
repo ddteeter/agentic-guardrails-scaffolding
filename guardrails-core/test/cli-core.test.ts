@@ -1086,6 +1086,22 @@ describe('cli-core final hardening', () => {
     expect(errors.join('')).toContain('commit and CI gates remain active');
   });
 
+  it('does not warn about a release when the stop still blocks', async () => {
+    await runCommand(
+      'gate',
+      ['--mode=stop'],
+      deps({
+        exec: failingVerifyExec(),
+        readStdin: () =>
+          Promise.resolve(
+            JSON.stringify({ cwd: root, session_id: 'blocking-session' }),
+          ),
+      }),
+    );
+    expect(out.join('')).toContain('"decision"');
+    expect(errors.join('')).not.toContain('releasing Stop retry');
+  });
+
   it('prints each added suppression found by the commit gate', async () => {
     // Kills the findings-loop block removal: the gate would block with no
     // explanation of WHICH suppression tripped it. `enforcement: 'block'`

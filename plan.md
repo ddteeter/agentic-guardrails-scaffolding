@@ -336,6 +336,29 @@ reads outside `repoRoot`). One remains:
   "broaden the root-anchored gitignore" follow-up (Phase C piece 2 findings). TDD
   a `resolveRepoRoot(exec, cwd)` seam with a fake exec.
 
+- **`Stryker disable next-line` silently misses a prettier-wrapped statement —
+  found on PR #19, fixed there by removing the need for it; the drift-guard is
+  still open.** Stryker matches a disable comment by **(mutator, line number)**,
+  so `// Stryker disable next-line ConditionalExpression` above a statement that
+  prettier has wrapped onto two lines lands on the first line — often a bare
+  `const files =` with no mutants at all — while the mutated expression sits on
+  the next line, unsuppressed. `cli-core.ts` carried exactly this: an
+  eight-line, carefully argued equivalence note whose annotation had not been
+  in effect since the statement was wrapped. It fails **quietly in the worst
+  direction**: the recorded argument reads as active to every subsequent
+  reviewer, while the gate reports the mutant as a live survivor that looks like
+  new debt. The PR-#19 instance was resolved without a suppression at all — the
+  duplicated `filePaths ?? filePath` shape was extracted into a tested
+  `hookFilePaths()` seam, which makes the `[]`-vs-`[undefined]` distinction
+  observable and the mutants genuinely killable — but the trap remains for the
+  other ~25 `disable next-line` sites. **Fix direction:** extend the drift-guard
+  (`test/drift/registry.test.ts`) to parse every `// Stryker disable next-line
+<mutators>` in `src/` and assert the following line actually carries a mutant
+  of each named mutator in the current report; a suppression that matches
+  nothing is either misaligned or stale, and both should fail the build. Same
+  class as the generated-`.claude/agents` trap: a formatter rewriting code that
+  another tool keys on by line.
+
 - **Diff-auditor was mention-blind, not suppression-blind — resolved in Phase
   B.** Dogfooding the auditor against its own diff (see `guardrails-
 core/src/audit.ts`) surfaced that it was a context-free text scan: it flagged

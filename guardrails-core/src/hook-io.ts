@@ -40,15 +40,31 @@ export interface HookInput {
  * destination is written, so both must pass the fixer's manifest scope. */
 export function parseApplyPatchFilePaths(command: string): string[] {
   const paths: string[] = [];
-  const header =
-    /^\*\*\* (?:Add File|Delete File|Update File|Move to): (.+)$/gm;
-  for (const match of command.matchAll(header)) {
-    const candidate = match[1]?.trim();
-    if (candidate !== undefined && !paths.includes(candidate)) {
+  // The `^` anchor is load-bearing: patch BODY lines are prefixed (`+`/`-`), so
+  // anchoring is what stops patch content that merely looks like a header from
+  // smuggling an extra path past the fixer's manifest scope. No `$` anchor —
+  // `.` never matches a newline, so the greedy `(.+)` already stops at the end
+  // of the line and a `$` would be an untestable no-op.
+  const header = /^\*\*\* (?:Add File|Delete File|Update File|Move to): (.+)/gm;
+  // Destructured with a default rather than `match[1]?.` — group 1 always
+  // participates in a successful match, so an optional access here would be
+  // unreachable defence that no test can distinguish.
+  for (const [, captured = ''] of command.matchAll(header)) {
+    const candidate = captured.trim();
+    if (candidate !== '' && !paths.includes(candidate)) {
       paths.push(candidate);
     }
   }
   return paths;
+}
+
+/** The files a hook payload names: Codex's multi-path `apply_patch` list when
+ * present, else the single-path field, else nothing. A copy, so a caller cannot
+ * reach back through it into the payload. */
+export function hookFilePaths(input: HookInput): string[] {
+  const paths =
+    input.filePaths ?? (input.filePath === undefined ? [] : [input.filePath]);
+  return [...paths];
 }
 
 /** The raw payload fields we read, typed against the SDK schema. */

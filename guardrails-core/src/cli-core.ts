@@ -28,6 +28,7 @@ import {
   formatCopilotStopOutput,
   formatPreToolUseDeny,
   formatStopHookOutput,
+  hookFilePaths,
   parseHookInput,
   resolveLocalBin,
 } from './hook-io.js';
@@ -121,25 +122,16 @@ async function verifyCommand(deps: CliDeps): Promise<number> {
 async function autofixCommand(deps: CliDeps): Promise<number> {
   const input = parseHookInput(await deps.readStdin());
   const repoRoot = input.cwd ?? deps.cwd;
-  // Equivalent mutant (`true`): with no file path, the mutated branch calls
-  // runAutofix with `[undefined]`, whose own `isTypeScriptFile` filter rejects
-  // it (`/\.tsx?$/.test(undefined)` coerces to the string "undefined" and is
-  // false), so the file list is empty and eslint is never spawned — identical
-  // observable behavior through the only seam this function has. The guard is
-  // redundant with that filter, and every reshaping of it leaves one equivalent
-  // mutant: `[x].filter(...)` and the ternary form each move the equivalence
-  // from the `true` variant to the `false` one rather than removing it.
-  // Stryker disable next-line ConditionalExpression
-  const files =
-    input.filePaths ?? (input.filePath === undefined ? [] : [input.filePath]);
-  if (files.length > 0) {
-    await runAutofix({
-      repoRoot,
-      files: [...files],
-      exec: deps.exec,
-      resolveBin: binResolver(repoRoot),
-    });
-  }
+  // No empty-list guard here: runAutofix filters to TypeScript files and returns
+  // before spawning eslint when nothing is left, so a guard would only add a
+  // branch whose two sides are indistinguishable through this function's one
+  // seam. `hookFilePaths` carries the file-shape logic and is tested directly.
+  await runAutofix({
+    repoRoot,
+    files: hookFilePaths(input),
+    exec: deps.exec,
+    resolveBin: binResolver(repoRoot),
+  });
   return 0;
 }
 
@@ -428,9 +420,10 @@ async function scopeCheckCommand(
     );
     return;
   }
-  const filePaths =
-    input.filePaths ?? (input.filePath === undefined ? [] : [input.filePath]);
-  if (filePaths.length === 0) return;
+  // No empty-list guard: both branches below reduce to "no path violates the
+  // scope" over an empty list, so an early return would only add a branch that
+  // no test can distinguish.
+  const filePaths = hookFilePaths(input);
   // Read: the fixer may read anything WITHIN the repo (manifest, edited files,
   // even node_modules rule sources — that in-repo exploration is how the
   // thorough tier diagnoses subtle rules), but nothing OUTSIDE it (e.g. the

@@ -11,10 +11,12 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import type { GateDecision } from '../src/gate-decision.js';
+import type { HookInput } from '../src/hook-io.js';
 import {
   formatCopilotStopOutput,
   formatPreToolUseDeny,
   formatStopHookOutput,
+  hookFilePaths,
   parseApplyPatchFilePaths,
   parseHookInput,
   resolveLocalBin,
@@ -180,6 +182,85 @@ describe('parseHookInput', () => {
         '*** Update File: src/a.ts\n+line\n*** Update File: src/a.ts',
       ),
     ).toEqual(['src/a.ts']);
+  });
+
+  // The `^` anchor is the scope-lock's defence against a patch BODY line that
+  // merely looks like a header: added content is prefixed (`+`), so an attacker
+  // controlling patch text cannot smuggle an extra path past the manifest.
+  it('ignores an apply_patch header that is not at the start of a line', () => {
+    expect(
+      parseApplyPatchFilePaths(
+        '*** Update File: src/a.ts\n+*** Add File: src/injected.ts',
+      ),
+    ).toEqual(['src/a.ts']);
+  });
+
+  it('trims surrounding whitespace off an apply_patch path', () => {
+    expect(parseApplyPatchFilePaths('*** Add File:   src/a.ts  ')).toEqual([
+      'src/a.ts',
+    ]);
+  });
+
+  it('ignores an apply_patch header whose path is only whitespace', () => {
+    expect(parseApplyPatchFilePaths('*** Add File:    ')).toEqual([]);
+  });
+
+  it('leaves filePaths unset for an apply_patch payload with no command', () => {
+    const parsed = parseHookInput(JSON.stringify({ tool_name: 'apply_patch' }));
+    expect(parsed.toolName).toBe('apply_patch');
+    expect(parsed.filePaths).toBeUndefined();
+  });
+
+  it('leaves filePaths unset when an apply_patch command names no file', () => {
+    const parsed = parseHookInput(
+      JSON.stringify({
+        tool_name: 'apply_patch',
+        tool_input: { command: '*** Begin Patch\n*** End Patch' },
+      }),
+    );
+    expect(parsed.filePaths).toBeUndefined();
+  });
+
+  // Only apply_patch payloads get the header treatment: a shell command whose
+  // heredoc body happens to contain a header line must not widen scope.
+  it("does not read apply_patch headers out of another tool's command", () => {
+    const parsed = parseHookInput(
+      JSON.stringify({
+        tool_name: 'Bash',
+        tool_input: {
+          command: "cat <<'EOF'\n*** Add File: src/injected.ts\nEOF",
+        },
+      }),
+    );
+    expect(parsed.command).toContain('*** Add File');
+    expect(parsed.filePaths).toBeUndefined();
+  });
+});
+
+describe('hookFilePaths', () => {
+  it('returns an empty list when the payload names no file', () => {
+    expect(hookFilePaths({})).toEqual([]);
+  });
+
+  it('returns the single edited path when only filePath is set', () => {
+    expect(hookFilePaths({ filePath: '/repo/src/a.ts' })).toEqual([
+      '/repo/src/a.ts',
+    ]);
+  });
+
+  it('prefers the multi-path list over the single path', () => {
+    expect(
+      hookFilePaths({
+        filePath: '/repo/src/a.ts',
+        filePaths: ['/repo/src/b.ts'],
+      }),
+    ).toEqual(['/repo/src/b.ts']);
+  });
+
+  it('returns a copy the caller cannot use to mutate the payload', () => {
+    const input: HookInput = { filePaths: ['/repo/src/a.ts'] };
+    hookFilePaths(input).push('/repo/src/b.ts');
+    expect(input.filePaths).toEqual(['/repo/src/a.ts']);
   });
 });
 
