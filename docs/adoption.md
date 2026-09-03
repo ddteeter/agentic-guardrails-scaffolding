@@ -30,9 +30,16 @@ Installing the tarball does not wire anything up. `guardrails init` does that.
 ## `init --plan`, then `init --apply`
 
 ```bash
-npx guardrails init --plan   # print what would be written; touches nothing
-npx guardrails init --apply  # write it
+node ./node_modules/guardrails-core/dist/cli.mjs init --plan   # print what would be written; touches nothing
+node ./node_modules/guardrails-core/dist/cli.mjs init --apply  # write it
 ```
+
+Invoked by path rather than `npx guardrails-core`. npx resolves a bin NAME and
+falls through to the registry when nothing local provides it, so the bin is
+named after the package: a miss can only ever fetch this package, never someone
+else's. (It was `guardrails` until the rename — a real, unrelated package sits
+under that name.) A miss can still fetch a different VERSION than you installed,
+which is why the path form is the one documented here and the one CI uses.
 
 There is no interactive mode and no TTY probe: a non-TTY invocation of `init`
 (no `--apply`) behaves identically to `--plan`. `--apply` is the only way past
@@ -125,7 +132,7 @@ adopter never wrote, which is worse than no gate at all: it trains the habit
 of ignoring the gate.
 
 ```bash
-npx guardrails verify
+node ./node_modules/guardrails-core/dist/cli.mjs verify
 ```
 
 Fix (or explicitly turn off, via `analyzers`) whatever it reports before
@@ -195,7 +202,7 @@ catches that edit for you.
 
 ## Re-running `init` after an upgrade
 
-Bump the tarball URL, run `npx guardrails init --plan` again. Each line is one
+Bump the tarball URL, run `node ./node_modules/guardrails-core/dist/cli.mjs init --plan` again. Each line is one
 of:
 
 ```

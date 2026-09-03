@@ -1,7 +1,11 @@
-import { describe, expect, it } from 'vitest';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import type { Exec, ExecResult } from '../src/exec.js';
-import { resolveRepoRoot } from '../src/repo-root.js';
+import { findGitRoot, resolveRepoRoot } from '../src/repo-root.js';
 
 const ok = (stdout: string): ExecResult => ({ stdout, stderr: '', code: 0 });
 
@@ -32,19 +36,21 @@ function recordingExec(result: ExecResult): {
 describe('resolveRepoRoot', () => {
   it('returns the git toplevel, not the working directory', async () => {
     const exec = constantExec(ok('/repo\n'));
-    await expect(resolveRepoRoot(exec, '/repo/packages/api')).resolves.toBe(
-      '/repo',
-    );
+    await expect(
+      resolveRepoRoot(exec, '/repo/packages/api', () => false),
+    ).resolves.toBe('/repo');
   });
 
   it('trims trailing whitespace from git output', async () => {
     const exec = constantExec(ok('/repo\n\n'));
-    await expect(resolveRepoRoot(exec, '/repo')).resolves.toBe('/repo');
+    await expect(resolveRepoRoot(exec, '/repo', () => false)).resolves.toBe(
+      '/repo',
+    );
   });
 
   it('asks git from the given working directory', async () => {
     const { exec, calls } = recordingExec(ok('/repo'));
-    await resolveRepoRoot(exec, '/repo/sub');
+    await resolveRepoRoot(exec, '/repo/sub', () => false);
     expect(calls).toEqual([
       {
         command: 'git',
@@ -62,9 +68,9 @@ describe('resolveRepoRoot', () => {
       stderr: 'not a git repository',
       code: 128,
     });
-    await expect(resolveRepoRoot(exec, '/somewhere')).resolves.toBe(
-      '/somewhere',
-    );
+    await expect(
+      resolveRepoRoot(exec, '/somewhere', () => false),
+    ).resolves.toBe('/somewhere');
   });
 
   it('falls back to the working directory when git cannot be started', async () => {
@@ -74,16 +80,16 @@ describe('resolveRepoRoot', () => {
       code: 1,
       spawnFailed: true,
     });
-    await expect(resolveRepoRoot(exec, '/somewhere')).resolves.toBe(
-      '/somewhere',
-    );
+    await expect(
+      resolveRepoRoot(exec, '/somewhere', () => false),
+    ).resolves.toBe('/somewhere');
   });
 
   it('falls back when git exits zero but prints nothing', async () => {
     const exec = constantExec(ok('   \n'));
-    await expect(resolveRepoRoot(exec, '/somewhere')).resolves.toBe(
-      '/somewhere',
-    );
+    await expect(
+      resolveRepoRoot(exec, '/somewhere', () => false),
+    ).resolves.toBe('/somewhere');
   });
 
   it('falls back on a non-zero exit even when git printed something', async () => {
@@ -97,9 +103,9 @@ describe('resolveRepoRoot', () => {
       stderr: 'not a git repository',
       code: 128,
     });
-    await expect(resolveRepoRoot(exec, '/somewhere')).resolves.toBe(
-      '/somewhere',
-    );
+    await expect(
+      resolveRepoRoot(exec, '/somewhere', () => false),
+    ).resolves.toBe('/somewhere');
   });
 
   it('falls back when spawnFailed is set even if the exit code reads as zero', async () => {
@@ -112,8 +118,61 @@ describe('resolveRepoRoot', () => {
       code: 0,
       spawnFailed: true,
     });
-    await expect(resolveRepoRoot(exec, '/somewhere')).resolves.toBe(
-      '/somewhere',
+    await expect(
+      resolveRepoRoot(exec, '/somewhere', () => false),
+    ).resolves.toBe('/somewhere');
+  });
+
+  it('does not spawn git when a .git is found by walking up', async () => {
+    const { exec, calls } = recordingExec(ok('/should-not-be-asked'));
+    await expect(
+      resolveRepoRoot(
+        exec,
+        '/repo/packages/api',
+        (candidate) => candidate === path.join(path.resolve('/repo'), '.git'),
+      ),
+    ).resolves.toBe(path.resolve('/repo'));
+    expect(calls).toEqual([]);
+  });
+});
+
+describe('findGitRoot', () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(path.join(tmpdir(), 'guardrails-root-'));
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('walks up to a .git directory', () => {
+    mkdirSync(path.join(root, '.git'));
+    const deep = path.join(root, 'packages', 'web', 'src');
+    mkdirSync(deep, { recursive: true });
+    expect(findGitRoot(deep)).toBe(root);
+  });
+
+  it('treats a .git FILE as the root, which is how linked worktrees look', () => {
+    // `git worktree add` writes a FILE containing `gitdir: <path>`, not a
+    // directory. An existsSync check covers both; a statSync().isDirectory()
+    // check would silently skip every worktree.
+    writeFileSync(
+      path.join(root, '.git'),
+      'gitdir: /elsewhere/.git/worktrees/x',
     );
+    expect(findGitRoot(root)).toBe(root);
+  });
+
+  it('returns undefined when no .git is found anywhere above', () => {
+    expect(findGitRoot(root, () => false)).toBeUndefined();
+  });
+
+  it('stops at the nearest .git, not the outermost', () => {
+    mkdirSync(path.join(root, '.git'));
+    const nested = path.join(root, 'vendor', 'library');
+    mkdirSync(path.join(nested, '.git'), { recursive: true });
+    expect(findGitRoot(nested)).toBe(nested);
   });
 });

@@ -86,6 +86,29 @@ for (const relative of [
   }
 }
 
+// 4b. The subpath every generated hook command imports. `files` and the
+//     templates checks above prove the BYTES shipped; this proves the
+//     `exports` map actually publishes them under the name hooks use.
+//     Resolved, never imported: importing cli.mjs would run the CLI, which
+//     reads stdin and would hang here.
+const resolveProbe = spawnSync(
+  process.execPath,
+  [
+    '-e',
+    "const { createRequire } = require('node:module');" +
+      "console.log(createRequire(process.cwd() + '/probe.cjs')" +
+      ".resolve('guardrails-core/cli'));",
+  ],
+  { cwd: fixture, encoding: 'utf8' },
+);
+if (resolveProbe.status !== 0 || !resolveProbe.stdout.includes('cli.mjs')) {
+  fail(
+    'the packed package does not publish `guardrails-core/cli` — every ' +
+      'generated hook command imports that subpath:\n' +
+      `${resolveProbe.stdout}${resolveProbe.stderr}`,
+  );
+}
+
 // 5. `guardrails init --plan` exercises far more of the install path than the
 //    usage banner does: template resolution from INSIDE the installed
 //    package (`packageRoot()` must find `templates/` and `guidance/` under
@@ -95,7 +118,7 @@ for (const relative of [
 //    `cwd` — that is a legitimate path (spec-sanctioned degrade, not a bug),
 //    and `init --plan` must still produce a plan rather than crash.
 const plan = run(
-  path.join(fixture, 'node_modules', '.bin', 'guardrails'),
+  path.join(fixture, 'node_modules', '.bin', 'guardrails-core'),
   ['init', '--plan'],
   fixture,
 );
@@ -173,7 +196,12 @@ writeFileSync(
   path.join(sourceDirectory, 'main.ts'),
   'const answer: string = 42;\nconsole.log(answer);\n',
 );
-const guardrails = path.join(fixture, 'node_modules', '.bin', 'guardrails');
+const guardrails = path.join(
+  fixture,
+  'node_modules',
+  '.bin',
+  'guardrails-core',
+);
 run(
   guardrails,
   [

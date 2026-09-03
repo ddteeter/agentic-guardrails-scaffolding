@@ -17,7 +17,7 @@ install): `.claude/settings.json` carries the Stop / PostToolUse / SessionStart 
 SessionEnd hooks, and `.claude/agents/` holds the two fixer subagents. They load
 automatically at the start of a fresh Claude Code session — no marketplace step.
 Confirm with `/hooks` that `Stop` is bound to
-`node ".../guardrails-core/dist/cli.mjs" gate --mode=stop`.
+`node -e "import('guardrails-core/cli')" guardrails gate --mode=stop`.
 
 For Codex CLI, the equivalent live wiring is `.codex/hooks.json`, with custom
 fixers in `.codex/agents/` and shared guidance in `AGENTS.md`. Start a fresh

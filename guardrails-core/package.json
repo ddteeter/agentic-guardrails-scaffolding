@@ -8,13 +8,14 @@
     "node": ">=24.0.0"
   },
   "bin": {
-    "guardrails": "./dist/cli.mjs"
+    "guardrails-core": "./dist/cli.mjs"
   },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.mjs"
-    }
+    },
+    "./cli": "./dist/cli.mjs"
   },
   "files": [
     "dist",

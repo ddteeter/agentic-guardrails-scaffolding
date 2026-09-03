@@ -39,10 +39,11 @@ milestone exists to collect.
 ## Setup
 
 The Stop hook runs
-`node "$CLAUDE_PROJECT_DIR/node_modules/guardrails-core/dist/cli.mjs"`. `dist/`
+`node -e "import('guardrails-core/cli')" guardrails gate --mode=stop`, which
+resolves `guardrails-core` through Node's own upward `node_modules` walk. `dist/`
 is gitignored, so a fresh worktree needs a build — `npm install` does it (the
-`prepare` script builds after install). If the Stop hook ever errors with a
-missing `cli.mjs`, run `npm run build`.
+`prepare` script builds after install). If a hook errors with
+`ERR_MODULE_NOT_FOUND` for `guardrails-core`, run `npm run build`.
 
 **Kill-switch:** if the loop bricks development, comment out the `Stop` (and/or
 `PostToolUse`) entry in `.claude/settings.json`. Husky pre-push + CI remain the

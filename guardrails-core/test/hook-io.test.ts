@@ -390,4 +390,58 @@ describe('resolveLocalBin', () => {
       });
     }
   });
+
+  it('finds the bin in an ancestor when the package has no node_modules', () => {
+    // npm hoisting: deps live at the monorepo root and packages/web has no
+    // node_modules of its own. Before the walk, this fell through to PATH and
+    // ran whatever eslint the machine had.
+    const binDirectory = path.join(root, 'node_modules', '.bin');
+    mkdirSync(binDirectory, { recursive: true });
+    const eslint = path.join(binDirectory, 'eslint');
+    writeFileSync(eslint, '#!/usr/bin/env node\n');
+    chmodSync(eslint, 0o755);
+    mkdirSync(path.join(root, '.git'));
+    const package_ = path.join(root, 'packages', 'web');
+    mkdirSync(package_, { recursive: true });
+
+    expect(resolveLocalBin(package_, 'eslint')).toBe(eslint);
+  });
+
+  it('prefers the nearest bin over an ancestor copy', () => {
+    const outer = path.join(root, 'node_modules', '.bin');
+    mkdirSync(outer, { recursive: true });
+    writeFileSync(path.join(outer, 'eslint'), '');
+    mkdirSync(path.join(root, '.git'));
+    const package_ = path.join(root, 'packages', 'web');
+    const inner = path.join(package_, 'node_modules', '.bin');
+    mkdirSync(inner, { recursive: true });
+    const nearest = path.join(inner, 'eslint');
+    writeFileSync(nearest, '');
+
+    expect(resolveLocalBin(package_, 'eslint')).toBe(nearest);
+  });
+
+  it('stops at the repo root instead of taking an ancestor toolchain', () => {
+    // The bound. A bin above the repo is not this repo's pinned version, and
+    // silently running it would change what counts as a violation.
+    const outside = path.join(root, 'node_modules', '.bin');
+    mkdirSync(outside, { recursive: true });
+    writeFileSync(path.join(outside, 'eslint'), '');
+    const repo = path.join(root, 'repo');
+    mkdirSync(path.join(repo, '.git'), { recursive: true });
+
+    expect(resolveLocalBin(repo, 'eslint')).toBe('eslint');
+  });
+
+  it('still finds a bin at the repo root itself', () => {
+    // The boundary is inclusive: the repo root's own node_modules is in scope.
+    const repo = path.join(root, 'repo');
+    mkdirSync(path.join(repo, '.git'), { recursive: true });
+    const binDirectory = path.join(repo, 'node_modules', '.bin');
+    mkdirSync(binDirectory, { recursive: true });
+    const eslint = path.join(binDirectory, 'eslint');
+    writeFileSync(eslint, '');
+
+    expect(resolveLocalBin(repo, 'eslint')).toBe(eslint);
+  });
 });

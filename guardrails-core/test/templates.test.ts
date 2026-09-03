@@ -94,14 +94,16 @@ describe('consumer templates', () => {
     expect(hooks).toContain('scope-check');
   });
 
-  it('references guardrails-core through node_modules, never a repo-local path', () => {
+  it('resolves guardrails-core through package resolution, never a repo-local path', () => {
     // A template that pointed at this repo's own layout would break in every
-    // consumer. The hook commands must resolve through the installed package.
+    // consumer. The hook commands must resolve the guardrails-core package
+    // through Node's module resolution, by name via `-e "import(...)"`, never
+    // this repository's own source directory.
     const hooks = readFileSync(
       path.join(templates, 'claude', 'settings.hooks.json'),
       'utf8',
     );
-    expect(hooks).toContain('node_modules/guardrails-core/dist/cli.mjs');
+    expect(hooks).toContain("import('guardrails-core/cli')");
     expect(hooks).not.toContain('guardrails-core/src');
   });
 
@@ -136,10 +138,11 @@ describe('consumer templates', () => {
   });
 
   it('invokes the CLI by local path, never through npx', () => {
-    // `npx guardrails` resolves a BIN NAME. On a misconfigured install --
-    // hoisting gone wrong, a partial `npm ci` -- npx falls through to fetching
-    // a registry package called `guardrails`, which this project does not own.
-    // This repo's own ci.yml uses the explicit path for exactly that reason.
+    // npx resolves a BIN NAME and falls through to the registry when nothing
+    // local provides it. The bin is named after the package, so a miss lands on
+    // this package -- but it can still fetch a different VERSION than `npm ci`
+    // installed. CI must run exactly what it installed, so it uses the path
+    // form, as this repo's own ci.yml does.
     const workflow = readFileSync(
       path.join(templates, 'workflows', 'guardrails.yml'),
       'utf8',
@@ -151,7 +154,7 @@ describe('consumer templates', () => {
       'node ./node_modules/guardrails-core/dist/cli.mjs sanctions-check',
     );
     // Matched against the `run:` STEPS, not the file text: the template's own
-    // comment names `npx guardrails` in order to explain why it is not used.
+    // comment names `npx guardrails-core` in order to explain why it is not used.
     expect(workflow).not.toMatch(/^ *- run: npx\b/m);
   });
 
