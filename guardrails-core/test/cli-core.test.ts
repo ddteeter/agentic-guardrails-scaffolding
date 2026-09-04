@@ -785,6 +785,73 @@ describe('scope-check trigger conditions', () => {
     expect(await runScopeCheck(scopeStdin('Read', OUTSIDE_PATH))).toBe('');
   });
 
+  it('does not confine a sibling subagent while a fixer is active', async () => {
+    // The reported problem: fanning out parallel subagents during a fix
+    // confined all of them, because the lock could only see a session id that
+    // every agent in the session shares.
+    writeActiveViolations('default', [violation('src/a.ts')]);
+    const stdin = JSON.stringify({
+      cwd: root,
+      tool_name: 'Edit',
+      tool_input: { file_path: path.join(root, 'src/other.ts') },
+      agent_id: 'sibling',
+      agent_type: 'general-purpose',
+    });
+    expect(await runScopeCheck(stdin)).toBe('');
+  });
+
+  it('does not confine the main thread while a fixer is active', async () => {
+    // Claude Code omits agent_id on the main thread but still reports
+    // agent_type in an --agent session, so the main agent is identified by a
+    // NON-FIXER type rather than by absence.
+    writeActiveViolations('default', [violation('src/a.ts')]);
+    const stdin = JSON.stringify({
+      cwd: root,
+      tool_name: 'Edit',
+      tool_input: { file_path: path.join(root, 'src/other.ts') },
+      agent_type: 'general-purpose',
+    });
+    expect(await runScopeCheck(stdin)).toBe('');
+  });
+
+  it('confines the fixer itself', async () => {
+    writeActiveViolations('default', [violation('src/a.ts')]);
+    const stdin = JSON.stringify({
+      cwd: root,
+      tool_name: 'Edit',
+      tool_input: { file_path: path.join(root, 'src/other.ts') },
+      agent_id: 'fixer',
+      agent_type: 'guardrail-fixer',
+    });
+    expect(await runScopeCheck(stdin)).toContain('scope-lock');
+  });
+
+  it('confines the thorough fixer too', async () => {
+    writeActiveViolations('default', [violation('src/a.ts')]);
+    const stdin = JSON.stringify({
+      cwd: root,
+      tool_name: 'Edit',
+      tool_input: { file_path: path.join(root, 'src/other.ts') },
+      agent_id: 'fixer',
+      agent_type: 'guardrail-fixer-thorough',
+    });
+    expect(await runScopeCheck(stdin)).toContain('scope-lock');
+  });
+
+  it('falls back to session scope when the host reports no identity', async () => {
+    // Codex reports no agent fields at all (openai/codex#16226), and Copilot's
+    // preToolUse reports none either. Those surfaces must not silently lose
+    // the lock -- Codex especially, which has no per-agent tool allowlist to
+    // fall back on.
+    writeActiveViolations('default', [violation('src/a.ts')]);
+    const stdin = JSON.stringify({
+      cwd: root,
+      tool_name: 'Edit',
+      tool_input: { file_path: path.join(root, 'src/other.ts') },
+    });
+    expect(await runScopeCheck(stdin)).toContain('scope-lock');
+  });
+
   it('allows an in-repo read while a fixer IS active', async () => {
     // The positive control for the pair above: in-repo exploration is how the
     // thorough tier diagnoses subtle rules, so gating the branch must not turn

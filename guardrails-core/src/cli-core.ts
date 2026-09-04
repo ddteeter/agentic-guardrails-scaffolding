@@ -31,6 +31,7 @@ import {
   formatPreToolUseDeny,
   formatStopHookOutput,
   hookFilePaths,
+  type HookInput,
   parseHookInput,
   resolveLocalBin,
 } from './hook-io.js';
@@ -424,6 +425,40 @@ function isReadTool(toolName: string | undefined): boolean {
   return toolName !== undefined && READ_TOOLS.test(toolName);
 }
 
+/**
+ * The agent types the scope-lock is FOR, as the hosts report them.
+ *
+ * Not agent-settable: the host writes these fields, so a fixer cannot rename
+ * itself out of the lock.
+ */
+const FIXER_AGENT_TYPES: ReadonlySet<string> = new Set([
+  'guardrail-fixer',
+  'guardrail-fixer-thorough',
+]);
+
+/**
+ * Should this caller be confined to the violations manifest?
+ *
+ * The manifest is keyed by SESSION, and a subagent shares its parent's session
+ * id -- so without agent identity the lock cannot tell the fixer from the main
+ * agent or from a sibling subagent fanned out in parallel, and confines all of
+ * them. Where the host reports identity, only the fixer is confined.
+ *
+ * `agentType === undefined` means the host does not report identity AT ALL, not
+ * that this is the main thread: Copilot omits it from `preToolUse` (it appears
+ * only on `subagentStart`/`subagentStop`) and Codex omits it entirely
+ * (`openai/codex#16226`). Those surfaces keep today's session-scoped lock,
+ * which is deliberately the conservative direction -- Codex has no per-agent
+ * tool allowlist, so this hook is its only enforcement. No surface ends up
+ * less protected than before; the difference is only how narrowly the lock
+ * applies.
+ */
+function isFixerCaller(input: HookInput): boolean {
+  return (
+    input.agentType === undefined || FIXER_AGENT_TYPES.has(input.agentType)
+  );
+}
+
 async function scopeCheckCommand(
   deps: CliDeps,
   dialect: Dialect,
@@ -431,11 +466,14 @@ async function scopeCheckCommand(
   const input = parseHookInput(await deps.readStdin());
   const repoRoot = input.cwd ?? deps.cwd;
   const scope = collectManifestScope(stateDirectory(repoRoot), input.sessionId);
+  // Every branch below is a FIXER lock, so a caller the host tells us is not
+  // the fixer is left alone entirely.
+  const confined = scope.active && isFixerCaller(input);
   // Codex custom agents do not expose a per-agent tool allowlist. While a
   // fixer manifest is active, the repo-level hook therefore enforces the same
   // no-shell/no-MCP boundary that Claude and Copilot express declaratively.
   if (
-    scope.active &&
+    confined &&
     (SHELL_TOOLS.test(input.toolName ?? '') ||
       (input.toolName?.startsWith('mcp__') ?? false))
   ) {
@@ -462,7 +500,7 @@ async function scopeCheckCommand(
   // reads outside the repo as a matter of course. Ungated, this branch made the
   // read-lock permanent for every session in every repo that scaffolds
   // guardrails -- a false positive that reached the main agent, not the fixer.
-  if (scope.active && isReadTool(input.toolName)) {
+  if (confined && isReadTool(input.toolName)) {
     const outside = filePaths.find((file) => !isWithinRepo(repoRoot, file));
     if (outside !== undefined) {
       denyPreToolUse(
@@ -485,7 +523,7 @@ async function scopeCheckCommand(
   const denied = filePaths.find(
     (file) => !isPathAllowed(scope.files, repoRoot, file),
   );
-  if (scope.active && denied !== undefined) {
+  if (confined && denied !== undefined) {
     denyPreToolUse(
       deps,
       `Fixer scope-lock: ${denied} is not editable. The fixer may ` +

@@ -445,3 +445,42 @@ describe('resolveLocalBin', () => {
     expect(resolveLocalBin(repo, 'eslint')).toBe(eslint);
   });
 });
+
+describe('agent identity', () => {
+  it('reads Claude Code agent identity', () => {
+    const input = parseHookInput(
+      JSON.stringify({ agent_id: 'a1', agent_type: 'guardrail-fixer' }),
+    );
+    expect(input.agentId).toBe('a1');
+    expect(input.agentType).toBe('guardrail-fixer');
+  });
+
+  it('reads Copilot subagent identity', () => {
+    // Copilot supplies these on subagentStart/subagentStop, never on
+    // preToolUse -- the parser reads them wherever they appear.
+    const input = parseHookInput(
+      JSON.stringify({ agentId: 'a1', agentType: 'guardrail-fixer' }),
+    );
+    expect(input.agentId).toBe('a1');
+    expect(input.agentType).toBe('guardrail-fixer');
+  });
+
+  it('leaves identity absent on a main-thread payload', () => {
+    // Absence is the SIGNAL, not a default to be filled in: Claude Code omits
+    // agent_id on the main thread, and Codex omits both fields entirely. A
+    // consumer must be able to tell "no agent" from "some agent".
+    const input = parseHookInput(
+      JSON.stringify({ session_id: 's', tool_name: 'Edit' }),
+    );
+    expect(input.agentId).toBeUndefined();
+    expect(input.agentType).toBeUndefined();
+  });
+
+  it('ignores non-string agent fields', () => {
+    const input = parseHookInput(
+      JSON.stringify({ agent_id: 7, agent_type: { name: 'x' } }),
+    );
+    expect(input.agentId).toBeUndefined();
+    expect(input.agentType).toBeUndefined();
+  });
+});

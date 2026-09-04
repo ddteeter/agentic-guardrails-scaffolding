@@ -34,6 +34,25 @@ export interface HookInput {
   toolName?: string;
   command?: string;
   stopHookActive?: boolean;
+  /**
+   * The calling subagent's id, when the host reports one.
+   *
+   * ABSENCE IS THE SIGNAL: Claude Code sets this only inside a subagent, never
+   * on the main thread, and its SDK documents it as the field to use for that
+   * distinction (not `agentType`, which is also set on the main thread of an
+   * `--agent` session). Copilot's `preToolUse` and Codex carry no agent fields
+   * at all -- see `agentType`.
+   */
+  agentId?: string;
+  /**
+   * The calling agent's type name, e.g. `guardrail-fixer`.
+   *
+   * Available on Claude Code's hook events. NOT available on Copilot's
+   * `preToolUse` (only on `subagentStart`/`subagentStop`) and not available on
+   * Codex at all (`openai/codex#16226`). Consumers must therefore treat its
+   * absence as "this host cannot tell me", never as "this is not a fixer".
+   */
+  agentType?: string;
 }
 
 /** Paths named by Codex's canonical `apply_patch` envelope. Update+move
@@ -70,7 +89,10 @@ export function hookFilePaths(input: HookInput): string[] {
 
 /** The raw payload fields we read, typed against the SDK schema. */
 type RawHookPayload = Partial<
-  Pick<BaseHookInput, 'session_id' | 'cwd'> &
+  // `agent_id`/`agent_type` are picked from the SDK type rather than declared
+  // locally, so a rename upstream breaks this build instead of silently
+  // disengaging the fixer scope-lock's narrowing.
+  Pick<BaseHookInput, 'session_id' | 'cwd' | 'agent_id' | 'agent_type'> &
     Pick<PreToolUseHookInput, 'tool_name' | 'tool_input'> &
     Pick<StopHookInput, 'stop_hook_active'>
 >;
@@ -89,6 +111,9 @@ type RawHookPayload = Partial<
  */
 interface CopilotHookPayload {
   sessionId?: unknown;
+  /** Present on `subagentStop`, absent on `preToolUse` -- see `HookInput`. */
+  agentId?: unknown;
+  agentType?: unknown;
   workingDirectory?: unknown;
   toolName?: unknown;
   toolArgs?: unknown;
@@ -152,6 +177,8 @@ export function parseHookInput(stdin: string): HookInput {
   >;
   const fields: readonly [StringHookField, readonly unknown[]][] = [
     ['sessionId', [claude.session_id, copilot.sessionId]],
+    ['agentId', [claude.agent_id, copilot.agentId]],
+    ['agentType', [claude.agent_type, copilot.agentType]],
     ['cwd', [claude.cwd, copilot.workingDirectory]],
     ['toolName', [claude.tool_name, copilot.toolName]],
     ['filePath', [args.file_path, args.path]],
