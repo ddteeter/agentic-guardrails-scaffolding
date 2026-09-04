@@ -54,7 +54,7 @@ export interface InitDeps {
 }
 
 const INIT_USAGE =
-  'usage: guardrails init [--plan] [--json] [--apply] [--force] ' +
+  'usage: guardrails-core init [--plan] [--json] [--apply] [--force] ' +
   '[--analyzers=<tool>=<off|auto|required>[,...]] ' +
   '[--enforcement=warn|block] [--distribution=solo|team]\n';
 

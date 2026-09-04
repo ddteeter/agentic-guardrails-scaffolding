@@ -1357,7 +1357,7 @@ describe('analyzers that run and then fail (defect 1: exit code ignored)', () =>
     expect(failed?.message).not.toContain('stderr:');
   });
 
-  it('keeps the non-blank stderr lines, trimmed, skipping blank ones', async () => {
+  it('keeps the non-blank output lines, trimmed, skipping blank ones', async () => {
     const { exec } = fakeExec({
       'eslint --format json --no-warn-ignored src/foo.ts src/new.ts': {
         stdout: '',
@@ -1375,7 +1375,7 @@ describe('analyzers that run and then fail (defect 1: exit code ignored)', () =>
       (v) => v.ruleId === 'guardrails/analyzer-failed',
     );
     expect(failed?.message).toContain(
-      'stderr: "fatal: config file not found; some other detail"',
+      'output: "fatal: config file not found; some other detail"',
     );
     // Neither the blank lines nor the untrimmed padding leaked through.
     expect(failed?.message).not.toContain('   fatal:');
@@ -1398,10 +1398,10 @@ const eslintNoConfigStderr = [
   'From ESLint v9.0.0, the default configuration file is now eslint.config.*.',
 ].join('\n');
 
-async function failedMessage(stderr: string): Promise<string> {
+async function failedMessage(stderr: string, stdout = ''): Promise<string> {
   const { exec } = fakeExec({
     'eslint --format json --no-warn-ignored src/foo.ts src/new.ts': {
-      stdout: '',
+      stdout,
       stderr,
       code: 2,
     },
@@ -1418,7 +1418,7 @@ async function failedMessage(stderr: string): Promise<string> {
   );
 }
 
-describe('analyzer-failed stderr detail', () => {
+describe('analyzer-failed output detail', () => {
   it('surfaces the diagnosis, not just the banner', async () => {
     const message = await failedMessage(eslintNoConfigStderr);
     expect(message).toContain("couldn't find an eslint.config.* file");
@@ -1440,6 +1440,61 @@ describe('analyzer-failed stderr detail', () => {
     const message = await failedMessage('x'.repeat(5000));
     expect(message.length).toBeLessThan(1000);
     expect(message).toContain('…');
+  });
+
+  // tsc and knip write their diagnostics to STDOUT, not stderr -- so the most
+  // likely tsc misconfiguration in a first adoption (`error TS5058: The
+  // specified path does not exist: 'tsconfig.json'`) reached an unattended
+  // agent as a violation with no diagnosis in it at all, while tsc had said
+  // exactly what was wrong. This is the same failure the eslint-banner case
+  // above fixed, on the other stream.
+  it('surfaces a diagnosis a tool wrote to stdout with stderr empty', async () => {
+    const message = await failedMessage(
+      '',
+      "error TS5058: The specified path does not exist: 'tsconfig.json'.",
+    );
+    expect(message).toContain('TS5058');
+  });
+
+  it('keeps both streams when a tool writes to each', async () => {
+    const message = await failedMessage('a warning banner', 'the diagnosis');
+    expect(message).toContain('a warning banner');
+    expect(message).toContain('the diagnosis');
+  });
+
+  // Each stream gets its own line budget, so neither can crowd the other out.
+  // The pair shares only the character cap, which is what actually bounds the
+  // manifest. Both directions matter and only one of them used to hold: a
+  // crashing tool that puts a stack trace on stderr and its real message on
+  // stdout is the same "the diagnosis is on the stream you are not reading"
+  // failure this whole change exists to fix, just one level in.
+  it('caps a flooding stdout without losing the stderr lines', async () => {
+    const message = await failedMessage(
+      'the real diagnosis',
+      Array.from({ length: 200 }, (_, index) => `out ${index}`).join('\n'),
+    );
+    expect(message).toContain('the real diagnosis');
+    expect(message).toContain('out 0');
+    expect(message).not.toContain('out 5');
+  });
+
+  it('caps a flooding stderr without losing the stdout diagnosis', async () => {
+    const message = await failedMessage(
+      Array.from({ length: 200 }, (_, index) => `err ${index}`).join('\n'),
+      'the real diagnosis',
+    );
+    expect(message).toContain('the real diagnosis');
+    expect(message).not.toContain('err 5');
+  });
+
+  // The distinction is between "the tool said nothing" and 'the tool said ""'.
+  // A silent crash must read as a violation with no detail clause at all, not
+  // as one quoting an empty string -- an agent reading `output: ""` would take
+  // it as evidence the tool was asked and had nothing to report.
+  it('omits the detail clause entirely when both streams are empty', async () => {
+    const message = await failedMessage('', '');
+    expect(message).toContain('exited with code 2');
+    expect(message).not.toContain('output:');
   });
 
   it('keeps stderr that is exactly at the cap, untruncated', async () => {

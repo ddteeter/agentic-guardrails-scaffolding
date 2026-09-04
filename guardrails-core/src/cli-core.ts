@@ -706,7 +706,12 @@ export async function runCommand(
     }
     default: {
       deps.stderr(
-        'usage: guardrails <init [--plan|--apply] [--json] [--force]|verify|autofix|audit|gate [--mode=stop|commit|pretooluse] [--dialect=codex|copilot]|sanctions-check|state|scope-check|session-start|session-end|install-hooks>\n',
+        'usage: guardrails-core <command>\n' +
+          '  init [--plan|--apply] [--json] [--force] [--enforcement=warn|block]\n' +
+          '       [--analyzers=<tool>=<off|auto|required>[,...]] [--distribution=solo|team]\n' +
+          '  gate --mode=stop|commit|push|ci|pretooluse [--dialect=codex|copilot]\n' +
+          '  verify | autofix | audit | sanctions-check | install-hooks\n' +
+          '  state | scope-check | session-start | session-end\n',
       );
       return 1;
     }

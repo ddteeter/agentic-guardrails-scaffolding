@@ -18,9 +18,7 @@ function violation(ruleId: string, extra: Partial<Violation> = {}): Violation {
 describe('withGuidance', () => {
   it('attaches the mutation doc to a surviving-mutant violation', () => {
     const [tagged] = withGuidance([violation('stryker/survived')]);
-    expect(tagged?.guidance).toBe(
-      'node_modules/guardrails-core/guidance/crushing-mutants.md',
-    );
+    expect(tagged?.guidance).toBe('docs/guardrails/crushing-mutants.md');
   });
 
   it('leaves classes with no guidance untouched, adding no key', () => {
@@ -38,9 +36,7 @@ describe('withGuidance', () => {
 
   it('matches on prefix, not exact id', () => {
     const [tagged] = withGuidance([violation('stryker/timeout')]);
-    expect(tagged?.guidance).toBe(
-      'node_modules/guardrails-core/guidance/crushing-mutants.md',
-    );
+    expect(tagged?.guidance).toBe('docs/guardrails/crushing-mutants.md');
   });
 
   it('preserves every other field and the input order', () => {
@@ -55,5 +51,16 @@ describe('withGuidance', () => {
 
   it('is empty for no violations', () => {
     expect(withGuidance([])).toEqual([]);
+  });
+
+  // `init` installs these docs into the consumer repo precisely because the
+  // Copilot cloud agent reads the DEFAULT BRANCH, where `node_modules` has
+  // never been installed (`templates.ts`'s `guidanceRoot`). A manifest
+  // pointing into `node_modules/` hands that agent a path it cannot open --
+  // and the manifest is the one channel every runtime reads, so this is the
+  // pointer that matters most.
+  it('points at the in-repo copy, not one inside node_modules', () => {
+    const [tagged] = withGuidance([violation('stryker/survived')]);
+    expect(tagged?.guidance).not.toContain('node_modules');
   });
 });

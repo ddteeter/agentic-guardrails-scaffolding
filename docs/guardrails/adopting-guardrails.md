@@ -79,14 +79,19 @@ general case.
 
 ### 4. Ask about the judgement calls that are actually genuine
 
-Only the ones step 1–3 couldn't settle from evidence: solo vs. team
-distribution (changes the enforcement default and whether CI is required),
-which test runner Stryker should target once the starter `command` runner
-isn't good enough, and which validator library (§5) fits the repo's existing
-dependency graph. Ask with the specific fork in front of you — "this repo has
-no test-runner-specific Stryker plugin installed; do you want `@stryker-mutator/vitest-runner`
-or stay on the generic `command` runner" — not "how do you want mutation
-testing configured?"
+Only the ones step 1–3 couldn't settle from evidence: which test runner
+Stryker should target once the starter `command` runner isn't good enough, and
+which validator library (§5) fits the repo's existing dependency graph. Ask
+with the specific fork in front of you — "this repo has no
+test-runner-specific Stryker plugin installed; do you want
+`@stryker-mutator/vitest-runner` or stay on the generic `command` runner" —
+not "how do you want mutation testing configured?"
+
+**Do not spend a question on `distribution`.** No code path reads it; it is a
+field a team declares for humans, and `--distribution` only records what you
+pass. What actually changes behaviour is `enforcement` (step 3) and, for a
+team, marking the CI job required in branch protection — which does nothing
+until `enforcement` is `block`.
 
 **The exclude set for the whole-graph analyzers belongs here too.** `knip` and
 `dependency-cruiser` walk the repository, so anything physically present but
@@ -119,7 +124,12 @@ maintaining lint rules for somebody else's repository. That's this step's job:
   import `adapters/`).
 - **Stryker's test-runner plugin and thresholds** — swap `command` for a
   framework-specific runner once one is installed, and set `break`/`low`/`high`
-  thresholds that mean something, not the schema's defaults.
+  thresholds that mean something, not the schema's defaults. Swapping it also
+  clears a finding you would otherwise hit immediately: knip reads
+  `stryker.conf.json`, sees `testRunner: "command"`, and reports
+  `@stryker-mutator/command-runner` as an unlisted dependency — so the seeded
+  config is knip-dirty out of the box in exactly the knip-plus-stryker
+  combination step 3 recommends.
 - **A validator library, if a boundary cast needs redirecting** (see the
   `boundary-validation` skill) — zod, valibot, typia, or arktype, whichever
   matches the repo's existing dependency graph and the team's taste.
@@ -132,11 +142,13 @@ maintaining lint rules for somebody else's repository. That's this step's job:
 not guardrails' constraint — it is typescript-eslint's:
 
 - `typescript-eslint@8` declares `typescript: ">=4.8.4 <6.1.0"`.
-- `npm i -D typescript` installs **7.x**.
+- `npm i -D typescript` installs whatever is `latest`, which has been outside
+  that ceiling before and will be again.
 
-So the obvious command produces a graph npm refuses to resolve, and the escape
-hatch an agent reaches for (`--legacy-peer-deps`, `--force`) produces one that
-installs cleanly and then misbehaves. Read typescript-eslint's own
+When it is outside, the obvious command produces a graph npm refuses to
+resolve, and the escape hatch an agent reaches for (`--legacy-peer-deps`,
+`--force`) produces one that installs cleanly and then misbehaves. Read
+typescript-eslint's own
 `peerDependencies` — `npm view typescript-eslint peerDependencies` — and pin
 TypeScript inside that range. Do not copy a version from this document without
 checking; the point is the **rule**, not the numbers.
@@ -145,16 +157,23 @@ checking; the point is the **rule**, not the numbers.
 wrong, including the case npm's install-time check misses. It is cheaper to get
 right.
 
-A stack verified together on 2026-09-03 — a worked example, not a contract:
+A stack verified together on 2026-09-04, on top of the Vite `react-ts`
+template — a worked example, not a contract:
 
 | package                 | range  | why                                 |
 | ----------------------- | ------ | ----------------------------------- |
 | `eslint`                | `^10`  |                                     |
-| `typescript`            | `~5.9` | must be <6.1 — typescript-eslint    |
+| `typescript`            | `~6.0` | must be <6.1 — typescript-eslint    |
 | `typescript-eslint`     | `^8`   | sets the TypeScript ceiling         |
 | `@eslint/js`            | `^10`  |                                     |
 | `eslint-plugin-unicorn` | `^74`  | current major needs `eslint >=10.4` |
 | `eslint-plugin-sonarjs` | `^4`   |                                     |
+
+Note what that template gives you and what it does not: it pins TypeScript
+itself (inside the ceiling, as of this writing) and it ships **oxlint**, not
+ESLint. guardrails has no oxlint adapter, so `eslint` is a dependency you add
+— and until you do, `init` will warn that the analyzer is enabled but will be
+skipped.
 
 guardrails-core is not the constraint: its adapters are verified against
 TypeScript 7 and ESLint 10, and its own peer ranges (`typescript: ">=5"`,

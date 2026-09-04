@@ -212,6 +212,35 @@ run(
   ],
   fixture,
 );
+// `init --apply` merges a `prepare` script into package.json, and npm treats a
+// failed `prepare` as a failed install. Nothing above can catch a broken one:
+// npm runs `prepare` on an ARGUMENT-LESS `npm install` and on `npm ci`, never
+// on the `npm install <path>` form every other leg here uses. A stale bin name
+// in that script therefore sails through this whole script while making the
+// scaffolded repo uninstallable -- `npm ci` is the first command the shipped
+// CI workflow runs, so it would fail before ever reaching the gate.
+const reinstall = spawnSync('npm', ['ci', '--no-audit', '--no-fund'], {
+  cwd: fixture,
+  encoding: 'utf8',
+});
+if (reinstall.status !== 0) {
+  fail(
+    'a scaffolded repo cannot reinstall its own dependencies -- check the ' +
+      '`prepare` script `init --apply` merged into package.json.\n' +
+      `stdout:\n${reinstall.stdout}\nstderr:\n${reinstall.stderr}`,
+  );
+}
+// ...and the point of that script is its side effect, not its exit code: it is
+// what puts a fresh clone or a teammate's checkout onto the commit gate.
+const hooksPath = run('git', ['config', '--get', 'core.hooksPath'], fixture);
+if (hooksPath.trim() !== '.githooks') {
+  fail(
+    `the prepare script ran but core.hooksPath is "${hooksPath.trim()}", not ` +
+      '".githooks" -- the commit gate is not installed',
+  );
+}
+console.log('smoke-tarball: OK — a scaffolded repo can still `npm ci`');
+
 const claudeSettings = readFileSync(
   path.join(fixture, '.claude', 'settings.json'),
   'utf8',

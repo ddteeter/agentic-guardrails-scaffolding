@@ -55,6 +55,13 @@ Flags: `--json` (machine-readable plan/result), `--force` (overwrite OWNED
 files you have edited — never SEED-ONCE), `--analyzers=<tool>=<off|auto|required>[,...]`,
 `--enforcement=warn|block`, `--distribution=solo|team`.
 
+All three decision flags only affect the run that **seeds**
+`guardrails.config.json`. Once that file exists it is SEED-ONCE, so a later
+`init` cannot change your policy — and, since it is then the authority,
+guardrails reads the analyzer policy out of that file rather than out of the
+flags when deciding what else to write. `--distribution` records a value no
+code path reads; it is a field a team declares for humans.
+
 ## Who owns each written file
 
 `init` writes three kinds of files, and the difference matters the moment you
@@ -72,8 +79,8 @@ thing this command could do.
 
 `.githooks/pre-commit` is written but inert on its own — git only runs hooks
 from `.git/hooks` unless told otherwise. `init --apply`'s `package.json`
-merger appends `guardrails install-hooks` to the `prepare` script, and that
-command is what points `core.hooksPath` at `.githooks` (resolved against the
+merger appends `guardrails-core install-hooks` to the `prepare` script, and
+that command is what points `core.hooksPath` at `.githooks` (resolved against the
 real repo root, not the current directory, so it still targets the right repo
 from inside a monorepo package). `npm install` runs `prepare` automatically,
 which is what gets a fresh clone or a teammate's checkout onto the commit gate
@@ -158,6 +165,12 @@ of ignoring the gate.
 ```bash
 node ./node_modules/guardrails-core/dist/cli.mjs verify
 ```
+
+Bare `verify` runs at the **ci rung**, so it runs every enabled analyzer,
+including the whole-graph ones the per-turn Stop gate skips. That is what
+makes it the baseline check: it shows you everything the commit, push and CI
+gates will see. It runs neither the diff-auditor nor the sanction budget —
+those need a diff, and belong to `gate`.
 
 Fix (or explicitly turn off, via `analyzers`) whatever it reports before
 wiring the Stop hook into a live session, and before enabling the whole-graph
@@ -289,7 +302,7 @@ surface.
 
 ## Known limits
 
-Seven things worth knowing before you hit them, rather than after:
+Things worth knowing before you hit them, rather than after:
 
 - **In-repo trees that are not part of your module graph must be excluded
   yourself.** knip and dependency-cruiser walk the repository, so a vendored or
@@ -332,10 +345,22 @@ Seven things worth knowing before you hit them, rather than after:
   guarantee to buy convenience. If `openai/codex#16226` lands, Codex joins the
   first row.
 
+- **The seeded `stryker.conf.json` trips knip.** Its starter `testRunner` is
+  `"command"`, and knip reads that file, resolves the runner, and reports
+  `@stryker-mutator/command-runner` as an unlisted dependency — in exactly the
+  knip-plus-stryker combination worth recommending. Swapping `command` for the
+  framework runner you actually use (`@stryker-mutator/vitest-runner`, say),
+  which you want to do anyway, clears it. `stryker.conf.json` is SEED-ONCE, so
+  editing it is safe: `init` will never touch it again.
 - **`.claude/settings.json` is reformatted on every merge**, unconditionally
   (see the SHARED-file note above). If your formatter disagrees with the
   merger's output, expect a reformat/re-reformat cycle on every `init --apply`.
   Cosmetic, not destructive.
+- **Two findings on one line read as a duplicate.** The `Violation` contract
+  carries a line but no column, so two genuinely different findings at the same
+  line — two mutants on one expression, two eslint reports on one statement —
+  print as identical rows. They are not duplicates and must not be collapsed:
+  each is its own fix. Read the count as "findings", not "distinct lines".
 - **Orphan files are never reported or removed.** A file an earlier guardrails
   version wrote that a later version no longer wants to write (renamed,
   retired) is left in place silently, and its checksum entry in
@@ -346,6 +371,15 @@ Seven things worth knowing before you hit them, rather than after:
 - **The scaffolder assumes a clean baseline** (see above) — it will happily
   scaffold onto a repo with pre-existing `verify` findings, and the gate it
   wires up will then escalate on those findings from turn one.
+- **An `auto` analyzer whose provider you never installed is skipped in
+  silence.** `init` seeds an empty `analyzers` block, which makes every
+  analyzer `auto`: it runs if its binary resolves, and a failure to resolve is
+  an error only when your own `package.json` declares the provider. So a repo
+  that never installed eslint gets no eslint checking and a `verify` that
+  prints `clean (0 violations)`. `init --plan` and `--apply` now warn, naming
+  each analyzer and the package it needs — read that warning before you accept
+  a green first run. The fix is either half: install the tool, or mark it
+  `"required"` so its absence blocks instead.
 - **Declared analyzer providers are read from the ROOT `package.json` only.**
   A monorepo that declares eslint/typescript/knip/dependency-cruiser/stryker in
   its member packages rather than at the root has an empty declared set: every

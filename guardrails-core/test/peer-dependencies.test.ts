@@ -4,7 +4,10 @@ import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
-import { ANALYZER_PROVIDERS } from '../src/verify/index.js';
+import {
+  ANALYZER_PROVIDERS,
+  NON_PACKAGE_PROVIDERS,
+} from '../src/verify/index.js';
 
 /**
  * The pack shells out to tools the CONSUMER repo provides — guardrails-core
@@ -22,19 +25,10 @@ const manifest = JSON.parse(
   peerDependenciesMeta?: Record<string, { optional?: boolean }>;
 };
 
-/**
- * Providers that are NOT installable packages, so no peer dependency can or
- * should be declared for them.
- *
- * `npm-peers` shells out to `npm` itself. Declaring npm as a peer would invite
- * an installer to materialise the package manager into a consumer's
- * `node_modules`; leaving the analyzer's `provider` optional instead would put
- * an `undefined` guard in `selectAnalyzers` whose mutants are provably
- * equivalent and cannot be silenced without also losing a real one (measured:
- * killed 321 -> 320). Recording the exception here costs no coverage, and this
- * list failing loudly is what keeps it from growing silently.
- */
-const NON_PACKAGE_PROVIDERS: ReadonlySet<string> = new Set(['npm']);
+// The exemption itself lives in `verify/index.ts`, because `init`'s
+// silent-skip warning needs it too -- it must never tell a consumer to
+// `npm install npm`. The assertions below are what keep it from growing
+// silently, wherever it is declared.
 
 /** Providers that must appear in `peerDependencies`. */
 const packageProviders = ANALYZER_PROVIDERS.filter(

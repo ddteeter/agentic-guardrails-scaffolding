@@ -224,7 +224,32 @@ describe('init --apply', () => {
     const parsed: unknown = JSON.parse(read('package.json'));
     expect(parsed).toEqual({
       name: 'consumer',
-      scripts: { prepare: 'husky && guardrails install-hooks' },
+      scripts: { prepare: 'husky && guardrails-core install-hooks' },
+    });
+  });
+
+  // The end-to-end half of the legacy-command migration (`mergePrepareScript`
+  // covers the string transform). A repo scaffolded by an older guardrails
+  // carries `guardrails install-hooks`, which no longer resolves -- npm aborts
+  // the install with exit 127 and the shipped CI workflow dies at `npm ci`. The
+  // next `init --apply` has to REPAIR that script, not append beside it.
+  it('repairs a package.json still carrying the legacy install-hooks command', async () => {
+    writeFileSync(
+      path.join(root, 'package.json'),
+      `${JSON.stringify(
+        {
+          name: 'consumer',
+          scripts: { prepare: 'husky && guardrails install-hooks' },
+        },
+        undefined,
+        2,
+      )}\n`,
+    );
+    await init('--apply');
+    const parsed: unknown = JSON.parse(read('package.json'));
+    expect(parsed).toEqual({
+      name: 'consumer',
+      scripts: { prepare: 'husky && guardrails-core install-hooks' },
     });
   });
 
@@ -237,7 +262,7 @@ describe('init --apply', () => {
     await init('--apply');
     const parsed: unknown = JSON.parse(read('package.json'));
     expect(parsed).toEqual({
-      scripts: { prepare: 'guardrails install-hooks' },
+      scripts: { prepare: 'guardrails-core install-hooks' },
     });
   });
 
@@ -259,7 +284,22 @@ describe('init --apply', () => {
     expect(written).toContain(HOOK);
     expect(written).toContain('.guardrails/scaffold.json');
     expect(skipped).toEqual([]);
-    expect(warnings).toEqual([]);
+    // The fixture repo declares no analyzer providers, so the silent-skip
+    // warning is correct here -- what this asserts is that warnings reach the
+    // machine-readable report as strings, not that there are none.
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('verify reports clean without running it');
+  });
+
+  // The end-to-end half of the silent-skip warning. Its whole purpose is to be
+  // read BEFORE `--apply`, by whoever is choosing the analyzer set -- a
+  // warning that only appears in `--apply` output arrives after the decision.
+  it('warns in --plan that undeclared analyzers will be skipped silently', async () => {
+    expect(await init('--plan')).toBe(0);
+    const printed = errors.join('');
+    expect(printed).toContain('warning:');
+    expect(printed).toContain('eslint (needs eslint)');
+    expect(printed).toContain('"required"');
   });
 
   it('records a checksum per owned file in the committed manifest', async () => {
@@ -403,7 +443,7 @@ describe('init --help', () => {
     // `--nope` is -- it should read as "show me the usage", not fail the way
     // every other unrecognised option does.
     expect(await init('--help')).toBe(0);
-    expect(out.join('')).toContain('usage: guardrails init');
+    expect(out.join('')).toContain('usage: guardrails-core init');
     expect(readdirSync(root)).toEqual([]);
   });
 });
@@ -413,7 +453,7 @@ describe('init — flag validation', () => {
     'rejects %s with usage and a non-zero exit',
     async (argument) => {
       expect(await init(argument)).toBe(1);
-      expect(errors.join('')).toContain('usage: guardrails init');
+      expect(errors.join('')).toContain('usage: guardrails-core init');
       expect(readdirSync(root)).toEqual([]);
     },
   );

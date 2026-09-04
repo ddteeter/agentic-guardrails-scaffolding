@@ -67,6 +67,50 @@ describe('detect', () => {
     expect(result.hasDependencyCruiserConfig).toBe(false);
   });
 
+  /**
+   * `guardrails.config.json` is SEED-ONCE: once it exists, `--analyzers` can
+   * no longer change it, `--force` included. But the flag still drove the
+   * decisions derived from it, so a re-run with `--analyzers=stryker=required`
+   * seeded `.dependency-cruiser.cjs` -- for an analyzer the real config says
+   * is `off`. Combined with "orphan files are never removed", that leaves a
+   * config in the consumer's repo for a tool that never runs, permanently.
+   * Once the file exists, the file is the authority.
+   */
+  it('reads the analyzer policy out of an existing guardrails.config.json', async () => {
+    const result = await facts({
+      '/repo/guardrails.config.json': {
+        analyzers: { eslint: 'required', 'dependency-cruiser': false },
+      },
+    });
+    expect(result.existingAnalyzers).toEqual({
+      eslint: 'required',
+      'dependency-cruiser': 'off',
+    });
+  });
+
+  it.each([
+    ['a JSON scalar', 'not an object'],
+    ['null', null],
+    ['an object with no analyzers key', { baseBranch: 'main' }],
+  ])(
+    'reads an empty policy, not a crash, from a config that is %s',
+    async (_label, content) => {
+      // The file is consumer-authored, so every shape it can hold has to
+      // resolve to a policy. Empty, not `undefined`: the file EXISTS, so the
+      // flags no longer decide -- a config that configures nothing is still
+      // the authority.
+      const result = await facts({ '/repo/guardrails.config.json': content });
+      expect(result.existingAnalyzers).toEqual({});
+    },
+  );
+
+  it('reports no analyzer policy when the config does not exist yet', async () => {
+    // Distinct from an empty policy: absent means the flags still decide,
+    // because this run is the one that seeds the file.
+    const result = await facts({});
+    expect(result.existingAnalyzers).toBeUndefined();
+  });
+
   it('collects declared providers from package.json', async () => {
     const result = await facts({
       '/repo/package.json': { devDependencies: { eslint: '^9', knip: '^6' } },

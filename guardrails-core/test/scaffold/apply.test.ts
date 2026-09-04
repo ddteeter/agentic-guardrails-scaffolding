@@ -101,6 +101,7 @@ function factsWithManifest(manifestRaw: string | undefined): RepoFacts {
     hasStrykerConfig: false,
     manifest,
     hooksPath: undefined,
+    existingAnalyzers: undefined,
   };
 }
 
@@ -344,7 +345,9 @@ describe('applyScaffold', () => {
       const parsed = JSON.parse(files.get(fullPath('package.json')) ?? '') as {
         scripts: { prepare: string };
       };
-      expect(parsed.scripts.prepare).toBe('husky && guardrails install-hooks');
+      expect(parsed.scripts.prepare).toBe(
+        'husky && guardrails-core install-hooks',
+      );
     });
 
     it('warns when package.json fails to parse, not just settings.json', () => {

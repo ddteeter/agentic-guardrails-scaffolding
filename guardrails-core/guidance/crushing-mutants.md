@@ -158,10 +158,14 @@ diff-auditor treats it as one. It requires an entry in
 - the equivalence argument, or what you tried and why it cannot work,
 - what stops being checked once it is granted.
 
-CI fails on every newly-added key until a human reviews and merges, so a
-self-granted exemption will not land — but the point of asking is to catch a
-_wrong_ exemption now, while you still have the context to explain it and the
-developer can still say "no — fix the code instead."
+**Nothing downstream will catch a self-grant for you.** `sanctions-check`
+prints every newly-added key and exits 0 — by design, since the human reviewing
+the change is the control, and a check that failed on every legitimate approval
+would deadlock the very review that constitutes it. Where that review is a pull
+request, merging it is the approval; in a `solo` repo there may be no pull
+request at all. Either way the ask is the whole control, not a formality on top
+of one: it catches a _wrong_ exemption now, while you still have the context to
+explain it and the developer can still say "no — fix the code instead."
 
 ## Do not
 

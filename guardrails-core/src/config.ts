@@ -220,7 +220,7 @@ function pickStringArray(value: unknown): string[] {
     : [];
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
+export function isRecord(value: unknown): value is Record<string, unknown> {
   // Equivalent mutant on the `typeof value === 'object'` half: a primitive that
   // slips through is still read field-by-field with `pick*` fallbacks, so every
   // field lands on its default — the same result as rejecting the value here.
@@ -253,7 +253,7 @@ function isAnalyzerMode(value: unknown): value is AnalyzerMode {
  * running) instead of silently disabling a guard — failing toward more
  * checking, like every other defensive path in this file.
  */
-function pickAnalyzers(value: unknown): Record<string, AnalyzerMode> {
+export function pickAnalyzers(value: unknown): Record<string, AnalyzerMode> {
   if (!isRecord(value)) {
     return {};
   }

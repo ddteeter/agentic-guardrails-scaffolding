@@ -21,7 +21,7 @@ import path from 'node:path';
 
 import { packageRoot } from '../package-root.js';
 import { analyzerMode, decideAnalyzer } from '../verify/analyzer-policy.js';
-import type { RepoFacts } from './detect.js';
+import { effectiveAnalyzers, type RepoFacts } from './detect.js';
 import {
   AGENTS_GUARDRAILS_END,
   AGENTS_GUARDRAILS_START,
@@ -336,9 +336,61 @@ function copilotInstructionsBlock(directory: string): string {
         `- [\`${name}\`](../docs/guardrails/${name}.md) — ${description}`,
     ),
     '',
+    ...GATE_CONTRACT,
+    '',
     COPILOT_SKILLS_END,
   ].join('\n');
 }
+
+/**
+ * The prohibitions every host must state UNCONDITIONALLY, in the instruction
+ * file it always loads.
+ *
+ * The doc index these blocks are mostly made of is trigger-gated on purpose
+ * ("read this when that applies"), which is right for method and wrong for a
+ * prohibition: an agent about to write `eslint-disable` has no reason to open
+ * a mutation-testing doc, so a rule that only lives behind a trigger is a rule
+ * it never reads. `crushing-mutants` carried the sanction protocol, and only
+ * for Stryker directives.
+ *
+ * The sanction paragraph is the load-bearing one. `scope.ts`'s
+ * `DENIED_FILE_NAMES` stops the FIXER from reaching `guardrails.config.json`;
+ * nothing stops the main agent, and `sanctions-check` reports a new grant and
+ * exits 0 by design (the pull request is the review). In a `solo` repo there
+ * may be no pull request at all. So the ask is the whole control, and the text
+ * must not imply a backstop that does not exist.
+ */
+const GATE_CONTRACT: readonly string[] = [
+  '### Never satisfy a gate by weakening it',
+  '',
+  'Fix the code. Never add a suppression (`eslint-disable`, `@ts-ignore`,',
+  '`@ts-expect-error`, `@ts-nocheck`, `as any`, `.skip`, `.only`,',
+  '`@SuppressWarnings`, `// Stryker disable`), never loosen or delete an',
+  'assertion, and never delete code to quiet a checker. A deterministic',
+  'diff-auditor inspects the branch diff and re-blocks on any of them.',
+  '',
+  'Equally off-limits: making a check pass by switching off the check.',
+  "Never set an entry in `guardrails.config.json`'s `analyzers` block to",
+  '`off`, never remove an analyzer from `package.json` to turn its',
+  '`analyzer-missing` error into silence, and never raise a threshold.',
+  '',
+  '### Never grant yourself an exemption',
+  '',
+  "`guardrails.config.json`'s `sanctionedSuppressions` is the only escape",
+  'hatch from the diff-auditor. **You do not add an entry to it.** Nothing',
+  'downstream will catch it for you — the CI sanctions check reports a new',
+  'grant and exits 0, because a human reviewing the change is the control.',
+  '',
+  'Ask the developer directly, and give them what they need to decide:',
+  '',
+  '- **What** the exemption covers — the exact `file|kind|text` key.',
+  '- **Why** it is unavoidable — for an equivalent mutant, the argument that',
+  '  no test can kill it; for anything else, what you tried first.',
+  '- **What it costs** — what stops being checked once it is granted.',
+  '',
+  'If they approve, put the argument they accepted into `reason`: that text is',
+  'what a reviewer reads later. If they do not, fix the code instead.',
+];
 
 /** Portable instruction index used by Codex and any other AGENTS.md host. */
 function agentsInstructionsBlock(directory: string): string {
@@ -357,6 +409,8 @@ function agentsInstructionsBlock(directory: string): string {
     ),
     '',
     'When a guardrails Stop hook asks for a fixer, delegate only the violations-manifest path to the named fixer agent.',
+    '',
+    ...GATE_CONTRACT,
     '',
     AGENTS_GUARDRAILS_END,
   ].join('\n');
@@ -377,7 +431,7 @@ function analyzerAsked(
   decisions: ScaffoldDecisions,
 ): boolean {
   return decideAnalyzer(
-    analyzerMode(decisions.analyzers, analyzer.tool),
+    analyzerMode(effectiveAnalyzers(facts, decisions.analyzers), analyzer.tool),
     facts.declaredProviders.has(analyzer.provider),
   ).reportMissing;
 }

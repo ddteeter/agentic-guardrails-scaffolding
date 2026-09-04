@@ -11,7 +11,9 @@
  * string-and-path-heavy shape that produces hundreds of mutants. If a rule in
  * here ever needs to read a file, that need belongs in `detect()` instead.
  */
-import type { RepoFacts } from './detect.js';
+import { analyzerMode } from '../verify/analyzer-policy.js';
+import { installableAnalyzerProviders } from '../verify/index.js';
+import { effectiveAnalyzers, type RepoFacts } from './detect.js';
 import { foreignHooksPath, foreignHooksPathWarning } from './hooks-path.js';
 import { isSharedPath } from './merge.js';
 import { checksum, type ScaffoldManifest } from './manifest.js';
@@ -257,5 +259,57 @@ export function planScaffold(input: PlanInput): ScaffoldPlan {
     warnings.push(foreignHooksPathWarning(existingHooksPath));
   }
 
+  const silent = silentlySkippedAnalyzers(input);
+  if (silent.length > 0) {
+    warnings.push(silentSkipWarning(silent));
+  }
+
   return { actions, warnings };
+}
+
+/**
+ * Analyzers that are enabled but whose provider package the repo does not
+ * declare -- so `decideAnalyzer('auto', false)` will run-and-never-report them,
+ * and `verify` will print `clean (0 violations)` having checked nothing.
+ *
+ * `required` is excluded because it is precisely the fix: a missing binary is
+ * then a blocking `guardrails/analyzer-missing`, which can never read as clean.
+ * `off` is excluded because the consumer said so. Only analyzers with an
+ * installable provider are considered -- `npm-peers` shells out to `npm`, which
+ * no repo declares and nobody should be told to install.
+ */
+function silentlySkippedAnalyzers(
+  input: PlanInput,
+): readonly (readonly [string, string])[] {
+  return Object.entries(installableAnalyzerProviders()).filter(
+    ([tool, provider]) =>
+      analyzerMode(
+        effectiveAnalyzers(input.facts, input.decisions.analyzers),
+        tool,
+      ) === 'auto' && !input.facts.declaredProviders.has(provider),
+  );
+}
+
+/**
+ * Says the thing a silent skip cannot say for itself. The failure this exists
+ * for looks like success: a first adoption on a repo that never installed
+ * eslint gets a green `verify` and a gate that checks almost nothing, which is
+ * worse than no gate because it teaches everyone to trust it.
+ *
+ * Names both halves -- the tool a consumer configures and the package they
+ * install -- and both fixes, since either is legitimate: install it, or say
+ * `required` and let the absence block.
+ */
+function silentSkipWarning(
+  silent: readonly (readonly [string, string])[],
+): string {
+  const named = silent
+    .map(([tool, provider]) => `${tool} (needs ${provider})`)
+    .join(', ');
+  return (
+    `these analyzers are enabled but their provider package is not in ` +
+    `package.json, so each is skipped and verify reports clean without ` +
+    `running it: ${named}. Install the ones you want, or set them ` +
+    `"required" in guardrails.config.json so a missing one blocks instead.`
+  );
 }
