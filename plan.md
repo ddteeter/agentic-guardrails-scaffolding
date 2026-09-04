@@ -1342,6 +1342,111 @@ was already dead.
   several commits after the fix shipped — a reminder to update this section
   in the same commit as the fix, not after.
 
+- **Piece 5 — the scaffolding skill (shipped).** `adopting-guardrails`, in
+  `guardrails-plugin/skills/`, ships in the tarball's `guidance/` tree and is
+  excluded from every path `init` writes (`templates.ts`'s
+  `ADOPTION_TIME_SKILL`). `init` and the README both name its path, so a reader
+  does not have to already know the file exists.
+- **Piece 6 — CI template + adoption docs + team-flip verification
+  (shipped).** `templates/workflows/guardrails.yml`, `docs/adoption.md`, and
+  the solo→team verification recorded under "Solo → team" above.
+- **Piece 7 — cut the release, adopt in a real project, record findings
+  (outstanding).** The remaining work in Phase E. No `v0.1.0` tag exists, so
+  every documented install URL 404s until one is pushed.
+
+### Dogfooding finding: nested worktrees poisoned every whole-graph analyzer
+
+Surfaced by a greenfield-adoption audit. A git worktree checked out inside the
+repository root is untracked but **not ignored**, so knip and
+dependency-cruiser walked into it and reported a whole second checkout of this
+repository as part of this one. Measured in the main checkout: `verify`
+reported **661 violations, every one phantom**, `gate --mode=commit` exited 1 —
+every commit blocked — and dependency-cruiser cruised 671 of 792 modules from
+worktree copies.
+
+Two things made this worth a design rather than a one-line ignore:
+
+- **CI never saw it.** A CI checkout has no worktrees, so the backstop stayed
+  green while the working copy was unusable. The failure lands exactly where
+  the commit gate runs and nowhere else.
+- **The recommended workflow produced it.** Claude Code creates worktrees under
+  `.claude/worktrees/` by default, and this project's own guidance prompts for
+  a worktree on any plan of reasonable size. A first adopter following the
+  documented path gets a gate that blocks every commit on findings nobody
+  wrote — the "dirty baseline trains you to ignore the gate" failure
+  `docs/adoption.md` warns about, arriving through a door that document did not
+  cover.
+
+Fixed in three layers that fail differently: the shipped `.gitignore` block and
+dependency-cruiser seed (the common case, and it recovers the wasted cruise);
+an unconditional filter in `verify` driven by `git worktree list --porcelain`
+(correctness, and the only layer that helps an already-scaffolded repo); and a
+generalised exclude-set question in `adopting-guardrails` covering vendored,
+generated and fixture trees as well. Verified end to end: **661 → 0**, commit
+gate **1 → 0**, with no change to `knip.json`.
+
+Two sub-findings worth keeping:
+
+- **Our own scaffolding had drifted from what we ship.** This repo's
+  `.gitignore` predates `init` and carries no `guardrails:start`/`end` markers,
+  and its `.dependency-cruiser.cjs` is its own file rather than the seed — so
+  neither shipped default reached us, and both entries had to be applied by
+  hand. Whenever a fix lands in a template, check whether this repo actually
+  receives it.
+- **The first parser was wrong in a way only mutation testing caught.** It
+  tested a relative path for a leading `..`, which lets `/repo/../evil` through
+  as a child. Comparing resolved absolute paths is both simpler and correct,
+  and it removed two redundant guards no test could distinguish.
+
+### Dogfooding finding: the fixer read-lock applied to the main agent
+
+`scope-check`'s three branches are all meant to be fixer locks. Two of them —
+shell/MCP and Edit/Write — were gated on `scope.active`, the latter with the
+comment "No active manifest → the fixer isn't running; don't interfere." The
+**read** branch was not gated at all, so in every repo that scaffolds
+guardrails the MAIN agent was permanently barred from reading anything outside
+the repository: the user's `~/.claude` memory, a sibling checkout, a build log.
+
+Found by the lock denying the main agent mid-session, with `attempts: 0`, no
+manifest on disk and no fix loop running.
+
+The three tests asserting the old behaviour all did so **without** an active
+manifest, so they were pinning the bug rather than catching it. That is the
+pattern to watch for elsewhere: **a lock exercised only in its locked state
+cannot tell you whether it ever unlocks.** Each now writes a manifest, and the
+`READ_TOOLS` anchor tests assert _which_ denial fires (`read-scope` for a read,
+`scope-lock` for the edit family) rather than asserting no denial — which would
+have become trivially true once the branch was gated.
+
+### Dogfooding finding: a failed analyzer reported only its banner
+
+`analyzerFailedViolation` kept the first line of stderr. For the most likely
+first-adoption failure — eslint with no flat config — that line is `Oops!
+Something went wrong! :(`, and the actionable sentence sits three meaningful
+lines further down. An unattended agent got the banner and nothing else. Now
+keeps the first five meaningful lines, capped at 500 characters. Banners are
+kept rather than pattern-matched away: recognising each tool's decorative first
+line is hardcoded third-party copy, the class of coupling the "Upgrading
+leveraged tools" guidance says rots silently.
+
+### Roadmap: costs observed while running the loop on ourselves
+
+Not bugs, but they shape what working under the gate feels like, and they are
+worth fixing or documenting before an outside adopter meets them:
+
+- **Commit-rung mutation testing scales with the branch diff, not the commit.**
+  Stryker mutates every production file changed since the merge-base, so
+  commits get progressively slower along a branch — several exceeded ten
+  minutes here. An agent working in small, frequent commits pays this
+  repeatedly. Scoping the mutation run to the files in _this_ commit would be
+  the obvious fix.
+- **The scope-lock confines the main agent during delegation, not just the
+  fixer.** While a fixer manifest is active, the main agent cannot edit files
+  outside the manifest either, so it has no useful parallel work — and every
+  attempt to end the turn re-triggers the Stop gate. Correct as designed
+  (concurrent edits would be worse), but it means delegation is strictly
+  serial, which is worth stating in the adoption docs.
+
 ### Finding: the base branch never resolved in CI — every PR run was fail-open
 
 Surfaced by CI on PR #16, immediately after the fail-closed exit-code checks

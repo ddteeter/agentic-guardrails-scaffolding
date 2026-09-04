@@ -91,6 +91,18 @@ no test-runner-specific Stryker plugin installed; do you want `@stryker-mutator/
 or stay on the generic `command` runner" — not "how do you want mutation
 testing configured?"
 
+**The exclude set for the whole-graph analyzers belongs here too.** `knip` and
+`dependency-cruiser` walk the repository, so anything physically present but
+not part of its module graph gets reported as if it were: vendored or
+`third_party` trees, generated output, and large test-fixture directories.
+Nested git worktrees are the same failure and guardrails already handles that
+one for you — `verify` drops violations resolving inside any worktree
+`git worktree list` reports, and the scaffolded `.gitignore` and
+dependency-cruiser seed exclude `.claude/worktrees/`. The rest are this repo's
+business, and you can see them from step 2, so name them: "this repo has a
+`vendor/` tree and `test/fixtures/`; knip will report both as dead code —
+exclude them before I enable it?" — not "how do you want knip configured?"
+
 ### 5. Author the configs and dependencies `init` deliberately does not own
 
 `init` seeds three configs only when their analyzer is enabled and no config
@@ -131,6 +143,15 @@ they don't diff-scope, so every pre-existing issue in the repo shows up on the
 very first run. A repo scaffolded onto a dirty baseline gets a gate that blocks
 every future turn on findings nobody just introduced — which is worse than no
 gate at all, because it teaches the team to route around it.
+
+**Read a large first-run count as a scope problem, not a code problem.** If the
+first `verify` reports findings by the hundred, the overwhelmingly likely cause
+is that an analyzer is scanning something that is not this repo's code — a
+vendored tree, generated output, a second checkout — not that the repo is
+hundreds of violations deep. Look at the _paths_ in the report before you fix a
+single finding. Fixing findings that should never have been reported is worse
+than wasted work: it edits code the repo does not own, and it hides the real
+problem, which is the exclude set from step 4.
 
 **Scaffolding ends at file-writing; adoption ends at green.** Don't stop at
 step 6. Fix or triage every finding `verify` reports before calling the
