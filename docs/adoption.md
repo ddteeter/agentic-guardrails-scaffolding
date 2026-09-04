@@ -318,11 +318,11 @@ Seven things worth knowing before you hit them, rather than after:
   parent's session id — so the scope-lock narrows to the fixer only where the
   host reports which agent is calling.
 
-  | surface         | during a fix, other agents are…                          |
-  | --------------- | -------------------------------------------------------- |
-  | **Claude Code** | unaffected — `agent_id`/`agent_type` identify the caller |
-  | **Copilot**     | confined — `preToolUse` carries no agent fields          |
-  | **Codex**       | confined — no agent fields at all (`openai/codex#16226`) |
+  | surface         | during a fix, the main agent and sibling subagents are…                                                                                             |
+  | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+  | **Claude Code** | unaffected — `agent_id` appears only inside a subagent, so its absence identifies the main thread and a non-fixer `agent_type` identifies a sibling |
+  | **Copilot**     | confined — `preToolUse` carries no agent fields                                                                                                     |
+  | **Codex**       | confined — no agent fields at all (`openai/codex#16226`)                                                                                            |
 
   On Copilot and Codex, a fan-out of unrelated subagents during a fix is locked
   to the fixer's manifest, and the main agent cannot edit outside it either, so
