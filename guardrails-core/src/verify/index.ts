@@ -121,13 +121,13 @@ export interface VerifyResult {
  *  meaningful lines clears the deepest real case measured -- eslint puts its
  *  diagnosis on line 3, behind a banner and a version line -- without letting
  *  a stack trace become the whole manifest. */
-const STDERR_DETAIL_LINES = 5;
-const STDERR_DETAIL_CHARS = 500;
+const OUTPUT_DETAIL_LINES = 5;
+const OUTPUT_DETAIL_CHARS = 500;
 
 /**
- * The useful head of a tool's stderr, for a violation message that names *why*
- * the tool failed rather than just that it did. `undefined` when stderr carried
- * nothing.
+ * The useful head of what a tool actually said, for a violation message that
+ * names *why* it failed rather than just that it did. `undefined` when it said
+ * nothing on either stream.
  *
  * Blank lines are dropped; decorative banners are NOT. eslint's first line is
  * `Oops! Something went wrong! :(`, and teaching this function to recognise
@@ -138,33 +138,42 @@ const STDERR_DETAIL_CHARS = 500;
  * Before this, only the first line was kept, so the most likely first-adoption
  * failure -- eslint with no flat config -- reported exactly `Oops!` to an
  * unattended agent, with the actionable sentence three lines further down.
+ *
+ * And before this, only STDERR was read -- which is the wrong stream for half
+ * the pack. tsc and knip write diagnostics to stdout, so the most likely `tsc`
+ * misconfiguration in a first adoption (`error TS5058: The specified path does
+ * not exist: 'tsconfig.json'`) produced a violation carrying no diagnosis at
+ * all, while tsc had said precisely what was wrong. Both streams are read, and
+ * the cap applies to the pair: a tool that floods one of them must not push
+ * the other's diagnosis out of the message.
  */
-function stderrDetail(text: string): string | undefined {
+function outputDetail(text: string): string | undefined {
   const lines = text
     .split('\n')
     .map((line) => line.trim())
     .filter((line) => line.length > 0)
-    .slice(0, STDERR_DETAIL_LINES);
+    .slice(0, OUTPUT_DETAIL_LINES);
   if (lines.length === 0) {
     return undefined;
   }
   const joined = lines.join('; ');
-  return joined.length <= STDERR_DETAIL_CHARS
+  return joined.length <= OUTPUT_DETAIL_CHARS
     ? joined
-    : `${joined.slice(0, STDERR_DETAIL_CHARS)}…`;
+    : `${joined.slice(0, OUTPUT_DETAIL_CHARS)}…`;
 }
 
 /** A guard that ran and then crashed/misconfigured, distinct from
  *  `guardrails/analyzer-missing` (which means the binary never started). Named
- *  after the tool, its exit code, and — when present — the useful head of
- *  stderr, so a consumer can tell why without re-running it. */
+ *  after the tool, its exit code, and — when present — the useful head of what
+ *  it printed, so a consumer can tell why without re-running it. */
 function analyzerFailedViolation(
   tool: string,
   code: number,
   stderr: string,
+  stdout: string,
 ): Violation {
-  const head = stderrDetail(stderr);
-  const detail = head === undefined ? '' : ` stderr: "${head}"`;
+  const head = outputDetail(`${stderr}\n${stdout}`);
+  const detail = head === undefined ? '' : ` output: "${head}"`;
   return {
     ruleId: 'guardrails/analyzer-failed',
     file: 'package.json',
@@ -199,7 +208,12 @@ function withExitCodeCheck(
   ) {
     return [
       ...violations,
-      analyzerFailedViolation(tool, execResult.code, execResult.stderr),
+      analyzerFailedViolation(
+        tool,
+        execResult.code,
+        execResult.stderr,
+        execResult.stdout,
+      ),
     ];
   }
   return violations;
@@ -238,7 +252,12 @@ async function changedTypeScriptFiles(
       return {
         files: [],
         violations: [
-          analyzerFailedViolation('git', staged.code, staged.stderr),
+          analyzerFailedViolation(
+            'git',
+            staged.code,
+            staged.stderr,
+            staged.stdout,
+          ),
         ],
       };
     }
@@ -302,6 +321,7 @@ async function changedTypeScriptFiles(
           'git',
           failedGitCall.code,
           failedGitCall.stderr,
+          failedGitCall.stdout,
         ),
       ],
     };
@@ -445,12 +465,22 @@ async function runTsc(
   });
   if (shown.spawnFailed === true) {
     return [
-      analyzerFailedViolation('tsc --showConfig', shown.code, shown.stderr),
+      analyzerFailedViolation(
+        'tsc --showConfig',
+        shown.code,
+        shown.stderr,
+        shown.stdout,
+      ),
     ];
   }
   if (shown.code !== 0) {
     return [
-      analyzerFailedViolation('tsc --showConfig', shown.code, shown.stderr),
+      analyzerFailedViolation(
+        'tsc --showConfig',
+        shown.code,
+        shown.stderr,
+        shown.stdout,
+      ),
     ];
   }
   const references = resolvedProjectReferences(shown.stdout);
@@ -460,6 +490,7 @@ async function runTsc(
         'tsc --showConfig',
         0,
         'TypeScript produced an unreadable resolved configuration.',
+        '',
       ),
     ];
   }
@@ -588,7 +619,14 @@ async function runStryker(
     return [];
   }
   if (result.code !== 0) {
-    return [analyzerFailedViolation('stryker', result.code, result.stderr)];
+    return [
+      analyzerFailedViolation(
+        'stryker',
+        result.code,
+        result.stderr,
+        result.stdout,
+      ),
+    ];
   }
 
   let report: string;
