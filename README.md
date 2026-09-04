@@ -46,6 +46,13 @@ node ./node_modules/guardrails-core/dist/cli.mjs init --apply  # write it
 
 (Invoked by path, not `npx` — see `docs/adoption.md` for why.)
 
+Before choosing analyzers and an enforcement level, read
+`node_modules/guardrails-core/guidance/adopting-guardrails.md`. It ships in the
+tarball — readable as soon as `npm install` finishes, and deliberately not
+copied into your repo — and covers the judgement calls `init` does not make for
+you, including the configs (`eslint.config.js`, `tsconfig.json`) it never
+writes. `init` prints this path too.
+
 `init` is re-runnable: on a fresh repo it creates the Claude, Codex, and Copilot
 fixer agents, `.githooks/pre-commit`, host hook configuration, and a seeded
 `guardrails.config.json`; on a repo it already scaffolded, an untouched file

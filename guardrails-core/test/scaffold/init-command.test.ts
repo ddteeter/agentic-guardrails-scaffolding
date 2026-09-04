@@ -484,3 +484,37 @@ describe('init — the usage banner', () => {
     expect(errors.join('')).toContain('init');
   });
 });
+
+describe('init — the adoption-guidance pointer', () => {
+  // `adopting-guardrails` ships in the tarball and is excluded from every path
+  // init writes, by design. The gap was that nothing ever named it, so an
+  // agent had to already know the file existed to read the document that
+  // explains what to do. These assert the path, not prose, because the path is
+  // the part an agent acts on.
+  const GUIDANCE_PATH =
+    'node_modules/guardrails-core/guidance/adopting-guardrails.md';
+
+  it('points --plan at the adoption guidance', async () => {
+    await init('--plan');
+    expect(out.join('')).toContain(GUIDANCE_PATH);
+  });
+
+  it('points --apply at the adoption guidance', async () => {
+    await init('--apply');
+    expect(out.join('')).toContain(GUIDANCE_PATH);
+  });
+
+  it('keeps the pointer out of --json, which stays parseable', async () => {
+    // --json is consumed by scripts. Prose in it is a parse error waiting to
+    // happen, so the whole payload must remain valid JSON.
+    await init('--plan', '--json');
+    expect(() => JSON.parse(out.join('')) as unknown).not.toThrow();
+    expect(out.join('')).not.toContain('adopting-guardrails.md');
+  });
+
+  it('keeps the pointer out of --apply --json too', async () => {
+    await init('--apply', '--json');
+    expect(() => JSON.parse(out.join('')) as unknown).not.toThrow();
+    expect(out.join('')).not.toContain('adopting-guardrails.md');
+  });
+});
