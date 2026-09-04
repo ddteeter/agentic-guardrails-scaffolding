@@ -115,6 +115,9 @@ describe('runStopGate', () => {
   });
 
   it('audits suppressions in an untracked new file', async () => {
+    // The auditor reports only inside an open fix loop; this test is about
+    // what the diff CONTAINS, so open one and let it speak.
+    writeSnapshot(JSON.stringify([]));
     const source = path.join(root, 'src', 'new.ts');
     mkdirSync(path.dirname(source), { recursive: true });
     writeFileSync(
@@ -138,6 +141,9 @@ describe('runStopGate', () => {
   });
 
   it('falls back to the index for an unborn branch and audits its staged diff', async () => {
+    // The auditor reports only inside an open fix loop; this test is about
+    // what the diff CONTAINS, so open one and let it speak.
+    writeSnapshot(JSON.stringify([]));
     const { exec, calls } = recordingExec((line) => {
       if (line === 'git diff HEAD')
         return { stdout: '', stderr: 'bad revision HEAD', code: 128 };
@@ -174,6 +180,9 @@ describe('runStopGate', () => {
   });
 
   it('does not hide a successful HEAD diff behind the unborn fallback', async () => {
+    // The auditor reports only inside an open fix loop; this test is about
+    // what the diff CONTAINS, so open one and let it speak.
+    writeSnapshot(JSON.stringify([]));
     const { exec, calls } = recordingExec((line) => {
       if (line === 'git diff HEAD') return ok(SNEAKY_DIFF);
       if (line.includes('--name-only') || line.includes('--others'))
@@ -186,6 +195,9 @@ describe('runStopGate', () => {
   });
 
   it('audits an untracked final line even when the file has no trailing newline', async () => {
+    // The auditor reports only inside an open fix loop; this test is about
+    // what the diff CONTAINS, so open one and let it speak.
+    writeSnapshot(JSON.stringify([]));
     mkdirSync(path.join(root, 'src'), { recursive: true });
     writeFileSync(path.join(root, 'src', 'new.ts'), '// @ts-ignore');
     const exec = makeExec((line) => {
@@ -199,6 +211,9 @@ describe('runStopGate', () => {
   });
 
   it('combines tracked and untracked audit input without dropping either', async () => {
+    // The auditor reports only inside an open fix loop; this test is about
+    // what the diff CONTAINS, so open one and let it speak.
+    writeSnapshot(JSON.stringify([]));
     mkdirSync(path.join(root, 'src'), { recursive: true });
     writeFileSync(path.join(root, 'src', 'new.ts'), '// @ts-ignore\n');
     const exec = makeExec((line) => {
@@ -324,10 +339,108 @@ function snapshotPath(): string {
   return path.join(stateDirectory(root), 'sid.pre-fix.json');
 }
 
+/**
+ * The module docstring states the invariant: "at the first delegation of a fix
+ * loop we snapshot the suppressions already present in the working diff; every
+ * subsequent cycle flags only suppressions absent from that baseline -- i.e.
+ * the ones the fixer added". The implementation broke it on exactly the cycle
+ * where no fixer has run, because the findings were computed against a
+ * baseline that did not exist yet. Everything already in the diff -- the main
+ * agent's own deliberate `eslint-disable`, a `.skip`, a `@ts-expect-error` --
+ * was reported as `Fixer added a forbidden ...`, blocked the turn, and asked
+ * for a fixer to be spawned against a manifest naming a change no fixer made.
+ * The retry then passed anyway, because the delegate had by then written the
+ * snapshot that forgave it. One wasted subagent round-trip, and a pointer to
+ * the wrong culprit, per deliberate suppression.
+ */
+describe('runStopGate — no fixer has run yet', () => {
+  it('does not attribute a pre-existing suppression to the fixer', async () => {
+    const { decision, auditFindings } = await runStopGate(
+      options(suppressionExec()),
+    );
+    expect(auditFindings).toEqual([]);
+    expect(decision.outcome).toBe('clean');
+  });
+
+  it('writes no manifest entry blaming a fixer that never ran', async () => {
+    await runStopGate(options(suppressionExec()));
+    const ids = readViolations(stateDirectory(root), 'sid').map(
+      (v) => v.ruleId,
+    );
+    expect(ids).not.toContain('guardrails/added-suppression');
+  });
+
+  it('still blocks on a real violation, and does not add the suppression to it', async () => {
+    // The suppression must not become part of the fixer's manifest: it is not
+    // the fixer's to answer for, and removing it is not the fix being asked
+    // for. The verify violation still blocks the turn.
+    const exec = makeExec((line) => {
+      if (line.includes('--name-only')) return ok('src/foo.ts');
+      if (line.includes('--others')) return ok('');
+      if (line.includes('diff') && line.includes('HEAD'))
+        return ok(SNEAKY_DIFF);
+      if (line.includes('eslint')) return ok(eslintError());
+      return ok('');
+    });
+    const { decision } = await runStopGate(options(exec));
+    expect(decision.outcome).toBe('delegate');
+    const ids = readViolations(stateDirectory(root), 'sid').map(
+      (v) => v.ruleId,
+    );
+    expect(ids).toContain('no-console');
+    expect(ids).not.toContain('guardrails/added-suppression');
+  });
+
+  it('baselines that suppression so the loop it just opened never re-flags it', async () => {
+    // The delegate above starts the fix loop, so the snapshot must capture what
+    // was already there -- otherwise cycle 2 blames the fixer for it instead.
+    const exec = makeExec((line) => {
+      if (line.includes('--name-only')) return ok('src/foo.ts');
+      if (line.includes('--others')) return ok('');
+      if (line.includes('diff') && line.includes('HEAD'))
+        return ok(SNEAKY_DIFF);
+      if (line.includes('eslint')) return ok(eslintError());
+      return ok('');
+    });
+    await runStopGate(options(exec));
+    expect(readFileSync(snapshotPath(), 'utf8')).toContain(SNEAKY_KEY);
+  });
+});
+
+/**
+ * Once a fix loop IS open, the same finding is real and must block -- this is
+ * the behaviour the change above must not cost us.
+ */
+describe('runStopGate — a fix loop is open', () => {
+  it('flags a suppression absent from the baseline', async () => {
+    writeSnapshot(JSON.stringify([]));
+    const { decision, auditFindings } = await runStopGate(
+      options(suppressionExec()),
+    );
+    expect(auditFindings.map((f) => f.kind)).toContain('eslint-disable');
+    expect(decision.outcome).toBe('delegate');
+  });
+
+  it('describes when the suppression appeared, not who it guesses added it', async () => {
+    // The gate sees a diff, not an author. Inside a fix loop the fixer is the
+    // expected editor, but the main agent is unconfined on Claude Code and can
+    // edit during a loop too -- so the message states the fact the gate
+    // actually has.
+    writeSnapshot(JSON.stringify([]));
+    await runStopGate(options(suppressionExec()));
+    const added = readViolations(stateDirectory(root), 'sid').find(
+      (v) => v.ruleId === 'guardrails/added-suppression',
+    );
+    expect(added?.message).toContain('during the fix loop');
+    expect(added?.message).not.toContain('Fixer added');
+  });
+});
+
 describe('runStopGate mutation-hardening', () => {
   it('classifies an added suppression as NON-fixable', async () => {
     // Kills `fixable: false` -> true. A fixable suppression would be routed to
     // the SILENT autofix class — the gate would quietly accept gate-cheating.
+    writeSnapshot(JSON.stringify([]));
     const { decision: _decision } = await runStopGate(
       options(suppressionExec()),
     );
@@ -367,7 +480,17 @@ describe('runStopGate mutation-hardening', () => {
   it('writes the snapshot on delegate and removes it when the loop ends', async () => {
     // Kills the `outcome === 'delegate'` conditional/equality mutants and the
     // `else { rmSync }` block removal — the baseline must not outlive its loop.
-    await runStopGate(options(suppressionExec()));
+    // Delegation is driven by a VERIFY failure here: a suppression alone no
+    // longer delegates, because outside a loop there is no fixer to blame.
+    const failing = makeExec((line) => {
+      if (line.includes('--name-only')) return ok('src/foo.ts');
+      if (line.includes('--others')) return ok('');
+      if (line.includes('diff') && line.includes('HEAD'))
+        return ok(SNEAKY_DIFF);
+      if (line.includes('eslint')) return ok(eslintError());
+      return ok('');
+    });
+    await runStopGate(options(failing));
     expect(existsSync(snapshotPath())).toBe(true);
 
     const clean = makeExec((line) => {
