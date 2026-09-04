@@ -18,7 +18,7 @@ import {
 } from './config.js';
 import type { Exec } from './exec.js';
 import { runCommitGate, runStopGate } from './gate.js';
-import { findGitRoot } from './repo-root.js';
+import { findGitRoot, resolveRepoRoot } from './repo-root.js';
 import {
   formatGrantReport,
   newlySanctioned,
@@ -113,8 +113,30 @@ const NOT_BLOCKING_NOTE =
   'guardrails: not blocking (enforcement: warn). Set "enforcement": ' +
   '"block" in guardrails.config.json to make this gate enforce.\n';
 
+/**
+ * The repository root every command works from — the git toplevel, never the
+ * directory the command happened to be invoked in.
+ *
+ * A hook payload's `cwd` and `deps.cwd` are both "where this ran", which is not
+ * the same question. Trusting them made a subdirectory invocation silently
+ * fail-open: `guardrails.config.json`, `tsconfig.json` and `package.json` all
+ * resolve at the ROOT, so from `src/` the config vanished, every analyzer
+ * became `auto` + undeclared (skip-in-silence), and `gate --mode=stop` reported
+ * a clean turn over a live type error. `stateDirectory` moved with it, so the
+ * recurrence ledger fragmented and nested `.guardrails/` directories escaped
+ * the root-anchored `.gitignore` pattern.
+ *
+ * `resolveRepoRoot` degrades to `cwd` rather than throwing, so a non-git
+ * directory keeps behaving exactly as it did. `install-hooks` already resolved
+ * this way through `detect`, for the same reason spelled out on its own
+ * docstring — this makes the rest of the CLI agree with it.
+ */
+function commandRepoRoot(deps: CliDeps, hookCwd?: string): Promise<string> {
+  return resolveRepoRoot(deps.exec, hookCwd ?? deps.cwd);
+}
+
 async function verifyCommand(deps: CliDeps): Promise<number> {
-  const repoRoot = deps.cwd;
+  const repoRoot = await commandRepoRoot(deps);
   const config = loadConfig(repoRoot);
   const { violations } = await runVerify({
     repoRoot,
@@ -135,7 +157,7 @@ async function verifyCommand(deps: CliDeps): Promise<number> {
 
 async function autofixCommand(deps: CliDeps): Promise<number> {
   const input = parseHookInput(await deps.readStdin());
-  const repoRoot = input.cwd ?? deps.cwd;
+  const repoRoot = await commandRepoRoot(deps, input.cwd);
   // No empty-list guard here: runAutofix filters to TypeScript files and returns
   // before spawning eslint when nothing is left, so a guard would only add a
   // branch whose two sides are indistinguishable through this function's one
@@ -154,7 +176,7 @@ async function gateStopCommand(
   dialect: Dialect,
 ): Promise<number> {
   const input = parseHookInput(await deps.readStdin());
-  const repoRoot = input.cwd ?? deps.cwd;
+  const repoRoot = await commandRepoRoot(deps, input.cwd);
   const sessionId = input.sessionId ?? 'default';
   const config = loadConfig(repoRoot);
   const { decision } = await runStopGate({
@@ -197,7 +219,7 @@ async function gateCommitCommand(
   deps: CliDeps,
   changedScope: 'branch' | 'staged',
 ): Promise<number> {
-  const repoRoot = deps.cwd;
+  const repoRoot = await commandRepoRoot(deps);
   const config = loadConfig(repoRoot);
   const { violations, findings, blocked } = await runCommitGate({
     repoRoot,
@@ -251,7 +273,7 @@ async function gatePreToolUseCommand(
   ) {
     return; // allow (silent)
   }
-  const repoRoot = input.cwd ?? deps.cwd;
+  const repoRoot = await commandRepoRoot(deps, input.cwd);
   const config = loadConfig(repoRoot);
   const { violations, findings, blocked } = await runCommitGate({
     repoRoot,
@@ -484,7 +506,7 @@ async function scopeCheckCommand(
   dialect: Dialect,
 ): Promise<void> {
   const input = parseHookInput(await deps.readStdin());
-  const repoRoot = input.cwd ?? deps.cwd;
+  const repoRoot = await commandRepoRoot(deps, input.cwd);
   const scope = collectManifestScope(stateDirectory(repoRoot), input.sessionId);
   // Every branch below is a FIXER lock, so a caller the host tells us is not
   // the fixer is left alone entirely.
@@ -557,7 +579,10 @@ async function scopeCheckCommand(
 async function sessionEndCommand(deps: CliDeps): Promise<number> {
   const input = parseHookInput(await deps.readStdin());
   const sessionId = input.sessionId ?? 'default';
-  deleteSession(stateDirectory(input.cwd ?? deps.cwd), sessionId);
+  deleteSession(
+    stateDirectory(await commandRepoRoot(deps, input.cwd)),
+    sessionId,
+  );
   return 0;
 }
 

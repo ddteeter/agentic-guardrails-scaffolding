@@ -453,6 +453,98 @@ describe('runCommand — session lifecycle', () => {
   });
 });
 
+/**
+ * Every command but `init` and `install-hooks` computed `repoRoot` as
+ * `input.cwd ?? deps.cwd` and trusted it. Measured on a scaffolded greenfield
+ * repo, `gate --mode=stop` run from `src/` exited 0 with NO output while a live
+ * TS2322 sat in the tree: at that root no `tsconfig.json`, `package.json` or
+ * `guardrails.config.json` resolves, so every analyzer is `auto` + undeclared,
+ * which is skip-in-silence. It also wrote a stray `src/.guardrails/` that the
+ * root-anchored `.gitignore` pattern does not cover.
+ *
+ * `resolveRepoRoot` already existed, was tested, and was used by
+ * `scaffold/detect.ts` -- which is exactly why `init` was the one command that
+ * behaved from a subdirectory. These pin that the rest now agree with it.
+ */
+/**
+ * A subdirectory of a repository, with the root marked the way a LINKED
+ * worktree marks it: `.git` as a file, not a directory. `findGitRoot` matches
+ * it by plain existence for exactly that reason, so this shape covers both.
+ */
+function subdirectoryOf(repoRoot: string): string {
+  writeFileSync(path.join(repoRoot, '.git'), 'gitdir: elsewhere\n');
+  const nested = path.join(repoRoot, 'src');
+  mkdirSync(nested, { recursive: true });
+  return nested;
+}
+
+describe('runCommand — anchors on the git root, not the invocation directory', () => {
+  it('session-end deletes the root session, not one under the subdirectory', async () => {
+    const nested = subdirectoryOf(root);
+    saveSession(stateDirectory(root), 'sid', {
+      attempts: 2,
+      ruleCounts: {},
+      corrected: [],
+    });
+    const stdin = JSON.stringify({ session_id: 'sid', cwd: nested });
+
+    expect(
+      await runCommand(
+        'session-end',
+        [],
+        deps({ cwd: nested, readStdin: () => Promise.resolve(stdin) }),
+      ),
+    ).toBe(0);
+
+    expect(existsSync(sessionFile(stateDirectory(root), 'sid'))).toBe(false);
+    // The hygiene half of the same bug: state written anywhere but the true
+    // root escapes `.gitignore`'s root-anchored pattern and is committable.
+    expect(existsSync(path.join(nested, '.guardrails'))).toBe(false);
+  });
+
+  it('scope-check still enforces a lock recorded at the root', async () => {
+    // The fail-open that matters most: the manifest lives at the repo root, so
+    // reading state relative to a subdirectory found none and the fixer's
+    // scope-lock silently stood aside.
+    const nested = subdirectoryOf(root);
+    writeActiveViolations('sid', [violation('src/allowed.ts')]);
+    const stdin = JSON.stringify({
+      session_id: 'sid',
+      cwd: nested,
+      tool_input: { file_path: path.join(root, 'src/forbidden.ts') },
+      agent_id: 'fixer',
+      agent_type: 'guardrail-fixer',
+    });
+
+    await runCommand(
+      'scope-check',
+      [],
+      deps({ cwd: nested, readStdin: () => Promise.resolve(stdin) }),
+    );
+
+    expect(out.join('')).toContain('deny');
+  });
+
+  it('falls back to the invocation directory outside a repository', async () => {
+    // `resolveRepoRoot` degrades to `cwd` rather than throwing, so a non-git
+    // directory keeps working exactly as it did.
+    saveSession(stateDirectory(root), 'sid', {
+      attempts: 1,
+      ruleCounts: {},
+      corrected: [],
+    });
+    const stdin = JSON.stringify({ session_id: 'sid', cwd: root });
+    expect(
+      await runCommand(
+        'session-end',
+        [],
+        deps({ readStdin: () => Promise.resolve(stdin) }),
+      ),
+    ).toBe(0);
+    expect(existsSync(sessionFile(stateDirectory(root), 'sid'))).toBe(false);
+  });
+});
+
 describe('runCommand — unknown', () => {
   // The banner is the discoverability surface for an unattended agent that
   // guessed a command wrong -- so it has to name the bin that actually exists
@@ -1765,6 +1857,11 @@ describe('autofix command', () => {
     expect(eslintCall).toContain('src/edited.ts');
   });
 
+  // Asserts on the ESLINT call rather than an empty exec log: every command now
+  // resolves the repository root first, and outside a repository (this tmpdir)
+  // that falls back through `git rev-parse --show-toplevel`. The claim being
+  // pinned is unchanged — autofix spawns no linter when there is nothing to
+  // lint.
   it('runs nothing when the hook payload carries no file path', async () => {
     const { exec, calls } = execRecorder();
     const stdin = JSON.stringify({ cwd: root, tool_name: 'Bash' });
@@ -1774,7 +1871,9 @@ describe('autofix command', () => {
       deps({ exec, readStdin: () => Promise.resolve(stdin) }),
     );
     expect(code).toBe(0);
-    expect(calls).toEqual([]);
+    expect(
+      calls.find((call) => call[0]?.includes('eslint') === true),
+    ).toBeUndefined();
   });
 
   it('runs nothing when the edited file is not TypeScript', async () => {
@@ -1791,7 +1890,9 @@ describe('autofix command', () => {
       deps({ exec, readStdin: () => Promise.resolve(stdin) }),
     );
     expect(code).toBe(0);
-    expect(calls).toEqual([]);
+    expect(
+      calls.find((call) => call[0]?.includes('eslint') === true),
+    ).toBeUndefined();
   });
 
   it("resolves eslint from the payload cwd's local bin, not the process cwd", async () => {
