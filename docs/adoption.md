@@ -117,7 +117,22 @@ Not every analyzer runs on every turn. `guardrails-core/src/verify/index.ts`'s
 The practical read: eslint and tsc are cheap enough to run after every agent
 turn. knip, dependency-cruiser, and stryker are whole-graph or mutation
 analysis — too slow for a per-turn gate — so they only fire at `git commit`
-(via `.githooks/pre-commit`) and in CI. An analyzer set to `"off"` in
+(via `.githooks/pre-commit`), at `git push` (via `.githooks/pre-push`), and in
+CI.
+
+**Three local rungs, differing only in which change set the diff-scoped
+analyzers see.** `--mode=commit` scopes them to the **staged** files, so the
+cost of committing does not grow with the length of the branch — under a
+branch-wide scope, stryker re-mutates every production file the branch has
+touched on every single commit. `--mode=push` and `--mode=ci` scope to the
+branch diff instead. Every file is still mutation-gated in the commit that
+changes it; what the wider scope adds is the interaction a per-commit scope
+cannot see — a commit that removes the test killing a mutant in a file it does
+not itself touch — and `.githooks/pre-push` catches that before the code leaves
+the machine. The diff-auditor and sanction budget always audit the branch diff,
+in every mode, so a suppression added in an earlier commit keeps flagging.
+
+An analyzer set to `"off"` in
 `guardrails.config.json`'s `analyzers` block never runs at any rung, which is
 how you adopt eslint/tsc first and turn on the heavier three once your
 baseline is clean under them.
@@ -142,10 +157,11 @@ analyzers in the commit/CI gate.
 ## Starting in `warn`, graduating to `block`
 
 `guardrails.config.json`'s `enforcement` field (`"warn"` at the bare CLI
-default, or `"block"`) governs exactly two commands: `gate --mode=commit` (run by
-`.githooks/pre-commit`, and by the `guardrails gate --mode=commit` step in the
-shipped `.github/workflows/guardrails.yml`) and `gate --mode=pretooluse` (the
-Copilot commit/push self-gate). Under `warn`, both still run the full check —
+default, or `"block"`) governs the branch-gate family — `gate --mode=commit`
+(run by `.githooks/pre-commit`), `gate --mode=push` (run by
+`.githooks/pre-push`), and `gate --mode=ci` (the step in the shipped
+`.github/workflows/guardrails.yml`) — plus `gate --mode=pretooluse` (the
+Copilot commit/push self-gate). Under `warn`, all of them still run the full check —
 verify, the diff-auditor, the sanction budget — and print every violation and
 every added suppression in full; only the exit code changes, from a blocking
 non-zero to an explicit 0 with a "not blocking" note on stderr. A green run
@@ -154,7 +170,7 @@ under `warn` is never silent about violations it chose not to block on.
 **This means a "required" CI check is not automatically a hard gate.** Marking
 the `guardrails` job required in GitHub branch protection stops a PR from
 merging only when the job actually fails — and under `enforcement: "warn"`,
-`gate --mode=commit` exits 0 regardless of what it found. Flip
+`gate --mode=ci` exits 0 regardless of what it found. Flip
 `enforcement` to `"block"` before a required check does anything.
 
 **The Claude Code and Codex Stop loops are never softened by this field.** The
@@ -187,7 +203,7 @@ fails closed rather than treating an unknown input set as clean.
 
 **Do not trim `fetch-depth` on the shipped CI workflow.**
 `.github/workflows/guardrails.yml` checks out with `fetch-depth: 0` on
-purpose: `gate --mode=commit`'s diff-auditor and sanction budget diff against
+purpose: `gate --mode=ci`'s diff-auditor and sanction budget diff against
 `git merge-base <baseBranch> HEAD`, which needs history a shallow checkout
 doesn't have. When that `merge-base` call fails, `branchDiff` (`gate.ts`)
 falls back to `git diff --cached` — empty in a CI checkout, since nothing is

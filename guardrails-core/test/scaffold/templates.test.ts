@@ -127,6 +127,26 @@ describe('buildDesiredFiles — the shipped template tree', () => {
     );
   });
 
+  it('scaffolds a pre-push hook running the branch-scoped gate', () => {
+    // The third local rung. `--mode=commit` now means "staged files", so
+    // without this nothing re-checks the whole branch until CI.
+    const desired = buildDesiredFiles(facts(), decisions());
+    expect(Object.keys(desired)).toContain('.githooks/pre-push');
+    expect(contentOf(desired, '.githooks/pre-push')).toContain('--mode=push');
+  });
+
+  it('runs the shipped CI workflow at the ci rung, not the commit rung', () => {
+    // Correctness, not tidiness: `--mode=commit` scopes to STAGED files, and
+    // nothing is staged in a CI checkout -- so the old spelling would check an
+    // empty file set and report clean.
+    const workflow = readFileSync(
+      path.join(templatesRoot(), 'workflows', 'guardrails.yml'),
+      'utf8',
+    );
+    expect(workflow).toContain('gate --mode=ci');
+    expect(workflow).not.toContain('gate --mode=commit');
+  });
+
   it('carries the CI workflow template bytes verbatim (spec §8.1)', () => {
     const desired = buildDesiredFiles(facts(), decisions());
     expect(contentOf(desired, '.github/workflows/guardrails.yml')).toBe(

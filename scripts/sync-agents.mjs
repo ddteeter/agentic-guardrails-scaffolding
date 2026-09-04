@@ -401,6 +401,10 @@ copyFileSync(
   path.join(root, '.githooks', 'pre-commit'),
   path.join(gitHooks, 'pre-commit'),
 );
+copyFileSync(
+  path.join(root, '.githooks', 'pre-push'),
+  path.join(gitHooks, 'pre-push'),
+);
 
 // Consumer CI workflow (spec §8.1). Unlike the wiring files above, this one
 // has no "this repo's own live wiring" source to copy from: this repo's own

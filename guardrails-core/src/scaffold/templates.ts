@@ -100,6 +100,10 @@ const TEMPLATE_FILES: readonly DesiredEntry[] = [
   ],
   ['copilot/hooks/guardrails.json', '.github/hooks/guardrails.json'],
   ['githooks/pre-commit', '.githooks/pre-commit'],
+  // The branch-wide local rung. pre-commit scopes to staged files so commits
+  // stay fast; this re-checks the whole branch once before it leaves the
+  // machine, catching what a per-commit scope structurally cannot.
+  ['githooks/pre-push', '.githooks/pre-push'],
   // OWNED, not SEED_ONCE or SHARED (spec §8.1): a consumer who edits this
   // workflow gets drift-reported and left alone on the next `init`, same as
   // any other owned file -- classifyFile's default, since this path is in

@@ -98,6 +98,7 @@ function read(relative: string): string {
 }
 
 const HOOK = '.githooks/pre-commit';
+const PUSH_HOOK = '.githooks/pre-push';
 const HOOKS_WRITE = 'git config core.hooksPath .githooks';
 
 const EXPECTED_WRITES = [
@@ -191,6 +192,14 @@ describe('init --apply', () => {
     // looks exactly like a working install until the gate never fires.
     await init('--apply');
     expect(statSync(path.join(root, HOOK)).mode & 0o111).not.toBe(0);
+  });
+
+  it('makes the pre-push hook executable too', async () => {
+    // git silently ignores a non-executable hook, so without this the push
+    // rung is a decoration rather than a gate -- and it is the rung that
+    // catches what a staged-scope commit cannot.
+    await init('--apply');
+    expect(statSync(path.join(root, PUSH_HOOK)).mode & 0o111).not.toBe(0);
   });
 
   it('does not make ordinary scaffolded files executable', async () => {
