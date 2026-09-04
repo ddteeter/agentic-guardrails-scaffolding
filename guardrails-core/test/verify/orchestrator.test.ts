@@ -1804,3 +1804,72 @@ describe('base branch resolution (the CI checkout case)', () => {
     ).toBe(false);
   });
 });
+
+/** knip walking into a nested worktree: a second checkout of this repository
+ *  reported as dead code in THIS one, alongside one genuine finding. */
+const knipWithWorktreeJson = JSON.stringify({
+  issues: [
+    { file: '.claude/worktrees/wt/src/dead.ts', files: [{ name: 'dead' }] },
+    { file: 'src/really-dead.ts', files: [{ name: 'really-dead' }] },
+  ],
+});
+
+function worktreeAwareExec(worktreeStdout: string): Exec {
+  return fakeExec({
+    'git worktree list --porcelain': {
+      stdout: worktreeStdout,
+      stderr: '',
+      code: 0,
+    },
+    'knip --reporter json': {
+      stdout: knipWithWorktreeJson,
+      stderr: '',
+      code: 1,
+    },
+  }).exec;
+}
+
+describe('runVerify nested-worktree filtering', () => {
+  it('drops violations inside a nested worktree and keeps the rest', async () => {
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec: worktreeAwareExec(
+        'worktree /repo\n\nworktree /repo/.claude/worktrees/wt\n',
+      ),
+      profile: 'commit',
+      analyzers: {
+        knip: 'required',
+        eslint: 'off',
+        tsc: 'off',
+        'dependency-cruiser': 'off',
+        stryker: 'off',
+      },
+    });
+    expect(violations.map((violation) => violation.file)).toEqual([
+      'src/really-dead.ts',
+    ]);
+  });
+
+  it('keeps every violation when there is no nested worktree', async () => {
+    // The positive control. Without it, an implementation that dropped
+    // everything under '.claude/' unconditionally would also pass above.
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec: worktreeAwareExec('worktree /repo\n'),
+      profile: 'commit',
+      analyzers: {
+        knip: 'required',
+        eslint: 'off',
+        tsc: 'off',
+        'dependency-cruiser': 'off',
+        stryker: 'off',
+      },
+    });
+    expect(violations.map((violation) => violation.file)).toEqual([
+      '.claude/worktrees/wt/src/dead.ts',
+      'src/really-dead.ts',
+    ]);
+  });
+});

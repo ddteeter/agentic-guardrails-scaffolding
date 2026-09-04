@@ -56,9 +56,11 @@ import {
 import { parseDepcruiseJson } from './depcruise-adapter.js';
 import { parseEslintJson } from './eslint-adapter.js';
 import {
+  isInsideNestedWorktree,
   isTestFile,
   isTypeScriptFile,
   mergeChangedFiles,
+  nestedWorktreePaths,
   resolveBaseReference,
 } from './git.js';
 import { parseKnipJson } from './knip-adapter.js';
@@ -732,13 +734,28 @@ export async function runVerify(options: VerifyOptions): Promise<VerifyResult> {
       violations.push(missingToolViolation(analyzer.tool, analyzer.provider));
     }
   }
+  // A nested worktree is a whole second checkout of this repository, and every
+  // analyzer that walks the tree reports it. Filtering HERE rather than inside
+  // each adapter means one rule covers all of them -- including any analyzer
+  // added later, which would otherwise have to remember to opt in.
+  //
+  // `options.exec`, not the `tracked` wrapper: a spawn failure recorded there
+  // becomes a `guardrails/analyzer-missing` violation for git, which
+  // `changedTypeScriptFiles` already reports. Routing this call through it
+  // would report a missing git twice.
+  // Filtering unconditionally rather than short-circuiting on an empty list:
+  // with no nested worktrees the predicate is false for every violation, so a
+  // fast path would only save one array copy while adding a branch no test can
+  // distinguish.
+  const nested = await nestedWorktreePaths(options.exec, options.repoRoot);
+  const scoped = violations.filter(
+    (violation) => !isInsideNestedWorktree(violation.file, nested),
+  );
+
   // Attribution is per-file, so it happens here rather than inside any adapter.
   // Built once per run: the resolver reads the filesystem at construction and is
   // pure thereafter.
   return {
-    violations: withPackages(
-      violations,
-      loadWorkspaceResolver(options.repoRoot),
-    ),
+    violations: withPackages(scoped, loadWorkspaceResolver(options.repoRoot)),
   };
 }
