@@ -1353,10 +1353,10 @@ describe('analyzers that run and then fail (defect 1: exit code ignored)', () =>
       (v) => v.ruleId === 'guardrails/analyzer-failed',
     );
     expect(failed).toBeDefined();
-    expect(failed?.message).not.toContain('First line of stderr');
+    expect(failed?.message).not.toContain('stderr:');
   });
 
-  it('picks the first NON-BLANK line of stderr, trimmed, skipping leading blank lines', async () => {
+  it('keeps the non-blank stderr lines, trimmed, skipping blank ones', async () => {
     const { exec } = fakeExec({
       'eslint --format json --no-warn-ignored src/foo.ts src/new.ts': {
         stdout: '',
@@ -1374,11 +1374,82 @@ describe('analyzers that run and then fail (defect 1: exit code ignored)', () =>
       (v) => v.ruleId === 'guardrails/analyzer-failed',
     );
     expect(failed?.message).toContain(
-      'First line of stderr: "fatal: config file not found"',
+      'stderr: "fatal: config file not found; some other detail"',
     );
     // Neither the blank lines nor the untrimmed padding leaked through.
     expect(failed?.message).not.toContain('   fatal:');
-    expect(failed?.message).not.toContain('some other detail');
+  });
+});
+
+/**
+ * Verbatim eslint stderr for the single most likely first-adoption failure:
+ * a repo with no flat config. The actionable sentence is on MEANINGFUL line
+ * 3, behind a decorative banner and a version line -- so keeping only the
+ * first line handed an unattended agent the word "Oops!" and nothing else.
+ */
+const eslintNoConfigStderr = [
+  'Oops! Something went wrong! :(',
+  '',
+  'ESLint: 9.39.5',
+  '',
+  "ESLint couldn't find an eslint.config.* file.",
+  '',
+  'From ESLint v9.0.0, the default configuration file is now eslint.config.*.',
+].join('\n');
+
+async function failedMessage(stderr: string): Promise<string> {
+  const { exec } = fakeExec({
+    'eslint --format json --no-warn-ignored src/foo.ts src/new.ts': {
+      stdout: '',
+      stderr,
+      code: 2,
+    },
+  });
+  const { violations } = await runVerify({
+    repoRoot: '/repo',
+    baseBranch: 'main',
+    exec,
+    readFile: () => Promise.resolve('{}'),
+  });
+  return (
+    violations.find((v) => v.ruleId === 'guardrails/analyzer-failed')
+      ?.message ?? ''
+  );
+}
+
+describe('analyzer-failed stderr detail', () => {
+  it('surfaces the diagnosis, not just the banner', async () => {
+    const message = await failedMessage(eslintNoConfigStderr);
+    expect(message).toContain("couldn't find an eslint.config.* file");
+    // The banner is kept rather than pattern-matched away -- recognising each
+    // tool's decorative first line is hardcoded third-party copy that rots on
+    // upgrade. Five lines gets past every banner without knowing any of them.
+    expect(message).toContain('Oops!');
+  });
+
+  it('caps runaway stderr at five meaningful lines', async () => {
+    const message = await failedMessage(
+      Array.from({ length: 200 }, (_, index) => `line ${index}`).join('\n'),
+    );
+    expect(message).toContain('line 4');
+    expect(message).not.toContain('line 5');
+  });
+
+  it('truncates a single enormous line rather than flooding the manifest', async () => {
+    const message = await failedMessage('x'.repeat(5000));
+    expect(message.length).toBeLessThan(1000);
+    expect(message).toContain('…');
+  });
+
+  it('keeps stderr that is exactly at the cap, untruncated', async () => {
+    // The boundary. The two cases above sit far either side of 500, so they
+    // cannot tell `<=` from `<` -- the difference shows up only at exactly the
+    // limit, where a length-500 detail must survive whole rather than lose its
+    // last character to an ellipsis.
+    const exact = 'x'.repeat(500);
+    const message = await failedMessage(exact);
+    expect(message).toContain(exact);
+    expect(message).not.toContain('…');
   });
 });
 
@@ -1802,5 +1873,74 @@ describe('base branch resolution (the CI checkout case)', () => {
         (call) => call.command === 'git' && call.args.includes('ls-files'),
       ),
     ).toBe(false);
+  });
+});
+
+/** knip walking into a nested worktree: a second checkout of this repository
+ *  reported as dead code in THIS one, alongside one genuine finding. */
+const knipWithWorktreeJson = JSON.stringify({
+  issues: [
+    { file: '.claude/worktrees/wt/src/dead.ts', files: [{ name: 'dead' }] },
+    { file: 'src/really-dead.ts', files: [{ name: 'really-dead' }] },
+  ],
+});
+
+function worktreeAwareExec(worktreeStdout: string): Exec {
+  return fakeExec({
+    'git worktree list --porcelain': {
+      stdout: worktreeStdout,
+      stderr: '',
+      code: 0,
+    },
+    'knip --reporter json': {
+      stdout: knipWithWorktreeJson,
+      stderr: '',
+      code: 1,
+    },
+  }).exec;
+}
+
+describe('runVerify nested-worktree filtering', () => {
+  it('drops violations inside a nested worktree and keeps the rest', async () => {
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec: worktreeAwareExec(
+        'worktree /repo\n\nworktree /repo/.claude/worktrees/wt\n',
+      ),
+      profile: 'commit',
+      analyzers: {
+        knip: 'required',
+        eslint: 'off',
+        tsc: 'off',
+        'dependency-cruiser': 'off',
+        stryker: 'off',
+      },
+    });
+    expect(violations.map((violation) => violation.file)).toEqual([
+      'src/really-dead.ts',
+    ]);
+  });
+
+  it('keeps every violation when there is no nested worktree', async () => {
+    // The positive control. Without it, an implementation that dropped
+    // everything under '.claude/' unconditionally would also pass above.
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec: worktreeAwareExec('worktree /repo\n'),
+      profile: 'commit',
+      analyzers: {
+        knip: 'required',
+        eslint: 'off',
+        tsc: 'off',
+        'dependency-cruiser': 'off',
+        stryker: 'off',
+      },
+    });
+    expect(violations.map((violation) => violation.file)).toEqual([
+      '.claude/worktrees/wt/src/dead.ts',
+      'src/really-dead.ts',
+    ]);
   });
 });

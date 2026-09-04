@@ -10,3 +10,10 @@ reports/
 !.guardrails/state/recurrence.json
 .claude/agents/
 .claude/skills/
+# Nested git worktrees are whole second checkouts of this repository. Without
+# this, knip walks into them and reports them as THIS repo's dead code --
+# measured at 661 phantom violations and a commit gate that blocked every
+# commit. This file predates `guardrails init` and carries no
+# `guardrails:start`/`end` markers, so the shipped GITIGNORE_BLOCK does not
+# reach it; the entry has to be kept here by hand.
+.claude/worktrees/

@@ -39,6 +39,14 @@ module.exports = {
   ],
   options: {
     doNotFollow: { path: 'node_modules' },
+    // Nested git worktrees are whole second checkouts of this repository.
+    // dependency-cruiser does NOT read .gitignore, so the entry there does
+    // nothing for it: measured before this, 671 of 792 cruised modules came
+    // from worktree copies. Silent today only because `exec-seam` happens not
+    // to fire in them -- any broader rule would report once per checkout.
+    // This file is the repo's own, not the shipped SEED, so it needs the
+    // exclude applied here by hand.
+    exclude: { path: '^\\.claude/worktrees/' },
     // Must be an ABSOLUTE path here, not the relative 'guardrails-core/tsconfig.json'
     // it looks like it should be. With a relative fileName, TypeScript's own
     // config-extends resolution (typescript.js's getExtendsConfigPathOrArray ->

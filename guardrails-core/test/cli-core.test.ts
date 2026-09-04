@@ -186,7 +186,11 @@ describe('runCommand — scope-check', () => {
     expect(out.join('')).toBe('');
   });
 
-  it('denies a Read outside the repo (e.g. ~/.claude memory)', async () => {
+  it('denies a fixer Read outside the repo (e.g. ~/.claude memory)', async () => {
+    // The manifest is what makes this a FIXER session. Without it the read
+    // lock must stand aside -- see 'allows an out-of-repo read when NO fixer
+    // is active' below.
+    writeActiveViolations('default', [violation('src/a.ts')]);
     const stdin = JSON.stringify({
       cwd: root,
       tool_name: 'Read',
@@ -295,7 +299,8 @@ describe('runCommand — scope-check', () => {
     ).toContain('deny');
   });
 
-  it('denies a Copilot `view` read outside the repo', async () => {
+  it('denies a fixer Copilot `view` read outside the repo', async () => {
+    writeActiveViolations('default', [violation('src/a.ts')]);
     const stdin = JSON.stringify({
       workingDirectory: root,
       toolName: 'view',
@@ -736,24 +741,58 @@ describe('scope-check trigger conditions', () => {
     ).toContain('deny');
   });
 
-  it('treats only exact read-tool names as reads', async () => {
-    // Kills the READ_TOOLS anchor mutants. An unanchored pattern would classify
-    // `my-read` / `read-only` as reads and deny them for being outside the repo,
-    // when they are edit-family tools that an empty manifest must let through.
-    expect(await runScopeCheck(scopeStdin('my-read', OUTSIDE_PATH))).toBe('');
-    expect(await runScopeCheck(scopeStdin('read-only', OUTSIDE_PATH))).toBe('');
+  it('treats only an exact read-tool name as a read (my-read)', async () => {
+    // Kills the READ_TOOLS anchor mutants. Both paths DENY here, so the
+    // assertion is on WHICH denial: an unanchored pattern classifies `my-read`
+    // as a read and rejects it with the read-scope message, where the correct
+    // edit-family path rejects it with the manifest scope-lock message.
+    writeActiveViolations('default', [violation('src/a.ts')]);
+    expect(await runScopeCheck(scopeStdin('my-read', OUTSIDE_PATH))).toContain(
+      'scope-lock',
+    );
+  });
+
+  it('treats only an exact read-tool name as a read (read-only)', async () => {
+    writeActiveViolations('default', [violation('src/a.ts')]);
+    expect(
+      await runScopeCheck(scopeStdin('read-only', OUTSIDE_PATH)),
+    ).toContain('scope-lock');
   });
 
   it('does not treat an arbitrary defined tool name as a read', async () => {
     // Kills `toolName !== undefined && ...` -> `||` (and -> true): an edit tool
-    // would be read-classified and denied for an out-of-repo path.
-    expect(await runScopeCheck(scopeStdin('edit', OUTSIDE_PATH))).toBe('');
+    // would be read-classified and rejected with the read-scope message.
+    writeActiveViolations('default', [violation('src/a.ts')]);
+    expect(await runScopeCheck(scopeStdin('edit', OUTSIDE_PATH))).toContain(
+      'scope-lock',
+    );
   });
 
-  it('still denies a genuine out-of-repo read', async () => {
+  it('still denies a genuine out-of-repo read while a fixer is active', async () => {
+    writeActiveViolations('default', [violation('src/a.ts')]);
     expect(await runScopeCheck(scopeStdin('Read', OUTSIDE_PATH))).toContain(
-      'deny',
+      'read-scope',
     );
+  });
+
+  it('allows an out-of-repo read when NO fixer is active', async () => {
+    // The scope-lock is a FIXER lock. With no manifest this session is the
+    // main agent, which legitimately reads outside the repo -- the user's
+    // ~/.claude memory, a sibling checkout, a build log. The read branch was
+    // the only one of the three not gated on `scope.active`, which made the
+    // lock permanent for every session in every repo that scaffolds
+    // guardrails. Found by it denying the main agent mid-session.
+    expect(await runScopeCheck(scopeStdin('Read', OUTSIDE_PATH))).toBe('');
+  });
+
+  it('allows an in-repo read while a fixer IS active', async () => {
+    // The positive control for the pair above: in-repo exploration is how the
+    // thorough tier diagnoses subtle rules, so gating the branch must not turn
+    // it into deny-every-read.
+    writeActiveViolations('default', [violation('src/a.ts')]);
+    expect(
+      await runScopeCheck(scopeStdin('Read', path.join(root, 'src/other.ts'))),
+    ).toBe('');
   });
 
   it('returns early when no filePath is supplied', async () => {

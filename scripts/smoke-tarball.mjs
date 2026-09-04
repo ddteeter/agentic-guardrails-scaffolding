@@ -242,3 +242,75 @@ run('git', ['commit', '-m', 'initial greenfield commit'], fixture);
 console.log(
   'smoke-tarball: OK — solution tsconfig, unborn branch, and first blocking commit work',
 );
+
+// 7. eslint acceptance. Every leg above runs with `eslint=off`, so the eslint
+// adapter -- the analyzer the per-turn Stop gate actually leans on -- had never
+// been exercised from a real install. Everything else in the suite runs against
+// the npm-workspace symlink, which bypasses `files`, the bin shebang, and ESM
+// resolution entirely.
+//
+// The config is deliberately PLUGIN-FREE. The point is to prove the path works
+// out of the tarball, not to re-test the plugin ecosystem: pulling in
+// typescript-eslint/unicorn/sonarjs would make this leg slow and would tie it
+// to peer-dependency constraints that are a separate concern.
+run(
+  'npm',
+  [
+    'install',
+    '--save-dev',
+    '--no-audit',
+    '--no-fund',
+    path.join(root, 'node_modules', 'eslint'),
+  ],
+  fixture,
+);
+writeFileSync(
+  path.join(fixture, 'eslint.config.js'),
+  `export default [
+  {
+    files: ['**/*.ts'],
+    rules: { 'no-unused-labels': 'error' },
+  },
+];
+`,
+);
+// Deliberately free of type annotations despite the .ts extension: this config
+// installs no TypeScript parser, so a `: void` here would be reported as
+// `eslint/parse-error` and this leg would prove nothing about rule reporting.
+// The file only has to reach the eslint adapter as a changed TS file.
+writeFileSync(
+  path.join(sourceDirectory, 'lint-me.ts'),
+  'export function go() {\n  unused: for (;;) { break; }\n}\n',
+);
+// `guardrails.config.json` is SEED-ONCE, so `init --analyzers=...` cannot
+// change the config the first leg already seeded (nor can `--force`, by
+// design). Editing the file directly is both what actually works and what a
+// consumer does.
+const configPath = path.join(fixture, 'guardrails.config.json');
+const config = JSON.parse(readFileSync(configPath, 'utf8'));
+config.analyzers = {
+  eslint: 'required',
+  tsc: 'off',
+  knip: 'off',
+  'dependency-cruiser': 'off',
+  stryker: 'off',
+};
+writeFileSync(configPath, `${JSON.stringify(config, undefined, 2)}\n`);
+
+const eslintVerify = spawnSync(guardrails, ['verify'], {
+  cwd: fixture,
+  encoding: 'utf8',
+});
+if (eslintVerify.status === 0) {
+  fail(
+    'eslint-enabled verify exited 0 on a file with a lint error. ' +
+      `stdout:\n${eslintVerify.stdout}\nstderr:\n${eslintVerify.stderr}`,
+  );
+}
+if (!eslintVerify.stderr.includes('no-unused-labels')) {
+  fail(
+    'eslint-enabled verify did not report the planted rule violation. ' +
+      `stdout:\n${eslintVerify.stdout}\nstderr:\n${eslintVerify.stderr}`,
+  );
+}
+console.log('smoke-tarball: OK — eslint runs and reports from the tarball');

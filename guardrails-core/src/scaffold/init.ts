@@ -80,6 +80,23 @@ const VALUE_FLAG_PREFIXES: readonly string[] = [
   '--distribution=',
 ];
 
+/**
+ * `adopting-guardrails` is deliberately excluded from every path `init` writes
+ * -- a document explaining how to adopt guardrails cannot be delivered BY
+ * adoption (see `templates.ts`'s ADOPTION_TIME_SKILL). It ships in the tarball
+ * instead, readable the moment `npm install` finishes.
+ *
+ * That left a narrow but real gap: nothing ever NAMED it, so an agent had to
+ * already know the file existed to read the document explaining what to do.
+ * Printing the path on both human paths puts it exactly where an agent is
+ * deciding which analyzers and enforcement level to choose. It is not printed
+ * under `--json`, whose consumers parse the payload.
+ */
+const GUIDANCE_POINTER =
+  'Next: read node_modules/guardrails-core/guidance/adopting-guardrails.md ' +
+  'for how to choose analyzers and enforcement, and which configs init ' +
+  'deliberately does not write for you.\n';
+
 const ANALYZER_MODES: readonly AnalyzerMode[] = ['off', 'auto', 'required'];
 const ENFORCEMENTS: readonly Enforcement[] = ['warn', 'block'];
 const DISTRIBUTIONS: readonly Distribution[] = ['solo', 'team'];
@@ -319,6 +336,7 @@ function printPlan(
     deps.stdout(`  ${action.kind}: ${action.path} — ${action.reason}\n`);
   }
   printWarnings(deps, plan.warnings);
+  deps.stdout(GUIDANCE_POINTER);
 }
 
 function printApply(
@@ -347,6 +365,7 @@ function printApply(
     deps.stdout(`  wrote: ${file}\n`);
   }
   printWarnings(deps, warnings);
+  deps.stdout(GUIDANCE_POINTER);
 }
 
 export async function initCommand(

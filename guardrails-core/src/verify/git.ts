@@ -5,6 +5,8 @@
  * edits are typically uncommitted, so a base-only diff would miss them.
  */
 
+import path from 'node:path';
+
 import type { Exec } from '../exec.js';
 
 /**
@@ -76,4 +78,92 @@ export function isTypeScriptFile(file: string): boolean {
 
 export function isTestFile(file: string): boolean {
   return /\.(test|spec)\.tsx?$/.test(file);
+}
+
+const WORKTREE_PREFIX = 'worktree ';
+
+/**
+ * Repo-relative POSIX prefixes for every git worktree checked out INSIDE
+ * `repoRoot`.
+ *
+ * A nested worktree is untracked but NOT ignored, so whole-graph analyzers
+ * (knip, dependency-cruiser) walk into it and report a second checkout of the
+ * repository as if it were part of this one. Claude Code creates worktrees
+ * under `.claude/worktrees/` by default, so the recommended workflow produces
+ * this state; measured here, it was 661 phantom violations and a commit gate
+ * that refused every commit.
+ *
+ * Parsing is separated from running git so the record-shape rules — the first
+ * record is always the main checkout, `HEAD`/`branch`/`locked` lines are noise
+ * — are provable without a repository.
+ */
+export function parseNestedWorktrees(
+  stdout: string,
+  repoRoot: string,
+): string[] {
+  const root = path.resolve(repoRoot);
+  const nested: string[] = [];
+  for (const line of stdout.split('\n')) {
+    if (!line.startsWith(WORKTREE_PREFIX)) {
+      continue;
+    }
+    // `.trim()` earns its place on CRLF output: splitting on '\n' leaves a
+    // trailing '\r' that would otherwise become part of the path.
+    const absolute = line.slice(WORKTREE_PREFIX.length).trim();
+    // git always emits an absolute path here. Resolving a relative one would
+    // silently depend on the PROCESS's cwd, which in a hook is not necessarily
+    // the repository being guarded -- so refuse rather than guess.
+    if (!path.isAbsolute(absolute)) {
+      continue;
+    }
+    const resolved = path.resolve(absolute);
+    // One test carries three jobs, which is why there is no separate
+    // `resolved === root` guard above it -- that case is already false here,
+    // since `root` alone cannot start with `root` PLUS a separator:
+    //   - the main checkout (always the first record) is excluded;
+    //   - '/repo-other/wt' is excluded, which is what the separator is for;
+    //   - '/repo/../evil' has already resolved to '/evil', so a path that only
+    //     LOOKED like a child on the raw string is excluded too.
+    if (!resolved.startsWith(`${root}${path.sep}`)) {
+      continue;
+    }
+    nested.push(path.relative(root, resolved).replaceAll('\\', '/'));
+  }
+  return nested;
+}
+
+/**
+ * Is this repo-relative file inside one of `prefixes`?
+ *
+ * The `/` in the second test is load-bearing: without it, a worktree named
+ * `feature` would also swallow a sibling directory named `feature-old`.
+ */
+export function isInsideNestedWorktree(
+  file: string,
+  prefixes: readonly string[],
+): boolean {
+  return prefixes.some(
+    (prefix) => file === prefix || file.startsWith(`${prefix}/`),
+  );
+}
+
+/**
+ * Nested worktrees for `repoRoot`, or none if git cannot answer.
+ *
+ * Degrading to `[]` is the STRICT choice here, not a fail-open: this list only
+ * ever removes violations, so filtering nothing leaves the gate exactly as
+ * strict as it is today. A genuinely missing git is already reported by
+ * `changedTypeScriptFiles`, so this must not report it a second time.
+ */
+export async function nestedWorktreePaths(
+  exec: Exec,
+  repoRoot: string,
+): Promise<string[]> {
+  const result = await exec('git', ['worktree', 'list', '--porcelain'], {
+    cwd: repoRoot,
+  });
+  if (result.spawnFailed === true || result.code !== 0) {
+    return [];
+  }
+  return parseNestedWorktrees(result.stdout, repoRoot);
 }

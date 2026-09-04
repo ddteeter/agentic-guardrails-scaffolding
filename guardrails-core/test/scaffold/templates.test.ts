@@ -14,6 +14,7 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -553,5 +554,38 @@ describe('SEED_ONCE_ANALYZERS', () => {
       DEPCRUISE_PATH,
       STRYKER_PATH,
     ]);
+  });
+
+  it('seeds a dependency-cruiser config that excludes nested worktrees', () => {
+    // dependency-cruiser does NOT read .gitignore, so the gitignore entry does
+    // nothing for it. Measured before this: 671 of 792 cruised modules came
+    // from worktree copies. It reports nothing today only because the seed
+    // ships a single `no-circular` rule -- the moment an adopter adds the
+    // layer rules `adopting-guardrails` step 5 tells them to add, every rule
+    // fires once per nested checkout.
+    //
+    // Written out and `require`d rather than string-matched: the seed is a
+    // string here and a .cjs file in a consumer's repo, so a broken escape in
+    // the pattern would otherwise ship silently. Loading it the way
+    // dependency-cruiser itself does is the faithful check -- and, unlike a
+    // `new Function` evaluation, is not code-eval.
+    const seed = SEED_ONCE_ANALYZERS.find(
+      (analyzer) => analyzer.tool === 'dependency-cruiser',
+    );
+    const directory = mkdtempSync(path.join(tmpdir(), 'guardrails-seed-'));
+    const seedPath = path.join(directory, '.dependency-cruiser.cjs');
+    writeFileSync(seedPath, seed?.seed ?? '');
+    const loaded = createRequire(import.meta.url)(seedPath) as {
+      options?: { exclude?: { path?: string } };
+    };
+    rmSync(directory, { recursive: true, force: true });
+    const pattern = loaded.options?.exclude?.path ?? '';
+    expect(pattern.length).toBeGreaterThan(0);
+    expect(new RegExp(pattern).test('.claude/worktrees/wt/src/a.ts')).toBe(
+      true,
+    );
+    // The positive control: the exclude must not have become a catch-all that
+    // silences the consumer's own sources too.
+    expect(new RegExp(pattern).test('src/a.ts')).toBe(false);
   });
 });

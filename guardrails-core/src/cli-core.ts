@@ -442,7 +442,13 @@ async function scopeCheckCommand(
   // thorough tier diagnoses subtle rules), but nothing OUTSIDE it (e.g. the
   // user's ~/.claude project memory). Covers both dialects' read tool: Claude's
   // `Read` and Copilot's `view`.
-  if (isReadTool(input.toolName)) {
+  //
+  // Gated on `scope.active` for the same reason the two branches around it are:
+  // with no manifest, no fixer is running and this is the MAIN agent, which
+  // reads outside the repo as a matter of course. Ungated, this branch made the
+  // read-lock permanent for every session in every repo that scaffolds
+  // guardrails -- a false positive that reached the main agent, not the fixer.
+  if (scope.active && isReadTool(input.toolName)) {
     const outside = filePaths.find((file) => !isWithinRepo(repoRoot, file));
     if (outside !== undefined) {
       denyPreToolUse(

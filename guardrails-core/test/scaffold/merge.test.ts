@@ -240,11 +240,36 @@ describe('mergeGitignore', () => {
     '!.guardrails/state/recurrence.json',
     'reports/mutation/',
     '.stryker-tmp/',
+    '.claude/worktrees/',
     '# --- guardrails:end ---',
   ].join('\n');
 
   it('adds a marker-delimited block when absent', () => {
     expect(mergeGitignore(undefined)).toBe(`${EXPECTED_BLOCK}\n`);
+  });
+
+  it('ignores nested Claude Code worktrees', () => {
+    // A worktree under `.claude/worktrees/` is untracked but NOT ignored, so
+    // knip -- which does respect .gitignore -- walks in and reports a whole
+    // second checkout of the repo as this repo's dead code. Measured before
+    // this entry existed: 661 phantom violations and a blocked commit gate.
+    expect(mergeGitignore(undefined)).toContain('.claude/worktrees/');
+  });
+
+  it('adds the worktree entry to an already-scaffolded gitignore', () => {
+    // The block is marker-REPLACED, not appended to, so a consumer scaffolded
+    // before this entry existed picks it up on their next `init --apply` with
+    // no migration step.
+    const stale = [
+      'node_modules/',
+      '',
+      '# --- guardrails:start ---',
+      '.guardrails/state/*',
+      '# --- guardrails:end ---',
+    ].join('\n');
+    const merged = mergeGitignore(stale);
+    expect(merged).toContain('.claude/worktrees/');
+    expect(merged).toContain('node_modules/');
   });
 
   it('adds a clean block when the file exists but is blank', () => {

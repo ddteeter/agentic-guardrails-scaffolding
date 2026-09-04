@@ -264,7 +264,24 @@ surface.
 
 ## Known limits
 
-Four things worth knowing before you hit them, rather than after:
+Six things worth knowing before you hit them, rather than after:
+
+- **In-repo trees that are not part of your module graph must be excluded
+  yourself.** knip and dependency-cruiser walk the repository, so a vendored or
+  `third_party` directory, generated output, or a large fixture tree gets
+  reported as your code. Nested git worktrees are the one case handled for
+  you — `verify` drops any violation resolving inside a worktree that
+  `git worktree list` reports, wherever it lives, and the scaffolded
+  `.gitignore` and dependency-cruiser seed both exclude `.claude/worktrees/` so
+  the analyzers do not waste time walking it. Everything else is yours to
+  exclude; `adopting-guardrails` step 4 prompts for it. A first `verify` that
+  reports findings by the hundred almost always means an analyzer is scanning
+  something that is not your code — check the paths before fixing anything.
+- **Delegation is serial.** While a fixer is running, its scope-lock confines
+  the main agent too: it may not edit files outside the violations manifest. So
+  the agent cannot do unrelated work while a fix is in flight. This is
+  deliberate — concurrent edits to the same tree would be worse — but it means
+  a fix cycle blocks the turn rather than overlapping with it.
 
 - **`.claude/settings.json` is reformatted on every merge**, unconditionally
   (see the SHARED-file note above). If your formatter disagrees with the

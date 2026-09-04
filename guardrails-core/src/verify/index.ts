@@ -56,9 +56,11 @@ import {
 import { parseDepcruiseJson } from './depcruise-adapter.js';
 import { parseEslintJson } from './eslint-adapter.js';
 import {
+  isInsideNestedWorktree,
   isTestFile,
   isTypeScriptFile,
   mergeChangedFiles,
+  nestedWorktreePaths,
   resolveBaseReference,
 } from './git.js';
 import { parseKnipJson } from './knip-adapter.js';
@@ -99,28 +101,54 @@ export interface VerifyResult {
   violations: Violation[];
 }
 
-/** First non-blank line of a tool's stderr, for a violation message that names
- *  *why* the tool failed rather than just that it did. `undefined` when stderr
- *  carried nothing useful. */
-function firstNonEmptyLine(text: string): string | undefined {
-  return text
+/** How much of a failed tool's stderr reaches the violation message. Five
+ *  meaningful lines clears the deepest real case measured -- eslint puts its
+ *  diagnosis on line 3, behind a banner and a version line -- without letting
+ *  a stack trace become the whole manifest. */
+const STDERR_DETAIL_LINES = 5;
+const STDERR_DETAIL_CHARS = 500;
+
+/**
+ * The useful head of a tool's stderr, for a violation message that names *why*
+ * the tool failed rather than just that it did. `undefined` when stderr carried
+ * nothing.
+ *
+ * Blank lines are dropped; decorative banners are NOT. eslint's first line is
+ * `Oops! Something went wrong! :(`, and teaching this function to recognise
+ * that would hardcode a third-party tool's copy -- the class of coupling that
+ * rots silently on upgrade, which this repo's guidance calls out by name.
+ * Keeping several lines gets past every banner without knowing any of them.
+ *
+ * Before this, only the first line was kept, so the most likely first-adoption
+ * failure -- eslint with no flat config -- reported exactly `Oops!` to an
+ * unattended agent, with the actionable sentence three lines further down.
+ */
+function stderrDetail(text: string): string | undefined {
+  const lines = text
     .split('\n')
     .map((line) => line.trim())
-    .find((line) => line.length > 0);
+    .filter((line) => line.length > 0)
+    .slice(0, STDERR_DETAIL_LINES);
+  if (lines.length === 0) {
+    return undefined;
+  }
+  const joined = lines.join('; ');
+  return joined.length <= STDERR_DETAIL_CHARS
+    ? joined
+    : `${joined.slice(0, STDERR_DETAIL_CHARS)}…`;
 }
 
 /** A guard that ran and then crashed/misconfigured, distinct from
  *  `guardrails/analyzer-missing` (which means the binary never started). Named
- *  after the tool, its exit code, and — when present — the first line of
+ *  after the tool, its exit code, and — when present — the useful head of
  *  stderr, so a consumer can tell why without re-running it. */
 function analyzerFailedViolation(
   tool: string,
   code: number,
   stderr: string,
 ): Violation {
-  const stderrLine = firstNonEmptyLine(stderr);
-  const detail =
-    stderrLine === undefined ? '' : ` First line of stderr: "${stderrLine}"`;
+  const head = stderrDetail(stderr);
+  const detail = head === undefined ? '' : ` stderr: "${head}"`;
   return {
     ruleId: 'guardrails/analyzer-failed',
     file: 'package.json',
@@ -732,13 +760,28 @@ export async function runVerify(options: VerifyOptions): Promise<VerifyResult> {
       violations.push(missingToolViolation(analyzer.tool, analyzer.provider));
     }
   }
+  // A nested worktree is a whole second checkout of this repository, and every
+  // analyzer that walks the tree reports it. Filtering HERE rather than inside
+  // each adapter means one rule covers all of them -- including any analyzer
+  // added later, which would otherwise have to remember to opt in.
+  //
+  // `options.exec`, not the `tracked` wrapper: a spawn failure recorded there
+  // becomes a `guardrails/analyzer-missing` violation for git, which
+  // `changedTypeScriptFiles` already reports. Routing this call through it
+  // would report a missing git twice.
+  // Filtering unconditionally rather than short-circuiting on an empty list:
+  // with no nested worktrees the predicate is false for every violation, so a
+  // fast path would only save one array copy while adding a branch no test can
+  // distinguish.
+  const nested = await nestedWorktreePaths(options.exec, options.repoRoot);
+  const scoped = violations.filter(
+    (violation) => !isInsideNestedWorktree(violation.file, nested),
+  );
+
   // Attribution is per-file, so it happens here rather than inside any adapter.
   // Built once per run: the resolver reads the filesystem at construction and is
   // pure thereafter.
   return {
-    violations: withPackages(
-      violations,
-      loadWorkspaceResolver(options.repoRoot),
-    ),
+    violations: withPackages(scoped, loadWorkspaceResolver(options.repoRoot)),
   };
 }
