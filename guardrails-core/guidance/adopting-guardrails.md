@@ -127,6 +127,40 @@ maintaining lint rules for somebody else's repository. That's this step's job:
   per-repo call as the eslint config above, just for a dependency instead of
   a file.
 
+**Pin TypeScript against typescript-eslint's peer range, not against
+`latest`.** This is the one dependency fact that will stop you cold, and it is
+not guardrails' constraint — it is typescript-eslint's:
+
+- `typescript-eslint@8` declares `typescript: ">=4.8.4 <6.1.0"`.
+- `npm i -D typescript` installs **7.x**.
+
+So the obvious command produces a graph npm refuses to resolve, and the escape
+hatch an agent reaches for (`--legacy-peer-deps`, `--force`) produces one that
+installs cleanly and then misbehaves. Read typescript-eslint's own
+`peerDependencies` — `npm view typescript-eslint peerDependencies` — and pin
+TypeScript inside that range. Do not copy a version from this document without
+checking; the point is the **rule**, not the numbers.
+
+`guardrails verify` reports `guardrails/peer-range-violation` if you get it
+wrong, including the case npm's install-time check misses. It is cheaper to get
+right.
+
+A stack verified together on 2026-09-03 — a worked example, not a contract:
+
+| package                 | range  | why                                 |
+| ----------------------- | ------ | ----------------------------------- |
+| `eslint`                | `^10`  |                                     |
+| `typescript`            | `~5.9` | must be <6.1 — typescript-eslint    |
+| `typescript-eslint`     | `^8`   | sets the TypeScript ceiling         |
+| `@eslint/js`            | `^10`  |                                     |
+| `eslint-plugin-unicorn` | `^74`  | current major needs `eslint >=10.4` |
+| `eslint-plugin-sonarjs` | `^4`   |                                     |
+
+guardrails-core is not the constraint: its adapters are verified against
+TypeScript 7 and ESLint 10, and its own peer ranges (`typescript: ">=5"`,
+`eslint: ">=9"`) are deliberately wide. The ceiling comes from the lint plugins
+you choose, so it moves when they do.
+
 ### 6. Run `guardrails init --apply` with the decisions
 
 Now write the files, with the analyzer set, enforcement level, and distribution

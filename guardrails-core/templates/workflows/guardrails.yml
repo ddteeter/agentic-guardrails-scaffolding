@@ -32,18 +32,19 @@ jobs:
           node-version: '24'
           cache: npm
       - run: npm ci
-      # `gate --mode=commit` runs verify PLUS the diff-auditor PLUS the
-      # sanction budget. Bare `verify` runs none of the last two.
+      # `gate --mode=ci` runs verify PLUS the diff-auditor PLUS the sanction
+      # budget. Bare `verify` runs none of the last two.
       #
-      # `--mode=commit` verifies at `profile: 'commit'`, and no analyzer
-      # currently declares `minRung: 'ci'` -- so commit and ci coverage are
-      # identical today. The day one does, this workflow needs a
-      # `--mode=ci` step too.
+      # `--mode=ci`, NOT `--mode=commit`: the commit rung scopes the
+      # diff-scoped analyzers to the STAGED files, which keeps local commits
+      # fast but is empty in a CI checkout, where nothing is staged. `ci` (and
+      # its local twin `push`) scope to the branch diff instead, which is the
+      # question CI is actually asking.
       #
       # Invoked by explicit path rather than `npx guardrails-core`. The bin is
       # named after the package, so an npx miss resolves THIS package rather
       # than a stranger's -- but it can still fetch a different VERSION than
       # `npm ci` installed. CI must run exactly what it installed, and only the
       # path form guarantees that.
-      - run: node ./node_modules/guardrails-core/dist/cli.mjs gate --mode=commit
+      - run: node ./node_modules/guardrails-core/dist/cli.mjs gate --mode=ci
       - run: node ./node_modules/guardrails-core/dist/cli.mjs sanctions-check

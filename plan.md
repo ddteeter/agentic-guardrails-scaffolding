@@ -1440,12 +1440,57 @@ worth fixing or documenting before an outside adopter meets them:
   minutes here. An agent working in small, frequent commits pays this
   repeatedly. Scoping the mutation run to the files in _this_ commit would be
   the obvious fix.
-- **The scope-lock confines the main agent during delegation, not just the
-  fixer.** While a fixer manifest is active, the main agent cannot edit files
-  outside the manifest either, so it has no useful parallel work — and every
-  attempt to end the turn re-triggers the Stop gate. Correct as designed
-  (concurrent edits would be worse), but it means delegation is strictly
-  serial, which is worth stating in the adoption docs.
+- **The scope-lock confined every agent in the session, not just the fixer —
+  fixed, tiered by host.** The manifest is keyed by session and a subagent
+  shares its parent's session id, so a fan-out of unrelated subagents during a
+  fix was confined to the fixer's manifest, as was the main agent. Now keyed on
+  agent identity where the host reports it. The research is worth recording,
+  because the surfaces differ: Claude Code supplies `agent_id`/`agent_type` on
+  every hook event; Copilot supplies them only on
+  `subagentStart`/`subagentStop`, never on `preToolUse`; Codex supplies none
+  (`openai/codex#16226`, open, citing Claude Code as the reference
+  implementation). So `agentType === undefined` is read as "this host cannot
+  tell me", never as "not a fixer", and those two surfaces keep the
+  session-scoped lock — the conservative direction, since Codex has no
+  per-agent tool allowlist to fall back on. When `openai/codex#16226` lands,
+  Codex joins the narrow tier with no design change here.
+- **Commit-rung mutation testing scaled with the branch diff — fixed.** Stryker
+  mutated every production file changed since the merge-base, so commits got
+  slower the longer a branch ran (several exceeded ten minutes on this branch
+  alone). `--mode=commit` now scopes to the staged files, with a new
+  `--mode=push` rung and `--mode=ci` carrying the branch scope. Every file is
+  still mutation-gated in the commit that changes it; the push rung catches the
+  interaction a per-commit scope structurally cannot see.
+
+### Dogfooding finding: a suppression can cost more coverage than it buys
+
+Working the `npm-peers` analyzer surfaced one provably-equivalent mutant — a
+`provider !== undefined` guard where `declared` is a `Set<string>`, so
+`declared.has(undefined)` is false for every possible input. The developer
+granted a `sanctionedSuppressions` entry for it. **Measuring the directive's
+collateral, as `crushing-mutants` requires, reversed the decision:**
+
+|                   | Ignored | Killed  | Survived |
+| ----------------- | ------- | ------- | -------- |
+| without directive | 154     | **321** | 3        |
+| with directive    | 157     | **320** | 1        |
+
+A line-scoped `disable next-line ConditionalExpression` silences _both_
+directions of the conditional, and only the `→ true` direction was equivalent —
+so the grant cost a genuinely-killed mutant. Extracting the guard onto its own
+statement (the remedy the skill prescribes for compound conditions) did not
+help, because the collateral here is direction, not adjacency.
+
+The fix was to remove the equivalent mutant rather than hide it: `npm-peers`
+declares `provider: 'npm'` so the field stays non-optional, and the "npm is not
+an installable peer dependency" fact lives in `peer-dependencies.test.ts`'s
+`NON_PACKAGE_PROVIDERS` instead, where it costs no coverage. No suppression was
+added.
+
+**The lesson for the skill:** the collateral measurement is not a formality
+after the equivalence argument — it can invalidate a correct equivalence
+argument. An equivalent mutant is a necessary condition for a suppression, not
+a sufficient one.
 
 ### Finding: the base branch never resolved in CI — every PR run was fail-open
 

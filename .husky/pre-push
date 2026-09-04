@@ -1,2 +1,10 @@
+# The branch-wide guardrail rung. `.husky/pre-commit` runs
+# `gate --mode=commit`, which scopes the analyzers to the STAGED files so
+# committing stays fast however long the branch runs. This re-checks the
+# whole branch diff once, catching what a per-commit scope structurally
+# cannot -- a commit that breaks something in a file it does not touch.
+#
+# Consumers get the same rung from the scaffolded `.githooks/pre-push`.
+node ./node_modules/guardrails-core/dist/cli.mjs gate --mode=push
 npm run test:coverage
 npm run check:graph

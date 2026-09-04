@@ -61,9 +61,11 @@ import {
   isTypeScriptFile,
   mergeChangedFiles,
   nestedWorktreePaths,
+  parseFileList,
   resolveBaseReference,
 } from './git.js';
 import { parseKnipJson } from './knip-adapter.js';
+import { parseNpmLsJson } from './npm-peers-adapter.js';
 import { parseStrykerJson } from './stryker-adapter.js';
 import { parseTscOutput } from './tsc-adapter.js';
 
@@ -76,6 +78,20 @@ export interface VerifyOptions {
   /** Cadence rung. Heavy whole-graph analyzers (knip, dependency-cruiser) run
    *  only at commit/ci; the per-turn stop gate stays fast. Defaults to 'stop'. */
   profile?: 'stop' | 'commit' | 'ci';
+  /**
+   * Which change set the diff-scoped analyzers see.
+   *
+   * `'branch'` (the default) is everything since the merge-base — the right
+   * question for a push or a CI run, which judge the branch as a whole.
+   *
+   * `'staged'` is only what is about to be committed. A pre-commit hook wants
+   * this: under branch scope, stryker re-mutates every production file the
+   * branch has touched on EVERY commit, so the cost of committing grows the
+   * longer a branch runs. Each file is still mutation-gated in the commit that
+   * changes it, and the push and CI rungs re-check the whole branch, so
+   * nothing escapes — see the design doc's "Cadence rungs" section.
+   */
+  changedScope?: 'branch' | 'staged';
   /** File reader seam (stryker writes its JSON report to disk, not stdout).
    *  Defaults to node:fs/promises readFile; injected in tests. */
   readFile?: (filePath: string) => Promise<string>;
@@ -205,6 +221,34 @@ async function changedTypeScriptFiles(
   options: VerifyOptions,
 ): Promise<{ files: string[]; violations: Violation[] }> {
   const { exec, repoRoot, baseBranch } = options;
+  // Staged scope answers a different question -- "what is in this commit?" --
+  // and answers it without a base ref at all. That is not just a shortcut: it
+  // is why the pre-commit rung works unchanged on an unborn repository, where
+  // there is no merge-base to resolve.
+  if (options.changedScope === 'staged') {
+    const staged = await exec(
+      'git',
+      ['diff', '--cached', '--name-only', '--diff-filter=ACM'],
+      { cwd: repoRoot },
+    );
+    if (staged.spawnFailed === true) {
+      return { files: [], violations: [] };
+    }
+    if (gitCallFailed(staged)) {
+      return {
+        files: [],
+        violations: [
+          analyzerFailedViolation('git', staged.code, staged.stderr),
+        ],
+      };
+    }
+    return {
+      files: parseFileList(staged.stdout).filter((file) =>
+        isTypeScriptFile(file),
+      ),
+      violations: [],
+    };
+  }
   const base = await resolveBaseReference(exec, repoRoot, baseBranch);
   if (base.spawnFailed === true) {
     // A spawn failure is git being absent entirely; runVerify reports that
@@ -282,6 +326,36 @@ async function runKnip(
     cwd: repoRoot,
   });
   return withExitCodeCheck('knip', knip, parseKnipJson(knip.stdout, repoRoot));
+}
+
+/**
+ * npm's own peer-range verdict on the installed graph. Whole-graph and cheap,
+ * so it sits at the commit rung beside knip.
+ *
+ * Deliberately NOT wrapped in `withExitCodeCheck`: `npm ls` exits 0 on a graph
+ * it has just reported problems for (measured), so the parsed output is the
+ * only signal -- an exit-code check would read a broken graph as clean.
+ *
+ * A spawn failure yields no violations rather than an error. This is a
+ * diagnostic for an incoherent install, and an environment without npm on PATH
+ * (or a repo on pnpm/yarn) is not a broken repo. A consumer who wants it
+ * enforced sets `"npm-peers": "required"`.
+ */
+async function runNpmPeers(
+  options: VerifyOptions,
+  resolveBin: (tool: string) => string,
+): Promise<Violation[]> {
+  const result = await options.exec(
+    resolveBin('npm'),
+    // `--long` for the per-node `path`, which is what lets the adapter drop a
+    // linked dependency's foreign tree -- see its `isInsideRepo`.
+    ['ls', '--json', '--all', '--long'],
+    { cwd: options.repoRoot },
+  );
+  if (result.spawnFailed === true) {
+    return [];
+  }
+  return parseNpmLsJson(result.stdout, options.repoRoot);
 }
 
 /** dependency-cruiser is whole-graph (not diff-scoped); like knip it runs at
@@ -535,6 +609,17 @@ interface Analyzer {
   tool: string;
   /** npm package providing the binary — named in the missing-analyzer message
    *  and kept in sync with peerDependencies by a test. */
+  /**
+   * The npm package a consumer installs to provide this tool.
+   *
+   * `npm-peers` names `npm`: not an installable dependency, but genuinely the
+   * binary it shells out to. Keeping this field non-optional is a deliberate
+   * mutation-testing choice -- an `undefined` guard here produces a provably
+   * equivalent mutant that cannot be suppressed without also silencing a real
+   * one on the same line (measured: killed 321 -> 320). The "not a peer
+   * dependency" fact is recorded in `NON_PACKAGE_PROVIDERS` in
+   * `test/peer-dependencies.test.ts` instead, where it costs no coverage.
+   */
   provider: string;
   minRung: Rung;
   /** Run-trigger: 'changed-files' runs only when the turn changed >=1 TS file
@@ -575,6 +660,17 @@ const ANALYZERS: Analyzer[] = [
     minRung: 'commit',
     scope: 'whole-project',
     run: runKnip,
+  },
+  {
+    // `npm` is the binary this analyzer runs, and no repo declares it as a
+    // dependency -- so `decideAnalyzer('auto', false)` resolves to
+    // run-but-never-report-missing: it runs by default and goes quiet where
+    // npm is unavailable, which is what a diagnostic wants.
+    tool: 'npm-peers',
+    provider: 'npm',
+    minRung: 'commit',
+    scope: 'whole-project',
+    run: runNpmPeers,
   },
   {
     tool: 'dependency-cruiser',
@@ -682,8 +778,16 @@ function unresolvableBaseViolation(baseBranch: string): Violation {
 
 interface SelectedAnalyzer {
   analyzer: Analyzer;
-  /** Whether a spawn failure for this analyzer should be reported as missing. */
-  reportMissing: boolean;
+  /**
+   * The provider package to name if this analyzer fails to spawn, or
+   * `undefined` when its absence is a deliberate opt-out rather than an error.
+   *
+   * Carrying the package here rather than a boolean keeps the two facts that
+   * must agree -- "report this as missing" and "there IS a package to name" --
+   * in a single value. A separate boolean would need a redundant re-check of
+   * `analyzer.provider` at the call site, on a branch no input could reach.
+   */
+  missingProvider: string | undefined;
 }
 
 /**
@@ -712,7 +816,13 @@ function selectAnalyzers(
     if (analyzer.scope === 'changed-files' && !hasChangedFiles) {
       continue;
     }
-    selected.push({ analyzer, reportMissing: decision.reportMissing });
+    // `analyzer.provider` is already `string | undefined`, so a provider-less
+    // analyzer lands on `undefined` here without a second guard -- and the call
+    // site's `!== undefined` check then skips it for free.
+    selected.push({
+      analyzer,
+      missingProvider: decision.reportMissing ? analyzer.provider : undefined,
+    });
   }
   return selected;
 }
@@ -748,7 +858,7 @@ export async function runVerify(options: VerifyOptions): Promise<VerifyResult> {
     );
   violations.push(...unknownAnalyzerViolations(analyzers));
 
-  for (const { analyzer, reportMissing } of selectAnalyzers(
+  for (const { analyzer, missingProvider } of selectAnalyzers(
     analyzers,
     declared,
     profile,
@@ -756,8 +866,8 @@ export async function runVerify(options: VerifyOptions): Promise<VerifyResult> {
   )) {
     const before = failures.length;
     violations.push(...(await analyzer.run(tracked, resolveBin, files)));
-    if (failures.length > before && reportMissing) {
-      violations.push(missingToolViolation(analyzer.tool, analyzer.provider));
+    if (failures.length > before && missingProvider !== undefined) {
+      violations.push(missingToolViolation(analyzer.tool, missingProvider));
     }
   }
   // A nested worktree is a whole second checkout of this repository, and every

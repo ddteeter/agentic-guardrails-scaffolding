@@ -68,12 +68,12 @@ jobs:
       - name: Skill docs in sync (generated docs committed)
         run: git diff --exit-code -- docs/guardrails guardrails-core/guidance guardrails-core/templates .github/copilot-instructions.md .codex/agents AGENTS.md
 
-      # `gate --mode=commit` runs verify PLUS the diff-auditor PLUS the
+      # `gate --mode=ci` runs verify PLUS the diff-auditor PLUS the
       # sanction budget -- bare `verify` runs neither of the last two, so a
       # suppression added on a branch was previously caught by the commit
       # gate locally but never by CI.
       - name: Guardrails gate (commit)
-        run: node ./node_modules/guardrails-core/dist/cli.mjs gate --mode=commit
+        run: node ./node_modules/guardrails-core/dist/cli.mjs gate --mode=ci
 
       # Visibility + well-formedness gate for the diff-auditor's ONLY escape
       # hatch. It can only FAIL on a malformed `sanctionedSuppressions` entry

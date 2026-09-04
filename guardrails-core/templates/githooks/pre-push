@@ -1,0 +1,20 @@
+#!/bin/sh
+# The branch-wide rung of the tool-agnostic guardrail floor, and the companion
+# to `.githooks/pre-commit`.
+#
+# pre-commit scopes the analyzers to the STAGED files, so committing stays fast
+# however long the branch runs. That leaves exactly one gap: a commit can break
+# something in a file it does not itself touch -- deleting the test that was
+# killing a mutant elsewhere, say. This hook closes it by re-checking the whole
+# branch diff once, before anything leaves the machine.
+#
+# Activate with:
+#   git config core.hooksPath .githooks
+# `guardrails init --apply` and `guardrails install-hooks` do that for you --
+# UNLESS core.hooksPath already points at another hooks directory, which they
+# will not overwrite. In that case call the line below from the pre-push hook
+# you already have, and this file stays inert.
+node "./node_modules/guardrails-core/dist/cli.mjs" gate --mode=push || {
+  echo "guardrails: push blocked — resolve violations or run 'guardrails verify'." >&2
+  exit 1
+}

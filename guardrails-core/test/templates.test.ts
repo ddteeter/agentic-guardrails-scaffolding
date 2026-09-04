@@ -23,6 +23,7 @@ const EXPECTED_FILES = [
   'copilot/agents/guardrail-fixer-thorough.agent.md',
   'copilot/hooks/guardrails.json',
   'githooks/pre-commit',
+  'githooks/pre-push',
   'workflows/guardrails.yml',
 ] as const;
 
@@ -128,12 +129,35 @@ describe('consumer templates', () => {
     expect(hook).not.toContain('This repo');
   });
 
-  it('ships a CI workflow that runs the commit gate plus sanctions-check', () => {
+  it('ships a pre-push hook that runs the branch-scoped gate', () => {
+    // The commit rung scopes to staged files, so this is what re-checks the
+    // whole branch before anything leaves the machine.
+    const hook = readFileSync(
+      path.join(templates, 'githooks', 'pre-push'),
+      'utf8',
+    );
+    expect(hook).toContain('gate --mode=push');
+  });
+
+  it('ships a pre-push hook with no prose about THIS repo in it', () => {
+    const hook = readFileSync(
+      path.join(templates, 'githooks', 'pre-push'),
+      'utf8',
+    );
+    expect(hook).not.toContain('.husky');
+    expect(hook).not.toContain('This repo');
+  });
+
+  it('ships a CI workflow that runs the ci gate plus sanctions-check', () => {
+    // `--mode=ci`, not `--mode=commit`: the commit rung scopes to STAGED
+    // files, and nothing is staged in a CI checkout, so the old spelling would
+    // check an empty set and report clean.
     const workflow = readFileSync(
       path.join(templates, 'workflows', 'guardrails.yml'),
       'utf8',
     );
-    expect(workflow).toContain('gate --mode=commit');
+    expect(workflow).toContain('gate --mode=ci');
+    expect(workflow).not.toContain('gate --mode=commit');
     expect(workflow).toContain('sanctions-check');
   });
 
@@ -148,7 +172,7 @@ describe('consumer templates', () => {
       'utf8',
     );
     expect(workflow).toContain(
-      'node ./node_modules/guardrails-core/dist/cli.mjs gate --mode=commit',
+      'node ./node_modules/guardrails-core/dist/cli.mjs gate --mode=ci',
     );
     expect(workflow).toContain(
       'node ./node_modules/guardrails-core/dist/cli.mjs sanctions-check',

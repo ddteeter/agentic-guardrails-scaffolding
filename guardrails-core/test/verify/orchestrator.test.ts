@@ -337,6 +337,7 @@ describe('runVerify', () => {
       'eslint',
       'tsc',
       'knip',
+      'npm-peers',
       'dependency-cruiser',
       'stryker',
     ]);
@@ -1899,6 +1900,287 @@ function worktreeAwareExec(worktreeStdout: string): Exec {
     },
   }).exec;
 }
+
+/** Distinguishes the two change sets: the branch diff names one file, the
+ *  staged diff names a different one, so which files reach the analyzers says
+ *  unambiguously which scope was used. */
+function scopeExec(): { exec: Exec; calls: Call[] } {
+  return fakeExec({
+    'git diff --name-only --diff-filter=ACM main': {
+      stdout: 'src/branch-only.ts',
+      stderr: '',
+      code: 0,
+    },
+    'git diff --cached --name-only --diff-filter=ACM': {
+      stdout: 'src/staged.ts',
+      stderr: '',
+      code: 0,
+    },
+    'git ls-files --others --exclude-standard': {
+      stdout: '',
+      stderr: '',
+      code: 0,
+    },
+  });
+}
+
+function lintedFiles(calls: Call[]): string[] {
+  const eslintCall = calls.find(
+    (call) => call.command === 'eslint' || call.args.includes('eslint'),
+  );
+  return (eslintCall?.args ?? []).filter((argument) =>
+    argument.startsWith('src/'),
+  );
+}
+
+describe('changed-file scope', () => {
+  // The mutation tax this exists to fix: with branch scope, stryker re-mutates
+  // every production file the branch has touched, on EVERY commit, so cost
+  // grows monotonically along a branch. Staged scope gates what is actually
+  // being committed.
+  it('defaults to the branch diff', async () => {
+    const { exec, calls } = scopeExec();
+    await runVerify({ repoRoot: '/repo', baseBranch: 'main', exec });
+    expect(lintedFiles(calls)).toEqual(['src/branch-only.ts']);
+  });
+
+  it('narrows to staged files when asked', async () => {
+    const { exec, calls } = scopeExec();
+    await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      changedScope: 'staged',
+    });
+    expect(lintedFiles(calls)).toEqual(['src/staged.ts']);
+  });
+
+  it('does not consult the base branch under staged scope', async () => {
+    // Staged scope needs no merge-base, which is also why it works on an
+    // unborn repository without the base-resolution dance.
+    const { exec, calls } = scopeExec();
+    await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      changedScope: 'staged',
+    });
+    expect(calls.some((call) => call.args.includes('merge-base'))).toBe(false);
+    expect(
+      calls.some(
+        (call) =>
+          call.args.includes('--diff-filter=ACM') && call.args.includes('main'),
+      ),
+    ).toBe(false);
+  });
+
+  it('asks git for the staged list in the repo root', async () => {
+    // Asserting the exact argv and cwd: without `cwd`, git answers for
+    // whatever directory the process happens to be in, which in a hook is not
+    // necessarily the repository being guarded.
+    const { exec, calls } = scopeExec();
+    await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      changedScope: 'staged',
+    });
+    expect(
+      calls.find(
+        (call) => call.command === 'git' && call.args.includes('--cached'),
+      ),
+    ).toEqual({
+      command: 'git',
+      args: ['diff', '--cached', '--name-only', '--diff-filter=ACM'],
+      options: { cwd: '/repo' },
+    });
+  });
+
+  it('lints only TypeScript files from the staged list', async () => {
+    // The staged set is whatever the developer added, which routinely includes
+    // markdown and JSON. Without the filter those reach eslint as targets.
+    //
+    // The non-TS files sit under `src/` deliberately: `lintedFiles` keeps only
+    // args starting with `src/`, so a README at the repo root would be dropped
+    // by the ASSERTION rather than by the code, and the filter would go
+    // unobserved.
+    const { exec, calls } = fakeExec({
+      'git diff --cached --name-only --diff-filter=ACM': {
+        stdout: 'src/kept.ts\nsrc/notes.md\nsrc/data.json',
+        stderr: '',
+        code: 0,
+      },
+    });
+    await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      changedScope: 'staged',
+    });
+    expect(lintedFiles(calls)).toEqual(['src/kept.ts']);
+  });
+
+  it('reports a git failure under staged scope rather than reading clean', async () => {
+    // Fail closed: an unreadable index must not look like "nothing changed".
+    const { exec, calls } = fakeExec({
+      'git diff --cached --name-only --diff-filter=ACM': {
+        stdout: '',
+        stderr: 'fatal: not a git repository',
+        code: 128,
+      },
+    });
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      changedScope: 'staged',
+    });
+    expect(violations.map((violation) => violation.ruleId)).toContain(
+      'guardrails/analyzer-failed',
+    );
+    // And no analyzer ran on a fabricated file list.
+    expect(calls.some((call) => call.command === 'eslint')).toBe(false);
+  });
+
+  it('stays silent under staged scope when git cannot be spawned', async () => {
+    // A missing git is reported once by runVerify's own spawn tracker; this
+    // path must not blame the index for it, nor invent a changed set.
+    const { exec, calls } = fakeExec({
+      'git diff --cached --name-only --diff-filter=ACM': {
+        stdout: '',
+        stderr: 'spawn git ENOENT',
+        code: 1,
+        spawnFailed: true as const,
+      },
+    });
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      changedScope: 'staged',
+    });
+    expect(
+      violations.filter(
+        (violation) => violation.ruleId === 'guardrails/analyzer-failed',
+      ),
+    ).toEqual([]);
+    expect(calls.some((call) => call.command === 'eslint')).toBe(false);
+  });
+});
+
+/** The greenfield failure, in npm's own words: `npm i -D typescript` installs a
+ *  major no released typescript-eslint accepts. */
+const npmLsInvalidJson = JSON.stringify({
+  dependencies: {
+    typescript: {
+      // `path` comes from `--long`; the adapter reports only packages
+      // physically inside the repo, so a linked dependency's foreign tree
+      // cannot leak in.
+      path: '/repo/node_modules/typescript',
+      version: '7.0.2',
+      invalid: '">=4.8.4 <6.1.0" from node_modules/typescript-eslint',
+    },
+  },
+});
+
+const peerOnlyAnalyzers = {
+  'npm-peers': 'required',
+  eslint: 'off',
+  tsc: 'off',
+  knip: 'off',
+  'dependency-cruiser': 'off',
+  stryker: 'off',
+} as const;
+
+describe('npm peer-range analyzer', () => {
+  it('reports peer-range violations at the commit rung', async () => {
+    const { exec } = fakeExec({
+      'npm ls --json --all --long': {
+        stdout: npmLsInvalidJson,
+        stderr: '',
+        code: 0,
+      },
+    });
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      profile: 'commit',
+      analyzers: peerOnlyAnalyzers,
+    });
+    expect(violations.map((violation) => violation.ruleId)).toEqual([
+      'guardrails/peer-range-violation',
+    ]);
+  });
+
+  it('reports findings even though npm ls exits 0', async () => {
+    // Measured: `npm ls` exits 0 on a graph it has just reported problems for.
+    // Wrapping this analyzer in the usual exit-code check would read a broken
+    // graph as clean, which is why it is deliberately not wrapped.
+    const { exec } = fakeExec({
+      'npm ls --json --all --long': {
+        stdout: npmLsInvalidJson,
+        stderr: '',
+        code: 0,
+      },
+    });
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      profile: 'commit',
+      analyzers: peerOnlyAnalyzers,
+    });
+    expect(violations).toHaveLength(1);
+  });
+
+  it('does NOT run at the stop rung', async () => {
+    // Whole-graph, so it belongs with knip at the commit rung rather than on
+    // every turn.
+    const { exec, calls } = fakeExec();
+    await runVerify({ repoRoot: '/repo', baseBranch: 'main', exec });
+    expect(calls.some((call) => call.command === 'npm')).toBe(false);
+  });
+
+  it('stays silent when npm cannot be spawned', async () => {
+    // A diagnostic, not a gate of last resort: an environment without npm on
+    // PATH, or a repo on pnpm, must not manufacture a blocking violation.
+    const { exec } = fakeExec({
+      'npm ls --json --all --long': {
+        stdout: npmLsInvalidJson,
+        stderr: 'not found',
+        code: 1,
+        spawnFailed: true as const,
+      },
+    });
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      profile: 'commit',
+      analyzers: { ...peerOnlyAnalyzers, 'npm-peers': 'auto' },
+    });
+    expect(violations).toEqual([]);
+  });
+
+  it('asks npm for the whole tree, in the repo root', async () => {
+    const { exec, calls } = fakeExec({
+      'npm ls --json --all --long': { stdout: '{}', stderr: '', code: 0 },
+    });
+    await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      profile: 'commit',
+      analyzers: peerOnlyAnalyzers,
+    });
+    expect(calls.find((call) => call.command === 'npm')).toEqual({
+      command: 'npm',
+      args: ['ls', '--json', '--all', '--long'],
+      options: { cwd: '/repo' },
+    });
+  });
+});
 
 describe('runVerify nested-worktree filtering', () => {
   it('drops violations inside a nested worktree and keeps the rest', async () => {

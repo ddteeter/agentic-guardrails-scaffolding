@@ -37,6 +37,7 @@ import {
   foreignHooksPath,
   HOOKS_DIRECTORY,
   HOOKS_SCRIPT_PATH,
+  PUSH_HOOK_SCRIPT_PATH,
 } from './hooks-path.js';
 import {
   planScaffold,
@@ -62,7 +63,10 @@ const INIT_USAGE =
  * hook it cannot execute, which looks exactly like a working install right up
  * until the gate never fires — so this is not cosmetic.
  */
-const EXECUTABLE_PATHS: ReadonlySet<string> = new Set([HOOKS_SCRIPT_PATH]);
+const EXECUTABLE_PATHS: ReadonlySet<string> = new Set([
+  HOOKS_SCRIPT_PATH,
+  PUSH_HOOK_SCRIPT_PATH,
+]);
 
 type Enforcement = ScaffoldDecisions['enforcement'];
 type Distribution = ScaffoldDecisions['distribution'];

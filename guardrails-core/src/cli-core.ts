@@ -31,6 +31,7 @@ import {
   formatPreToolUseDeny,
   formatStopHookOutput,
   hookFilePaths,
+  type HookInput,
   parseHookInput,
   resolveLocalBin,
 } from './hook-io.js';
@@ -182,7 +183,20 @@ async function gateStopCommand(
   return 0;
 }
 
-async function gateCommitCommand(deps: CliDeps): Promise<number> {
+/**
+ * The commit/push/ci gate. All three run the same checks; they differ only in
+ * which change set the diff-scoped analyzers see.
+ *
+ * `commit` narrows to the staged files, because under branch scope stryker
+ * re-mutates everything the branch has touched on every commit and the cost of
+ * committing grows the longer a branch runs. `push` and `ci` keep the branch
+ * scope, which is what catches the one thing staged scope cannot see: a commit
+ * that removes the test killing a mutant in a file it does not itself touch.
+ */
+async function gateCommitCommand(
+  deps: CliDeps,
+  changedScope: 'branch' | 'staged',
+): Promise<number> {
   const repoRoot = deps.cwd;
   const config = loadConfig(repoRoot);
   const { violations, findings, blocked } = await runCommitGate({
@@ -192,6 +206,7 @@ async function gateCommitCommand(deps: CliDeps): Promise<number> {
     resolveBin: binResolver(repoRoot),
     sanctionedSuppressions: config.sanctionedSuppressions,
     analyzers: config.analyzers,
+    changedScope,
   });
   printGateDetail(deps, violations, findings);
   if (!blocked) {
@@ -410,6 +425,60 @@ function isReadTool(toolName: string | undefined): boolean {
   return toolName !== undefined && READ_TOOLS.test(toolName);
 }
 
+/**
+ * The agent types the scope-lock is FOR, as the hosts report them.
+ *
+ * Not agent-settable: the host writes these fields, so a fixer cannot rename
+ * itself out of the lock.
+ */
+const FIXER_AGENT_TYPES: ReadonlySet<string> = new Set([
+  'guardrail-fixer',
+  'guardrail-fixer-thorough',
+]);
+
+/**
+ * Should this caller be confined to the violations manifest?
+ *
+ * The manifest is keyed by SESSION, and a subagent shares its parent's session
+ * id -- so without agent identity the lock cannot tell the fixer from the main
+ * agent or from a sibling subagent fanned out in parallel, and confines all of
+ * them.
+ *
+ * The dialect is what makes absence readable, and it is why `agentId` is
+ * parsed at all:
+ *
+ * - **claude** reports identity on EVERY hook event, and its SDK documents
+ *   `agent_id` as present only inside a subagent -- "Absent for the main
+ *   thread, even in --agent sessions". So on this dialect a missing `agentId`
+ *   positively identifies the MAIN THREAD, which is never the fixer. Without
+ *   this branch the main agent stayed confined during a fix, because a normal
+ *   session's main thread sends neither field and looked identical to a host
+ *   that cannot report at all.
+ * - **codex / copilot** report nothing on `preToolUse` -- Copilot only on
+ *   `subagentStart`/`subagentStop`, Codex not at all (`openai/codex#16226`).
+ *   Absence there is "I cannot tell you", so the session-scoped lock stands.
+ *   That is the conservative direction on purpose: Codex has no per-agent tool
+ *   allowlist, so this hook is its only enforcement.
+ *
+ * No surface ends up less protected than before; what changes is how narrowly
+ * the lock applies where the host gives us enough to narrow it.
+ */
+function isFixerCaller(input: HookInput, dialect: Dialect): boolean {
+  if (dialect !== 'claude') {
+    // These hosts report nothing on `preToolUse`, so there is nothing to
+    // narrow by: everyone in the session is confined, as before.
+    return true;
+  }
+  if (input.agentId === undefined) {
+    return false;
+  }
+  // A subagent whose type we somehow did not get is confined rather than
+  // trusted: unknown is not the same as "not the fixer".
+  return (
+    input.agentType === undefined || FIXER_AGENT_TYPES.has(input.agentType)
+  );
+}
+
 async function scopeCheckCommand(
   deps: CliDeps,
   dialect: Dialect,
@@ -417,11 +486,14 @@ async function scopeCheckCommand(
   const input = parseHookInput(await deps.readStdin());
   const repoRoot = input.cwd ?? deps.cwd;
   const scope = collectManifestScope(stateDirectory(repoRoot), input.sessionId);
+  // Every branch below is a FIXER lock, so a caller the host tells us is not
+  // the fixer is left alone entirely.
+  const confined = scope.active && isFixerCaller(input, dialect);
   // Codex custom agents do not expose a per-agent tool allowlist. While a
   // fixer manifest is active, the repo-level hook therefore enforces the same
   // no-shell/no-MCP boundary that Claude and Copilot express declaratively.
   if (
-    scope.active &&
+    confined &&
     (SHELL_TOOLS.test(input.toolName ?? '') ||
       (input.toolName?.startsWith('mcp__') ?? false))
   ) {
@@ -448,7 +520,7 @@ async function scopeCheckCommand(
   // reads outside the repo as a matter of course. Ungated, this branch made the
   // read-lock permanent for every session in every repo that scaffolds
   // guardrails -- a false positive that reached the main agent, not the fixer.
-  if (scope.active && isReadTool(input.toolName)) {
+  if (confined && isReadTool(input.toolName)) {
     const outside = filePaths.find((file) => !isWithinRepo(repoRoot, file));
     if (outside !== undefined) {
       denyPreToolUse(
@@ -471,7 +543,7 @@ async function scopeCheckCommand(
   const denied = filePaths.find(
     (file) => !isPathAllowed(scope.files, repoRoot, file),
   );
-  if (scope.active && denied !== undefined) {
+  if (confined && denied !== undefined) {
     denyPreToolUse(
       deps,
       `Fixer scope-lock: ${denied} is not editable. The fixer may ` +
@@ -592,7 +664,12 @@ export async function runCommand(
       const mode = flag(rest, 'mode');
       const dialect = resolveDialect(rest);
       if (mode === 'commit') {
-        return gateCommitCommand(deps);
+        return gateCommitCommand(deps, 'staged');
+      }
+      // Same checks, branch-wide scope: `push` is the local rung that catches
+      // what a staged-scope commit cannot, and `ci` is its authoritative twin.
+      if (mode === 'push' || mode === 'ci') {
+        return gateCommitCommand(deps, 'branch');
       }
       if (mode === 'pretooluse') {
         await gatePreToolUseCommand(deps, dialect);

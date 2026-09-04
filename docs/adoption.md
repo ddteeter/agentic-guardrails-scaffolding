@@ -92,8 +92,16 @@ installed: add
 node ./node_modules/guardrails-core/dist/cli.mjs gate --mode=commit
 ```
 
-to the pre-commit hook you already have, and the check runs inside your
-existing hooks instead of replacing them.
+to the pre-commit hook you already have, and this to your pre-push hook:
+
+```sh
+node ./node_modules/guardrails-core/dist/cli.mjs gate --mode=push
+```
+
+Then the checks run inside your existing hooks instead of replacing them. Both
+matter: `--mode=commit` scopes to the staged files so committing stays fast,
+and `--mode=push` is what re-checks the whole branch before it leaves the
+machine.
 
 One SHARED file is a special case worth calling out: **`.claude/settings.json`
 is re-serialized on every merge**, even when nothing guardrails-owned changed.
@@ -106,18 +114,34 @@ by your own tooling afterward. Harmless, but don't be surprised by the diff.
 Not every analyzer runs on every turn. `guardrails-core/src/verify/index.ts`'s
 `ANALYZERS` table gates each one by a minimum cadence rung:
 
-| Analyzer           | Runs at                            | Scope                                                                                  |
-| ------------------ | ---------------------------------- | -------------------------------------------------------------------------------------- |
-| eslint             | every turn (Stop gate), commit, CI | diff-scoped — only changed TypeScript files are linted                                 |
-| tsc                | every turn (Stop gate), commit, CI | triggered by a changed file, but checks the whole project (type errors are cross-file) |
-| knip               | commit and CI only                 | whole-project                                                                          |
-| dependency-cruiser | commit and CI only                 | whole-project                                                                          |
-| stryker            | commit and CI only                 | diff-scoped to changed production files                                                |
+| Analyzer           | Runs at                                  | Scope                                                                                  |
+| ------------------ | ---------------------------------------- | -------------------------------------------------------------------------------------- |
+| eslint             | every turn (Stop gate), commit, push, CI | diff-scoped — only changed TypeScript files are linted                                 |
+| tsc                | every turn (Stop gate), commit, push, CI | triggered by a changed file, but checks the whole project (type errors are cross-file) |
+| knip               | commit, push and CI only                 | whole-project                                                                          |
+| npm-peers          | commit, push and CI only                 | whole-project — asks `npm ls` which installed versions violate a peer range            |
+| dependency-cruiser | commit, push and CI only                 | whole-project                                                                          |
+| stryker            | commit, push and CI only                 | diff-scoped to changed production files                                                |
 
 The practical read: eslint and tsc are cheap enough to run after every agent
 turn. knip, dependency-cruiser, and stryker are whole-graph or mutation
 analysis — too slow for a per-turn gate — so they only fire at `git commit`
-(via `.githooks/pre-commit`) and in CI. An analyzer set to `"off"` in
+(via `.githooks/pre-commit`), at `git push` (via `.githooks/pre-push`), and in
+CI.
+
+**Three local rungs, differing only in which change set the diff-scoped
+analyzers see.** `--mode=commit` scopes them to the **staged** files, so the
+cost of committing does not grow with the length of the branch — under a
+branch-wide scope, stryker re-mutates every production file the branch has
+touched on every single commit. `--mode=push` and `--mode=ci` scope to the
+branch diff instead. Every file is still mutation-gated in the commit that
+changes it; what the wider scope adds is the interaction a per-commit scope
+cannot see — a commit that removes the test killing a mutant in a file it does
+not itself touch — and `.githooks/pre-push` catches that before the code leaves
+the machine. The diff-auditor and sanction budget always audit the branch diff,
+in every mode, so a suppression added in an earlier commit keeps flagging.
+
+An analyzer set to `"off"` in
 `guardrails.config.json`'s `analyzers` block never runs at any rung, which is
 how you adopt eslint/tsc first and turn on the heavier three once your
 baseline is clean under them.
@@ -142,10 +166,11 @@ analyzers in the commit/CI gate.
 ## Starting in `warn`, graduating to `block`
 
 `guardrails.config.json`'s `enforcement` field (`"warn"` at the bare CLI
-default, or `"block"`) governs exactly two commands: `gate --mode=commit` (run by
-`.githooks/pre-commit`, and by the `guardrails gate --mode=commit` step in the
-shipped `.github/workflows/guardrails.yml`) and `gate --mode=pretooluse` (the
-Copilot commit/push self-gate). Under `warn`, both still run the full check —
+default, or `"block"`) governs the branch-gate family — `gate --mode=commit`
+(run by `.githooks/pre-commit`), `gate --mode=push` (run by
+`.githooks/pre-push`), and `gate --mode=ci` (the step in the shipped
+`.github/workflows/guardrails.yml`) — plus `gate --mode=pretooluse` (the
+Copilot commit/push self-gate). Under `warn`, all of them still run the full check —
 verify, the diff-auditor, the sanction budget — and print every violation and
 every added suppression in full; only the exit code changes, from a blocking
 non-zero to an explicit 0 with a "not blocking" note on stderr. A green run
@@ -154,7 +179,7 @@ under `warn` is never silent about violations it chose not to block on.
 **This means a "required" CI check is not automatically a hard gate.** Marking
 the `guardrails` job required in GitHub branch protection stops a PR from
 merging only when the job actually fails — and under `enforcement: "warn"`,
-`gate --mode=commit` exits 0 regardless of what it found. Flip
+`gate --mode=ci` exits 0 regardless of what it found. Flip
 `enforcement` to `"block"` before a required check does anything.
 
 **The Claude Code and Codex Stop loops are never softened by this field.** The
@@ -187,7 +212,7 @@ fails closed rather than treating an unknown input set as clean.
 
 **Do not trim `fetch-depth` on the shipped CI workflow.**
 `.github/workflows/guardrails.yml` checks out with `fetch-depth: 0` on
-purpose: `gate --mode=commit`'s diff-auditor and sanction budget diff against
+purpose: `gate --mode=ci`'s diff-auditor and sanction budget diff against
 `git merge-base <baseBranch> HEAD`, which needs history a shallow checkout
 doesn't have. When that `merge-base` call fails, `branchDiff` (`gate.ts`)
 falls back to `git diff --cached` — empty in a CI checkout, since nothing is
@@ -264,7 +289,7 @@ surface.
 
 ## Known limits
 
-Six things worth knowing before you hit them, rather than after:
+Seven things worth knowing before you hit them, rather than after:
 
 - **In-repo trees that are not part of your module graph must be excluded
   yourself.** knip and dependency-cruiser walk the repository, so a vendored or
@@ -277,11 +302,35 @@ Six things worth knowing before you hit them, rather than after:
   exclude; `adopting-guardrails` step 4 prompts for it. A first `verify` that
   reports findings by the hundred almost always means an analyzer is scanning
   something that is not your code — check the paths before fixing anything.
-- **Delegation is serial.** While a fixer is running, its scope-lock confines
-  the main agent too: it may not edit files outside the violations manifest. So
-  the agent cannot do unrelated work while a fix is in flight. This is
-  deliberate — concurrent edits to the same tree would be worse — but it means
-  a fix cycle blocks the turn rather than overlapping with it.
+- **A graph installed past npm's peer check is reported, not tolerated.**
+  `guardrails/peer-range-violation` runs at the commit rung and asks
+  `npm ls --json` which installed packages violate another package's peer
+  range. That catches what `--legacy-peer-deps`, `--force`, and workspace
+  hoisting hide — a graph that installs cleanly and misbehaves later. It
+  reports `invalid` versions only; a missing optional peer is not a finding,
+  and each violation is reported once however many paths reach it. The case
+  that motivated it: `npm i -D typescript` installs a major no released
+  typescript-eslint accepts, so a strict TypeScript stack cannot be assembled
+  without pinning TypeScript below that ceiling. Set `"npm-peers": "off"` in
+  `analyzers` if your package manager is not npm.
+- **Whether a running fixer confines your other agents depends on the host.**
+  The violations manifest is keyed by session, and a subagent shares its
+  parent's session id — so the scope-lock narrows to the fixer only where the
+  host reports which agent is calling.
+
+  | surface         | during a fix, the main agent and sibling subagents are…                                                                                             |
+  | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+  | **Claude Code** | unaffected — `agent_id` appears only inside a subagent, so its absence identifies the main thread and a non-fixer `agent_type` identifies a sibling |
+  | **Copilot**     | confined — `preToolUse` carries no agent fields                                                                                                     |
+  | **Codex**       | confined — no agent fields at all (`openai/codex#16226`)                                                                                            |
+
+  On Copilot and Codex, a fan-out of unrelated subagents during a fix is locked
+  to the fixer's manifest, and the main agent cannot edit outside it either, so
+  a fix cycle blocks the turn rather than overlapping with it. This is the
+  conservative direction on purpose: Codex has no per-agent tool allowlist, so
+  the hook is its only enforcement, and relaxing it there would remove a real
+  guarantee to buy convenience. If `openai/codex#16226` lands, Codex joins the
+  first row.
 
 - **`.claude/settings.json` is reformatted on every merge**, unconditionally
   (see the SHARED-file note above). If your formatter disagrees with the

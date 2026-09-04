@@ -25,6 +25,10 @@ export const HOOKS_DIRECTORY = '.githooks';
 /** The hook script itself -- the thing a foreign `core.hooksPath` leaves inert. */
 export const HOOKS_SCRIPT_PATH = `${HOOKS_DIRECTORY}/pre-commit`;
 
+/** The branch-wide companion rung, inert under a foreign `core.hooksPath` for
+ *  exactly the same reason. */
+export const PUSH_HOOK_SCRIPT_PATH = `${HOOKS_DIRECTORY}/pre-push`;
+
 /**
  * The already-configured `core.hooksPath` that guardrails must not overwrite,
  * or `undefined` when there is nothing in the way -- either git has no
