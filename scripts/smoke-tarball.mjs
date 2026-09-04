@@ -314,3 +314,37 @@ if (!eslintVerify.stderr.includes('no-unused-labels')) {
   );
 }
 console.log('smoke-tarball: OK — eslint runs and reports from the tarball');
+
+// 8. The peer-range check must not report the DEVELOPMENT repo's dependency
+// graph. This fixture installs TypeScript by local path, which npm satisfies
+// with a symlink -- and `npm ls --all` walks straight through it into the
+// linked target's own tree. CI caught the adapter reporting seven findings
+// that way, all belonging to this repo rather than the fixture, including
+// "chai violates a range required by node_modules/typescript" (TypeScript
+// requires no such thing). The adapter now reports only packages physically
+// inside the repo it was asked about; this is the end-to-end proof, and it is
+// free because the link already exists above.
+const peerConfig = JSON.parse(readFileSync(configPath, 'utf8'));
+peerConfig.analyzers = {
+  'npm-peers': 'required',
+  eslint: 'off',
+  tsc: 'off',
+  knip: 'off',
+  'dependency-cruiser': 'off',
+  stryker: 'off',
+};
+writeFileSync(configPath, `${JSON.stringify(peerConfig, undefined, 2)}\n`);
+const peerVerify = spawnSync(guardrails, ['gate', '--mode=ci'], {
+  cwd: fixture,
+  encoding: 'utf8',
+});
+if (peerVerify.stderr.includes('peer-range-violation')) {
+  fail(
+    "the peer-range check reported findings from the linked dependency's own " +
+      `tree rather than this repo's. stderr:\n${peerVerify.stderr}`,
+  );
+}
+
+console.log(
+  "smoke-tarball: OK — peer check ignores a linked dependency's tree",
+);

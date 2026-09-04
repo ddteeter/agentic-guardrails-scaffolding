@@ -2073,6 +2073,10 @@ describe('changed-file scope', () => {
 const npmLsInvalidJson = JSON.stringify({
   dependencies: {
     typescript: {
+      // `path` comes from `--long`; the adapter reports only packages
+      // physically inside the repo, so a linked dependency's foreign tree
+      // cannot leak in.
+      path: '/repo/node_modules/typescript',
       version: '7.0.2',
       invalid: '">=4.8.4 <6.1.0" from node_modules/typescript-eslint',
     },
@@ -2091,7 +2095,7 @@ const peerOnlyAnalyzers = {
 describe('npm peer-range analyzer', () => {
   it('reports peer-range violations at the commit rung', async () => {
     const { exec } = fakeExec({
-      'npm ls --json --all': {
+      'npm ls --json --all --long': {
         stdout: npmLsInvalidJson,
         stderr: '',
         code: 0,
@@ -2114,7 +2118,7 @@ describe('npm peer-range analyzer', () => {
     // Wrapping this analyzer in the usual exit-code check would read a broken
     // graph as clean, which is why it is deliberately not wrapped.
     const { exec } = fakeExec({
-      'npm ls --json --all': {
+      'npm ls --json --all --long': {
         stdout: npmLsInvalidJson,
         stderr: '',
         code: 0,
@@ -2142,7 +2146,7 @@ describe('npm peer-range analyzer', () => {
     // A diagnostic, not a gate of last resort: an environment without npm on
     // PATH, or a repo on pnpm, must not manufacture a blocking violation.
     const { exec } = fakeExec({
-      'npm ls --json --all': {
+      'npm ls --json --all --long': {
         stdout: npmLsInvalidJson,
         stderr: 'not found',
         code: 1,
@@ -2161,7 +2165,7 @@ describe('npm peer-range analyzer', () => {
 
   it('asks npm for the whole tree, in the repo root', async () => {
     const { exec, calls } = fakeExec({
-      'npm ls --json --all': { stdout: '{}', stderr: '', code: 0 },
+      'npm ls --json --all --long': { stdout: '{}', stderr: '', code: 0 },
     });
     await runVerify({
       repoRoot: '/repo',
@@ -2172,7 +2176,7 @@ describe('npm peer-range analyzer', () => {
     });
     expect(calls.find((call) => call.command === 'npm')).toEqual({
       command: 'npm',
-      args: ['ls', '--json', '--all'],
+      args: ['ls', '--json', '--all', '--long'],
       options: { cwd: '/repo' },
     });
   });

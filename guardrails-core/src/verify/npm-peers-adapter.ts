@@ -15,12 +15,17 @@
  * `npm i -D typescript` installs a major no released typescript-eslint accepts
  * (`typescript-eslint@8` declares `typescript: ">=4.8.4 <6.1.0"`).
  */
+import path from 'node:path';
+
 import type { Violation } from '../violation.js';
 
-/** The fields this adapter reads from one node of npm's dependency tree. */
+/** The fields this adapter reads from one node of npm's dependency tree.
+ *  `path` comes from `--long` and is what keeps a linked dependency from
+ *  dragging another project's graph into this repo's report. */
 interface NpmLsNode {
   version?: unknown;
   invalid?: unknown;
+  path?: unknown;
   dependencies?: unknown;
 }
 
@@ -58,7 +63,7 @@ function peerViolation(
  * at a version that violates a range. That keeps this a low-false-positive
  * signal rather than a second opinion on the whole dependency graph.
  */
-export function parseNpmLsJson(stdout: string): Violation[] {
+export function parseNpmLsJson(stdout: string, repoRoot: string): Violation[] {
   let parsed: unknown;
   try {
     parsed = JSON.parse(stdout);
@@ -72,6 +77,25 @@ export function parseNpmLsJson(stdout: string): Violation[] {
     return [];
   }
 
+  const root = path.resolve(repoRoot);
+  /**
+   * Is this package physically installed inside the repo?
+   *
+   * A `file:` dependency or `npm link` puts a SYMLINK in `node_modules`, and
+   * `npm ls --all` walks through it into the target's own tree -- so the
+   * report can carry violations belonging to an entirely different project,
+   * attributed to this one. Measured in CI: the tarball smoke fixture installs
+   * TypeScript by local path, and the check reported seven findings from the
+   * development repo's graph, including nonsense like "chai violates a range
+   * required by node_modules/typescript".
+   *
+   * A node with no `path` is skipped rather than trusted: this is a diagnostic,
+   * and a finding we cannot locate is one we cannot vouch for.
+   */
+  const isInsideRepo = (nodePath: unknown): boolean =>
+    typeof nodePath === 'string' &&
+    path.resolve(nodePath).startsWith(`${root}${path.sep}`);
+
   const found = new Map<string, Violation>();
   const visit = (node: Record<string, unknown>): void => {
     const { dependencies } = node as NpmLsNode;
@@ -82,8 +106,12 @@ export function parseNpmLsJson(stdout: string): Violation[] {
       if (!isRecord(child)) {
         continue;
       }
-      const { invalid, version } = child as NpmLsNode;
-      if (typeof invalid === 'string' && invalid.length > 0) {
+      const { invalid, version, path: nodePath } = child as NpmLsNode;
+      if (
+        typeof invalid === 'string' &&
+        invalid.length > 0 &&
+        isInsideRepo(nodePath)
+      ) {
         const installed = typeof version === 'string' ? version : 'unknown';
         // Keyed by name AND version, not name alone. npm's tree can hold two
         // different versions of one package at different paths -- the shape a

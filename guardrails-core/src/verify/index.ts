@@ -347,13 +347,15 @@ async function runNpmPeers(
 ): Promise<Violation[]> {
   const result = await options.exec(
     resolveBin('npm'),
-    ['ls', '--json', '--all'],
+    // `--long` for the per-node `path`, which is what lets the adapter drop a
+    // linked dependency's foreign tree -- see its `isInsideRepo`.
+    ['ls', '--json', '--all', '--long'],
     { cwd: options.repoRoot },
   );
   if (result.spawnFailed === true) {
     return [];
   }
-  return parseNpmLsJson(result.stdout);
+  return parseNpmLsJson(result.stdout, options.repoRoot);
 }
 
 /** dependency-cruiser is whole-graph (not diff-scoped); like knip it runs at
