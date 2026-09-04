@@ -733,6 +733,49 @@ export const ANALYZER_PROVIDERS: readonly string[] = ANALYZERS.map(
   (analyzer) => analyzer.provider,
 );
 
+/**
+ * Providers that are NOT installable packages, so no peer dependency can or
+ * should be declared for them — and no caller may tell a consumer to install
+ * them.
+ *
+ * `npm-peers` shells out to `npm` itself. Declaring npm as a peer would invite
+ * an installer to materialise the package manager into a consumer's
+ * `node_modules`; leaving the analyzer's `provider` optional instead would put
+ * an `undefined` guard in `selectAnalyzers` whose mutants are provably
+ * equivalent and cannot be silenced without also losing a real one (measured:
+ * killed 321 -> 320). Recording the exception costs no coverage, and
+ * `peer-dependencies.test.ts` failing loudly is what keeps it from growing
+ * silently.
+ *
+ * It lives here rather than in that test because `init` needs it too: the
+ * scaffolder warns about analyzers whose provider the repo has not declared,
+ * and `npm-peers` must never appear in that list.
+ */
+export const NON_PACKAGE_PROVIDERS: ReadonlySet<string> = new Set(['npm']);
+
+/**
+ * Analyzer tool name -> the npm package that provides it, for every analyzer
+ * a consumer can actually install. Exported for `init`'s silent-skip warning,
+ * which has to name both halves: the tool the consumer configures and the
+ * package they type into `npm install`.
+ *
+ * A function rather than a module-level constant, deliberately. Top-level code
+ * runs once when the module is imported, which is before any mutant is
+ * switched on -- so a mutation in the expression below would be unkillable by
+ * construction, and would have read as a survivor no test could ever address.
+ * Computing it per call puts the expression back inside the tests' reach. The
+ * table is six entries; there is nothing here worth memoising.
+ */
+export function installableAnalyzerProviders(): Readonly<
+  Record<string, string>
+> {
+  return Object.fromEntries(
+    ANALYZERS.filter(
+      (analyzer) => !NON_PACKAGE_PROVIDERS.has(analyzer.provider),
+    ).map((analyzer) => [analyzer.tool, analyzer.provider]),
+  );
+}
+
 /** The valid keys of `guardrails.config.json`'s `analyzers` block. Exported so
  *  `runVerify` can flag an unrecognised key rather than let a typo silently
  *  leave an analyzer running that the author believes disabled. */

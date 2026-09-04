@@ -21,11 +21,24 @@ const DEFAULT_DECISIONS: ScaffoldDecisions = {
   force: false,
 };
 
+/**
+ * Every analyzer provider, so the default fixture produces no silent-skip
+ * warning and each test below isolates the warning it is actually about. The
+ * silent-skip tests pass their own set.
+ */
+const ALL_PROVIDERS: ReadonlySet<string> = new Set([
+  'eslint',
+  'typescript',
+  'knip',
+  'dependency-cruiser',
+  '@stryker-mutator/core',
+]);
+
 function facts(manifest?: ScaffoldManifest): RepoFacts {
   return {
     repoRoot: '/repo',
     baseBranch: 'main',
-    declaredProviders: new Set(),
+    declaredProviders: ALL_PROVIDERS,
     hasDependencyCruiserConfig: false,
     hasStrykerConfig: false,
     manifest,
@@ -360,5 +373,87 @@ describe('plan — an existing foreign core.hooksPath', () => {
 
   it('says nothing when core.hooksPath already points at .githooks', () => {
     expect(planWithHooksPath('.githooks')).toEqual([]);
+  });
+});
+
+/**
+ * The fail-quiet default, seen from a real first adoption. `init` seeds
+ * `"analyzers": {}` -- every analyzer `auto` -- and `decideAnalyzer('auto',
+ * false)` is run-but-never-report-missing. So in a repo that has not installed
+ * eslint (the current Vite react-ts template ships oxlint instead), eslint,
+ * knip, dependency-cruiser and stryker all no-op and `verify` prints
+ * `clean (0 violations)`. A gate that looks green while checking almost
+ * nothing is the one outcome worse than no gate, and nothing in `--plan` or
+ * `--apply` said a word about it.
+ *
+ * `npm-peers` is deliberately never named here: its provider is `npm`, which
+ * no repo declares and which the analyzer table documents as run-by-default.
+ */
+function planWithProviders(
+  declaredProviders: ReadonlySet<string>,
+  analyzers: ScaffoldDecisions['analyzers'] = {},
+): string {
+  return planScaffold({
+    facts: { ...facts(), declaredProviders },
+    decisions: { ...DEFAULT_DECISIONS, analyzers },
+    desired: { [OWNED_PATH]: 'hook script' },
+    current: {},
+  }).warnings.join('\n');
+}
+
+describe('plan — analyzers that will silently skip', () => {
+  it('names every enabled analyzer whose provider the repo does not declare', () => {
+    const warnings = planWithProviders(new Set());
+    for (const tool of ['eslint', 'tsc', 'knip', 'dependency-cruiser']) {
+      expect(warnings, tool).toContain(tool);
+    }
+  });
+
+  it('names the package to install, not just the analyzer', () => {
+    const warnings = planWithProviders(new Set());
+    expect(warnings).toContain('typescript');
+    expect(warnings).toContain('@stryker-mutator/core');
+  });
+
+  it('says the gate will read clean without running them', () => {
+    expect(planWithProviders(new Set())).toContain('clean');
+  });
+
+  it('drops an analyzer once its provider is declared', () => {
+    const warnings = planWithProviders(new Set(['eslint']));
+    expect(warnings).not.toContain('eslint');
+    expect(warnings).toContain('knip');
+  });
+
+  it('says nothing when every provider is declared', () => {
+    expect(
+      planWithProviders(
+        new Set([
+          'eslint',
+          'typescript',
+          'knip',
+          'dependency-cruiser',
+          '@stryker-mutator/core',
+        ]),
+      ),
+    ).toBe('');
+  });
+
+  it('never names npm-peers, whose provider is not an installable package', () => {
+    expect(planWithProviders(new Set())).not.toContain('npm-peers');
+  });
+
+  it('ignores an analyzer turned off — nothing to warn about', () => {
+    expect(planWithProviders(new Set(), { eslint: 'off' })).not.toContain(
+      'eslint',
+    );
+  });
+
+  it('ignores a required analyzer, which already errors loudly at verify', () => {
+    // `required` is the fix this warning recommends: `analyzer-missing` is a
+    // blocking violation, so the absence can no longer pass as clean.
+    expect(planWithProviders(new Set(), { knip: 'required' })).not.toContain(
+      'knip',
+    );
   });
 });

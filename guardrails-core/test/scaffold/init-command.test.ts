@@ -284,7 +284,22 @@ describe('init --apply', () => {
     expect(written).toContain(HOOK);
     expect(written).toContain('.guardrails/scaffold.json');
     expect(skipped).toEqual([]);
-    expect(warnings).toEqual([]);
+    // The fixture repo declares no analyzer providers, so the silent-skip
+    // warning is correct here -- what this asserts is that warnings reach the
+    // machine-readable report as strings, not that there are none.
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('verify reports clean without running it');
+  });
+
+  // The end-to-end half of the silent-skip warning. Its whole purpose is to be
+  // read BEFORE `--apply`, by whoever is choosing the analyzer set -- a
+  // warning that only appears in `--apply` output arrives after the decision.
+  it('warns in --plan that undeclared analyzers will be skipped silently', async () => {
+    expect(await init('--plan')).toBe(0);
+    const printed = errors.join('');
+    expect(printed).toContain('warning:');
+    expect(printed).toContain('eslint (needs eslint)');
+    expect(printed).toContain('"required"');
   });
 
   it('records a checksum per owned file in the committed manifest', async () => {
