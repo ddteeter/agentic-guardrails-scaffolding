@@ -337,17 +337,52 @@ describe('mergeGitignore', () => {
 
 describe('mergePrepareScript', () => {
   it('creates the script when there is none', () => {
-    expect(mergePrepareScript(undefined)).toBe('guardrails install-hooks');
+    expect(mergePrepareScript(undefined)).toBe('guardrails-core install-hooks');
   });
   it('appends to an existing script rather than replacing it', () => {
     // A consumer running husky must not lose it.
     expect(mergePrepareScript('husky')).toBe(
-      'husky && guardrails install-hooks',
+      'husky && guardrails-core install-hooks',
     );
   });
   it('is idempotent: an already-wired script is returned unchanged', () => {
+    expect(mergePrepareScript('husky && guardrails-core install-hooks')).toBe(
+      'husky && guardrails-core install-hooks',
+    );
+  });
+
+  // The bin is `guardrails-core`, never `guardrails` -- a real, unrelated
+  // package owns the latter on npm, which is why the rename happened. A
+  // `prepare` naming the old bin does not resolve, and npm treats a failed
+  // `prepare` as a failed install: `npm install` and `npm ci` both abort with
+  // `sh: guardrails: command not found` (code 127), so a repo scaffolded by an
+  // older guardrails cannot install its own dependencies, and the shipped CI
+  // workflow fails at `npm ci` before it reaches the gate.
+  it('rewrites a legacy `guardrails install-hooks` in place', () => {
+    expect(mergePrepareScript('guardrails install-hooks')).toBe(
+      'guardrails-core install-hooks',
+    );
+  });
+  it('rewrites the legacy command inside a compound script', () => {
     expect(mergePrepareScript('husky && guardrails install-hooks')).toBe(
-      'husky && guardrails install-hooks',
+      'husky && guardrails-core install-hooks',
+    );
+  });
+
+  // Appending instead of rewriting is the failure mode that makes the naive
+  // one-line fix insufficient: a consumer who hand-corrects the broken script
+  // would get the broken one appended straight back on the next
+  // `init --apply`, leaving `guardrails-core install-hooks && guardrails
+  // install-hooks` -- still a failed install, now harder to read.
+  it('never appends our command alongside the legacy one', () => {
+    expect(mergePrepareScript('guardrails install-hooks')).not.toContain('&&');
+  });
+
+  // The legacy rewrite matches a command, not a substring: a consumer's own
+  // `my-guardrails` binary keeps its name and simply gains ours.
+  it('leaves a different binary whose name merely ends in `guardrails` alone', () => {
+    expect(mergePrepareScript('my-guardrails install-hooks')).toBe(
+      'my-guardrails install-hooks && guardrails-core install-hooks',
     );
   });
 });
@@ -412,7 +447,7 @@ describe('mergePackageJsonScripts', () => {
   it('creates a prepare script when package.json itself is missing entirely', () => {
     const result = mergePackageJsonScripts(undefined);
     const parsed = JSON.parse(result) as { scripts: { prepare: string } };
-    expect(parsed.scripts.prepare).toBe('guardrails install-hooks');
+    expect(parsed.scripts.prepare).toBe('guardrails-core install-hooks');
   });
 
   it('handles a package.json that has no scripts object at all', () => {
@@ -422,7 +457,7 @@ describe('mergePackageJsonScripts', () => {
       scripts: { prepare: string };
     };
     expect(parsed.name).toBe('bare');
-    expect(parsed.scripts.prepare).toBe('guardrails install-hooks');
+    expect(parsed.scripts.prepare).toBe('guardrails-core install-hooks');
   });
 
   it('appends to an existing prepare script rather than replacing it', () => {
@@ -430,15 +465,17 @@ describe('mergePackageJsonScripts', () => {
       JSON.stringify({ scripts: { prepare: 'husky' } }),
     );
     const parsed = JSON.parse(result) as { scripts: { prepare: string } };
-    expect(parsed.scripts.prepare).toBe('husky && guardrails install-hooks');
+    expect(parsed.scripts.prepare).toBe(
+      'husky && guardrails-core install-hooks',
+    );
   });
 
-  it('falls back to guardrails install-hooks when an existing prepare field is not a string', () => {
+  it('falls back to guardrails-core install-hooks when an existing prepare field is not a string', () => {
     const result = mergePackageJsonScripts(
       JSON.stringify({ scripts: { prepare: 123 } }),
     );
     const parsed = JSON.parse(result) as { scripts: { prepare: string } };
-    expect(parsed.scripts.prepare).toBe('guardrails install-hooks');
+    expect(parsed.scripts.prepare).toBe('guardrails-core install-hooks');
   });
 
   it('leaves an unparseable package.json unchanged', () => {
@@ -463,7 +500,10 @@ describe('mergePackageJsonScripts', () => {
     // feeds THIS function's own 2-space output back into itself, so the
     // formats already match on the second call regardless of the bug.
     const current = `${JSON.stringify(
-      { name: 'consumer', scripts: { prepare: 'guardrails install-hooks' } },
+      {
+        name: 'consumer',
+        scripts: { prepare: 'guardrails-core install-hooks' },
+      },
       undefined,
       4,
     )}\n`;

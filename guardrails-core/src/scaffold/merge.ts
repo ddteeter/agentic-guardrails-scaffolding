@@ -209,7 +209,22 @@ export function mergeGitignore(current: string | undefined): string {
   );
 }
 
-const OUR_PREPARE_COMMAND = 'guardrails install-hooks';
+const OUR_PREPARE_COMMAND = 'guardrails-core install-hooks';
+
+/**
+ * The command earlier versions wrote, back when the bin was named
+ * `guardrails`. It no longer resolves -- a real, unrelated package owns that
+ * name on npm, which is why the bin is named after this package instead -- and
+ * npm treats a failed `prepare` as a failed install, so a repo still carrying
+ * it cannot run `npm install` or `npm ci` at all (`sh: guardrails: command not
+ * found`, exit 127). Migrating it is not cosmetic: appending the current
+ * command beside it would leave the broken half in the `&&` chain and the
+ * install would still fail.
+ *
+ * Matched as a command rather than a substring, so a consumer's own
+ * `my-guardrails install-hooks` keeps its name.
+ */
+const LEGACY_PREPARE_COMMAND = /(?<![\w-])guardrails install-hooks/g;
 
 /**
  * Appends our hook-installer to `package.json`'s `prepare` script rather than
@@ -221,10 +236,14 @@ export function mergePrepareScript(current: string | undefined): string {
   if (current === undefined) {
     return OUR_PREPARE_COMMAND;
   }
-  if (current.includes(OUR_PREPARE_COMMAND)) {
-    return current;
+  const migrated = current.replaceAll(
+    LEGACY_PREPARE_COMMAND,
+    OUR_PREPARE_COMMAND,
+  );
+  if (migrated.includes(OUR_PREPARE_COMMAND)) {
+    return migrated;
   }
-  return `${current} && ${OUR_PREPARE_COMMAND}`;
+  return `${migrated} && ${OUR_PREPARE_COMMAND}`;
 }
 
 // Exported so templates.ts's buildDesiredFiles can build the DESIRED block

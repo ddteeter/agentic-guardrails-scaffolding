@@ -224,7 +224,32 @@ describe('init --apply', () => {
     const parsed: unknown = JSON.parse(read('package.json'));
     expect(parsed).toEqual({
       name: 'consumer',
-      scripts: { prepare: 'husky && guardrails install-hooks' },
+      scripts: { prepare: 'husky && guardrails-core install-hooks' },
+    });
+  });
+
+  // The end-to-end half of the legacy-command migration (`mergePrepareScript`
+  // covers the string transform). A repo scaffolded by an older guardrails
+  // carries `guardrails install-hooks`, which no longer resolves -- npm aborts
+  // the install with exit 127 and the shipped CI workflow dies at `npm ci`. The
+  // next `init --apply` has to REPAIR that script, not append beside it.
+  it('repairs a package.json still carrying the legacy install-hooks command', async () => {
+    writeFileSync(
+      path.join(root, 'package.json'),
+      `${JSON.stringify(
+        {
+          name: 'consumer',
+          scripts: { prepare: 'husky && guardrails install-hooks' },
+        },
+        undefined,
+        2,
+      )}\n`,
+    );
+    await init('--apply');
+    const parsed: unknown = JSON.parse(read('package.json'));
+    expect(parsed).toEqual({
+      name: 'consumer',
+      scripts: { prepare: 'husky && guardrails-core install-hooks' },
     });
   });
 
@@ -237,7 +262,7 @@ describe('init --apply', () => {
     await init('--apply');
     const parsed: unknown = JSON.parse(read('package.json'));
     expect(parsed).toEqual({
-      scripts: { prepare: 'guardrails install-hooks' },
+      scripts: { prepare: 'guardrails-core install-hooks' },
     });
   });
 
