@@ -92,8 +92,16 @@ installed: add
 node ./node_modules/guardrails-core/dist/cli.mjs gate --mode=commit
 ```
 
-to the pre-commit hook you already have, and the check runs inside your
-existing hooks instead of replacing them.
+to the pre-commit hook you already have, and this to your pre-push hook:
+
+```sh
+node ./node_modules/guardrails-core/dist/cli.mjs gate --mode=push
+```
+
+Then the checks run inside your existing hooks instead of replacing them. Both
+matter: `--mode=commit` scopes to the staged files so committing stays fast,
+and `--mode=push` is what re-checks the whole branch before it leaves the
+machine.
 
 One SHARED file is a special case worth calling out: **`.claude/settings.json`
 is re-serialized on every merge**, even when nothing guardrails-owned changed.
@@ -106,13 +114,14 @@ by your own tooling afterward. Harmless, but don't be surprised by the diff.
 Not every analyzer runs on every turn. `guardrails-core/src/verify/index.ts`'s
 `ANALYZERS` table gates each one by a minimum cadence rung:
 
-| Analyzer           | Runs at                            | Scope                                                                                  |
-| ------------------ | ---------------------------------- | -------------------------------------------------------------------------------------- |
-| eslint             | every turn (Stop gate), commit, CI | diff-scoped — only changed TypeScript files are linted                                 |
-| tsc                | every turn (Stop gate), commit, CI | triggered by a changed file, but checks the whole project (type errors are cross-file) |
-| knip               | commit and CI only                 | whole-project                                                                          |
-| dependency-cruiser | commit and CI only                 | whole-project                                                                          |
-| stryker            | commit and CI only                 | diff-scoped to changed production files                                                |
+| Analyzer           | Runs at                                  | Scope                                                                                  |
+| ------------------ | ---------------------------------------- | -------------------------------------------------------------------------------------- |
+| eslint             | every turn (Stop gate), commit, push, CI | diff-scoped — only changed TypeScript files are linted                                 |
+| tsc                | every turn (Stop gate), commit, push, CI | triggered by a changed file, but checks the whole project (type errors are cross-file) |
+| knip               | commit, push and CI only                 | whole-project                                                                          |
+| npm-peers          | commit, push and CI only                 | whole-project — asks `npm ls` which installed versions violate a peer range            |
+| dependency-cruiser | commit, push and CI only                 | whole-project                                                                          |
+| stryker            | commit, push and CI only                 | diff-scoped to changed production files                                                |
 
 The practical read: eslint and tsc are cheap enough to run after every agent
 turn. knip, dependency-cruiser, and stryker are whole-graph or mutation
@@ -280,7 +289,7 @@ surface.
 
 ## Known limits
 
-Six things worth knowing before you hit them, rather than after:
+Seven things worth knowing before you hit them, rather than after:
 
 - **In-repo trees that are not part of your module graph must be excluded
   yourself.** knip and dependency-cruiser walk the repository, so a vendored or
@@ -293,6 +302,17 @@ Six things worth knowing before you hit them, rather than after:
   exclude; `adopting-guardrails` step 4 prompts for it. A first `verify` that
   reports findings by the hundred almost always means an analyzer is scanning
   something that is not your code — check the paths before fixing anything.
+- **A graph installed past npm's peer check is reported, not tolerated.**
+  `guardrails/peer-range-violation` runs at the commit rung and asks
+  `npm ls --json` which installed packages violate another package's peer
+  range. That catches what `--legacy-peer-deps`, `--force`, and workspace
+  hoisting hide — a graph that installs cleanly and misbehaves later. It
+  reports `invalid` versions only; a missing optional peer is not a finding,
+  and each violation is reported once however many paths reach it. The case
+  that motivated it: `npm i -D typescript` installs a major no released
+  typescript-eslint accepts, so a strict TypeScript stack cannot be assembled
+  without pinning TypeScript below that ceiling. Set `"npm-peers": "off"` in
+  `analyzers` if your package manager is not npm.
 - **Delegation is serial.** While a fixer is running, its scope-lock confines
   the main agent too: it may not edit files outside the violations manifest. So
   the agent cannot do unrelated work while a fix is in flight. This is
