@@ -302,7 +302,7 @@ surface.
 
 ## Known limits
 
-Seven things worth knowing before you hit them, rather than after:
+Things worth knowing before you hit them, rather than after:
 
 - **In-repo trees that are not part of your module graph must be excluded
   yourself.** knip and dependency-cruiser walk the repository, so a vendored or

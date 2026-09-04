@@ -10,7 +10,7 @@
  * already has one (husky sets `.husky/_`) is a repo where installing our hook
  * means UNINSTALLING theirs: pre-commit, commit-msg, lint-staged, all of it,
  * silently, and again on every `npm install` for as long as
- * `scripts.prepare` runs `guardrails install-hooks`.
+ * `scripts.prepare` runs `guardrails-core install-hooks`.
  *
  * Between two incomplete outcomes we take the visible one. Not activating our
  * hook leaves the consumer exactly as they were and says so out loud; taking

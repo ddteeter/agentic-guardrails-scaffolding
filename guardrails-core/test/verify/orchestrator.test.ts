@@ -1462,13 +1462,29 @@ describe('analyzer-failed output detail', () => {
     expect(message).toContain('the diagnosis');
   });
 
-  it('caps the combined streams, not each one separately', async () => {
+  // Each stream gets its own line budget, so neither can crowd the other out.
+  // The pair shares only the character cap, which is what actually bounds the
+  // manifest. Both directions matter and only one of them used to hold: a
+  // crashing tool that puts a stack trace on stderr and its real message on
+  // stdout is the same "the diagnosis is on the stream you are not reading"
+  // failure this whole change exists to fix, just one level in.
+  it('caps a flooding stdout without losing the stderr lines', async () => {
     const message = await failedMessage(
-      'e1\ne2\ne3',
+      'the real diagnosis',
       Array.from({ length: 200 }, (_, index) => `out ${index}`).join('\n'),
     );
-    expect(message).toContain('out 1');
-    expect(message).not.toContain('out 2');
+    expect(message).toContain('the real diagnosis');
+    expect(message).toContain('out 0');
+    expect(message).not.toContain('out 5');
+  });
+
+  it('caps a flooding stderr without losing the stdout diagnosis', async () => {
+    const message = await failedMessage(
+      Array.from({ length: 200 }, (_, index) => `err ${index}`).join('\n'),
+      'the real diagnosis',
+    );
+    expect(message).toContain('the real diagnosis');
+    expect(message).not.toContain('err 5');
   });
 
   // The distinction is between "the tool said nothing" and 'the tool said ""'.

@@ -143,16 +143,26 @@ const OUTPUT_DETAIL_CHARS = 500;
  * the pack. tsc and knip write diagnostics to stdout, so the most likely `tsc`
  * misconfiguration in a first adoption (`error TS5058: The specified path does
  * not exist: 'tsconfig.json'`) produced a violation carrying no diagnosis at
- * all, while tsc had said precisely what was wrong. Both streams are read, and
- * the cap applies to the pair: a tool that floods one of them must not push
- * the other's diagnosis out of the message.
+ * all, while tsc had said precisely what was wrong.
+ *
+ * Both streams are read, and each gets its OWN line budget rather than sharing
+ * one. Concatenating them and taking the first five lines of the result would
+ * reintroduce the same bug one level in: a tool that puts a stack trace on
+ * stderr and its actual message on stdout would have the message dropped
+ * entirely, which is again "the diagnosis is on the stream you are not
+ * reading". Only the character cap is shared, because that is the limit that
+ * actually protects the manifest from a runaway tool.
  */
-function outputDetail(text: string): string | undefined {
-  const lines = text
+function headLines(text: string): string[] {
+  return text
     .split('\n')
     .map((line) => line.trim())
     .filter((line) => line.length > 0)
     .slice(0, OUTPUT_DETAIL_LINES);
+}
+
+function outputDetail(stderr: string, stdout: string): string | undefined {
+  const lines = [...headLines(stderr), ...headLines(stdout)];
   if (lines.length === 0) {
     return undefined;
   }
@@ -172,7 +182,7 @@ function analyzerFailedViolation(
   stderr: string,
   stdout: string,
 ): Violation {
-  const head = outputDetail(`${stderr}\n${stdout}`);
+  const head = outputDetail(stderr, stdout);
   const detail = head === undefined ? '' : ` output: "${head}"`;
   return {
     ruleId: 'guardrails/analyzer-failed',
