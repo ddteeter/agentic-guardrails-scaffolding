@@ -313,11 +313,24 @@ Seven things worth knowing before you hit them, rather than after:
   typescript-eslint accepts, so a strict TypeScript stack cannot be assembled
   without pinning TypeScript below that ceiling. Set `"npm-peers": "off"` in
   `analyzers` if your package manager is not npm.
-- **Delegation is serial.** While a fixer is running, its scope-lock confines
-  the main agent too: it may not edit files outside the violations manifest. So
-  the agent cannot do unrelated work while a fix is in flight. This is
-  deliberate — concurrent edits to the same tree would be worse — but it means
-  a fix cycle blocks the turn rather than overlapping with it.
+- **Whether a running fixer confines your other agents depends on the host.**
+  The violations manifest is keyed by session, and a subagent shares its
+  parent's session id — so the scope-lock narrows to the fixer only where the
+  host reports which agent is calling.
+
+  | surface         | during a fix, other agents are…                          |
+  | --------------- | -------------------------------------------------------- |
+  | **Claude Code** | unaffected — `agent_id`/`agent_type` identify the caller |
+  | **Copilot**     | confined — `preToolUse` carries no agent fields          |
+  | **Codex**       | confined — no agent fields at all (`openai/codex#16226`) |
+
+  On Copilot and Codex, a fan-out of unrelated subagents during a fix is locked
+  to the fixer's manifest, and the main agent cannot edit outside it either, so
+  a fix cycle blocks the turn rather than overlapping with it. This is the
+  conservative direction on purpose: Codex has no per-agent tool allowlist, so
+  the hook is its only enforcement, and relaxing it there would remove a real
+  guarantee to buy convenience. If `openai/codex#16226` lands, Codex joins the
+  first row.
 
 - **`.claude/settings.json` is reformatted on every merge**, unconditionally
   (see the SHARED-file note above). If your formatter disagrees with the
