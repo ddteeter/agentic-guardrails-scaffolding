@@ -1,0 +1,105 @@
+/**
+ * npm peer-range adapter: maps `npm ls --json --all` into `Violation[]`.
+ *
+ * npm already knows every package's peer ranges and which installed versions
+ * violate them, so this ASKS npm rather than carrying a table of supported
+ * analyzer versions. That is deliberate: a hardcoded version table is the
+ * "hardcoded third-party knowledge rots silently" failure this repo's guidance
+ * warns about, it would need editing every time the ecosystem moved, and it
+ * would need a `semver` dependency in a package that has none.
+ *
+ * Why this exists when npm validates peers at INSTALL time: that check is
+ * bypassed by `--legacy-peer-deps` and `--force` -- exactly what a stuck agent
+ * reaches for -- and by workspace hoisting. Those leave a graph that installs
+ * cleanly and misbehaves later. The greenfield case that motivated it:
+ * `npm i -D typescript` installs a major no released typescript-eslint accepts
+ * (`typescript-eslint@8` declares `typescript: ">=4.8.4 <6.1.0"`).
+ */
+import type { Violation } from '../violation.js';
+
+/** The fields this adapter reads from one node of npm's dependency tree. */
+interface NpmLsNode {
+  version?: unknown;
+  invalid?: unknown;
+  dependencies?: unknown;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function peerViolation(
+  name: string,
+  version: string,
+  ranges: string,
+): Violation {
+  return {
+    ruleId: 'guardrails/peer-range-violation',
+    file: 'package.json',
+    message:
+      `${name}@${version} violates a peer range required by another installed ` +
+      `package: ${ranges}. Pin ${name} inside that range, or upgrade the ` +
+      `package that requires it. A graph only reaches this state by being ` +
+      `installed past npm's own peer check (--legacy-peer-deps, --force) or ` +
+      `by workspace hoisting, so it will not fail again at install time.`,
+    severity: 'error',
+    fixable: false,
+    tool: 'npm',
+  };
+}
+
+/**
+ * Walk the tree, collecting `invalid` nodes keyed by package name so the same
+ * violation reached by several paths is reported once -- npm repeats it per
+ * path, and one real fixture produced a dozen copies of a single finding.
+ *
+ * `missing` is deliberately not reported: an absent peer is frequently
+ * legitimate (optional peers), while `invalid` means the package IS installed
+ * at a version that violates a range. That keeps this a low-false-positive
+ * signal rather than a second opinion on the whole dependency graph.
+ */
+export function parseNpmLsJson(stdout: string): Violation[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch {
+    // Deliberately empty: leaving `parsed` undefined lets the guard below
+    // reject it, so malformed JSON and "parsed, but not a tree" share ONE
+    // exit. A `return []` here would be a second path to the same answer --
+    // untestable by construction, since no input could tell the two apart.
+  }
+  if (!isRecord(parsed)) {
+    return [];
+  }
+
+  const found = new Map<string, Violation>();
+  const visit = (node: Record<string, unknown>): void => {
+    const { dependencies } = node as NpmLsNode;
+    if (!isRecord(dependencies)) {
+      return;
+    }
+    for (const [name, child] of Object.entries(dependencies)) {
+      if (!isRecord(child)) {
+        continue;
+      }
+      const { invalid, version } = child as NpmLsNode;
+      if (
+        typeof invalid === 'string' &&
+        invalid.length > 0 &&
+        !found.has(name)
+      ) {
+        found.set(
+          name,
+          peerViolation(
+            name,
+            typeof version === 'string' ? version : 'unknown',
+            invalid,
+          ),
+        );
+      }
+      visit(child);
+    }
+  };
+  visit(parsed);
+  return [...found.values()];
+}
