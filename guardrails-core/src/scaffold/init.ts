@@ -170,9 +170,22 @@ function parseAnalyzers(
   return analyzers;
 }
 
+/**
+ * No `--enforcement` seeds `block`, matching what `docs/adoption.md` and the
+ * `adopting-guardrails` skill already tell adopters to choose: a greenfield or
+ * already-clean repo starts enforcing, and `warn` is a migration tool for an
+ * existing backlog.
+ *
+ * It defaulted to `warn`, which made the README's own `init --apply` produce
+ * advisory commit/push/CI gates -- and `guardrails.config.json` is SEED-ONCE,
+ * so the flag cannot repair that afterwards. `warn` fails quiet (a type error
+ * commits, and the first violation reaches the base branch where diff-scoped
+ * checks no longer see it); `block` fails loud, and a loud first run is the one
+ * an adopter can act on. Same direction as every other defensive default here.
+ */
 function parseEnforcement(value: string | undefined): Enforcement | undefined {
   return value === undefined
-    ? 'warn'
+    ? 'block'
     : ENFORCEMENTS.find((choice) => choice === value);
 }
 
