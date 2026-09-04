@@ -198,11 +198,37 @@ const GITIGNORE_BLOCK = [
   GITIGNORE_END,
 ].join('\n');
 
+/**
+ * The one entry guardrails seeds OUTSIDE its own block, and only when there is
+ * no consumer content to preserve.
+ *
+ * Scoping the marker block to guardrails' own generated paths is right for the
+ * merge case -- a repo with a `.gitignore` already ignores its dependencies.
+ * On a greenfield repo there is no such file, so that block becomes the WHOLE
+ * `.gitignore` and `node_modules/` is untracked-but-not-ignored: the same
+ * failure class as a nested worktree, and measured just as loudly. `git
+ * ls-files --others` returned 12,699 paths, 12,669 of them installed
+ * dependencies; they reached eslint, which walked up from one into
+ * `node_modules/fast-uri/eslint.config.js` and died, so the gate reported
+ * `guardrails/analyzer-failed` for eslint on every turn instead of linting.
+ *
+ * Written above the markers rather than inside them, because it is not
+ * guardrails' entry to own: a later `init` marker-replaces the block and leaves
+ * this line where it is, and a consumer who removes it is not fought on the
+ * next run. `changedFiles` filters dependency paths independently
+ * (`isDependencyPath`), so the gate stays correct either way -- this seed is
+ * what keeps the repo's own `git status` honest.
+ */
+const GITIGNORE_SEED = 'node_modules/';
+
 /** Merges guardrails' own `.gitignore` entries into a marker-delimited block,
  * leaving every other line in the file exactly where the consumer put it. */
 export function mergeGitignore(current: string | undefined): string {
+  // Authoring the whole file -- an absent file and a whitespace-only one are
+  // the same case, and `replaceMarkedBlock` already treats them alike.
+  const authoring = current === undefined || current.trim() === '';
   return replaceMarkedBlock(
-    current ?? '',
+    authoring ? GITIGNORE_SEED : current,
     GITIGNORE_START,
     GITIGNORE_END,
     GITIGNORE_BLOCK,

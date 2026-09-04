@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { Exec, ExecResult } from '../../src/exec.js';
 import {
+  isDependencyPath,
   isInsideNestedWorktree,
   isTestFile,
   isTypeScriptFile,
@@ -40,6 +41,33 @@ describe('mergeChangedFiles', () => {
 
   it('de-duplicates across a stray leading ./ prefix', () => {
     expect(mergeChangedFiles('./src/a.ts', 'src/a.ts')).toEqual(['src/a.ts']);
+  });
+
+  // A greenfield repo whose `.gitignore` does not cover `node_modules/` reports
+  // every installed file as untracked -- measured at 12,669 paths -- and eslint
+  // dies loading a dependency's own flat config. The filter belongs here rather
+  // than only in the seeded `.gitignore` because a consumer can delete that line.
+  it('drops dependency paths, however the union reaches it', () => {
+    expect(
+      mergeChangedFiles(
+        'node_modules/left-pad/index.ts',
+        'src/a.ts\n./node_modules/fast-uri/types.ts\npackages/web/node_modules/x/y.ts',
+      ),
+    ).toEqual(['src/a.ts']);
+  });
+});
+
+describe('isDependencyPath', () => {
+  it('flags an installed path at the root and inside a workspace member', () => {
+    expect(isDependencyPath('node_modules/fast-uri/types.ts')).toBe(true);
+    expect(isDependencyPath('packages/web/node_modules/x/y.ts')).toBe(true);
+  });
+
+  // The guard is a path-SEGMENT test on purpose: a source directory whose name
+  // merely starts with the segment is the repo's own code and must still lint.
+  it('does not flag a source path that only looks like one', () => {
+    expect(isDependencyPath('src/node_modules_shim/index.ts')).toBe(false);
+    expect(isDependencyPath('src/a.ts')).toBe(false);
   });
 });
 

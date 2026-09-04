@@ -63,13 +63,33 @@ export function parseFileList(stdout: string): string[] {
     .filter((line) => line.length > 0);
 }
 
+/**
+ * True for a path inside an installed dependency tree, at any depth.
+ *
+ * `node_modules` is untracked but only ignored if the consumer's `.gitignore`
+ * says so, and `init` writes that file from scratch on a greenfield repo — so
+ * the changed set can legitimately arrive carrying every installed file.
+ * Measured on a bare `npm init` adoption: 12,669 of 12,699 untracked paths were
+ * dependencies, and eslint died walking up from one of them into
+ * `node_modules/fast-uri/eslint.config.js`, reporting `analyzer-failed` on
+ * every turn instead of linting.
+ *
+ * Filtering here rather than only seeding the `.gitignore` line is the same
+ * two-layer answer nested worktrees get: the seed covers the common case, and
+ * this covers a consumer who edits the seed back out. Matched as a whole path
+ * SEGMENT — a `src/node_modules_shim/` directory is the repo's own code.
+ */
+export function isDependencyPath(file: string): boolean {
+  return file.split('/').includes('node_modules');
+}
+
 export function mergeChangedFiles(
   trackedDiff: string,
   untracked: string,
 ): string[] {
   return [
     ...new Set([...parseFileList(trackedDiff), ...parseFileList(untracked)]),
-  ];
+  ].filter((file) => !isDependencyPath(file));
 }
 
 export function isTypeScriptFile(file: string): boolean {
