@@ -1263,7 +1263,7 @@ was already dead.
   executes the plan through an injected filesystem seam. `init` alone never
   writes: `--plan` (the default, including a non-TTY invocation — spec §6.2)
   only prints the plan, and `--apply` is the only way past that. A separate
-  `guardrails install-hooks` command (invoked automatically via the
+  `guardrails-core install-hooks` command (invoked automatically via the
   `package.json` `prepare` script `init --apply` wires in) is what actually
   points `core.hooksPath` at `.githooks` on a fresh clone or a teammate's
   checkout, so the pre-commit gate activates without anyone running a command
@@ -1351,8 +1351,138 @@ was already dead.
   (shipped).** `templates/workflows/guardrails.yml`, `docs/adoption.md`, and
   the solo→team verification recorded under "Solo → team" above.
 - **Piece 7 — cut the release, adopt in a real project, record findings
-  (outstanding).** The remaining work in Phase E. No `v0.1.0` tag exists, so
-  every documented install URL 404s until one is pushed.
+  (adoption done; release outstanding).** The adoption ran end to end against
+  the Vite `react-ts` template and a bare repo; seven blocking or
+  trust-damaging findings came out of it and are fixed, and four more are on
+  the roadmap below — see "Findings: a real first adoption, run end to end".
+  The release half remains: no `v0.1.0` tag exists, so every documented install
+  URL 404s until one is pushed.
+
+### Findings: a real first adoption, run end to end (piece 7)
+
+Piece 7 asked for an adoption in a real project. Done, twice: the current Vite
+`react-ts` template (a greenfield web app, the shape the first consumer takes)
+and a bare `npm init` repo, both installing the packed tarball and running
+`init --plan` → `init --apply` → `verify` → first commit → the Stop loop.
+
+**What worked, stated first, because it is most of it.** tsc followed the
+solution-style tsconfig into its referenced projects and failed closed on the
+type error there. The unborn-branch first commit gated correctly under
+`enforcement: block`. The Stop loop escalated fast → thorough → full dump →
+release, exactly as designed. And stryker caught a deliberately vacuous test
+(`expect(discount(200, true)).toBeTypeOf('number')`) with eight survived
+mutants in six seconds, out of the tarball, on the starter `command` runner —
+the single most valuable thing this pack does for agent-written code works in a
+greenfield repo with no tuning.
+
+Everything below is what did not.
+
+**1. `init --apply` made the repo uninstallable.** `mergePrepareScript` still
+wrote `guardrails install-hooks`, from before the bin was renamed to
+`guardrails-core`. npm treats a failed `prepare` as a failed install, so the
+next `npm install` and every `npm ci` died with `sh: guardrails: command not
+found`, exit 127 — including the first real step of the CI workflow `init`
+itself ships. Three things kept it hidden: every test pinned the wrong string;
+the tarball smoke test never re-ran an argument-less install (npm runs
+`prepare` on `npm install` with no arguments and on `npm ci`, never on
+`npm install <path>`, which is the form every leg of that script used); and
+the naive fix is wrong — matching on the literal meant a repo already carrying
+the broken command, or a consumer who hand-corrected it, got the broken one
+appended straight back. The legacy command is now rewritten in place, and the
+smoke test has an `npm ci` leg that also asserts the side effect the script
+exists for.
+
+**2. The scaffolded instruction files never stated the gate contract.** They
+were a doc index and nothing more, and that index is trigger-gated on purpose
+("read this when that applies") — which is right for method and wrong for a
+prohibition. An agent about to write `eslint-disable` has no reason to open a
+mutation-testing doc. Worse, the sanction protocol lived only in
+`crushing-mutants`, whose trigger is `stryker/survived`, and it made a false
+promise: "CI fails on every newly-added key … so a self-granted exemption will
+not land." `sanctions-check` does the opposite by design — it prints new grants
+and exits 0, because a check that failed on every legitimate approval would
+deadlock the review that constitutes it. Confirmed by doing it: a self-granted
+entry took `gate --mode=commit` from exit 1 to exit 0, and `sanctions-check`
+printed the grant and passed. In a `solo` repo there may be no pull request
+either. So the doc handed the agent the rationalization, and nothing else in
+the consumer repo said not to. The never-weaken rules and the ask now go into
+every host's always-loaded instruction file, unconditionally, and the ask
+covers switching an analyzer `off` too: `scope.ts` keeps the FIXER out of
+`guardrails.config.json`, but nothing keeps the main agent out.
+
+**3. The fixer manifest pointed guidance into `node_modules`.** `init` installs
+those docs to `docs/guardrails/` precisely because the Copilot cloud agent
+reads the default branch, where `node_modules` does not exist — so the pointer
+was dead on the one surface the in-repo copy exists for. The comment in
+`guidance.ts` justifying the `node_modules` path had gone stale: it claimed the
+root copy is generated for this repo only, which stopped being true when
+`guidanceEntries` began installing it unconditionally.
+
+**4. A crashed analyzer reported nothing useful if it talked on stdout.**
+`analyzerFailedViolation` quoted stderr only. tsc and knip write diagnostics to
+stdout, so the likeliest first-adoption tsc misconfiguration produced a
+violation with no diagnosis in it at all, while tsc had already said
+`error TS5058: The specified path does not exist: 'tsconfig.json'`. Same
+failure the eslint-banner fix addressed, on the other stream.
+
+**5. A green `verify` could mean almost nothing had run.** `init` seeds
+`"analyzers": {}` — every analyzer `auto` — and `auto` + undeclared provider is
+run-but-never-report-missing. The Vite template ships **oxlint, not eslint**,
+so eslint, knip, dependency-cruiser and stryker all no-op'd and `verify`
+printed `clean (0 violations)`, with `init` silent about it. `docs/adoption.md`
+documented this fail-quiet only for the monorepo case; the plain single-package
+greenfield path is the one that actually meets it. `init` now warns, naming
+each analyzer, the package it needs, and both fixes.
+
+**6. `--analyzers` still drove decisions it could no longer make.**
+`guardrails.config.json` is SEED-ONCE, so on a re-run the flag cannot change
+the policy — but it was still deciding what got seeded FROM that policy, so
+`--analyzers=stryker=required` on a configured repo seeded a
+`.dependency-cruiser.cjs` while the real config said `off`. Orphans are never
+removed, so that file would have stayed forever, for a tool that never runs.
+`detect` reads the existing policy; `effectiveAnalyzers` gives the file
+precedence over the flags.
+
+**7. Smaller things, all fixed.** The usage banner named `guardrails`, the bin
+nothing provides, and had never gained `--mode=push`, `--mode=ci`, or init's
+three decision flags. `adopting-guardrails` told the agent to spend a human
+question on `distribution`, which the Solo → team section above already
+establishes is read by no code path. Its worked TypeScript-pin table had gone
+stale against what the Vite template now pins — the rule survived, the numbers
+did not, which is exactly what that section warns about.
+
+### Roadmap: from the same adoption, not fixed here
+
+- **The Stop gate blames the main agent's suppressions on the fixer.** Writing
+  an `eslint-disable` with no fixer running produced a manifest entry reading
+  `Fixer added a forbidden eslint-disable`, a delegate block, and a spawn
+  instruction; stopping again passed, because the delegate had written the
+  snapshot baseline that then forgave it. So every deliberate main-agent
+  suppression, `.skip` or `@ts-expect-error` costs one bogus fixer round-trip
+  against a manifest that misattributes the change — the wrong-pointer shape
+  that makes an agent thrash. `runStopGate` writes the pre-fix snapshot only on
+  a `delegate` outcome, which is what forces the wasted cycle; snapshotting the
+  working diff at the START of a fix loop, and attributing by who actually
+  edited, would fix both halves. The commit gate is unaffected: it re-audits
+  the whole branch diff with no snapshot.
+- **Two findings on one line are indistinguishable from a duplicate.** The
+  `Violation` contract carries `line` but no `column`, so two mutants on one
+  expression, or two eslint reports on one statement, print as identical rows.
+  Deduping would be wrong — they are separate fixes, and stryker legitimately
+  reports several survivors per line — so the fix is a column on the contract,
+  which touches every adapter and every consumer of the manifest. Recorded
+  rather than rushed; `docs/adoption.md` states the reading rule meanwhile.
+- **The seeded `stryker.conf.json` is knip-dirty out of the box.** Its starter
+  `testRunner: "command"` makes knip report `@stryker-mutator/command-runner`
+  as an unlisted dependency, in exactly the knip-plus-stryker combination the
+  adoption skill recommends. Swapping in the real test-runner plugin — which
+  step 5 already tells the adopter to do — clears it, so this is documented in
+  both places rather than worked around in the seed. If a better default
+  exists (detecting the repo's test runner at seed time), it belongs here.
+- **The greenfield template's linter is not ESLint.** Vite's `react-ts` now
+  ships oxlint. There is no oxlint adapter, so adoption means adding ESLint
+  alongside it or replacing it. Worth knowing before deciding whether an oxlint
+  adapter earns its place.
 
 ### Dogfooding finding: nested worktrees poisoned every whole-graph analyzer
 
