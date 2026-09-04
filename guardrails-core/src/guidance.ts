@@ -8,20 +8,25 @@
  * on the agent going to look; the manifest is the one channel every runtime
  * already reads, so the pointer rides along on the violation itself.
  *
- * Paths are repo-relative and point into `node_modules/guardrails-core/guidance/`,
- * not `docs/guardrails/` at the repo root: that root-level copy is generated
- * for THIS repo only (guardrails-core's `files` field ships just `dist` and
- * `guidance`), so it does not exist in a consumer repo that merely installs
- * the package. `guardrails-core/guidance/` is emitted by
- * `scripts/sync-agents.mjs` from the plugin's skills alongside the root copy,
- * ships with the package, and resolves via `node_modules` in any consumer.
+ * Paths are repo-relative and point at `docs/guardrails/`, the copy `init`
+ * installs INTO the consumer repo -- not into
+ * `node_modules/guardrails-core/guidance/`, which is where the same bytes ship
+ * but not where every reader can reach them. `guidanceEntries`
+ * (`scaffold/templates.ts`) writes `docs/guardrails/*.md` unconditionally for
+ * exactly this reason: the Copilot cloud agent reads the DEFAULT BRANCH, where
+ * `node_modules` has never been installed. A `node_modules` path is readable
+ * from a local session and dead from that one, and the manifest is the channel
+ * every runtime reads, so it takes the path that works everywhere.
+ *
+ * The adoption-time doc is the deliberate exception, and lives only in the
+ * tarball: `init` never copies it, because the reader has not run `init` yet.
  */
 
 import type { Violation } from './violation.js';
 
 /** rule-id prefix → repo-relative guidance doc. Longest match wins. */
 const GUIDANCE: readonly (readonly [string, string])[] = [
-  ['stryker/', 'node_modules/guardrails-core/guidance/crushing-mutants.md'],
+  ['stryker/', 'docs/guardrails/crushing-mutants.md'],
 ];
 
 function guidanceFor(ruleId: string): string | undefined {

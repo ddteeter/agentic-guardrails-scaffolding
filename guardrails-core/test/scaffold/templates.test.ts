@@ -261,6 +261,14 @@ describe('buildDesiredFiles — .github/copilot-instructions.md (spec §7 Task 3
     const content = contentOf(desired, '.github/copilot-instructions.md');
     expect(content).not.toContain('adopting-guardrails');
   });
+
+  it('states the never-weaken-the-gate contract unconditionally', () => {
+    const content = contentOf(
+      buildDesiredFiles(facts(), decisions()),
+      '.github/copilot-instructions.md',
+    );
+    expect(content).toContain(NEVER_WEAKEN_HEADING);
+  });
 });
 
 describe('buildDesiredFiles — Codex', () => {
@@ -282,6 +290,48 @@ describe('buildDesiredFiles — Codex', () => {
     expect(content).toContain('(docs/guardrails/crushing-mutants.md)');
     expect(content).toContain('stryker/survived');
     expect(content).not.toContain('adopting-guardrails');
+  });
+});
+
+/**
+ * The doc index above is deliberately trigger-gated ("read this when that
+ * applies"), which is right for method but wrong for a prohibition: an agent
+ * about to write `eslint-disable` has no reason to open a mutation-testing
+ * doc, so a contract that only lives behind a trigger is a contract the agent
+ * never reads. These pin the parts that must be stated unconditionally, in
+ * every host's always-loaded instruction file.
+ */
+const NEVER_WEAKEN_HEADING = 'Never satisfy a gate by weakening it';
+
+describe.each([
+  ['AGENTS.md', 'AGENTS.md'],
+  ['Copilot instructions', '.github/copilot-instructions.md'],
+])('buildDesiredFiles — %s gate contract', (_label, file) => {
+  const content = (): string =>
+    contentOf(buildDesiredFiles(facts(), decisions()), file);
+
+  it('forbids the suppression syntaxes the diff-auditor watches for', () => {
+    expect(content()).toContain('eslint-disable');
+    expect(content()).toContain('@ts-expect-error');
+    expect(content()).toContain('.skip');
+  });
+
+  it('forbids switching an analyzer off to make a check pass', () => {
+    // The fixer cannot reach guardrails.config.json (scope.ts's
+    // DENIED_FILE_NAMES); the main agent can, and nothing else stops it.
+    expect(content()).toContain('analyzers');
+  });
+
+  it('tells the agent it may never grant itself a sanctioned suppression', () => {
+    expect(content()).toContain('sanctionedSuppressions');
+    expect(content()).toContain('file|kind|text');
+  });
+
+  it('does not promise a downstream check that will catch a self-grant', () => {
+    // `sanctions-check` PRINTS a new grant and exits 0 by design -- there is
+    // no automated backstop, which is precisely why the ask is mandatory.
+    // Telling the agent otherwise hands it the rationalization.
+    expect(content()).not.toContain('CI fails on every newly-added key');
   });
 });
 
