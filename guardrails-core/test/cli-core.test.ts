@@ -966,6 +966,61 @@ describe('cli-core residual hardening', () => {
     expect(await runCommand('gate', ['--mode=commit'], deps({ exec }))).toBe(1);
   });
 
+  it('scopes --mode=commit to the staged files', async () => {
+    // The mutation tax: under branch scope the analyzers re-check everything
+    // the branch has touched on EVERY commit, so committing gets slower the
+    // longer the branch runs.
+    const calls: string[] = [];
+    const exec: Exec = (command, args) => {
+      calls.push([command, ...args].join(' '));
+      return Promise.resolve(ok(''));
+    };
+    await runCommand('gate', ['--mode=commit'], deps({ exec }));
+    expect(calls).toContain('git diff --cached --name-only --diff-filter=ACM');
+  });
+
+  it('routes --mode=push to the branch-scoped commit gate', async () => {
+    // The rung that catches what staged scope cannot: a commit removing the
+    // test that killed a mutant in a file it does not itself touch.
+    //
+    // Asserting the EXIT CODE, not the git argv: the stop gate also asks for a
+    // branch diff, so an argv assertion cannot tell "routed to the commit
+    // gate" from "fell through to the stop gate". Only the commit gate exits
+    // non-zero on a blocking finding.
+    writeFileSync(
+      path.join(root, 'guardrails.config.json'),
+      JSON.stringify({ enforcement: 'block' }),
+    );
+    const exec = gitExec({
+      'merge-base': 'BASESHA\n',
+      'diff BASESHA': [
+        '+++ b/src/a.ts',
+        '@@ -1,0 +1,1 @@',
+        '+// eslint-disable-next-line',
+      ].join('\n'),
+    });
+    expect(await runCommand('gate', ['--mode=push'], deps({ exec }))).toBe(1);
+  });
+
+  it('routes --mode=ci to the branch-scoped commit gate', async () => {
+    // CI must ask for the branch explicitly now that --mode=commit means
+    // "staged": nothing is staged in a CI checkout, so the old spelling would
+    // check nothing at all.
+    writeFileSync(
+      path.join(root, 'guardrails.config.json'),
+      JSON.stringify({ enforcement: 'block' }),
+    );
+    const exec = gitExec({
+      'merge-base': 'BASESHA\n',
+      'diff BASESHA': [
+        '+++ b/src/a.ts',
+        '@@ -1,0 +1,1 @@',
+        '+// eslint-disable-next-line',
+      ].join('\n'),
+    });
+    expect(await runCommand('gate', ['--mode=ci'], deps({ exec }))).toBe(1);
+  });
+
   it('defaults the session id for state and session-end', async () => {
     // Kills the `flag(rest,'session') ?? 'default'` and
     // `input.sessionId ?? 'default'` -> `&&` mutants.

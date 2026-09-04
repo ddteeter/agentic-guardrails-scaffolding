@@ -61,6 +61,7 @@ import {
   isTypeScriptFile,
   mergeChangedFiles,
   nestedWorktreePaths,
+  parseFileList,
   resolveBaseReference,
 } from './git.js';
 import { parseKnipJson } from './knip-adapter.js';
@@ -76,6 +77,20 @@ export interface VerifyOptions {
   /** Cadence rung. Heavy whole-graph analyzers (knip, dependency-cruiser) run
    *  only at commit/ci; the per-turn stop gate stays fast. Defaults to 'stop'. */
   profile?: 'stop' | 'commit' | 'ci';
+  /**
+   * Which change set the diff-scoped analyzers see.
+   *
+   * `'branch'` (the default) is everything since the merge-base — the right
+   * question for a push or a CI run, which judge the branch as a whole.
+   *
+   * `'staged'` is only what is about to be committed. A pre-commit hook wants
+   * this: under branch scope, stryker re-mutates every production file the
+   * branch has touched on EVERY commit, so the cost of committing grows the
+   * longer a branch runs. Each file is still mutation-gated in the commit that
+   * changes it, and the push and CI rungs re-check the whole branch, so
+   * nothing escapes — see the design doc's "Cadence rungs" section.
+   */
+  changedScope?: 'branch' | 'staged';
   /** File reader seam (stryker writes its JSON report to disk, not stdout).
    *  Defaults to node:fs/promises readFile; injected in tests. */
   readFile?: (filePath: string) => Promise<string>;
@@ -205,6 +220,34 @@ async function changedTypeScriptFiles(
   options: VerifyOptions,
 ): Promise<{ files: string[]; violations: Violation[] }> {
   const { exec, repoRoot, baseBranch } = options;
+  // Staged scope answers a different question -- "what is in this commit?" --
+  // and answers it without a base ref at all. That is not just a shortcut: it
+  // is why the pre-commit rung works unchanged on an unborn repository, where
+  // there is no merge-base to resolve.
+  if (options.changedScope === 'staged') {
+    const staged = await exec(
+      'git',
+      ['diff', '--cached', '--name-only', '--diff-filter=ACM'],
+      { cwd: repoRoot },
+    );
+    if (staged.spawnFailed === true) {
+      return { files: [], violations: [] };
+    }
+    if (gitCallFailed(staged)) {
+      return {
+        files: [],
+        violations: [
+          analyzerFailedViolation('git', staged.code, staged.stderr),
+        ],
+      };
+    }
+    return {
+      files: parseFileList(staged.stdout).filter((file) =>
+        isTypeScriptFile(file),
+      ),
+      violations: [],
+    };
+  }
   const base = await resolveBaseReference(exec, repoRoot, baseBranch);
   if (base.spawnFailed === true) {
     // A spawn failure is git being absent entirely; runVerify reports that

@@ -72,6 +72,16 @@ export interface CommitGateOptions {
   sanctionedSuppressions?: readonly SanctionedSuppression[];
   /** Per-analyzer opt-in (`RepoConfig.analyzers`), forwarded to `runVerify`. */
   analyzers?: Readonly<Record<string, AnalyzerMode>>;
+  /**
+   * Which change set the diff-scoped analyzers see. `'staged'` at the
+   * pre-commit rung, `'branch'` (the default) at pre-push and CI.
+   *
+   * The diff-auditor and sanction budget below are deliberately NOT affected:
+   * they always audit the branch's cumulative diff, because a suppression
+   * introduced in an earlier commit on this branch must keep flagging. Only the
+   * analyzers narrow.
+   */
+  changedScope?: 'branch' | 'staged';
 }
 
 export interface CommitGateResult {
@@ -321,6 +331,7 @@ export async function runCommitGate(
     profile: 'commit',
     ...(options.resolveBin ? { resolveBin: options.resolveBin } : {}),
     ...(options.analyzers ? { analyzers: options.analyzers } : {}),
+    ...(options.changedScope ? { changedScope: options.changedScope } : {}),
   });
   // The commit gate audits the branch's CUMULATIVE diff and has no per-loop
   // snapshot baseline (unlike runStopGate), so a deliberately-sanctioned

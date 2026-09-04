@@ -182,7 +182,20 @@ async function gateStopCommand(
   return 0;
 }
 
-async function gateCommitCommand(deps: CliDeps): Promise<number> {
+/**
+ * The commit/push/ci gate. All three run the same checks; they differ only in
+ * which change set the diff-scoped analyzers see.
+ *
+ * `commit` narrows to the staged files, because under branch scope stryker
+ * re-mutates everything the branch has touched on every commit and the cost of
+ * committing grows the longer a branch runs. `push` and `ci` keep the branch
+ * scope, which is what catches the one thing staged scope cannot see: a commit
+ * that removes the test killing a mutant in a file it does not itself touch.
+ */
+async function gateCommitCommand(
+  deps: CliDeps,
+  changedScope: 'branch' | 'staged',
+): Promise<number> {
   const repoRoot = deps.cwd;
   const config = loadConfig(repoRoot);
   const { violations, findings, blocked } = await runCommitGate({
@@ -192,6 +205,7 @@ async function gateCommitCommand(deps: CliDeps): Promise<number> {
     resolveBin: binResolver(repoRoot),
     sanctionedSuppressions: config.sanctionedSuppressions,
     analyzers: config.analyzers,
+    changedScope,
   });
   printGateDetail(deps, violations, findings);
   if (!blocked) {
@@ -592,7 +606,12 @@ export async function runCommand(
       const mode = flag(rest, 'mode');
       const dialect = resolveDialect(rest);
       if (mode === 'commit') {
-        return gateCommitCommand(deps);
+        return gateCommitCommand(deps, 'staged');
+      }
+      // Same checks, branch-wide scope: `push` is the local rung that catches
+      // what a staged-scope commit cannot, and `ci` is its authoritative twin.
+      if (mode === 'push' || mode === 'ci') {
+        return gateCommitCommand(deps, 'branch');
       }
       if (mode === 'pretooluse') {
         await gatePreToolUseCommand(deps, dialect);

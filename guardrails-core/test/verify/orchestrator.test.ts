@@ -1900,6 +1900,173 @@ function worktreeAwareExec(worktreeStdout: string): Exec {
   }).exec;
 }
 
+/** Distinguishes the two change sets: the branch diff names one file, the
+ *  staged diff names a different one, so which files reach the analyzers says
+ *  unambiguously which scope was used. */
+function scopeExec(): { exec: Exec; calls: Call[] } {
+  return fakeExec({
+    'git diff --name-only --diff-filter=ACM main': {
+      stdout: 'src/branch-only.ts',
+      stderr: '',
+      code: 0,
+    },
+    'git diff --cached --name-only --diff-filter=ACM': {
+      stdout: 'src/staged.ts',
+      stderr: '',
+      code: 0,
+    },
+    'git ls-files --others --exclude-standard': {
+      stdout: '',
+      stderr: '',
+      code: 0,
+    },
+  });
+}
+
+function lintedFiles(calls: Call[]): string[] {
+  const eslintCall = calls.find(
+    (call) => call.command === 'eslint' || call.args.includes('eslint'),
+  );
+  return (eslintCall?.args ?? []).filter((argument) =>
+    argument.startsWith('src/'),
+  );
+}
+
+describe('changed-file scope', () => {
+  // The mutation tax this exists to fix: with branch scope, stryker re-mutates
+  // every production file the branch has touched, on EVERY commit, so cost
+  // grows monotonically along a branch. Staged scope gates what is actually
+  // being committed.
+  it('defaults to the branch diff', async () => {
+    const { exec, calls } = scopeExec();
+    await runVerify({ repoRoot: '/repo', baseBranch: 'main', exec });
+    expect(lintedFiles(calls)).toEqual(['src/branch-only.ts']);
+  });
+
+  it('narrows to staged files when asked', async () => {
+    const { exec, calls } = scopeExec();
+    await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      changedScope: 'staged',
+    });
+    expect(lintedFiles(calls)).toEqual(['src/staged.ts']);
+  });
+
+  it('does not consult the base branch under staged scope', async () => {
+    // Staged scope needs no merge-base, which is also why it works on an
+    // unborn repository without the base-resolution dance.
+    const { exec, calls } = scopeExec();
+    await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      changedScope: 'staged',
+    });
+    expect(calls.some((call) => call.args.includes('merge-base'))).toBe(false);
+    expect(
+      calls.some(
+        (call) =>
+          call.args.includes('--diff-filter=ACM') && call.args.includes('main'),
+      ),
+    ).toBe(false);
+  });
+
+  it('asks git for the staged list in the repo root', async () => {
+    // Asserting the exact argv and cwd: without `cwd`, git answers for
+    // whatever directory the process happens to be in, which in a hook is not
+    // necessarily the repository being guarded.
+    const { exec, calls } = scopeExec();
+    await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      changedScope: 'staged',
+    });
+    expect(
+      calls.find(
+        (call) => call.command === 'git' && call.args.includes('--cached'),
+      ),
+    ).toEqual({
+      command: 'git',
+      args: ['diff', '--cached', '--name-only', '--diff-filter=ACM'],
+      options: { cwd: '/repo' },
+    });
+  });
+
+  it('lints only TypeScript files from the staged list', async () => {
+    // The staged set is whatever the developer added, which routinely includes
+    // markdown and JSON. Without the filter those reach eslint as targets.
+    //
+    // The non-TS files sit under `src/` deliberately: `lintedFiles` keeps only
+    // args starting with `src/`, so a README at the repo root would be dropped
+    // by the ASSERTION rather than by the code, and the filter would go
+    // unobserved.
+    const { exec, calls } = fakeExec({
+      'git diff --cached --name-only --diff-filter=ACM': {
+        stdout: 'src/kept.ts\nsrc/notes.md\nsrc/data.json',
+        stderr: '',
+        code: 0,
+      },
+    });
+    await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      changedScope: 'staged',
+    });
+    expect(lintedFiles(calls)).toEqual(['src/kept.ts']);
+  });
+
+  it('reports a git failure under staged scope rather than reading clean', async () => {
+    // Fail closed: an unreadable index must not look like "nothing changed".
+    const { exec, calls } = fakeExec({
+      'git diff --cached --name-only --diff-filter=ACM': {
+        stdout: '',
+        stderr: 'fatal: not a git repository',
+        code: 128,
+      },
+    });
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      changedScope: 'staged',
+    });
+    expect(violations.map((violation) => violation.ruleId)).toContain(
+      'guardrails/analyzer-failed',
+    );
+    // And no analyzer ran on a fabricated file list.
+    expect(calls.some((call) => call.command === 'eslint')).toBe(false);
+  });
+
+  it('stays silent under staged scope when git cannot be spawned', async () => {
+    // A missing git is reported once by runVerify's own spawn tracker; this
+    // path must not blame the index for it, nor invent a changed set.
+    const { exec, calls } = fakeExec({
+      'git diff --cached --name-only --diff-filter=ACM': {
+        stdout: '',
+        stderr: 'spawn git ENOENT',
+        code: 1,
+        spawnFailed: true as const,
+      },
+    });
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      changedScope: 'staged',
+    });
+    expect(
+      violations.filter(
+        (violation) => violation.ruleId === 'guardrails/analyzer-failed',
+      ),
+    ).toEqual([]);
+    expect(calls.some((call) => call.command === 'eslint')).toBe(false);
+  });
+});
+
 describe('runVerify nested-worktree filtering', () => {
   it('drops violations inside a nested worktree and keeps the rest', async () => {
     const { violations } = await runVerify({
