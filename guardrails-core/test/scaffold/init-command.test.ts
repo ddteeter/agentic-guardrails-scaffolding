@@ -443,7 +443,7 @@ describe('init --help', () => {
     // `--nope` is -- it should read as "show me the usage", not fail the way
     // every other unrecognised option does.
     expect(await init('--help')).toBe(0);
-    expect(out.join('')).toContain('usage: guardrails init');
+    expect(out.join('')).toContain('usage: guardrails-core init');
     expect(readdirSync(root)).toEqual([]);
   });
 });
@@ -453,7 +453,7 @@ describe('init — flag validation', () => {
     'rejects %s with usage and a non-zero exit',
     async (argument) => {
       expect(await init(argument)).toBe(1);
-      expect(errors.join('')).toContain('usage: guardrails init');
+      expect(errors.join('')).toContain('usage: guardrails-core init');
       expect(readdirSync(root)).toEqual([]);
     },
   );

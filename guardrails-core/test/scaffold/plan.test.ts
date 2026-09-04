@@ -43,6 +43,7 @@ function facts(manifest?: ScaffoldManifest): RepoFacts {
     hasStrykerConfig: false,
     manifest,
     hooksPath: undefined,
+    existingAnalyzers: undefined,
   };
 }
 

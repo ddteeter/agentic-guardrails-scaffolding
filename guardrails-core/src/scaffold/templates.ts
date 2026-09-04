@@ -21,7 +21,7 @@ import path from 'node:path';
 
 import { packageRoot } from '../package-root.js';
 import { analyzerMode, decideAnalyzer } from '../verify/analyzer-policy.js';
-import type { RepoFacts } from './detect.js';
+import { effectiveAnalyzers, type RepoFacts } from './detect.js';
 import {
   AGENTS_GUARDRAILS_END,
   AGENTS_GUARDRAILS_START,
@@ -431,7 +431,7 @@ function analyzerAsked(
   decisions: ScaffoldDecisions,
 ): boolean {
   return decideAnalyzer(
-    analyzerMode(decisions.analyzers, analyzer.tool),
+    analyzerMode(effectiveAnalyzers(facts, decisions.analyzers), analyzer.tool),
     facts.declaredProviders.has(analyzer.provider),
   ).reportMissing;
 }

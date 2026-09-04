@@ -454,6 +454,27 @@ describe('runCommand — session lifecycle', () => {
 });
 
 describe('runCommand — unknown', () => {
+  // The banner is the discoverability surface for an unattended agent that
+  // guessed a command wrong -- so it has to name the bin that actually exists
+  // (`guardrails-core`; a real, unrelated package owns `guardrails` on npm)
+  // and every rung and flag, or it sends the reader somewhere that does not
+  // work. `--mode=push` and `--mode=ci`, and `init`'s three decision flags,
+  // shipped without ever reaching it.
+  it('names the real bin, not the pre-rename one', async () => {
+    await runCommand('bogus', [], deps());
+    expect(errors.join('')).toContain('usage: guardrails-core');
+  });
+
+  it.each([
+    '--mode=stop|commit|push|ci|pretooluse',
+    '--enforcement=warn|block',
+    '--analyzers=',
+    '--distribution=solo|team',
+  ])('names %s', async (flag) => {
+    await runCommand('bogus', [], deps());
+    expect(errors.join('')).toContain(flag);
+  });
+
   it('prints usage and returns 1', async () => {
     expect(await runCommand('bogus', [], deps())).toBe(1);
     expect(errors.join('')).toContain('usage:');

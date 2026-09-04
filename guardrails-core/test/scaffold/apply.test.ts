@@ -101,6 +101,7 @@ function factsWithManifest(manifestRaw: string | undefined): RepoFacts {
     hasStrykerConfig: false,
     manifest,
     hooksPath: undefined,
+    existingAnalyzers: undefined,
   };
 }
 

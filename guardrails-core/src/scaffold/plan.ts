@@ -13,7 +13,7 @@
  */
 import { analyzerMode } from '../verify/analyzer-policy.js';
 import { installableAnalyzerProviders } from '../verify/index.js';
-import type { RepoFacts } from './detect.js';
+import { effectiveAnalyzers, type RepoFacts } from './detect.js';
 import { foreignHooksPath, foreignHooksPathWarning } from './hooks-path.js';
 import { isSharedPath } from './merge.js';
 import { checksum, type ScaffoldManifest } from './manifest.js';
@@ -283,8 +283,10 @@ function silentlySkippedAnalyzers(
 ): readonly (readonly [string, string])[] {
   return Object.entries(installableAnalyzerProviders()).filter(
     ([tool, provider]) =>
-      analyzerMode(input.decisions.analyzers, tool) === 'auto' &&
-      !input.facts.declaredProviders.has(provider),
+      analyzerMode(
+        effectiveAnalyzers(input.facts, input.decisions.analyzers),
+        tool,
+      ) === 'auto' && !input.facts.declaredProviders.has(provider),
   );
 }
 

@@ -40,6 +40,7 @@ function facts(over: Partial<RepoFacts> = {}): RepoFacts {
     declaredProviders: new Set<string>(),
     hasDependencyCruiserConfig: false,
     hasStrykerConfig: false,
+    existingAnalyzers: undefined,
     manifest: undefined,
     hooksPath: undefined,
     ...over,
@@ -558,6 +559,35 @@ describe('buildDesiredFiles — analyzer gating (spec §6.4 SEED-ONCE)', () => {
       reporters: ['json'],
       incremental: true,
     });
+  });
+
+  /**
+   * `guardrails.config.json` is SEED-ONCE, so on a re-run `--analyzers` cannot
+   * change the policy -- but it was still driving what got seeded FROM that
+   * policy. `--analyzers=stryker=required` on an already-configured repo left
+   * every unnamed analyzer at `auto`, so dependency-cruiser looked asked-for
+   * and got a config seeded, while the real config said `off`. Orphans are
+   * never removed, so that file stays forever, for a tool that never runs.
+   */
+  it('follows an existing config over the flags when deciding what to seed', () => {
+    const desired = buildDesiredFiles(
+      facts({
+        existingAnalyzers: { 'dependency-cruiser': 'off', stryker: 'required' },
+      }),
+      decisions({ analyzers: { 'dependency-cruiser': 'required' } }),
+    );
+    expect(keysOf(desired)).not.toContain(DEPCRUISE_PATH);
+    expect(keysOf(desired)).toContain(STRYKER_PATH);
+  });
+
+  it('falls back to the flags when no config exists yet to override them', () => {
+    // The first run is the one the flags are for: the file they would seed
+    // does not exist, so there is nothing more authoritative to read.
+    const desired = buildDesiredFiles(
+      facts({ existingAnalyzers: undefined }),
+      decisions({ analyzers: { 'dependency-cruiser': 'required' } }),
+    );
+    expect(keysOf(desired)).toContain(DEPCRUISE_PATH);
   });
 
   it('does NOT seed .dependency-cruiser.cjs for a consumer whose config is .dependency-cruiser.js', () => {
