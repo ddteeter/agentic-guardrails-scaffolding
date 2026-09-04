@@ -77,6 +77,18 @@ edit one of them by hand.
 your policy and your `sanctionedSuppressions`, and losing it is the worst
 thing this command could do.
 
+**One exception to "guardrails only writes its own entries": a `.gitignore` it
+creates from scratch also gets `node_modules/`, above the marker block.** On a
+repo that already has the file, guardrails adds nothing outside its block —
+your file already ignores your dependencies. On a greenfield repo there is no
+such file, so the block would be the whole thing and `node_modules/` would be
+untracked-but-not-ignored; `git ls-files --others` then reports every installed
+file as a change, and eslint dies walking up into a dependency's own flat
+config. The line is written outside the markers because it is yours from the
+moment it lands: a later `init` leaves it alone, and deleting it is your call.
+Deleting it does not break the gate — `verify` filters dependency paths out of
+the changed set independently — it only makes `git status` unusable.
+
 `.githooks/pre-commit` is written but inert on its own — git only runs hooks
 from `.git/hooks` unless told otherwise. `init --apply`'s `package.json`
 merger appends `guardrails-core install-hooks` to the `prepare` script, and
@@ -176,10 +188,10 @@ Fix (or explicitly turn off, via `analyzers`) whatever it reports before
 wiring the Stop hook into a live session, and before enabling the whole-graph
 analyzers in the commit/CI gate.
 
-## Starting in `warn`, graduating to `block`
+## Blocking by default, `warn` for a backlog
 
-`guardrails.config.json`'s `enforcement` field (`"warn"` at the bare CLI
-default, or `"block"`) governs the branch-gate family — `gate --mode=commit`
+`guardrails.config.json`'s `enforcement` field (`"block"` at the bare CLI
+default, or `"warn"`) governs the branch-gate family — `gate --mode=commit`
 (run by `.githooks/pre-commit`), `gate --mode=push` (run by
 `.githooks/pre-push`), and `gate --mode=ci` (the step in the shipped
 `.github/workflows/guardrails.yml`) — plus `gate --mode=pretooluse` (the
@@ -201,17 +213,21 @@ by `maxAttempts`, from the moment it is wired in — `warn`/`block` has no
 effect on it. That loop's safety comes from the attempt counter and the
 `--no-verify`-equivalent bypass at the commit boundary, not from `enforcement`.
 
-For a greenfield repo, or an existing repo that already verifies clean, start
-with `enforcement: "block"`. `warn` is only a migration tool for an existing
-backlog: let the commit/CI gate report while that backlog is cleared, then flip
-to `"block"` immediately. Letting a violation commit to the configured base
-branch removes it from later diff-scoped checks, so a clean repo gains nothing
-from a calibration window and can create its own dirty baseline under `warn`.
-Change this by editing `enforcement` in `guardrails.config.json` directly — `init`'s
-`--enforcement=block` flag only affects the _first_ time the file is seeded;
-because `guardrails.config.json` is SEED-ONCE, a later `init --apply
---enforcement=block` has no effect on an already-existing config, `--force`
-included.
+A bare `init --apply` seeds `"block"`, which is what a greenfield repo, or an
+existing repo that already verifies clean, wants. `warn` is only a migration
+tool for an existing backlog: pass `--enforcement=warn`, let the commit/CI gate
+report while that backlog is cleared, then flip to `"block"` immediately.
+Letting a violation commit to the configured base branch removes it from later
+diff-scoped checks, so a clean repo gains nothing from a calibration window and
+can create its own dirty baseline under `warn`.
+
+**The default used to be `warn`, and the seed is the one chance you get.**
+Because `guardrails.config.json` is SEED-ONCE, `--enforcement` only affects the
+_first_ time the file is written; a later `init --apply --enforcement=block` has
+no effect on an already-existing config, `--force` included. Change it by
+editing `enforcement` in `guardrails.config.json` directly. A repo scaffolded
+before this change is sitting on `"warn"` — check the field and edit it if you
+did not choose it deliberately.
 
 ### Solution-style TypeScript configurations
 

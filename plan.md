@@ -316,8 +316,16 @@ thorough tier from attempt 1; a `Read`-matcher scope-check denying the fixer
 reads outside `repoRoot`). One remains:
 
 - **State dir is cwd-relative, not git-root-relative — recurrence ledger
-  fragments (found Phase C piece 3, unfixed).** ~~There is no git-root
-  resolution anywhere in `src`~~ — **correction (cli-resolution branch):**
+  fragments (found Phase C piece 3, ~~unfixed~~ **fixed**; see the second
+  greenfield adoption's finding 3 below, which measured the consequence as a
+  silently fail-open gate rather than only a fragmented ledger).** The six
+  `cli-core.ts` handler sites now resolve through `resolveRepoRoot`, so state
+  anchors at the git toplevel regardless of invocation directory and the
+  hygiene half — nested `.guardrails/` dirs escaping the root-anchored
+  gitignore pattern — is subsumed rather than needing a broader pattern. The
+  original note, kept for the diagnosis it records:
+
+  ~~There is no git-root resolution anywhere in `src`~~ — **correction (cli-resolution branch):**
   `src/repo-root.ts` now exports `findGitRoot`, called from `src/cli-core.ts`
   as part of the out-of-repo refusal check (see below). That resolution is
   used only for the fatal self-check, not for state placement: `cli.ts` still
@@ -397,8 +405,11 @@ core/src/audit.ts`) surfaced that it was a context-free text scan: it flagged
   consulted only in `cli-core.ts` — it governs the commit/preToolUse surfaces
   alone, `toGateConfig` still does not forward it, and the Claude Code Stop
   loop is deliberately never softened by it. This repo sets its own
-  `enforcement` to `"block"` in `guardrails.config.json`, since the default is
-  `"warn"` and leaving it there would have made this repo's own gate advisory.
+  `enforcement` to `"block"` in `guardrails.config.json`; at the time that was
+  a correction, because the seed defaulted to `"warn"` and leaving it there
+  would have made this repo's own gate advisory. The seed now defaults to
+  `"block"` too — see the second greenfield adoption's findings below for why
+  having to make that correction at all was the bug.
 
 - **Auditor soundness: text lexer → AST (decided, roadmapped).** The auditor is
   a hand-rolled single-line lexer + regex signatures operating on _diff
@@ -1749,3 +1760,97 @@ Phase E's `json-file.ts` extraction later deleted the two `workspaces.ts`
 figures are **27 entries / 26 distinct keys / 38 declared occurrences** — still
 zero drift, which is the guard doing its job across a merge rather than a
 number that needed hand-editing.
+
+### Findings: a second greenfield adoption, run from the packed tarball
+
+Piece 7's adoption was re-run end to end on 2026-09-04 against a bare
+`git init` + `npm init -y` repo — install the packed tarball, `init --plan`,
+`init --apply`, author `tsconfig.json`/`eslint.config.js`, `verify`, first
+commit, then drive the Stop gate through its whole ladder by hand.
+
+**What worked, stated first.** The escalation ladder ran exactly as designed
+out of the tarball: `guardrail-fixer` → `guardrail-fixer-thorough` → full dump
+→ release, four blocks and a release across five invocations. The diff-auditor
+caught a committed `eslint-disable-next-line` and exited 1. A crashed eslint
+reported `analyzer-failed` carrying the real diagnostic — the PR #30 both-streams
+fix, working. The hook command form (`node -e "import('guardrails-core/cli')"`)
+resolved from a tarball install. And stryker, once pointed at a real runner,
+found **ten** survived/no-coverage mutants in a vacuous
+`expect(discount(200, true)).toBeTypeOf('number')` — the crown jewel, on a
+greenfield repo, from the tarball.
+
+Three things put a scaffolded greenfield repo into a state where the gate is
+not gating. All three are fixed here.
+
+**1. The created-from-scratch `.gitignore` omits `node_modules/`, which kills
+eslint on every turn.** `mergeGitignore` is deliberately scoped to guardrails'
+own marker block — correct for the MERGE case, where the consumer's file
+already ignores their dependencies. In the CREATE case there is no file
+underneath, so that block becomes the _entire_ `.gitignore`, and a greenfield
+repo's `node_modules/` is then untracked-but-not-ignored. Measured: `git
+ls-files --others --exclude-standard` returned 12,699 paths, **12,669 of them
+inside `node_modules/`**; `changedFiles` filters that set to TypeScript only,
+which is not a dependency filter, and hands the remainder to eslint; ESLint 10
+walks up from one of them, loads `node_modules/fast-uri/eslint.config.js`, and
+dies on its missing `neostandard`. The gate then reports
+`guardrails/analyzer-failed` for eslint on every single turn. Appending one
+line to `.gitignore` made it vanish.
+
+This is the same failure class as the nested-worktree finding above —
+untracked but not ignored — and it deserves the same two-layer answer, because
+a consumer can also delete the line: the seed covers the common case, and a
+dependency-path filter in `changedFiles` means no analyzer is ever handed a
+`node_modules/` path regardless of what `.gitignore` says.
+
+**2. `init` seeded `enforcement: "warn"`, against its own documentation.**
+`docs/adoption.md` and the `adopting-guardrails` skill both say to start a
+greenfield or already-clean repo at `"block"`, and that `warn` is a migration
+tool for an existing backlog. `parseEnforcement` defaulted to `'warn'` anyway,
+so the README's own copy-pasteable `init --apply` produced advisory commit,
+push and CI gates. Measured: a `TS2322` type error committed with no
+resistance under the documented quickstart. Because `guardrails.config.json` is
+SEED-ONCE, `--enforcement=block` cannot repair it afterwards — it takes a hand
+edit — and in the meantime `warn` lets that first violation reach `main`, where
+it is out of diff scope and then blocks every later commit the moment anyone
+flips to `block`.
+
+`warn` fails quiet; `block` fails loud. Every other defensive path in
+`config.ts` is documented as failing toward more checking, and the seed was the
+one that did not. The seed default is now `'block'`.
+
+`pickEnforcement`'s ABSENT→`warn` fallback is deliberately left alone: a config
+file that omits the field is a different question (an author who never stated a
+policy) from `init` choosing a starting policy for a fresh adoption, and that
+asymmetry is separately argued where it lives.
+
+**3. Every command but `init` anchored on the invocation directory, so a
+subdirectory run was silently fail-open.** This is the "state dir is
+cwd-relative" roadmap item above, now measured rather than reasoned about.
+`gate --mode=stop` run from `src/` in a repo carrying a live `TS2322` exited
+**0 with no output at all** — not a fragmented ledger, a gate that reported
+nothing while a type error sat in the tree. The mechanism is the two known
+facets compounding: `repoRoot` becomes `src/`, so no `tsconfig.json`,
+`package.json` or `guardrails.config.json` resolves there, and every analyzer
+is `auto` + undeclared at that root, which is skip-in-silence. It also left a
+stray `src/.guardrails/` that the root-anchored `.gitignore` pattern does not
+cover, exactly as predicted.
+
+The fix was already half-built and unwired: `resolveRepoRoot` exists, is
+tested, is filesystem-first (so a linked worktree's `.git` FILE resolves), and
+is used by `scaffold/detect.ts` — which is why `init` was the one command that
+behaved. The six `cli-core.ts` handler sites now resolve through it too. This
+subsumes the hygiene half of the roadmap item: state can no longer be written
+anywhere but the true root, so nested `.guardrails/` directories stop being
+reachable rather than needing a broader ignore pattern.
+
+**Left for the roadmap, deliberately.**
+
+- **No release exists**, so every documented install URL still 404s (verified).
+  `release.yml` is correct and smoke-gated; it has never run, because no tag
+  has been pushed. This is the one blocker no code change can clear.
+- **Stryker's greenfield on-ramp needs three manual steps.** It is `auto` +
+  undeclared in a fresh repo, so it is silently off; installed, the seeded
+  `testRunner: "command"` runs `npm test`, which in an `npm init -y` repo is
+  the placeholder that exits 1, producing `analyzer-failed`; and the seed is
+  knip-dirty as already recorded. Seeding a detected test runner is the fix
+  direction, and it belongs with the existing seed note above rather than here.
