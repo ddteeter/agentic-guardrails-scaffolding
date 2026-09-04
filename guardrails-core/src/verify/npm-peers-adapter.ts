@@ -83,18 +83,22 @@ export function parseNpmLsJson(stdout: string): Violation[] {
         continue;
       }
       const { invalid, version } = child as NpmLsNode;
-      if (
-        typeof invalid === 'string' &&
-        invalid.length > 0 &&
-        !found.has(name)
-      ) {
+      if (typeof invalid === 'string' && invalid.length > 0) {
+        const installed = typeof version === 'string' ? version : 'unknown';
+        // Keyed by name AND version, not name alone. npm's tree can hold two
+        // different versions of one package at different paths -- the shape a
+        // hoisting conflict takes, which is exactly what this analyzer is for
+        // -- and each is a distinct finding with its own remedy. Keying on the
+        // name would report the first and silently drop the rest.
+        //
+        // The `invalid` text is deliberately NOT part of the key: npm
+        // accumulates requirers as it walks, so the same physical package
+        // reports progressively longer strings at deeper paths (measured), and
+        // keying on it would restore the duplicate-per-path noise this map
+        // exists to remove.
         found.set(
-          name,
-          peerViolation(
-            name,
-            typeof version === 'string' ? version : 'unknown',
-            invalid,
-          ),
+          `${name}@${installed}`,
+          peerViolation(name, installed, invalid),
         );
       }
       visit(child);

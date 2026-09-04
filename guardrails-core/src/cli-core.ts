@@ -442,18 +442,38 @@ const FIXER_AGENT_TYPES: ReadonlySet<string> = new Set([
  * The manifest is keyed by SESSION, and a subagent shares its parent's session
  * id -- so without agent identity the lock cannot tell the fixer from the main
  * agent or from a sibling subagent fanned out in parallel, and confines all of
- * them. Where the host reports identity, only the fixer is confined.
+ * them.
  *
- * `agentType === undefined` means the host does not report identity AT ALL, not
- * that this is the main thread: Copilot omits it from `preToolUse` (it appears
- * only on `subagentStart`/`subagentStop`) and Codex omits it entirely
- * (`openai/codex#16226`). Those surfaces keep today's session-scoped lock,
- * which is deliberately the conservative direction -- Codex has no per-agent
- * tool allowlist, so this hook is its only enforcement. No surface ends up
- * less protected than before; the difference is only how narrowly the lock
- * applies.
+ * The dialect is what makes absence readable, and it is why `agentId` is
+ * parsed at all:
+ *
+ * - **claude** reports identity on EVERY hook event, and its SDK documents
+ *   `agent_id` as present only inside a subagent -- "Absent for the main
+ *   thread, even in --agent sessions". So on this dialect a missing `agentId`
+ *   positively identifies the MAIN THREAD, which is never the fixer. Without
+ *   this branch the main agent stayed confined during a fix, because a normal
+ *   session's main thread sends neither field and looked identical to a host
+ *   that cannot report at all.
+ * - **codex / copilot** report nothing on `preToolUse` -- Copilot only on
+ *   `subagentStart`/`subagentStop`, Codex not at all (`openai/codex#16226`).
+ *   Absence there is "I cannot tell you", so the session-scoped lock stands.
+ *   That is the conservative direction on purpose: Codex has no per-agent tool
+ *   allowlist, so this hook is its only enforcement.
+ *
+ * No surface ends up less protected than before; what changes is how narrowly
+ * the lock applies where the host gives us enough to narrow it.
  */
-function isFixerCaller(input: HookInput): boolean {
+function isFixerCaller(input: HookInput, dialect: Dialect): boolean {
+  if (dialect !== 'claude') {
+    // These hosts report nothing on `preToolUse`, so there is nothing to
+    // narrow by: everyone in the session is confined, as before.
+    return true;
+  }
+  if (input.agentId === undefined) {
+    return false;
+  }
+  // A subagent whose type we somehow did not get is confined rather than
+  // trusted: unknown is not the same as "not the fixer".
   return (
     input.agentType === undefined || FIXER_AGENT_TYPES.has(input.agentType)
   );
@@ -468,7 +488,7 @@ async function scopeCheckCommand(
   const scope = collectManifestScope(stateDirectory(repoRoot), input.sessionId);
   // Every branch below is a FIXER lock, so a caller the host tells us is not
   // the fixer is left alone entirely.
-  const confined = scope.active && isFixerCaller(input);
+  const confined = scope.active && isFixerCaller(input, dialect);
   // Codex custom agents do not expose a per-agent tool allowlist. While a
   // fixer manifest is active, the repo-level hook therefore enforces the same
   // no-shell/no-MCP boundary that Claude and Copilot express declaratively.

@@ -69,6 +69,61 @@ describe('parseNpmLsJson', () => {
     ]);
   });
 
+  it('reports two versions of one package as two findings', () => {
+    // A hoisting conflict: npm's tree holds `typescript` twice, at different
+    // paths and different versions, each invalid against a different range.
+    // These are distinct findings with distinct remedies, so a de-duplicator
+    // keyed on the package NAME would report the first and silently drop the
+    // second -- and the dropped one is real.
+    const tree = JSON.stringify({
+      dependencies: {
+        'pkg-a': {
+          version: '1.0.0',
+          dependencies: {
+            typescript: { version: '7.0.2', invalid: '">=4 <6.1" from pkg-a' },
+          },
+        },
+        'pkg-b': {
+          version: '1.0.0',
+          dependencies: {
+            typescript: { version: '4.0.0', invalid: '">=5" from pkg-b' },
+          },
+        },
+      },
+    });
+    expect(parseNpmLsJson(tree).map((violation) => violation.message)).toEqual([
+      expect.stringContaining('typescript@7.0.2'),
+      expect.stringContaining('typescript@4.0.0'),
+    ]);
+  });
+
+  it('still collapses one version reached by several paths', () => {
+    // The counterpart the key must not break: npm accumulates requirers as it
+    // walks, so the SAME physical package reports a progressively longer
+    // `invalid` string at deeper paths. Keying on that text would restore the
+    // duplicate-per-path noise; keying on name@version does not.
+    const tree = JSON.stringify({
+      dependencies: {
+        'pkg-a': {
+          version: '1.0.0',
+          dependencies: {
+            typescript: { version: '7.0.2', invalid: '">=4 <6.1" from pkg-a' },
+          },
+        },
+        'pkg-b': {
+          version: '1.0.0',
+          dependencies: {
+            typescript: {
+              version: '7.0.2',
+              invalid: '">=4 <6.1" from pkg-a, ">=4 <6.1" from pkg-b',
+            },
+          },
+        },
+      },
+    });
+    expect(parseNpmLsJson(tree)).toHaveLength(1);
+  });
+
   it('ignores missing peers, which are frequently legitimate', () => {
     // An absent OPTIONAL peer is normal. Only `invalid` means a package is
     // installed at a version that violates a range. Paired with a real finding

@@ -163,6 +163,8 @@ describe('runCommand — scope-check', () => {
     const stdin = JSON.stringify({
       cwd: root,
       tool_input: { file_path: path.join(root, 'src/forbidden.ts') },
+      agent_id: 'fixer',
+      agent_type: 'guardrail-fixer',
     });
     await runCommand(
       'scope-check',
@@ -195,6 +197,8 @@ describe('runCommand — scope-check', () => {
       cwd: root,
       tool_name: 'Read',
       tool_input: { file_path: '/home/u/.claude/projects/x/memory/y.md' },
+      agent_id: 'fixer',
+      agent_type: 'guardrail-fixer',
     });
     await runCommand(
       'scope-check',
@@ -306,9 +310,11 @@ describe('runCommand — scope-check', () => {
       toolName: 'view',
       toolArgs: { path: '/home/u/.claude/projects/x/memory/y.md' },
     });
+    // Under the copilot dialect: its preToolUse carries no agent fields, so
+    // absence is "I cannot tell you" and the session-scoped lock stands.
     await runCommand(
       'scope-check',
-      [],
+      ['--dialect=copilot'],
       deps({ readStdin: () => Promise.resolve(stdin) }),
     );
     expect(out.join('')).toContain('deny');
@@ -662,11 +668,25 @@ describe('cli-core wiring', () => {
 
 const OUTSIDE_PATH = path.join(tmpdir(), 'outside-the-repo.ts');
 
-/** stdin payload for the scope-check hook. */
+/**
+ * stdin payload for the scope-check hook, as the FIXER would send it.
+ *
+ * The agent fields are part of the default because the lock only ever applies
+ * to a fixer: on the claude dialect a payload without `agentId` is the main
+ * thread, which is deliberately never confined. A test that wants the main
+ * thread, or a sibling subagent, says so explicitly rather than relying on
+ * their absence.
+ */
 function scopeStdin(toolName: unknown, filePath: unknown): string {
   // filePath rides in toolArgs.path (parseHookInput reads tool_input.file_path
   // / toolArgs.path), NOT at the top level.
-  return JSON.stringify({ toolName, toolArgs: { path: filePath }, cwd: root });
+  return JSON.stringify({
+    toolName,
+    toolArgs: { path: filePath },
+    cwd: root,
+    agentId: 'fixer',
+    agentType: 'guardrail-fixer',
+  });
 }
 
 async function runScopeCheck(stdin: string): Promise<string> {
@@ -727,7 +747,14 @@ describe('scope-check trigger conditions', () => {
       tool_name: 'apply_patch',
       tool_input: { command },
     });
-    expect(await runScopeCheck(stdin)).toContain('src/forbidden.ts');
+    // Codex reports no agent identity at all (openai/codex#16226), so the
+    // session-scoped lock is what confines its fixer.
+    await runCommand(
+      'scope-check',
+      ['--dialect=codex'],
+      deps({ readStdin: () => Promise.resolve(stdin) }),
+    );
+    expect(out.join('')).toContain('src/forbidden.ts');
   });
 
   it('denies shell and MCP tools while a fixer manifest is active', async () => {
@@ -838,6 +865,34 @@ describe('scope-check trigger conditions', () => {
     expect(await runScopeCheck(stdin)).toContain('scope-lock');
   });
 
+  it('does not confine the Claude main thread, which reports no agent_id', async () => {
+    // The gap the dialect check closes. A NORMAL Claude session's main thread
+    // sends neither agent field -- agent_type appears only in --agent
+    // sessions -- so it used to look identical to a host that cannot report
+    // identity, and stayed confined during a fix. On this dialect a missing
+    // agent_id positively identifies the main thread.
+    writeActiveViolations('default', [violation('src/a.ts')]);
+    const stdin = JSON.stringify({
+      cwd: root,
+      tool_name: 'Edit',
+      tool_input: { file_path: path.join(root, 'src/other.ts') },
+    });
+    expect(await runScopeCheck(stdin)).toBe('');
+  });
+
+  it('confines a Claude subagent whose type is unreported', async () => {
+    // agent_id present but no type: a subagent we cannot identify. Unknown is
+    // not the same as "not the fixer", so it is confined.
+    writeActiveViolations('default', [violation('src/a.ts')]);
+    const stdin = JSON.stringify({
+      cwd: root,
+      tool_name: 'Edit',
+      tool_input: { file_path: path.join(root, 'src/other.ts') },
+      agent_id: 'mystery',
+    });
+    expect(await runScopeCheck(stdin)).toContain('scope-lock');
+  });
+
   it('falls back to session scope when the host reports no identity', async () => {
     // Codex reports no agent fields at all (openai/codex#16226), and Copilot's
     // preToolUse reports none either. Those surfaces must not silently lose
@@ -849,7 +904,22 @@ describe('scope-check trigger conditions', () => {
       tool_name: 'Edit',
       tool_input: { file_path: path.join(root, 'src/other.ts') },
     });
-    expect(await runScopeCheck(stdin)).toContain('scope-lock');
+    expect(
+      await runCommand(
+        'scope-check',
+        ['--dialect=codex'],
+        deps({ readStdin: () => Promise.resolve(stdin) }),
+      ),
+    ).toBe(0);
+    expect(out.join('')).toContain('scope-lock');
+  });
+
+  it('does not deny a fixer tool call that names no tool at all', async () => {
+    // A payload with no toolName is neither a shell tool nor an MCP one, so
+    // the capability-lock must not fire on it. Kills the `?? false` -> `?? true`
+    // mutant, which would deny every unnamed tool while a fixer is active.
+    writeActiveViolations('default', [violation('src/a.ts')]);
+    expect(await runScopeCheck(scopeStdin(undefined, undefined))).toBe('');
   });
 
   it('allows an in-repo read while a fixer IS active', async () => {
@@ -1006,6 +1076,8 @@ describe('cli-core residual hardening', () => {
             JSON.stringify({
               toolName: 'edit',
               toolArgs: { path: path.join(root, 'src/b.ts') },
+              agentId: 'fixer',
+              agentType: 'guardrail-fixer',
             }),
           ),
       }),
