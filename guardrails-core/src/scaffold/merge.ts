@@ -188,6 +188,13 @@ const GITIGNORE_BLOCK = [
   // asked for.
   'reports/mutation/',
   '.stryker-tmp/',
+  // A git worktree checked out inside the repo is untracked but NOT ignored,
+  // so knip -- which does respect .gitignore -- walks into it and reports a
+  // whole second checkout of this repository as dead code in this one. Claude
+  // Code creates worktrees here by default, so the recommended workflow
+  // produces the broken state. dependency-cruiser does not read .gitignore at
+  // all; it is handled by the seeded config's `exclude` instead.
+  '.claude/worktrees/',
   GITIGNORE_END,
 ].join('\n');
 

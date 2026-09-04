@@ -68,7 +68,14 @@ module.exports = {
   ],
   options: {
     doNotFollow: { path: 'node_modules' },
-    exclude: { path: '(^|/)(dist|build|coverage|node_modules)/' },
+    // The trailing alternative excludes nested git worktrees. A worktree
+    // checked out inside the repository is a whole second checkout of it, and
+    // dependency-cruiser does not read .gitignore, so without this it cruises
+    // every one of them. \`.claude/worktrees/\` is where Claude Code puts them
+    // by default; add your own vendored or generated trees here too.
+    exclude: {
+      path: '(^|/)(dist|build|coverage|node_modules)/|^\\\\.claude/worktrees/',
+    },
   },
 };
 `;
