@@ -337,6 +337,7 @@ describe('runVerify', () => {
       'eslint',
       'tsc',
       'knip',
+      'npm-peers',
       'dependency-cruiser',
       'stryker',
     ]);
@@ -2064,6 +2065,116 @@ describe('changed-file scope', () => {
       ),
     ).toEqual([]);
     expect(calls.some((call) => call.command === 'eslint')).toBe(false);
+  });
+});
+
+/** The greenfield failure, in npm's own words: `npm i -D typescript` installs a
+ *  major no released typescript-eslint accepts. */
+const npmLsInvalidJson = JSON.stringify({
+  dependencies: {
+    typescript: {
+      version: '7.0.2',
+      invalid: '">=4.8.4 <6.1.0" from node_modules/typescript-eslint',
+    },
+  },
+});
+
+const peerOnlyAnalyzers = {
+  'npm-peers': 'required',
+  eslint: 'off',
+  tsc: 'off',
+  knip: 'off',
+  'dependency-cruiser': 'off',
+  stryker: 'off',
+} as const;
+
+describe('npm peer-range analyzer', () => {
+  it('reports peer-range violations at the commit rung', async () => {
+    const { exec } = fakeExec({
+      'npm ls --json --all': {
+        stdout: npmLsInvalidJson,
+        stderr: '',
+        code: 0,
+      },
+    });
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      profile: 'commit',
+      analyzers: peerOnlyAnalyzers,
+    });
+    expect(violations.map((violation) => violation.ruleId)).toEqual([
+      'guardrails/peer-range-violation',
+    ]);
+  });
+
+  it('reports findings even though npm ls exits 0', async () => {
+    // Measured: `npm ls` exits 0 on a graph it has just reported problems for.
+    // Wrapping this analyzer in the usual exit-code check would read a broken
+    // graph as clean, which is why it is deliberately not wrapped.
+    const { exec } = fakeExec({
+      'npm ls --json --all': {
+        stdout: npmLsInvalidJson,
+        stderr: '',
+        code: 0,
+      },
+    });
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      profile: 'commit',
+      analyzers: peerOnlyAnalyzers,
+    });
+    expect(violations).toHaveLength(1);
+  });
+
+  it('does NOT run at the stop rung', async () => {
+    // Whole-graph, so it belongs with knip at the commit rung rather than on
+    // every turn.
+    const { exec, calls } = fakeExec();
+    await runVerify({ repoRoot: '/repo', baseBranch: 'main', exec });
+    expect(calls.some((call) => call.command === 'npm')).toBe(false);
+  });
+
+  it('stays silent when npm cannot be spawned', async () => {
+    // A diagnostic, not a gate of last resort: an environment without npm on
+    // PATH, or a repo on pnpm, must not manufacture a blocking violation.
+    const { exec } = fakeExec({
+      'npm ls --json --all': {
+        stdout: npmLsInvalidJson,
+        stderr: 'not found',
+        code: 1,
+        spawnFailed: true as const,
+      },
+    });
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      profile: 'commit',
+      analyzers: { ...peerOnlyAnalyzers, 'npm-peers': 'auto' },
+    });
+    expect(violations).toEqual([]);
+  });
+
+  it('asks npm for the whole tree, in the repo root', async () => {
+    const { exec, calls } = fakeExec({
+      'npm ls --json --all': { stdout: '{}', stderr: '', code: 0 },
+    });
+    await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      profile: 'commit',
+      analyzers: peerOnlyAnalyzers,
+    });
+    expect(calls.find((call) => call.command === 'npm')).toEqual({
+      command: 'npm',
+      args: ['ls', '--json', '--all'],
+      options: { cwd: '/repo' },
+    });
   });
 });
 
