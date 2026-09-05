@@ -28,6 +28,12 @@ interface StrykerMutant {
   status: string;
   mutatorName: string;
   location: { start: { line: number } };
+  /** Test ids stryker determined cover this mutant. Absent in reports from
+   *  runners that provide no per-test data. */
+  coveredBy?: string[];
+  /** How many tests actually EXECUTED during this mutant's run. The field that
+   *  separates "the tests ran and none failed" from "no test ran at all". */
+  testsCompleted?: number;
 }
 
 interface StrykerFile {
@@ -165,4 +171,77 @@ export function parseStrykerJson(
     }
   }
   return violations;
+}
+
+/**
+ * Is this mutant's `Survived` verdict unsupported by any test execution?
+ *
+ * Written as three separate answers rather than one `&&` chain on purpose. Each
+ * clause rules out a different, individually-tested shape, and stryker's
+ * per-test coverage attributes a sequence of early returns to the tests that
+ * actually reach each one — a three-clause condition on one line gets
+ * attributed as a unit, which is how a mutant on its middle clause survives
+ * against tests that do kill it.
+ */
+function isUnrunSurvivor(mutant: StrykerMutant): boolean {
+  if (mutant.status !== 'Survived') {
+    return false;
+  }
+  const covering = mutant.coveredBy?.length ?? 0;
+  if (covering === 0) {
+    return false;
+  }
+  return (mutant.testsCompleted ?? 0) === 0;
+}
+
+/**
+ * How many mutants in the changed set were reported `Survived` without a single
+ * covering test having run?
+ *
+ * A `Survived` verdict means "every covering test executed and none failed". If
+ * `coveredBy` is non-empty and `testsCompleted` is zero, the second half never
+ * happened: the runner returned an unexamined default, and the verdict is not
+ * evidence of anything. `@stryker-mutator/vitest-runner` does exactly this on
+ * vitest 5 (stryker-js#6210 — the per-test name filter stopped matching, so
+ * every mutant run executes nothing), and has three more open bugs in the same
+ * family. Upstream proposes the same invariant for itself in #6146.
+ *
+ * `NoCoverage` is deliberately excluded: running no tests is what that status
+ * MEANS, and it is reported on its own merits by `parseStrykerJson`.
+ *
+ * A missing `testsCompleted` counts as unrun. Every runner that reports a
+ * `Survived` mutant it actually exercised emits the field; treating its absence
+ * as "probably fine" would fail open on precisely the malformed report this
+ * guard exists to catch.
+ */
+export function unrunSurvivedMutants(
+  reportJson: string,
+  changedFiles: readonly string[],
+): number {
+  let parsed: unknown;
+  // Equivalent mutants: emptying either block leaves `parsed` undefined, which
+  // `isReport` rejects below — the function still answers 0. A range directive
+  // is used because `disable next-line` only attaches to a statement-LEADING
+  // comment, and a `} catch {` line has none.
+  // Stryker disable BlockStatement
+  try {
+    parsed = JSON.parse(reportJson);
+  } catch {
+    return 0;
+  }
+  // Stryker restore BlockStatement
+  if (!isReport(parsed)) {
+    return 0;
+  }
+  const changed = new Set(changedFiles);
+  let count = 0;
+  for (const [file, fileResult] of Object.entries(parsed.files)) {
+    if (!changed.has(file)) {
+      continue;
+    }
+    count += fileResult.mutants.filter((mutant) =>
+      isUnrunSurvivor(mutant),
+    ).length;
+  }
+  return count;
 }

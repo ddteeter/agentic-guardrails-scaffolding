@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   isStrykerReportJson,
   parseStrykerJson,
+  unrunSurvivedMutants,
 } from '../../src/verify/stryker-adapter.js';
 
 const report = JSON.stringify({
@@ -265,5 +266,149 @@ describe('isStrykerReportJson', () => {
     expect(isStrykerReportJson('')).toBe(false);
     expect(isStrykerReportJson('{"files":')).toBe(false);
     expect(isStrykerReportJson('<html>500</html>')).toBe(false);
+  });
+});
+
+const at = (line: number) => ({ start: { line } });
+
+function reportOf(mutants: unknown[]): string {
+  return JSON.stringify({ files: { 'src/a.ts': { mutants } } });
+}
+
+describe('unrunSurvivedMutants', () => {
+  it('counts a Survived mutant whose covering tests never ran', () => {
+    const json = reportOf([
+      {
+        status: 'Survived',
+        mutatorName: 'EqualityOperator',
+        location: at(1),
+        coveredBy: ['0', '1'],
+        testsCompleted: 0,
+      },
+    ]);
+    expect(unrunSurvivedMutants(json, ['src/a.ts'])).toBe(1);
+  });
+
+  it('does not count a genuine survivor, whose covering test did run', () => {
+    const json = reportOf([
+      {
+        status: 'Survived',
+        mutatorName: 'EqualityOperator',
+        location: at(1),
+        coveredBy: ['0'],
+        testsCompleted: 1,
+      },
+    ]);
+    expect(unrunSurvivedMutants(json, ['src/a.ts'])).toBe(0);
+  });
+
+  it('does not count a Killed mutant, whatever its counters say', () => {
+    const json = reportOf([
+      {
+        status: 'Killed',
+        mutatorName: 'EqualityOperator',
+        location: at(1),
+        coveredBy: ['0', '1'],
+        testsCompleted: 0,
+      },
+    ]);
+    expect(unrunSurvivedMutants(json, ['src/a.ts'])).toBe(0);
+  });
+
+  it('does not count NoCoverage, which legitimately runs no tests', () => {
+    const json = reportOf([
+      {
+        status: 'NoCoverage',
+        mutatorName: 'EqualityOperator',
+        location: at(1),
+        coveredBy: [],
+        testsCompleted: 0,
+      },
+    ]);
+    expect(unrunSurvivedMutants(json, ['src/a.ts'])).toBe(0);
+  });
+
+  it('does not count a Survived mutant with no covering tests at all', () => {
+    const json = reportOf([
+      {
+        status: 'Survived',
+        mutatorName: 'EqualityOperator',
+        location: at(1),
+        coveredBy: [],
+        testsCompleted: 0,
+      },
+    ]);
+    expect(unrunSurvivedMutants(json, ['src/a.ts'])).toBe(0);
+  });
+
+  it('does not count a mutant from a file outside the changed set', () => {
+    const json = JSON.stringify({
+      files: {
+        'src/other.ts': {
+          mutants: [
+            {
+              status: 'Survived',
+              mutatorName: 'EqualityOperator',
+              location: at(1),
+              coveredBy: ['0'],
+              testsCompleted: 0,
+            },
+          ],
+        },
+      },
+    });
+    expect(unrunSurvivedMutants(json, ['src/a.ts'])).toBe(0);
+  });
+
+  it('treats a missing testsCompleted as unrun, failing closed', () => {
+    const json = reportOf([
+      {
+        status: 'Survived',
+        mutatorName: 'EqualityOperator',
+        location: at(1),
+        coveredBy: ['0'],
+      },
+    ]);
+    expect(unrunSurvivedMutants(json, ['src/a.ts'])).toBe(1);
+  });
+
+  it('answers 0 for a payload that is not JSON at all', () => {
+    expect(unrunSurvivedMutants('not json', ['src/a.ts'])).toBe(0);
+  });
+
+  it('answers 0 for JSON that parses but is not a report', () => {
+    expect(unrunSurvivedMutants('{"nope":1}', ['src/a.ts'])).toBe(0);
+  });
+
+  it('treats an absent coveredBy as no covering tests, not as unrun', () => {
+    const json = reportOf([
+      {
+        status: 'Survived',
+        mutatorName: 'EqualityOperator',
+        location: at(1),
+        testsCompleted: 0,
+      },
+    ]);
+    expect(unrunSurvivedMutants(json, ['src/a.ts'])).toBe(0);
+  });
+
+  it('counts every affected mutant, so the message can say how many', () => {
+    const json = reportOf([
+      {
+        status: 'Survived',
+        mutatorName: 'EqualityOperator',
+        location: at(1),
+        coveredBy: ['0'],
+        testsCompleted: 0,
+      },
+      {
+        status: 'Survived',
+        mutatorName: 'ConditionalExpression',
+        location: at(2),
+        coveredBy: ['0'],
+        testsCompleted: 0,
+      },
+    ]);
+    expect(unrunSurvivedMutants(json, ['src/a.ts'])).toBe(2);
   });
 });
