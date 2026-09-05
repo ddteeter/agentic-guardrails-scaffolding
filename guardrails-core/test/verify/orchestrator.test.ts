@@ -6,6 +6,7 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import type { Exec, ExecResult } from '../../src/exec.js';
+import type { Violation } from '../../src/violation.js';
 import { ANALYZER_TOOLS, runVerify } from '../../src/verify/index.js';
 
 const eslintJson = JSON.stringify([
@@ -487,6 +488,43 @@ describe('runVerify scope policy', () => {
   });
 });
 
+function reportWithMutants(mutants: unknown[]): string {
+  return JSON.stringify({
+    schemaVersion: '1.0',
+    files: {
+      'guardrails-core/src/foo.ts': {
+        language: 'typescript',
+        source: '',
+        mutants,
+      },
+    },
+  });
+}
+
+async function verifyWithReport(report: string): Promise<Violation[]> {
+  const { exec } = fakeExec({
+    'git diff --name-only --diff-filter=ACM main': {
+      stdout: 'guardrails-core/src/foo.ts\n',
+      stderr: '',
+      code: 0,
+    },
+    'git ls-files --others --exclude-standard': {
+      stdout: '',
+      stderr: '',
+      code: 0,
+    },
+  });
+  const { violations } = await runVerify({
+    repoRoot: '/repo',
+    baseBranch: 'main',
+    exec,
+    profile: 'commit',
+    resolveBin: (tool) => tool,
+    readFile: () => Promise.resolve(report),
+  });
+  return violations;
+}
+
 describe('runStryker', () => {
   const strykerReport = JSON.stringify({
     schemaVersion: '1.0',
@@ -554,6 +592,64 @@ describe('runStryker', () => {
         line: 7,
       }),
     );
+  });
+
+  it('reports one analyzer-failed, not survivors, when no test ran', async () => {
+    const violations = await verifyWithReport(
+      reportWithMutants([
+        {
+          id: '1',
+          mutatorName: 'EqualityOperator',
+          status: 'Survived',
+          location: { start: { line: 1 }, end: { line: 1 } },
+          coveredBy: ['0'],
+          testsCompleted: 0,
+        },
+        {
+          id: '2',
+          mutatorName: 'ConditionalExpression',
+          status: 'Survived',
+          location: { start: { line: 2 }, end: { line: 2 } },
+          coveredBy: ['0'],
+          testsCompleted: 0,
+        },
+      ]),
+    );
+    expect(
+      violations.filter((violation) => violation.ruleId.startsWith('stryker/')),
+    ).toEqual([]);
+    const failed = violations.filter(
+      (violation) => violation.ruleId === 'guardrails/analyzer-failed',
+    );
+    expect(failed).toHaveLength(1);
+    expect(failed[0]?.message).toContain('2 mutant(s)');
+    expect(failed[0]?.severity).toBe('error');
+    // Not fixer-routable: no edit to the code under test can make a run that
+    // never happened into evidence.
+    expect(failed[0]?.fixable).toBe(false);
+  });
+
+  it('still reports genuine survivors, which did run their tests', async () => {
+    const violations = await verifyWithReport(
+      reportWithMutants([
+        {
+          id: '1',
+          mutatorName: 'EqualityOperator',
+          status: 'Survived',
+          location: { start: { line: 1 }, end: { line: 1 } },
+          coveredBy: ['0'],
+          testsCompleted: 1,
+        },
+      ]),
+    );
+    expect(
+      violations.filter((violation) => violation.ruleId === 'stryker/survived'),
+    ).toHaveLength(1);
+    expect(
+      violations.filter(
+        (violation) => violation.ruleId === 'guardrails/analyzer-failed',
+      ),
+    ).toEqual([]);
   });
 
   it('returns no stryker violations when only test files changed', async () => {

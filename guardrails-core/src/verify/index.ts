@@ -69,7 +69,11 @@ import {
 } from './git.js';
 import { parseKnipJson } from './knip-adapter.js';
 import { parseNpmLsJson } from './npm-peers-adapter.js';
-import { isStrykerReportJson, parseStrykerJson } from './stryker-adapter.js';
+import {
+  isStrykerReportJson,
+  parseStrykerJson,
+  unrunSurvivedMutants,
+} from './stryker-adapter.js';
 import { parseTscOutput } from './tsc-adapter.js';
 
 export interface VerifyOptions {
@@ -603,6 +607,35 @@ export function instrumentedZeroMutants(output: string): boolean {
   return instrumentedMutantCount(output) === 0;
 }
 
+/**
+ * Stryker completed and wrote a report, but the verdicts in it are not
+ * evidence: every one of these mutants was covered by tests that never
+ * executed.
+ *
+ * Reported once for the RUN rather than once per mutant, because the finding is
+ * about the runner and not about any mutant — N copies of "your runner is
+ * broken" is the context flood the terse-pointer design exists to prevent. And
+ * reported at all, rather than dropped, because a silent empty result would be
+ * a fail-open on the analyzer this pack most depends on.
+ */
+function strykerUnrunMutantsViolation(count: number): Violation {
+  return {
+    ruleId: 'guardrails/analyzer-failed',
+    file: 'package.json',
+    message:
+      `stryker reported ${count} mutant(s) as "survived" whose covering tests ` +
+      `never ran (testsCompleted: 0), so those verdicts are not evidence of ` +
+      `anything — treating the mutation check as failed, not clean. This is ` +
+      `the signature of a broken test-runner integration, not of weak tests: ` +
+      `@stryker-mutator/vitest-runner does it on vitest 5 (stryker-js#6210). ` +
+      `Check that your testRunner and its plugin support the installed major ` +
+      `of your test framework.`,
+    severity: 'error',
+    fixable: false,
+    tool: 'guardrails',
+  };
+}
+
 function strykerReportMissingViolation(reportPath: string): Violation {
   return {
     ruleId: 'guardrails/analyzer-failed',
@@ -711,8 +744,13 @@ async function runStryker(
     // Deliberately empty; a missing report is one of the outcomes decided below.
   }
   // Outcome 1: a parseable report means the run reached its reporter, so its
-  // findings are the answer no matter what the exit code was.
+  // findings are the answer no matter what the exit code was -- unless the
+  // verdicts in it were never produced by a test run at all.
   if (isStrykerReportJson(report)) {
+    const unrun = unrunSurvivedMutants(report, production);
+    if (unrun > 0) {
+      return [strykerUnrunMutantsViolation(unrun)];
+    }
     return parseStrykerJson(report, production);
   }
   if (result.code !== 0) {
