@@ -2267,3 +2267,26 @@ for anyone running `npx stryker run` by hand.
   default runner changes.
 - **No release exists**, so every documented install URL still 404s. Unchanged
   across four adoptions; still the one blocker no code change clears.
+
+**Verified from the tarball, after the fixes.** The same end-to-end script was
+re-run on a bare repo against the packed tarball built from this branch, with
+the analyzer set at the versions the corrected guidance now pins:
+
+- `init --apply` on the bare repo named `guardrails init --apply` as the second
+  half of the fix in its skipped-analyzer warning, and the re-run after
+  installing the analyzers seeded all three configs.
+- **The exit criterion is reachable in one pass.** Author `tsconfig.json` and
+  `eslint.config.js`, swap in the framework runner as step 5 says, and `verify`
+  goes green — no knip catch-22, no `analyzer-failed`, no hand-editing. The
+  first commit gated correctly on the unborn branch under `enforcement: block`.
+- **The mutation gate reports honestly on both sides.** A vacuous
+  `expect(tier(200)).toBeTypeOf('string')` produced 11 real mutation findings;
+  strengthening the test cleared them.
+- **And the guard does its job on the stack that breaks.** Raising the same
+  repo to vitest 5 turned what would have been **17 false `stryker/survived`
+  violations sent to the fixer** into one `guardrails/analyzer-failed` naming
+  the cause and the upstream issue. Dropping back to vitest 4 returns it to
+  clean, same code and same tests.
+- `git -c core.hooksPath=/dev/null commit` is denied on a dirty tree; an
+  unrelated shell command still passes silently; and
+  `reports/stryker-incremental.json` is ignored.
