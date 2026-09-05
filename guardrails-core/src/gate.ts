@@ -8,8 +8,24 @@
  * mechanism works at the Copilot commit gate: at the first delegation of a fix
  * loop we snapshot the suppressions already present in the working diff; every
  * subsequent cycle flags only suppressions absent from that baseline — i.e. the
- * ones the fixer added — and surfaces them as violations so they flow through
- * the normal escalation ladder.
+ * ones added during the loop — and surfaces them as violations so they flow
+ * through the normal escalation ladder.
+ *
+ * **Outside a fix loop the auditor reports nothing**, and that is the whole
+ * point of the baseline rather than a hole in it. A suppression sitting in the
+ * working diff before any fixer has run is the main agent's own, deliberate or
+ * not; the gate has a diff, not an author, so the honest thing it can say is
+ * "this appeared while the fixer had the manifest". Reporting it earlier is
+ * how this went wrong: the findings used to be computed against a baseline
+ * that did not exist yet, so the FIRST cycle flagged everything already in the
+ * diff, blocked the turn, and told the main agent to spawn a fixer against a
+ * change no fixer had made — after which the retry passed anyway, because the
+ * delegate had by then written the snapshot that forgave it. One wasted
+ * subagent round-trip, pointed at the wrong culprit, per deliberate
+ * suppression. The commit, push and CI gates audit the whole branch diff with
+ * no snapshot at all, so nothing escapes by not being reported here; they are
+ * where a suppression is answered for, and where `sanctionedSuppressions` can
+ * answer for it.
  */
 
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -212,7 +228,7 @@ function toViolation(finding: AuditFinding): Violation {
     ruleId: 'guardrails/added-suppression',
     file: finding.file,
     line: finding.line,
-    message: `Fixer added a forbidden ${finding.kind}: ${finding.text}`,
+    message: `Forbidden ${finding.kind} added during the fix loop: ${finding.text}`,
     severity: 'error',
     fixable: false,
     tool: 'guardrails',
@@ -232,9 +248,12 @@ export async function runStopGate(
   const baseline = readSnapshot(snapshotPath);
 
   const diff = await workingDiff(options);
-  const auditFindings = auditDiff(diff).filter(
-    (finding) => !baseline.has(findingKey(finding)),
-  );
+  const present = auditDiff(diff);
+  // No snapshot means no fix loop is open, so there is no fixer whose work
+  // this could be. See the module docstring.
+  const auditFindings = hadSnapshot
+    ? present.filter((finding) => !baseline.has(findingKey(finding)))
+    : [];
 
   const verifyOptions = {
     repoRoot,
@@ -276,9 +295,11 @@ export async function runStopGate(
   saveRecurrence(directory, decision.nextRecurrence);
 
   if (decision.outcome === 'delegate') {
-    // Snapshot the pre-fix suppression baseline once per fix loop.
+    // Snapshot the pre-fix suppression baseline once per fix loop -- this
+    // delegation is what opens it, so everything already present is what the
+    // fixer inherited rather than wrote.
     if (!hadSnapshot) {
-      const keys = auditDiff(diff).map((finding) => findingKey(finding));
+      const keys = present.map((finding) => findingKey(finding));
       writeFileSync(snapshotPath, JSON.stringify(keys));
     }
   } else {

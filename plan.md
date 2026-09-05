@@ -1453,18 +1453,40 @@ did not, which is exactly what that section warns about.
 
 ### Roadmap: from the same adoption, not fixed here
 
-- **The Stop gate blames the main agent's suppressions on the fixer.** Writing
-  an `eslint-disable` with no fixer running produced a manifest entry reading
-  `Fixer added a forbidden eslint-disable`, a delegate block, and a spawn
-  instruction; stopping again passed, because the delegate had written the
-  snapshot baseline that then forgave it. So every deliberate main-agent
-  suppression, `.skip` or `@ts-expect-error` costs one bogus fixer round-trip
-  against a manifest that misattributes the change — the wrong-pointer shape
-  that makes an agent thrash. `runStopGate` writes the pre-fix snapshot only on
-  a `delegate` outcome, which is what forces the wasted cycle; snapshotting the
-  working diff at the START of a fix loop, and attributing by who actually
-  edited, would fix both halves. The commit gate is unaffected: it re-audits
-  the whole branch diff with no snapshot.
+- **The Stop gate blamed the main agent's suppressions on the fixer — fixed.**
+  Writing an `eslint-disable` with no fixer running produced a manifest entry
+  reading `Fixer added a forbidden eslint-disable`, a delegate block, and a
+  spawn instruction; stopping again passed, because the delegate had by then
+  written the snapshot baseline that forgave it. So every deliberate main-agent
+  suppression, `.skip` or `@ts-expect-error` cost one bogus fixer round-trip
+  against a manifest that misattributed the change — the wrong-pointer shape
+  that makes an agent thrash.
+
+  The diagnosis in the original note was half right. The snapshot WRITE was
+  already in the correct place (the delegation that opens the loop); what was
+  wrong is that `auditFindings` were computed _before_ it existed, so the
+  opening cycle filtered against an empty baseline and flagged everything
+  already in the diff. This was never a design gap — `gate.ts`'s own docstring
+  already promised "every subsequent cycle flags only suppressions absent from
+  that baseline — i.e. the ones the fixer added". The code broke that promise on
+  exactly the cycle where no fixer had run. The auditor now reports only while a
+  fix loop is open.
+
+  The other half — "attributing by who actually edited" — turned out to be
+  neither available nor needed. The Stop hook fires for the main agent, so at
+  audit time the gate has a diff, not an author; and once the finding can only
+  arise inside an open loop, naming an author is a guess the message does not
+  have to make. It states the fact the gate actually has:
+  `Forbidden <kind> added during the fix loop: <text>`. That stays true even in
+  the case that would have made "Fixer added" a lie — the main agent is
+  unconfined on Claude Code and can edit during a loop.
+
+  Nothing escapes by going unreported at the Stop rung: the commit, push and CI
+  gates audit the whole branch diff with no snapshot, which is also the only
+  rung where `sanctionedSuppressions` can answer for one. Verified end to end —
+  the main agent's suppression now releases the turn and is still blocked at
+  `gate --mode=commit`, while a suppression added mid-loop is still caught.
+
 - **Two findings on one line are indistinguishable from a duplicate.** The
   `Violation` contract carries `line` but no `column`, so two mutants on one
   expression, or two eslint reports on one statement, print as identical rows.
