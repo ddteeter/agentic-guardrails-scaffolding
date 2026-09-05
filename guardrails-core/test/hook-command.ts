@@ -23,7 +23,9 @@
  */
 export const CLI_PREFIX = `node -e "import('guardrails-core/cli')" guardrails`;
 
-/** The full command string for one subcommand, e.g. `gate --mode=stop`. */
+/**
+The full command string for one subcommand, e.g. `gate --mode=stop`.
+*/
 export function cliCommand(subcommand: string): string {
   return `${CLI_PREFIX} ${subcommand}`;
 }

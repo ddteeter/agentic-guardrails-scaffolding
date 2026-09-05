@@ -23,7 +23,9 @@ export interface ScaffoldManifest {
   readonly files: Readonly<Record<string, string>>;
 }
 
-/** Content hash, algorithm-prefixed so the committed file says what it used. */
+/**
+Content hash, algorithm-prefixed so the committed file says what it used.
+*/
 export function checksum(content: string): string {
   return `sha256-${createHash('sha256').update(content, 'utf8').digest('hex')}`;
 }
@@ -58,12 +60,9 @@ export function serializeManifest(manifest: ScaffoldManifest): string {
   // an index-access guard here would be unreachable for any input that actually
   // satisfies `ScaffoldManifest`, which is exactly the kind of dead defensive
   // branch a mutation test cannot distinguish from `if (true)`.
-  const files: Record<string, string> = {};
-  for (const [key, value] of Object.entries(manifest.files).sort(([a], [b]) =>
-    a.localeCompare(b),
-  )) {
-    files[key] = value;
-  }
+  const files: Record<string, string> = Object.fromEntries(
+    Object.entries(manifest.files).toSorted(([a], [b]) => a.localeCompare(b)),
+  );
   return `${JSON.stringify(
     { guardrailsVersion: manifest.guardrailsVersion, files },
     undefined,

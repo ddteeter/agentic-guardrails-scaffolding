@@ -39,10 +39,10 @@ import { upwardFrom } from './path-walk.js';
  */
 export function findGitRoot(
   from: string,
-  exists: (candidate: string) => boolean = existsSync,
+  isPresent: (candidate: string) => boolean = existsSync,
 ): string | undefined {
   for (const directory of upwardFrom(from)) {
-    if (exists(path.join(directory, '.git'))) {
+    if (isPresent(path.join(directory, '.git'))) {
       return directory;
     }
   }
@@ -52,12 +52,12 @@ export function findGitRoot(
 export async function resolveRepoRoot(
   exec: Exec,
   cwd: string,
-  exists: (candidate: string) => boolean = existsSync,
+  isPresent: (candidate: string) => boolean = existsSync,
 ): Promise<string> {
   // Filesystem first: it returns exactly what `git rev-parse --show-toplevel`
   // returns, including inside a linked worktree, without a subprocess on the
   // hot path — and without requiring git to be installed at all.
-  const walked = findGitRoot(cwd, exists);
+  const walked = findGitRoot(cwd, isPresent);
   if (walked !== undefined) {
     return walked;
   }

@@ -13,7 +13,9 @@
  * escalation. These are textbook loose rules.
  */
 
-/** Rule *names* (the segment after the last `/`) that are loose in any plugin. */
+/**
+Rule *names* (the segment after the last `/`) that are loose in any plugin.
+*/
 const LOOSE_RULE_NAMES = new Set([
   'expect-expect',
   'no-trivial-assertions',
@@ -22,7 +24,9 @@ const LOOSE_RULE_NAMES = new Set([
   'no-restricted-imports',
 ]);
 
-/** Plugin/tool prefixes whose rules are loose as a family. */
+/**
+Plugin/tool prefixes whose rules are loose as a family.
+*/
 const LOOSE_PREFIXES = [
   'boundaries/',
   'stryker/',
@@ -30,15 +34,29 @@ const LOOSE_PREFIXES = [
   'dependency-cruiser/',
 ];
 
-/** Cross-cutting patterns (e.g. Java tools embed the tool name in the id). */
+/**
+Cross-cutting patterns (e.g. Java tools embed the tool name in the id).
+*/
 const LOOSE_PATTERNS = [/archunit/i, /\bpitest\b/i, /\bdescartes\b/i];
 
+/**
+ * The bare rule name: `no-console` from `eslint/no-console`, and `TS2322`
+ * unchanged.
+ *
+ * Branchless on purpose. The guard this replaced (`slash === -1 ? ruleId :
+ * ...`) had an unkillable mutant in it: `lastIndexOf` answers -1 when there is
+ * no slash, and `slice(-1 + 1)` is `slice(0)`, which is the whole string -- so
+ * removing the guard changes no output for any input. Deleting the branch is
+ * the honest fix; a suppression would have been recording that we could not
+ * tell the difference.
+ */
 function ruleName(ruleId: string): string {
-  const slash = ruleId.lastIndexOf('/');
-  return slash === -1 ? ruleId : ruleId.slice(slash + 1);
+  return ruleId.slice(ruleId.lastIndexOf('/') + 1);
 }
 
-/** The generic, ships-in-core default: is this a known loose-class rule? */
+/**
+The generic, ships-in-core default: is this a known loose-class rule?
+*/
 export function isBuiltinLoose(ruleId: string): boolean {
   return (
     LOOSE_RULE_NAMES.has(ruleName(ruleId)) ||

@@ -26,9 +26,9 @@ describe('.github/hooks/guardrails.json', () => {
   it('declares the camelCase native envelope', () => {
     expect(config.version).toBe(1);
     expect(
-      Object.keys(config.hooks).sort((a, b) => a.localeCompare(b)),
+      Object.keys(config.hooks).toSorted((a, b) => a.localeCompare(b)),
     ).toEqual(
-      ['agentStop', 'postToolUse', 'preToolUse'].sort((a, b) =>
+      ['agentStop', 'postToolUse', 'preToolUse'].toSorted((a, b) =>
         a.localeCompare(b),
       ),
     );

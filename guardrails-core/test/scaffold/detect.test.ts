@@ -9,12 +9,15 @@ import { detect } from '../../src/scaffold/detect.js';
 
 const ok = (stdout: string): ExecResult => ({ stdout, stderr: '', code: 0 });
 
-/** A fake git: toplevel, base branch, and core.hooksPath. */
+/**
+A fake git: toplevel, base branch, and core.hooksPath.
+*/
 function fakeExec(overrides: Record<string, ExecResult> = {}): Exec {
   return (command, args) => {
     const line = [command, ...args].join(' ');
-    if (overrides[line]) {
-      return Promise.resolve(overrides[line]);
+    const override = overrides[line];
+    if (override) {
+      return Promise.resolve(override);
     }
     if (line.includes('--show-toplevel')) return Promise.resolve(ok('/repo\n'));
     if (line.includes('core.hooksPath')) {
@@ -30,7 +33,7 @@ function facts(files: Record<string, unknown>, exec = fakeExec()) {
   return detect({
     exec,
     cwd: '/repo/packages/api',
-    fileExists: (filePath) => Object.hasOwn(files, filePath),
+    isFilePresent: (filePath) => Object.hasOwn(files, filePath),
     readJson: (filePath) => files[filePath],
   });
 }
@@ -41,7 +44,9 @@ interface RecordedCall {
   cwd: string | undefined;
 }
 
-/** A fake git that also records exactly what it was called with, and where. */
+/**
+A fake git that also records exactly what it was called with, and where.
+*/
 function recordingFakeExec(overrides: Record<string, ExecResult> = {}): {
   exec: Exec;
   calls: RecordedCall[];
@@ -160,7 +165,7 @@ describe('detect', () => {
       '/repo/package.json': { devDependencies: { eslint: '^9', knip: '^6' } },
     });
     expect(
-      [...result.declaredProviders].sort((a, b) => a.localeCompare(b)),
+      [...result.declaredProviders].toSorted((a, b) => a.localeCompare(b)),
     ).toEqual(['eslint', 'knip']);
   });
 
@@ -302,7 +307,7 @@ describe('detect', () => {
   });
 
   it('falls back to the real filesystem and JSON reader when none are injected', async () => {
-    // Proves the default `fileExists`/`readJson` seams (existsSync,
+    // Proves the default `isFilePresent`/`readJson` seams (existsSync,
     // readJsonFile) are wired up, not just the injected fakes every other
     // test uses -- by writing a REAL package.json/stryker.conf.json to a temp
     // directory and asserting their actual content is reflected, not merely

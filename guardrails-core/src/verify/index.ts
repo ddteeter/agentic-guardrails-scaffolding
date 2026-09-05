@@ -256,7 +256,7 @@ function withExitCodeCheck(
  *  `spawnFailed !== true` half would be unreachable code that no test can
  *  exercise — and mutation testing says so. A tool that could not be STARTED is
  *  still reported only as `analyzer-missing`, never also as `analyzer-failed`. */
-function gitCallFailed(result: ExecResult): boolean {
+function didGitCallFail(result: ExecResult): boolean {
   return result.code !== 0;
 }
 
@@ -277,7 +277,7 @@ async function changedTypeScriptFiles(
     if (staged.spawnFailed === true) {
       return { files: [], violations: [] };
     }
-    if (gitCallFailed(staged)) {
+    if (didGitCallFail(staged)) {
       return {
         files: [],
         violations: [
@@ -340,7 +340,7 @@ async function changedTypeScriptFiles(
   // Neither invocation's exit code carries a "findings" case (unlike the
   // analyzers above) — a non-zero git exit is always a failure.
   const failedGitCall = [tracked, untracked].find((result) =>
-    gitCallFailed(result),
+    didGitCallFail(result),
   );
   if (failedGitCall !== undefined) {
     return {
@@ -603,7 +603,7 @@ export function instrumentedMutantCount(output: string): number | undefined {
 
 /** Did stryker explicitly report instrumenting zero mutants? Absence of the
  *  banner is NOT a zero reading — an unrecognised output must fail closed. */
-export function instrumentedZeroMutants(output: string): boolean {
+export function isZeroMutantRun(output: string): boolean {
   return instrumentedMutantCount(output) === 0;
 }
 
@@ -694,21 +694,61 @@ function strykerReportMissingViolation(reportPath: string): Violation {
  *     explicit zero reading buys this, because a suite that genuinely cannot
  *     run reports the identical error.
  *  3. Anything else → `analyzer-failed`. */
+/**
+ * Drops executable entry points from the mutation set.
+ *
+ * A file whose first line is a `#!` shebang is run as a PROGRAM, never
+ * imported, so no unit test can exercise it in-process and every mutant in it
+ * comes back `no-coverage` by construction -- work handed to a fixer that it
+ * cannot honestly do, and whose only honest resolutions are a sanctioned
+ * suppression or a stryker exclusion the adopter has to know to write.
+ *
+ * Mutation only: eslint and tsc still check these files, which is where a CLI
+ * shim's real defects surface. Exactly the treatment, and the reasoning, that
+ * `isConfigFile` already applies to `*.config.ts`.
+ *
+ * A file that cannot be read is KEPT in the set: failing toward more checking
+ * is the rule everywhere else in this module, and a stryker run over a file
+ * that has since vanished is a harmless no-op.
+ */
+async function excludeExecutableEntries(
+  files: readonly string[],
+  repoRoot: string,
+  readFile: (filePath: string) => Promise<string>,
+): Promise<string[]> {
+  const verdicts = await Promise.all(
+    files.map(async (file) => {
+      try {
+        const content = await readFile(path.join(repoRoot, file));
+        return !content.startsWith('#!');
+      } catch {
+        return true;
+      }
+    }),
+  );
+  return files.filter((_, index) => verdicts[index] === true);
+}
+
 async function runStryker(
   options: VerifyOptions,
   resolveBin: (tool: string) => string,
   files: string[],
 ): Promise<Violation[]> {
-  const production = files.filter(
+  const { exec, repoRoot } = options;
+  const readFile =
+    options.readFile ?? ((filePath) => fsReadFile(filePath, 'utf8'));
+  const candidates = files.filter(
     (file) =>
       isTypeScriptFile(file) && !isTestFile(file) && !isConfigFile(file),
+  );
+  const production = await excludeExecutableEntries(
+    candidates,
+    repoRoot,
+    readFile,
   );
   if (production.length === 0) {
     return [];
   }
-  const { exec, repoRoot } = options;
-  const readFile =
-    options.readFile ?? ((filePath) => fsReadFile(filePath, 'utf8'));
   const removeFile =
     options.removeFile ?? ((filePath) => fsRm(filePath, { force: true }));
   const reportPath = STRYKER_REPORT_PATH;
@@ -756,7 +796,7 @@ async function runStryker(
   if (result.code !== 0) {
     // Outcome 2: nothing to mutate is vacuously clean, even though the runner
     // threw on its way to discovering that.
-    if (instrumentedZeroMutants(`${result.stdout}\n${result.stderr}`)) {
+    if (isZeroMutantRun(`${result.stdout}\n${result.stderr}`)) {
       return [];
     }
     // Outcome 3.
@@ -1077,7 +1117,7 @@ function selectAnalyzers(
     if (RUNG_ORDER[profile] < RUNG_ORDER[analyzer.minRung]) {
       continue;
     }
-    if (analyzer.scope === 'changed-files' && !hasChangedFiles) {
+    if (!hasChangedFiles && analyzer.scope === 'changed-files') {
       continue;
     }
     // `analyzer.provider` is already `string | undefined`, so a provider-less
@@ -1122,15 +1162,16 @@ export async function runVerify(options: VerifyOptions): Promise<VerifyResult> {
     );
   violations.push(...unknownAnalyzerViolations(analyzers));
 
-  for (const { analyzer, missingProvider } of selectAnalyzers(
+  const selected = selectAnalyzers(
     analyzers,
     declared,
     profile,
     files.length > 0,
-  )) {
+  );
+  for (const { analyzer, missingProvider } of selected) {
     const before = failures.length;
     violations.push(...(await analyzer.run(tracked, resolveBin, files)));
-    if (failures.length > before && missingProvider !== undefined) {
+    if (missingProvider !== undefined && failures.length > before) {
       violations.push(missingToolViolation(analyzer.tool, missingProvider));
     }
   }

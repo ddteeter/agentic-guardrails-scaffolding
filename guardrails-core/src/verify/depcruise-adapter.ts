@@ -82,7 +82,9 @@ function isDepcruiseReport(
   );
 }
 
-/** dependency-cruiser `error → error`; `warn`/`info → warn`; anything else skipped. */
+/**
+dependency-cruiser `error → error`; `warn`/`info → warn`; anything else skipped.
+*/
 function toSeverity(severity: string): Severity | undefined {
   if (severity === 'error') {
     return 'error';

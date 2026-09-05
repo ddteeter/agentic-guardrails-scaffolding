@@ -19,10 +19,14 @@
  * answer it differently.
  */
 
-/** Where guardrails installs its hook, and points `core.hooksPath` when it can. */
+/**
+Where guardrails installs its hook, and points `core.hooksPath` when it can.
+*/
 export const HOOKS_DIRECTORY = '.githooks';
 
-/** The hook script itself -- the thing a foreign `core.hooksPath` leaves inert. */
+/**
+The hook script itself -- the thing a foreign `core.hooksPath` leaves inert.
+*/
 export const HOOKS_SCRIPT_PATH = `${HOOKS_DIRECTORY}/pre-commit`;
 
 /** The branch-wide companion rung, inert under a foreign `core.hooksPath` for

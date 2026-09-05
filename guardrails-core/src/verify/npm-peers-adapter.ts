@@ -133,5 +133,5 @@ export function parseNpmLsJson(stdout: string, repoRoot: string): Violation[] {
     }
   };
   visit(parsed);
-  return [...found.values()];
+  return found.values().toArray();
 }

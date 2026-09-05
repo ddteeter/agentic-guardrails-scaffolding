@@ -2,7 +2,7 @@
  * Applies a `ScaffoldPlan` (Task 4) through an injected filesystem seam.
  *
  * Every touch -- read, write, or wiring up `core.hooksPath` -- goes through
- * `ApplyDeps`, so the whole of this module is unit-testable against an
+ * `ApplyDependencies`, so the whole of this module is unit-testable against an
  * in-memory map: no temp directories, no cleanup, and (per the phase this
  * belongs to) a provable idempotency property -- applying, re-planning, and
  * re-applying on an untouched repo writes nothing.
@@ -39,7 +39,7 @@ import {
 } from './manifest.js';
 import type { PlannedAction, ScaffoldPlan } from './plan.js';
 
-export interface ApplyDeps {
+export interface ApplyDependencies {
   readonly readFile: (filePath: string) => string | undefined;
   readonly writeFile: (filePath: string, content: string) => void;
   readonly setHooksPath: () => void;
@@ -86,10 +86,10 @@ function applySharedAction(
   actionPath: SharedPath,
   desiredContent: string,
   fullPath: string,
-  deps: ApplyDeps,
+  dependencies: ApplyDependencies,
   accumulator: ApplyAccumulator,
 ): void {
-  const current = deps.readFile(fullPath);
+  const current = dependencies.readFile(fullPath);
   const result: SharedMergeResult = SHARED_MERGERS[actionPath](
     current,
     desiredContent,
@@ -104,7 +104,7 @@ function applySharedAction(
     accumulator.skipped.push(actionPath);
     return;
   }
-  deps.writeFile(fullPath, content);
+  dependencies.writeFile(fullPath, content);
   accumulator.written.push(actionPath);
 }
 
@@ -122,20 +122,20 @@ function applyDirectAction(
   action: PlannedAction,
   desiredContent: string,
   fullPath: string,
-  deps: ApplyDeps,
+  dependencies: ApplyDependencies,
   accumulator: ApplyAccumulator,
 ): void {
   if (action.kind === 'drift' || action.kind === 'unchanged') {
     accumulator.skipped.push(action.path);
     return;
   }
-  deps.writeFile(fullPath, desiredContent);
+  dependencies.writeFile(fullPath, desiredContent);
   accumulator.written.push(action.path);
   if (action.fileClass === 'owned') {
     accumulator.manifestUpdates[action.path] = checksum(desiredContent);
   }
   if (action.path === GIT_HOOKS_SCRIPT_PATH) {
-    deps.setHooksPath();
+    dependencies.setHooksPath();
   }
 }
 
@@ -149,10 +149,10 @@ function applyDirectAction(
  */
 function readExistingManifest(
   manifestFullPath: string,
-  deps: ApplyDeps,
+  dependencies: ApplyDependencies,
   warnings: string[],
 ): ScaffoldManifest | undefined {
-  const raw = deps.readFile(manifestFullPath);
+  const raw = dependencies.readFile(manifestFullPath);
   if (raw === undefined) {
     return undefined;
   }
@@ -181,23 +181,27 @@ function writeManifest(
   repoRoot: string,
   manifestUpdates: Readonly<Record<string, string>>,
   version: string,
-  deps: ApplyDeps,
+  dependencies: ApplyDependencies,
   warnings: string[],
 ): void {
   const manifestFullPath = path.join(repoRoot, MANIFEST_PATH);
-  const existing = readExistingManifest(manifestFullPath, deps, warnings);
+  const existing = readExistingManifest(
+    manifestFullPath,
+    dependencies,
+    warnings,
+  );
   const manifest: ScaffoldManifest = {
     guardrailsVersion: version,
     files: { ...existing?.files, ...manifestUpdates },
   };
-  deps.writeFile(manifestFullPath, serializeManifest(manifest));
+  dependencies.writeFile(manifestFullPath, serializeManifest(manifest));
 }
 
 export function applyScaffold(
   plan: ScaffoldPlan,
   desired: Readonly<Record<string, string>>,
   repoRoot: string,
-  deps: ApplyDeps,
+  dependencies: ApplyDependencies,
   version: string,
 ): ApplyResult {
   const accumulator: ApplyAccumulator = {
@@ -231,12 +235,18 @@ export function applyScaffold(
         action.path,
         desiredContent,
         fullPath,
-        deps,
+        dependencies,
         accumulator,
       );
       continue;
     }
-    applyDirectAction(action, desiredContent, fullPath, deps, accumulator);
+    applyDirectAction(
+      action,
+      desiredContent,
+      fullPath,
+      dependencies,
+      accumulator,
+    );
   }
 
   if (Object.keys(accumulator.manifestUpdates).length > 0) {
@@ -244,7 +254,7 @@ export function applyScaffold(
       repoRoot,
       accumulator.manifestUpdates,
       version,
-      deps,
+      dependencies,
       accumulator.warnings,
     );
     accumulator.written.push(MANIFEST_PATH);

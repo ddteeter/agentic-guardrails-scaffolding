@@ -8,7 +8,7 @@
 
 import process from 'node:process';
 
-import { type CliDeps, runCommand } from './cli-core.js';
+import { type CliDependencies, runCommand } from './cli-core.js';
 import { spawnExec } from './exec.js';
 
 async function readStdin(): Promise<string> {
@@ -22,7 +22,7 @@ async function readStdin(): Promise<string> {
   return Buffer.concat(chunks).toString('utf8');
 }
 
-const deps: CliDeps = {
+const dependencies: CliDependencies = {
   exec: spawnExec,
   readStdin,
   cwd: process.cwd(),
@@ -33,7 +33,7 @@ const deps: CliDeps = {
 const [command, ...rest] = process.argv.slice(2);
 
 try {
-  process.exitCode = await runCommand(command, rest, deps);
+  process.exitCode = await runCommand(command, rest, dependencies);
 } catch (error: unknown) {
   process.stderr.write(`guardrails: ${String(error)}\n`);
   process.exitCode = 1;

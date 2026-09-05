@@ -29,7 +29,7 @@ describe('guardrails-plugin skills', () => {
         path.join(skillsDirectory, name, 'SKILL.md'),
         'utf8',
       );
-      const frontmatter = source.split('---')[1] ?? '';
+      const frontmatter = source.split('---', 2)[1] ?? '';
       // The description is the trigger: it is what a runtime matches on to
       // decide whether the skill applies, so an empty one makes it unreachable.
       expect(frontmatter, name).toContain(`name: ${name}`);

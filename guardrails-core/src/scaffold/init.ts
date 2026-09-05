@@ -14,9 +14,9 @@
  * `--plan --json` and then `--apply`. So the read-only path is simply the
  * default, and `--apply` is the only way past it.
  *
- * `InitDeps` restates the slice of `cli-core.ts`'s `CliDeps` this command
+ * `InitDependencies` restates the slice of `cli-core.ts`'s `CliDependencies` this command
  * needs, rather than importing it: `cli-core` dispatches to here, and importing
- * back would be a dependency cycle. `CliDeps` satisfies it structurally.
+ * back would be a dependency cycle. `CliDependencies` satisfies it structurally.
  */
 import {
   chmodSync,
@@ -31,7 +31,11 @@ import type { Exec } from '../exec.js';
 import { packageVersion } from '../package-root.js';
 import type { AnalyzerMode } from '../verify/analyzer-policy.js';
 import { ANALYZER_TOOLS } from '../verify/index.js';
-import { applyScaffold, type ApplyDeps, type ApplyResult } from './apply.js';
+import {
+  applyScaffold,
+  type ApplyDependencies,
+  type ApplyResult,
+} from './apply.js';
 import { detect, type RepoFacts } from './detect.js';
 import {
   foreignHooksPath,
@@ -46,7 +50,7 @@ import {
 } from './plan.js';
 import { buildDesiredFiles, canonicalKey } from './templates.js';
 
-export interface InitDeps {
+export interface InitDependencies {
   readonly exec: Exec;
   readonly cwd: string;
   readonly stdout: (text: string) => void;
@@ -107,7 +111,7 @@ const DISTRIBUTIONS: readonly Distribution[] = ['solo', 'team'];
 
 interface InitOptions {
   readonly apply: boolean;
-  readonly json: boolean;
+  readonly shouldPrintJson: boolean;
   readonly decisions: ScaffoldDecisions;
 }
 
@@ -152,7 +156,9 @@ function parseAnalyzerPair(
   return [tool, mode];
 }
 
-/** `undefined` means the value was malformed; an absent flag means `{}`. */
+/**
+`undefined` means the value was malformed; an absent flag means `{}`.
+*/
 function parseAnalyzers(
   value: string | undefined,
 ): Record<string, AnalyzerMode> | undefined {
@@ -232,12 +238,12 @@ function parseInitFlags(rest: readonly string[]): FlagParse {
     kind: 'options',
     options: {
       apply: rest.includes('--apply'),
-      json: rest.includes('--json'),
+      shouldPrintJson: rest.includes('--json'),
       decisions: {
         analyzers,
         enforcement,
         distribution,
-        force: rest.includes('--force'),
+        shouldForce: rest.includes('--force'),
       },
     },
   };
@@ -284,25 +290,27 @@ function readCurrent(
  * value is observable, so "starts unset" is a property a test can prove.
  */
 interface HooksPathLatch {
-  /** True once apply has asked for `core.hooksPath` to be repointed. */
+  /**
+  True once apply has asked for `core.hooksPath` to be repointed.
+  */
   readonly requested: () => boolean;
   readonly request: () => void;
 }
 
 function hooksPathLatch(): HooksPathLatch {
-  let requested = false;
+  let isRequested = false;
   return {
-    requested: () => requested,
+    requested: () => isRequested,
     request: () => {
-      requested = true;
+      isRequested = true;
     },
   };
 }
 
-function fileSystemApplyDeps(
+function fileSystemApplyDependencies(
   repoRoot: string,
   onHooksPath: () => void,
-): ApplyDeps {
+): ApplyDependencies {
   return {
     readFile: readIfPresent,
     writeFile: (filePath, content) => {
@@ -318,20 +326,23 @@ function fileSystemApplyDeps(
   };
 }
 
-function printWarnings(deps: InitDeps, warnings: readonly string[]): void {
+function printWarnings(
+  dependencies: InitDependencies,
+  warnings: readonly string[],
+): void {
   for (const warning of warnings) {
-    deps.stderr(`  warning: ${warning}\n`);
+    dependencies.stderr(`  warning: ${warning}\n`);
   }
 }
 
 function printPlan(
-  deps: InitDeps,
+  dependencies: InitDependencies,
   facts: RepoFacts,
   plan: ScaffoldPlan,
-  json: boolean,
+  shouldPrintJson: boolean,
 ): void {
-  if (json) {
-    deps.stdout(
+  if (shouldPrintJson) {
+    dependencies.stdout(
       `${JSON.stringify(
         {
           repoRoot: facts.repoRoot,
@@ -345,26 +356,28 @@ function printPlan(
     );
     return;
   }
-  deps.stdout(
+  dependencies.stdout(
     `guardrails init: plan for ${facts.repoRoot} — nothing is written ` +
       `without --apply.\n`,
   );
   for (const action of plan.actions) {
-    deps.stdout(`  ${action.kind}: ${action.path} — ${action.reason}\n`);
+    dependencies.stdout(
+      `  ${action.kind}: ${action.path} — ${action.reason}\n`,
+    );
   }
-  printWarnings(deps, plan.warnings);
-  deps.stdout(GUIDANCE_POINTER);
+  printWarnings(dependencies, plan.warnings);
+  dependencies.stdout(GUIDANCE_POINTER);
 }
 
 function printApply(
-  deps: InitDeps,
+  dependencies: InitDependencies,
   plan: ScaffoldPlan,
   result: ApplyResult,
-  json: boolean,
+  shouldPrintJson: boolean,
 ): void {
   const warnings = [...plan.warnings, ...result.warnings];
-  if (json) {
-    deps.stdout(
+  if (shouldPrintJson) {
+    dependencies.stdout(
       `${JSON.stringify(
         { written: result.written, skipped: result.skipped, warnings },
         undefined,
@@ -373,37 +386,40 @@ function printApply(
     );
     return;
   }
-  deps.stdout(
+  dependencies.stdout(
     result.written.length === 0
       ? 'guardrails init: nothing to do; the scaffold is up to date.\n'
       : `guardrails init: wrote ${result.written.length} file(s).\n`,
   );
   for (const file of result.written) {
-    deps.stdout(`  wrote: ${file}\n`);
+    dependencies.stdout(`  wrote: ${file}\n`);
   }
-  printWarnings(deps, warnings);
-  deps.stdout(GUIDANCE_POINTER);
+  printWarnings(dependencies, warnings);
+  dependencies.stdout(GUIDANCE_POINTER);
 }
 
 export async function initCommand(
-  deps: InitDeps,
+  dependencies: InitDependencies,
   rest: readonly string[],
 ): Promise<number> {
   // An explicit request for help is not a mistake the way an unrecognised
   // flag is -- short-circuits before flag validation so it prints usage and
   // exits 0 regardless of what else is on the command line.
   if (rest.includes('--help')) {
-    deps.stdout(INIT_USAGE);
+    dependencies.stdout(INIT_USAGE);
     return 0;
   }
   const parsed = parseInitFlags(rest);
   if (parsed.kind === 'error') {
-    deps.stderr(`guardrails init: ${parsed.message}\n`);
-    deps.stderr(INIT_USAGE);
+    dependencies.stderr(`guardrails init: ${parsed.message}\n`);
+    dependencies.stderr(INIT_USAGE);
     return 1;
   }
   const { decisions } = parsed.options;
-  const facts = await detect({ exec: deps.exec, cwd: deps.cwd });
+  const facts = await detect({
+    exec: dependencies.exec,
+    cwd: dependencies.cwd,
+  });
   const desired = buildDesiredFiles(facts, decisions);
   const plan = planScaffold({
     facts,
@@ -412,7 +428,7 @@ export async function initCommand(
     current: readCurrent(facts.repoRoot, desired),
   });
   if (!parsed.options.apply) {
-    printPlan(deps, facts, plan, parsed.options.json);
+    printPlan(dependencies, facts, plan, parsed.options.shouldPrintJson);
     return 0;
   }
   const latch = hooksPathLatch();
@@ -420,7 +436,7 @@ export async function initCommand(
     plan,
     desired,
     facts.repoRoot,
-    fileSystemApplyDeps(facts.repoRoot, latch.request),
+    fileSystemApplyDependencies(facts.repoRoot, latch.request),
     packageVersion(),
   );
   // A consumer who already points `core.hooksPath` somewhere else keeps it:
@@ -428,10 +444,14 @@ export async function initCommand(
   // re-disable it on every install. `planScaffold` has already warned about it
   // (see `hooks-path.ts`), and `printApply` prints that warning below.
   if (latch.requested() && foreignHooksPath(facts.hooksPath) === undefined) {
-    await deps.exec('git', ['config', 'core.hooksPath', HOOKS_DIRECTORY], {
-      cwd: facts.repoRoot,
-    });
+    await dependencies.exec(
+      'git',
+      ['config', 'core.hooksPath', HOOKS_DIRECTORY],
+      {
+        cwd: facts.repoRoot,
+      },
+    );
   }
-  printApply(deps, plan, result, parsed.options.json);
+  printApply(dependencies, plan, result, parsed.options.shouldPrintJson);
   return 0;
 }

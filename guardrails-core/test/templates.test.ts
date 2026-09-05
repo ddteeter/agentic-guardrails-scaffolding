@@ -41,7 +41,7 @@ describe('consumer templates', () => {
     );
     expect(raw).toHaveProperty('hooks');
     const { hooks } = raw as { hooks: Record<string, unknown> };
-    expect(Object.keys(hooks).sort((a, b) => a.localeCompare(b))).toEqual([
+    expect(Object.keys(hooks).toSorted((a, b) => a.localeCompare(b))).toEqual([
       'PostToolUse',
       'PreToolUse',
       'SessionEnd',

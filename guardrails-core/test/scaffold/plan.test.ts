@@ -18,7 +18,7 @@ const DEFAULT_DECISIONS: ScaffoldDecisions = {
   analyzers: {},
   enforcement: 'warn',
   distribution: 'solo',
-  force: false,
+  shouldForce: false,
 };
 
 /**
@@ -52,7 +52,7 @@ interface OneFileOptions {
   readonly desired?: string;
   readonly current?: string;
   readonly manifest?: ScaffoldManifest;
-  readonly force?: boolean;
+  readonly shouldForce?: boolean;
 }
 
 /**
@@ -63,7 +63,10 @@ interface OneFileOptions {
 function planOneFile(path: string, options: OneFileOptions): PlannedAction {
   const input: PlanInput = {
     facts: facts(options.manifest),
-    decisions: { ...DEFAULT_DECISIONS, force: options.force ?? false },
+    decisions: {
+      ...DEFAULT_DECISIONS,
+      shouldForce: options.shouldForce ?? false,
+    },
     desired: { [path]: options.desired ?? 'desired content' },
     current: options.current === undefined ? {} : { [path]: options.current },
   };
@@ -136,7 +139,7 @@ describe('planScaffold — the decision table', () => {
       desired: 'a newer template',
       current: 'the consumer edited this',
       manifest,
-      force: true,
+      shouldForce: true,
     });
     expect(action.kind).toBe(UPDATE);
   });
@@ -211,7 +214,7 @@ describe('planScaffold — the decision table', () => {
     // --force changes nothing here.
     const action = planOneFile(SHARED_PATH, {
       current: 'a file that looks nothing like anything guardrails wrote',
-      force: true,
+      shouldForce: true,
     });
     expect(action.kind).toBe(MERGE);
   });
@@ -237,7 +240,7 @@ describe('planScaffold — the decision table', () => {
     const action = planOneFile(SEED_ONCE_PATH, {
       desired: 'guardrails default policy',
       current: 'the consumer heavily customized this',
-      force: true,
+      shouldForce: true,
     });
     expect(action.kind).toBe(UNCHANGED);
   });
@@ -337,7 +340,7 @@ describe('planScaffold — cross-cutting properties', () => {
     };
     const plan = planScaffold(input);
     const paths = plan.actions.map((action) => action.path);
-    expect(paths).toEqual([...paths].sort((a, b) => a.localeCompare(b)));
+    expect(paths).toEqual([...paths].toSorted((a, b) => a.localeCompare(b)));
     expect(paths).toHaveLength(5);
   });
 });

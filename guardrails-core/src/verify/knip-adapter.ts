@@ -14,7 +14,9 @@
 
 import type { Violation } from '../violation.js';
 
-/** The uniform issue types mapped in this cut, and their human labels. */
+/**
+The uniform issue types mapped in this cut, and their human labels.
+*/
 const MAPPED_ISSUE_TYPES: Record<string, string> = {
   files: 'file',
   exports: 'export',
@@ -81,7 +83,9 @@ function isEntryArray(value: unknown): value is KnipEntry[] {
   );
 }
 
-/** Map one knip issue-type entry to a normalized violation. */
+/**
+Map one knip issue-type entry to a normalized violation.
+*/
 function toViolation(
   issueType: string,
   label: string,
@@ -97,11 +101,13 @@ function toViolation(
     severity: 'error',
     fixable: false,
     tool: 'knip',
-    ...(typeof entry.line === 'number' ? { line: entry.line } : {}),
+    ...(typeof entry.line === 'number' && { line: entry.line }),
   };
 }
 
-/** Expand one file's issue object into its mapped violations. */
+/**
+Expand one file's issue object into its mapped violations.
+*/
 function violationsForIssue(issue: KnipIssue): Violation[] {
   const violations: Violation[] = [];
   for (const [issueType, label] of Object.entries(MAPPED_ISSUE_TYPES)) {

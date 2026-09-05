@@ -2,7 +2,10 @@ import path from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import { applyScaffold, type ApplyDeps } from '../../src/scaffold/apply.js';
+import {
+  applyScaffold,
+  type ApplyDependencies,
+} from '../../src/scaffold/apply.js';
 import type { RepoFacts } from '../../src/scaffold/detect.js';
 import {
   checksum,
@@ -29,7 +32,7 @@ function fullPath(repoRelativePath: string): string {
 }
 
 interface Harness {
-  readonly deps: ApplyDeps;
+  readonly deps: ApplyDependencies;
   readonly files: Map<string, string>;
   readonly hooksPathCallCount: () => number;
 }
@@ -44,7 +47,7 @@ function makeHarness(
     ]),
   );
   let hooksPathCalls = 0;
-  const deps: ApplyDeps = {
+  const dependencies: ApplyDependencies = {
     readFile: (filePath) => files.get(filePath),
     writeFile: (filePath, content) => {
       files.set(filePath, content);
@@ -53,7 +56,11 @@ function makeHarness(
       hooksPathCalls += 1;
     },
   };
-  return { deps, files, hooksPathCallCount: () => hooksPathCalls };
+  return {
+    deps: dependencies,
+    files,
+    hooksPathCallCount: () => hooksPathCalls,
+  };
 }
 
 function action(
@@ -85,7 +92,7 @@ const TEST_DECISIONS: ScaffoldDecisions = {
   analyzers: {},
   enforcement: 'warn',
   distribution: 'solo',
-  force: false,
+  shouldForce: false,
 };
 
 function factsWithManifest(manifestRaw: string | undefined): RepoFacts {
@@ -415,10 +422,16 @@ describe('applyScaffold', () => {
       // This guards the design choice that text-splicing mergers never
       // report `parseFailed`.
       const { deps, files } = makeHarness();
-      const createPlan = planOf(
+      const creationPlan = planOf(
         action({ path: '.gitignore', fileClass: 'shared', kind: 'create' }),
       );
-      applyScaffold(createPlan, { '.gitignore': '' }, REPO_ROOT, deps, VERSION);
+      applyScaffold(
+        creationPlan,
+        { '.gitignore': '' },
+        REPO_ROOT,
+        deps,
+        VERSION,
+      );
 
       const mergePlan = planOf(
         action({ path: '.gitignore', fileClass: 'shared', kind: 'merge' }),
@@ -442,7 +455,7 @@ describe('applyScaffold', () => {
         '<!-- guardrails:skills:end -->',
       ].join('\n');
       const { deps } = makeHarness();
-      const createPlan = planOf(
+      const creationPlan = planOf(
         action({
           path: '.github/copilot-instructions.md',
           fileClass: 'shared',
@@ -450,7 +463,7 @@ describe('applyScaffold', () => {
         }),
       );
       applyScaffold(
-        createPlan,
+        creationPlan,
         { '.github/copilot-instructions.md': block },
         REPO_ROOT,
         deps,
@@ -760,9 +773,9 @@ describe('applyScaffold', () => {
     // vacuously on an empty or wrong plan.
     const sortedKinds = secondPlan.actions
       .map((planned) => planned.kind)
-      .sort((a, b) => a.localeCompare(b));
+      .toSorted((a, b) => a.localeCompare(b));
     expect(sortedKinds).toEqual(
-      ['merge', 'merge', 'merge', 'merge', 'unchanged', 'unchanged'].sort(
+      ['merge', 'merge', 'merge', 'merge', 'unchanged', 'unchanged'].toSorted(
         (a, b) => a.localeCompare(b),
       ),
     );

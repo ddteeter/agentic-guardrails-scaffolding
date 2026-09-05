@@ -15,11 +15,15 @@
  * worth proving, and proving it should not require spawning anything.
  */
 
-/** How a repo has opted into one analyzer. Absent from config means `auto`. */
+/**
+How a repo has opted into one analyzer. Absent from config means `auto`.
+*/
 export type AnalyzerMode = 'off' | 'auto' | 'required';
 
 export interface AnalyzerDecision {
-  /** Spawn the analyzer at all. */
+  /**
+  Spawn the analyzer at all.
+  */
   run: boolean;
   /**
    * When the spawn fails, report `guardrails/analyzer-missing` rather than
@@ -29,7 +33,7 @@ export interface AnalyzerDecision {
 }
 
 /**
- * The truth table from the design doc §3.3. `providerDeclared` is whether the
+ * The truth table from the design doc §3.3. `isProviderDeclared` is whether the
  * analyzer's npm package is named in the consumer's own `package.json`: a
  * declared-but-unresolvable tool is a broken install, not an opt-out, and must
  * never read as a clean gate. That distinction is what makes
@@ -37,7 +41,7 @@ export interface AnalyzerDecision {
  */
 export function decideAnalyzer(
   mode: AnalyzerMode,
-  providerDeclared: boolean,
+  isProviderDeclared: boolean,
 ): AnalyzerDecision {
   if (mode === 'off') {
     return { run: false, reportMissing: false };
@@ -45,10 +49,12 @@ export function decideAnalyzer(
   if (mode === 'required') {
     return { run: true, reportMissing: true };
   }
-  return { run: true, reportMissing: providerDeclared };
+  return { run: true, reportMissing: isProviderDeclared };
 }
 
-/** The configured mode for `tool`, defaulting to `auto` when unlisted. */
+/**
+The configured mode for `tool`, defaulting to `auto` when unlisted.
+*/
 export function analyzerMode(
   analyzers: Readonly<Record<string, AnalyzerMode>>,
   tool: string,

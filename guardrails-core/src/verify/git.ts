@@ -29,11 +29,20 @@ import type { Exec } from '../exec.js';
  * remedy — reported separately so it never masquerades as a bad base branch.
  */
 export interface BaseReferenceResolution {
-  /** The ref to diff against; absent when nothing resolved. */
+  /**
+  The ref to diff against; absent when nothing resolved.
+  */
   ref?: string;
-  /** git could not be STARTED. Distinct from "the ref does not exist". */
+  /**
+  git could not be STARTED. Distinct from "the ref does not exist".
+  */
   spawnFailed?: true;
 }
+
+/** git's "peel to a commit" suffix. Bound to a name because it reads as a
+ *  botched template interpolation to `unicorn/no-incorrect-template-string-interpolation`,
+ *  and because a reader who does not know gitrevisions(7) needs telling. */
+const COMMIT_PEEL = '^{commit}';
 
 export async function resolveBaseReference(
   exec: Exec,
@@ -43,7 +52,7 @@ export async function resolveBaseReference(
   for (const ref of [baseBranch, `origin/${baseBranch}`]) {
     const result = await exec(
       'git',
-      ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`],
+      ['rev-parse', '--verify', '--quiet', `${ref}${COMMIT_PEEL}`],
       { cwd: repoRoot },
     );
     if (result.spawnFailed === true) {
@@ -96,9 +105,37 @@ export function isTypeScriptFile(file: string): boolean {
   return /\.tsx?$/.test(file) && !file.endsWith('.d.ts');
 }
 
+/**
+ * Test material: a `*.test.ts`/`*.spec.ts` file, OR any file living under a
+ * test directory.
+ *
+ * The directory half exists because a suite is not only its spec files. A
+ * helper module a test imports -- a fixture builder, a harness, a shared
+ * predicate -- carries no `.test.` in its name, so the extension rule alone
+ * classed it as PRODUCTION and handed it to stryker, which then reported
+ * `no-coverage` on a module no test asserts about directly and no fixer can
+ * honestly do anything with. Found by dogfooding, on this repo's own
+ * `test/drift/under-mutation.ts`.
+ *
+ * The segment must be the WHOLE directory name (`test/`, `tests/`,
+ * `__tests__/`), not a substring: `src/testing/latest.ts` is production, and a
+ * rule that swallowed it would silently stop mutating real code.
+ */
 export function isTestFile(file: string): boolean {
-  return /\.(test|spec)\.tsx?$/.test(file);
+  if (/\.(test|spec)\.tsx?$/.test(file)) {
+    return true;
+  }
+  return file
+    .split(/[/\\]/)
+    .slice(0, -1)
+    .some((segment) => TEST_DIRECTORIES.has(segment));
 }
+
+const TEST_DIRECTORIES: ReadonlySet<string> = new Set([
+  'test',
+  'tests',
+  '__tests__',
+]);
 
 /**
  * Config-as-TypeScript: `vitest.config.ts`, `eslint.config.mts`,

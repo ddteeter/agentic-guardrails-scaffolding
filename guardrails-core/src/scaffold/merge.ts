@@ -226,9 +226,9 @@ const GITIGNORE_SEED = 'node_modules/';
 export function mergeGitignore(current: string | undefined): string {
   // Authoring the whole file -- an absent file and a whitespace-only one are
   // the same case, and `replaceMarkedBlock` already treats them alike.
-  const authoring = current === undefined || current.trim() === '';
+  const isAuthoring = current === undefined || current.trim() === '';
   return replaceMarkedBlock(
-    authoring ? GITIGNORE_SEED : current,
+    isAuthoring ? GITIGNORE_SEED : current,
     GITIGNORE_START,
     GITIGNORE_END,
     GITIGNORE_BLOCK,
@@ -262,9 +262,12 @@ export function mergePrepareScript(current: string | undefined): string {
   if (current === undefined) {
     return OUR_PREPARE_COMMAND;
   }
+  // Function replacement, not the string: a `$`-sequence in the replacement is
+  // a substitution pattern to `replaceAll`, and this value is a command line we
+  // do not control the future shape of.
   const migrated = current.replaceAll(
     LEGACY_PREPARE_COMMAND,
-    OUR_PREPARE_COMMAND,
+    () => OUR_PREPARE_COMMAND,
   );
   if (migrated.includes(OUR_PREPARE_COMMAND)) {
     return migrated;
@@ -300,7 +303,9 @@ export function mergeCopilotInstructions(
   );
 }
 
-/** Merges the portable guardrails index into the repository's AGENTS.md. */
+/**
+Merges the portable guardrails index into the repository's AGENTS.md.
+*/
 export function mergeAgentsInstructions(
   current: string | undefined,
   block: string,

@@ -14,7 +14,7 @@ const sanction = (
 ): SanctionedSuppression => ({
   key,
   reason,
-  ...(count === undefined ? {} : { count }),
+  ...(count !== undefined && { count }),
 });
 
 describe('newlySanctioned', () => {

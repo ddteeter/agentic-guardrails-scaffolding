@@ -17,7 +17,9 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
-/** Create `<root>/<relative>/package.json`. */
+/**
+Create `<root>/<relative>/package.json`.
+*/
 function makePackage(relative: string): void {
   const directory = path.join(root, relative);
   mkdirSync(directory, { recursive: true });

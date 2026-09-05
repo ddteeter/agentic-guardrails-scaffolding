@@ -42,6 +42,7 @@ import {
   parseStrykerJson,
   unrunSurvivedMutants,
 } from '../../src/verify/stryker-adapter.js';
+import { isUnderMutationRun } from './under-mutation.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '../../..');
@@ -120,31 +121,34 @@ async function buildFixture(): Promise<string> {
   return directory;
 }
 
-describe('drift-guard: stryker vitest runner', () => {
-  it('still kills the mutants the fixture tests genuinely catch', async () => {
-    const directory = await buildFixture();
-    const result = await spawnExec(strykerBin, ['run'], { cwd: directory });
-    const report = await readFile(
-      path.join(directory, 'reports', 'mutation', 'mutation.json'),
-      'utf8',
-    );
+describe.skipIf(isUnderMutationRun(here))(
+  'drift-guard: stryker vitest runner',
+  () => {
+    it('still kills the mutants the fixture tests genuinely catch', async () => {
+      const directory = await buildFixture();
+      const result = await spawnExec(strykerBin, ['run'], { cwd: directory });
+      const report = await readFile(
+        path.join(directory, 'reports', 'mutation', 'mutation.json'),
+        'utf8',
+      );
 
-    const diagnostic =
-      'stryker’s vitest runner stopped killing mutants that its own ' +
-      'tests catch. This is the stryker-js#6210 shape: the mutation gate ' +
-      'now MANUFACTURES violations, so every covered mutant in a consumer ' +
-      'repo is reported as survived. Check the installed vitest major ' +
-      'against @stryker-mutator/vitest-runner before releasing.\n' +
-      `stryker exit ${result.code}\n${result.stdout}\n${result.stderr}`;
+      const diagnostic =
+        'stryker’s vitest runner stopped killing mutants that its own ' +
+        'tests catch. This is the stryker-js#6210 shape: the mutation gate ' +
+        'now MANUFACTURES violations, so every covered mutant in a consumer ' +
+        'repo is reported as survived. Check the installed vitest major ' +
+        'against @stryker-mutator/vitest-runner before releasing.\n' +
+        `stryker exit ${result.code}\n${result.stdout}\n${result.stderr}`;
 
-    expect(result.code, diagnostic).toBe(0);
-    // The invariant `unrunSurvivedMutants` encodes, asserted against a real
-    // runner rather than a hand-written report: non-zero here means the runner
-    // executed no tests, whatever its verdicts claim.
-    expect(unrunSurvivedMutants(report, MUTATED), diagnostic).toBe(0);
-    // The positive half: these tests kill every mutant, so a working runner
-    // leaves nothing for us to raise. Without this, a runner that reported no
-    // mutants at all would satisfy the check above vacuously.
-    expect(parseStrykerJson(report, MUTATED), diagnostic).toEqual([]);
-  }, 300_000);
-});
+      expect(result.code, diagnostic).toBe(0);
+      // The invariant `unrunSurvivedMutants` encodes, asserted against a real
+      // runner rather than a hand-written report: non-zero here means the runner
+      // executed no tests, whatever its verdicts claim.
+      expect(unrunSurvivedMutants(report, MUTATED), diagnostic).toBe(0);
+      // The positive half: these tests kill every mutant, so a working runner
+      // leaves nothing for us to raise. Without this, a runner that reported no
+      // mutants at all would satisfy the check above vacuously.
+      expect(parseStrykerJson(report, MUTATED), diagnostic).toEqual([]);
+    }, 300_000);
+  },
+);

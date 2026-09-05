@@ -87,7 +87,9 @@ function isReport(
   );
 }
 
-/** Mutant status → (rule id, message tail). Absent status = not a failure. */
+/**
+Mutant status → (rule id, message tail). Absent status = not a failure.
+*/
 const FAILING_STATUSES: Record<string, { ruleId: string; reason: string }> = {
   Survived: {
     ruleId: 'stryker/survived',

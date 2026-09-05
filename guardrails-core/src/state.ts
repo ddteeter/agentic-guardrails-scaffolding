@@ -8,20 +8,30 @@
 
 import { recurrenceKey, type Violation } from './violation.js';
 
-/** Per-run tally. In workspace layouts, keys are `package:ruleId`. */
+/**
+Per-run tally. In workspace layouts, keys are `package:ruleId`.
+*/
 export interface SessionState {
-  /** Bounded fix-attempt counter for the current Stop loop. */
+  /**
+  Bounded fix-attempt counter for the current Stop loop.
+  */
   attempts: number;
   /** The full dump has already been handed to the main agent. The next Stop
    * retry releases the turn instead of starting the fixer ladder again. */
   escalated?: boolean;
-  /** Distinct rule-key → number of separate turns it has appeared in. */
+  /**
+  Distinct rule-key → number of separate turns it has appeared in.
+  */
   ruleCounts: Record<string, number>;
-  /** Rule-keys already given a behavioral correction this session. */
+  /**
+  Rule-keys already given a behavioral correction this session.
+  */
   corrected: string[];
 }
 
-/** Cross-session recurrence: rule-key → number of sessions it crossed in. */
+/**
+Cross-session recurrence: rule-key → number of sessions it crossed in.
+*/
 export type RecurrenceCounts = Record<string, number>;
 
 export function createSession(): SessionState {

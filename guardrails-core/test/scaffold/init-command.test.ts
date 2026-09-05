@@ -20,7 +20,7 @@ import path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { type CliDeps, runCommand } from '../../src/cli-core.js';
+import { type CliDependencies, runCommand } from '../../src/cli-core.js';
 import type { Exec, ExecResult } from '../../src/exec.js';
 
 interface ExecCall {
@@ -32,7 +32,9 @@ let root: string;
 let out: string[];
 let errors: string[];
 let execCalls: ExecCall[];
-/** What `git config --get core.hooksPath` answers; '' means "not set". */
+/**
+What `git config --get core.hooksPath` answers; '' means "not set".
+*/
 let configuredHooksPath: string;
 
 beforeEach(() => {
@@ -71,7 +73,7 @@ const gitExec: Exec = (command, args, options) => {
   return Promise.resolve(ok(''));
 };
 
-function deps(over: Partial<CliDeps> = {}): CliDeps {
+function dependencies(over: Partial<CliDependencies> = {}): CliDependencies {
   return {
     cwd: root,
     exec: gitExec,
@@ -83,14 +85,18 @@ function deps(over: Partial<CliDeps> = {}): CliDeps {
       'dist',
       'cli.mjs',
     ),
-    stdout: (text) => out.push(text),
-    stderr: (text) => errors.push(text),
+    stdout: (text) => {
+      out.push(text);
+    },
+    stderr: (text) => {
+      errors.push(text);
+    },
     ...over,
   };
 }
 
 function init(...rest: string[]): Promise<number> {
-  return runCommand('init', rest, deps());
+  return runCommand('init', rest, dependencies());
 }
 
 function read(relative: string): string {
@@ -554,7 +560,7 @@ describe('init — orphan files from an older scaffold', () => {
 
 describe('init — the usage banner', () => {
   it('lists init among the commands', async () => {
-    expect(await runCommand('bogus-command', [], deps())).toBe(1);
+    expect(await runCommand('bogus-command', [], dependencies())).toBe(1);
     expect(errors.join('')).toContain('init');
   });
 });

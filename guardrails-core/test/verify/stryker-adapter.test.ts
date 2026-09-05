@@ -100,7 +100,7 @@ describe('parseStrykerJson', () => {
     const result = parseStrykerJson(report, ['src/changed.ts']);
     expect(result).toHaveLength(2);
     expect(
-      result.map((v) => v.line).sort((a, b) => (a ?? 0) - (b ?? 0)),
+      result.map((v) => v.line).toSorted((a, b) => (a ?? 0) - (b ?? 0)),
     ).toEqual([12, 30]);
     expect(result.every((v) => v.file === 'src/changed.ts')).toBe(true);
   });
@@ -110,7 +110,7 @@ describe('parseStrykerJson', () => {
     // assertion — so the fixer routes on ruleId.
     const result = parseStrykerJson(report, ['src/changed.ts']);
     expect(
-      result.map((v) => v.ruleId).sort((a, b) => a.localeCompare(b)),
+      result.map((v) => v.ruleId).toSorted((a, b) => a.localeCompare(b)),
     ).toEqual(['stryker/no-coverage', 'stryker/survived']);
   });
 
@@ -147,7 +147,9 @@ function reportWith(mutants: unknown[]): string {
 
 const changed = ['src/changed.ts'];
 
-/** A report whose first mutant overrides `validMutant` with a bad field. */
+/**
+A report whose first mutant overrides `validMutant` with a bad field.
+*/
 function bad(fields: Record<string, unknown>): string {
   return reportWith([{ ...validMutant, ...fields }, validMutant]);
 }

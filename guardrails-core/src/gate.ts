@@ -63,9 +63,13 @@ export interface StopGateOptions {
   exec: Exec;
   config: GateConfig;
   resolveBin?: (tool: string) => string;
-  /** Per-analyzer opt-in (`RepoConfig.analyzers`), forwarded to `runVerify`. */
+  /**
+  Per-analyzer opt-in (`RepoConfig.analyzers`), forwarded to `runVerify`.
+  */
   analyzers?: Readonly<Record<string, AnalyzerMode>>;
-  /** Claude/Copilot says this Stop is a retry caused by an earlier block. */
+  /**
+  Claude/Copilot says this Stop is a retry caused by an earlier block.
+  */
   isRetry?: boolean | undefined;
 }
 
@@ -86,7 +90,9 @@ export interface CommitGateOptions {
    * directive beyond the granted count still blocks. See `sanctionBudget`.
    */
   sanctionedSuppressions?: readonly SanctionedSuppression[];
-  /** Per-analyzer opt-in (`RepoConfig.analyzers`), forwarded to `runVerify`. */
+  /**
+  Per-analyzer opt-in (`RepoConfig.analyzers`), forwarded to `runVerify`.
+  */
   analyzers?: Readonly<Record<string, AnalyzerMode>>;
   /**
    * Which change set the diff-scoped analyzers see. `'staged'` at the
@@ -249,14 +255,14 @@ export async function runStopGate(
   const recurrence = loadRecurrence(directory);
 
   const snapshotPath = snapshotFile(directory, sessionId);
-  const hadSnapshot = existsSync(snapshotPath);
+  const isHadSnapshot = existsSync(snapshotPath);
   const baseline = readSnapshot(snapshotPath);
 
   const diff = await workingDiff(options);
   const present = auditDiff(diff);
   // No snapshot means no fix loop is open, so there is no fixer whose work
   // this could be. See the module docstring.
-  const auditFindings = hadSnapshot
+  const auditFindings = isHadSnapshot
     ? present.filter((finding) => !baseline.has(findingKey(finding)))
     : [];
 
@@ -265,8 +271,8 @@ export async function runStopGate(
     baseBranch,
     exec,
     profile: 'stop' as const,
-    ...(options.resolveBin ? { resolveBin: options.resolveBin } : {}),
-    ...(options.analyzers ? { analyzers: options.analyzers } : {}),
+    ...(options.resolveBin && { resolveBin: options.resolveBin }),
+    ...(options.analyzers && { analyzers: options.analyzers }),
   };
   const { violations } = await runVerify(verifyOptions);
   // Guidance rides on the violation so it reaches the fixer through the
@@ -303,7 +309,7 @@ export async function runStopGate(
     // Snapshot the pre-fix suppression baseline once per fix loop -- this
     // delegation is what opens it, so everything already present is what the
     // fixer inherited rather than wrote.
-    if (!hadSnapshot) {
+    if (!isHadSnapshot) {
       const keys = present.map((finding) => findingKey(finding));
       writeFileSync(snapshotPath, JSON.stringify(keys));
     }
@@ -331,7 +337,7 @@ async function branchDiff(options: CommitGateOptions): Promise<string> {
     { cwd: options.repoRoot },
   );
   const sha = mergeBase.stdout.trim();
-  if (mergeBase.code === 0 && sha) {
+  if (sha && mergeBase.code === 0) {
     const diff = await options.exec('git', ['diff', sha], {
       cwd: options.repoRoot,
     });
@@ -355,9 +361,9 @@ export async function runCommitGate(
     baseBranch: options.baseBranch,
     exec: options.exec,
     profile: 'commit',
-    ...(options.resolveBin ? { resolveBin: options.resolveBin } : {}),
-    ...(options.analyzers ? { analyzers: options.analyzers } : {}),
-    ...(options.changedScope ? { changedScope: options.changedScope } : {}),
+    ...(options.resolveBin && { resolveBin: options.resolveBin }),
+    ...(options.analyzers && { analyzers: options.analyzers }),
+    ...(options.changedScope && { changedScope: options.changedScope }),
   });
   // The commit gate audits the branch's CUMULATIVE diff and has no per-loop
   // snapshot baseline (unlike runStopGate), so a deliberately-sanctioned
@@ -382,7 +388,9 @@ export async function runCommitGate(
   };
 }
 
-/** Combine the block message and any behavioral correction for a hook reason. */
+/**
+Combine the block message and any behavioral correction for a hook reason.
+*/
 export function stopHookReason(decision: GateDecision): string {
   return decision.additionalContext === undefined
     ? decision.message

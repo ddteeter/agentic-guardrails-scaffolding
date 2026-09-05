@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 
 import { auditDiff } from '../src/audit.js';
 
-/** Build a minimal unified diff for one file with the given body lines. */
+/**
+Build a minimal unified diff for one file with the given body lines.
+*/
 function diff(file: string, hunk: string, startLine = 1): string {
   const added = hunk.split('\n').length;
   return [
@@ -297,7 +299,9 @@ describe('auditDiff — mention-awareness', () => {
   });
 });
 
-/** A diff with a hand-written hunk header, for line-accounting assertions. */
+/**
+A diff with a hand-written hunk header, for line-accounting assertions.
+*/
 function diffWithHeader(file: string, header: string, body: string): string {
   return [
     `diff --git a/${file} b/${file}`,

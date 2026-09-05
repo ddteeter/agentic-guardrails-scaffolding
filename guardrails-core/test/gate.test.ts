@@ -21,6 +21,7 @@ import {
 import type { GateConfig, GateDecision } from '../src/gate-decision.js';
 import { createSession } from '../src/state.js';
 import {
+  loadRecurrence,
   loadSession,
   readViolations,
   stateDirectory,
@@ -46,7 +47,9 @@ const config: GateConfig = {
 
 const ok = (stdout: string): ExecResult => ({ stdout, stderr: '', code: 0 });
 
-/** Build a fake exec from a matcher over the joined command line. */
+/**
+Build a fake exec from a matcher over the joined command line.
+*/
 function makeExec(handler: (line: string) => ExecResult): Exec {
   return (command, args) =>
     Promise.resolve(handler([command, ...args].join(' ')));
@@ -73,6 +76,31 @@ function eslintError(): string {
 }
 
 describe('runStopGate', () => {
+  it('persists the recurrence tally to disk, not just the session', async () => {
+    // Recurrence is the CROSS-session half of the memory: it is what lets a
+    // rule that keeps coming back attach a behavioural correction on a later
+    // turn. Only the on-disk write carries it there, and the session file --
+    // asserted by its neighbours -- does not, so nothing else here notices if
+    // that write disappears.
+    const exec = makeExec((line) => {
+      if (line.includes('--name-only')) return ok('src/foo.ts');
+      if (line.includes('--others')) return ok('');
+      if (line.includes('diff') && line.includes('HEAD')) return ok('');
+      if (line.includes('eslint')) return ok(eslintError());
+      if (line.includes('--showConfig'))
+        return ok(JSON.stringify({ files: ['src/foo.ts'] }));
+      return ok('');
+    });
+
+    // recurThreshold is 3: the rule has to fail three separate turns before it
+    // is recorded as recurring.
+    await runStopGate(options(exec));
+    await runStopGate(options(exec));
+    await runStopGate(options(exec));
+
+    expect(loadRecurrence(stateDirectory(root))).toHaveProperty('no-console');
+  });
+
   it('delegates on a failing verify: writes manifest + snapshot, persists attempt', async () => {
     const exec = makeExec((line) => {
       if (line.includes('--name-only')) return ok('src/foo.ts');
@@ -294,7 +322,9 @@ interface RecordedCall {
   cwd: string | undefined;
 }
 
-/** A fake exec that records the cwd each tool was invoked with. */
+/**
+A fake exec that records the cwd each tool was invoked with.
+*/
 function recordingExec(handler: (line: string) => ExecResult): {
   exec: Exec;
   calls: RecordedCall[];
@@ -319,7 +349,9 @@ const SNEAKY_DIFF = [
 const SNEAKY_KEY =
   'src/foo.ts|eslint-disable|// eslint-disable-next-line no-console';
 
-/** Exec that reports a clean verify but a working diff carrying a suppression. */
+/**
+Exec that reports a clean verify but a working diff carrying a suppression.
+*/
 function suppressionExec(): Exec {
   return makeExec((line) => {
     if (line.includes('--name-only')) return ok('');
@@ -623,7 +655,7 @@ describe('runCommitGate mutation-hardening', () => {
 
   it('runs its git commands from the repo root', async () => {
     const { exec, calls } = recordingExec((line) =>
-      line.startsWith('git merge-base') ? ok('BASESHA\n') : ok(''),
+      ok(line.startsWith('git merge-base') ? 'BASESHA\n' : ''),
     );
     await runCommitGate({ repoRoot: root, baseBranch: 'main', exec });
     const gitCalls = calls.filter((call) => call.line.startsWith('git '));

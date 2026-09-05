@@ -62,7 +62,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-/** Keep only the entries whose value is a number — drops tampered/corrupt ones. */
+/**
+Keep only the entries whose value is a number — drops tampered/corrupt ones.
+*/
 function numberRecord(raw: Record<string, unknown>): Record<string, number> {
   const result: Record<string, number> = {};
   for (const [key, value] of Object.entries(raw)) {
@@ -166,7 +168,7 @@ export function sweepStale(
   }
   const deleted: string[] = [];
   for (const name of entries) {
-    if (!name.endsWith('.json') || name === 'recurrence.json') {
+    if (name === 'recurrence.json' || !name.endsWith('.json')) {
       continue;
     }
     const file = path.join(directory, name);

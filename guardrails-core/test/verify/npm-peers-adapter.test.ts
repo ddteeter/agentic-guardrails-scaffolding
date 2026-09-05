@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 
 import { parseNpmLsJson } from '../../src/verify/npm-peers-adapter.js';
 
-/** The repo every fixture below is installed inside. */
+/**
+The repo every fixture below is installed inside.
+*/
 const REPO = '/repo';
 
 /** A node physically installed in this repo's `node_modules`. `--long` supplies
@@ -26,12 +28,16 @@ function messagesOf(tree: unknown): string[] {
   return parse(tree).map((violation) => violation.message);
 }
 
-/** The greenfield failure, in npm's own words. */
+/**
+The greenfield failure, in npm's own words.
+*/
 const INVALID_RANGE =
   '">=4.8.4 <6.1.0" from node_modules/typescript-eslint, ' +
   '">=4.8.4 <6.1.0" from node_modules/@typescript-eslint/parser';
 
-/** The same violation reachable by two paths — npm repeats it per path. */
+/**
+The same violation reachable by two paths — npm repeats it per path.
+*/
 const duplicatedTree = {
   dependencies: {
     'typescript-eslint': inRepo('typescript-eslint', {

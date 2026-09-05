@@ -12,7 +12,9 @@
 import { readFileSync } from 'node:fs';
 
 export interface JsonFileResult {
-  /** Parsed contents, or `undefined` when the file was missing or malformed. */
+  /**
+  Parsed contents, or `undefined` when the file was missing or malformed.
+  */
   readonly parsed: unknown;
 }
 

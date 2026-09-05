@@ -26,7 +26,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
 
-/** The declared patterns: npm/yarn's array form, or yarn's `{ packages: [] }`. */
+/**
+The declared patterns: npm/yarn's array form, or yarn's `{ packages: [] }`.
+*/
 function declaredPatterns(manifest: unknown): unknown[] {
   if (!isRecord(manifest)) {
     return [];
@@ -104,13 +106,13 @@ function ancestorDirectories(repoRoot: string, file: string): string[] {
 }
 
 function isDeclaredMember(globs: ParsedGlob[], directory: string): boolean {
-  const included = globs.some(
+  const isIncluded = globs.some(
     (glob) => !glob.negated && glob.matches(directory),
   );
-  const excluded = globs.some(
+  const isExcluded = globs.some(
     (glob) => glob.negated && glob.matches(directory),
   );
-  return included && !excluded;
+  return isIncluded && !isExcluded;
 }
 
 export function loadWorkspaceResolver(repoRoot: string): PackageResolver {

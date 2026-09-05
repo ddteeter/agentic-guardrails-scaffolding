@@ -59,11 +59,17 @@ function isDeniedFile(normalizedPath: string): boolean {
   return DENIED_FILE_NAMES.has(path.basename(normalizedPath).toLowerCase());
 }
 
-/** What the scope-lock knows about the fixer's editable surface. */
+/**
+What the scope-lock knows about the fixer's editable surface.
+*/
 export interface ManifestScope {
-  /** Files the fixer may edit. Empty when every violation named a denied file. */
+  /**
+  Files the fixer may edit. Empty when every violation named a denied file.
+  */
   readonly files: ReadonlySet<string>;
-  /** Whether any manifest exists at all — distinct from an empty `files`. */
+  /**
+  Whether any manifest exists at all — distinct from an empty `files`.
+  */
   readonly active: boolean;
 }
 
@@ -122,7 +128,8 @@ export function collectManifestScope(
     };
   }
   const files = new Set<string>();
-  for (const violation of readManifest(path.join(directory, selected))) {
+  const manifested = readManifest(path.join(directory, selected));
+  for (const violation of manifested) {
     const file = path.normalize(violation.file);
     if (!isDeniedFile(file)) {
       files.add(file);
