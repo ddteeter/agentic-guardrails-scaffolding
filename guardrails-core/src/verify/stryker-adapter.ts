@@ -128,35 +128,44 @@ function failureViolation(
  * completed-but-non-zero run (a `break` threshold) from a crash.
  */
 export function isStrykerReportJson(reportJson: string): boolean {
+  return parseReport(reportJson) !== undefined;
+}
+
+/**
+ * The one place this module turns a payload into a report, shared by all three
+ * public entry points.
+ *
+ * Shared rather than repeated because the `try`/`catch` carries a sanctioned
+ * equivalent-mutant directive: emptying either block leaves `parsed`
+ * undefined, which `isReport` rejects anyway, so no test can tell the
+ * difference. One copy is one sanctioned line; a second copy would have been a
+ * second, for no new behaviour.
+ */
+function parseReport(
+  reportJson: string,
+): { files: Record<string, StrykerFile> } | undefined {
   let parsed: unknown;
+  // A range directive is used because `disable next-line` only attaches to a
+  // statement-LEADING comment, and a `} catch {` line has none.
+  // Stryker disable BlockStatement
   try {
     parsed = JSON.parse(reportJson);
   } catch {
-    // Deliberately empty. Not-JSON-at-all and parsed-but-wrong-shape are the
-    // same answer, and `isReport(undefined)` below already gives it — an
-    // explicit `return false` here would be an equivalent mutant no test could
-    // ever kill.
+    return undefined;
   }
-  return isReport(parsed);
+  // Stryker restore BlockStatement
+  if (!isReport(parsed)) {
+    return undefined;
+  }
+  return parsed;
 }
 
 export function parseStrykerJson(
   reportJson: string,
   changedFiles: readonly string[],
 ): Violation[] {
-  let parsed: unknown;
-  // Equivalent mutants: emptying either block leaves `parsed` undefined, which
-  // `isReport` rejects below — the function still returns []. A range directive
-  // is used because `disable next-line` only attaches to a statement-LEADING
-  // comment, and a `} catch {` line has none.
-  // Stryker disable BlockStatement
-  try {
-    parsed = JSON.parse(reportJson);
-  } catch {
-    return [];
-  }
-  // Stryker restore BlockStatement
-  if (!isReport(parsed)) {
+  const parsed = parseReport(reportJson);
+  if (parsed === undefined) {
     return [];
   }
   const changed = new Set(changedFiles);
@@ -220,19 +229,8 @@ export function unrunSurvivedMutants(
   reportJson: string,
   changedFiles: readonly string[],
 ): number {
-  let parsed: unknown;
-  // Equivalent mutants: emptying either block leaves `parsed` undefined, which
-  // `isReport` rejects below — the function still answers 0. A range directive
-  // is used because `disable next-line` only attaches to a statement-LEADING
-  // comment, and a `} catch {` line has none.
-  // Stryker disable BlockStatement
-  try {
-    parsed = JSON.parse(reportJson);
-  } catch {
-    return 0;
-  }
-  // Stryker restore BlockStatement
-  if (!isReport(parsed)) {
+  const parsed = parseReport(reportJson);
+  if (parsed === undefined) {
     return 0;
   }
   const changed = new Set(changedFiles);
