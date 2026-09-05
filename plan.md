@@ -2063,5 +2063,41 @@ contains, and nothing else. Every finding is about the code. Before, five of the
 findings were artifacts of the scaffold and one analyzer was reporting
 `analyzer-failed` on its own seed.
 
+**From review of the fix itself: the Bash gate had to learn where a command
+starts.** Extending `gate --mode=pretooluse` to Claude Code moved `GIT_WRITE`
+from Copilot's occasional shell calls onto the main agent's highest-frequency
+tool, and the pattern matched `git commit` anywhere in the command string —
+quoted prose included. Measured on this repository: `echo remember to git commit
+later` ran the whole branch-scoped commit gate, stryker and all, in **1m43s**;
+a Bash call naming no git write returned in 0.03s. Anchoring the match to a
+command position (start of string, or past a separator) took the same input back
+to 0.03s while every real position — `&&`, `;`, `||`, a newline, a subshell —
+still gates, `--no-verify` included.
+
+Two things worth keeping from how that went. The pattern is a command-POSITION
+test and deliberately not a shell parser: `FOO=1 git commit` and
+`xargs git commit` are misses, which is the direction the pre-existing
+`git -C <path> commit` note already accepts, and for the same reason — neither
+skips the git hooks, so the git-native floor still catches them. And the first
+anchored pattern put `\n` in the separator class with `\s*` behind it, so one
+input had two readings; this repo's own lint caught the super-linear
+backtracking before it landed. Disjoint classes (`\n` in the separator, `[ \t]*`
+in the padding) leave exactly one way to match.
+
+**Left as a known cost, not fixed here.** On a real `git commit` the gate now
+runs twice: once at `preToolUse` and again in `.githooks/pre-commit`, at a wider
+scope the first time (`preToolUse` does not pass `changedScope`, so it defaults
+to `branch` while the hook uses `staged`). That is defensible as
+defence-in-depth and is exactly what the Copilot channel already does, and
+commits are rare next to Bash calls — which is why the false-positive path was
+the one worth fixing now. The narrower design, if the duplication proves
+annoying: on Claude Code the git hooks are installed, so the only thing
+`preToolUse` adds over them is catching a command that SKIPS them — gate on the
+bypass (`--no-verify`, a `core.hooksPath` change) rather than on every commit,
+and leave the broad behaviour to Copilot, whose cloud surface has no reliable
+git-hook floor. Not taken here because a consumer sitting on a foreign
+`core.hooksPath` (documented, warned, but real) would lose a net they currently
+have.
+
 **Unchanged.** No release exists; the documented install URL still 404s. That
 remains the one blocker no code change clears.

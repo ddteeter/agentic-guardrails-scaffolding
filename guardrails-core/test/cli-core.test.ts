@@ -727,6 +727,53 @@ describe('pretooluse gate trigger conditions', () => {
     ).toBe('');
   });
 
+  it('does not fire on a git write merely MENTIONED inside an argument', async () => {
+    // The matcher governs Claude's Bash tool now, not only Copilot's much
+    // lower-frequency shell calls, so the cost of a spurious match is paid
+    // interactively on ordinary commands. Measured on this repo before the
+    // command-position anchor: `echo remember to git commit later` ran the full
+    // branch-scoped commit gate — stryker included — for 1m43s. Prose that
+    // happens to name a git write is not a git write.
+    expect(
+      await runPreToolUse(
+        preToolUseStdin('bash', 'echo remember to git commit later'),
+      ),
+    ).toBe('');
+    out.length = 0;
+    expect(
+      await runPreToolUse(
+        preToolUseStdin('bash', 'gh pr create --body "then git push it"'),
+      ),
+    ).toBe('');
+    out.length = 0;
+    expect(
+      await runPreToolUse(
+        preToolUseStdin('bash', 'git log --grep "git commit"'),
+      ),
+    ).toBe('');
+  });
+
+  it('still fires wherever a git write is actually a command', async () => {
+    // The anchor must not become a hole. Every position a shell would run a
+    // command from still counts — this is the half that keeps `--no-verify`
+    // from walking past the gate, which is the whole reason the Claude channel
+    // has this hook.
+    for (const command of [
+      'git commit --no-verify -m x',
+      'cd packages/web && git commit --no-verify -m x',
+      'npm test; git push --no-verify',
+      'npm test || git commit -m x',
+      'npm run build\ngit push',
+      '(git commit -m x)',
+    ]) {
+      out.length = 0;
+      expect(
+        await runPreToolUse(preToolUseStdin('bash', command)),
+        `should gate: ${command}`,
+      ).toContain('deny');
+    }
+  });
+
   it('stays silent when toolName or command is absent', async () => {
     // Kills the `=== undefined` equality mutants and the `||` -> `&&` chain
     // mutants, which would let a non-matching invocation reach the gate.

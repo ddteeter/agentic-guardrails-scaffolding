@@ -278,7 +278,29 @@ const SHELL_TOOLS = /^(?:bash|shell|powershell)$/i;
 // Requires `commit`/`push` immediately after `git`, so it won't match
 // `git -C <path> commit` — acceptable, since the git-native pre-commit hook
 // (Husky) is the hard floor that catches those commits regardless.
-const GIT_WRITE = /\bgit\s+(?:commit|push)\b/;
+//
+// `git` must also sit where a shell would START a command: the beginning of the
+// string, or just past a separator. Without that, prose naming a git write
+// counted as one — and this matcher now governs Claude Code's Bash tool, not
+// only Copilot's much rarer shell calls, so a spurious match is paid
+// interactively on an ordinary command. Measured on this repository before the
+// anchor: `echo remember to git commit later` ran the whole branch-scoped
+// commit gate, stryker included, for 1m43s.
+//
+// This is a command-POSITION test, not a shell parser — `FOO=1 git commit` and
+// `xargs git commit` are misses. That is the same direction the `git -C` note
+// above already accepts, and for the same reason: neither skips the git hooks,
+// so the git-native floor still catches them. What must never be missed is a
+// command that BYPASSES that floor, and `--no-verify` is written on a command,
+// which is exactly what this matches.
+//
+// The padding after the separator is `[ \t]*`, not `\s*`, and that is not
+// cosmetic: a newline is itself a separator, so `\s*` could match the same
+// character the class just did, and the two readings of one input are what make
+// the pattern backtrack super-linearly. Keeping the two disjoint — newline only
+// in the class, spaces and tabs only in the padding — leaves exactly one way to
+// match and no ambiguity to explore.
+const GIT_WRITE = /(?:^|[\n;&|()`{}]|\$\()[ \t]*git\s+(?:commit|push)\b/;
 
 /** `gate --mode=pretooluse`: the Copilot commit/push gate. Self-filters on the
  * shell-tool + git-commit/push command shape rather than relying on hook
