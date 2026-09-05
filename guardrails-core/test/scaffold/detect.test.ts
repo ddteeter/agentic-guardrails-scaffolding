@@ -67,6 +67,50 @@ describe('detect', () => {
     expect(result.hasDependencyCruiserConfig).toBe(false);
   });
 
+  it.each([
+    'knip.json',
+    'knip.jsonc',
+    '.knip.json',
+    '.knip.jsonc',
+    'knip.ts',
+    'knip.js',
+    'knip.config.ts',
+    'knip.config.js',
+  ])('reports an existing knip config named %s', async (name) => {
+    // Every filename knip itself reads. The seed writes `knip.json` only, so
+    // gating on that ONE name would hand a repo configured through any of the
+    // others a second config knip silently ignores — the same failure the
+    // dependency-cruiser probe already guards against.
+    const result = await facts({ [`/repo/${name}`]: {} });
+    expect(result.hasKnipConfig).toBe(true);
+  });
+
+  it('reports a knip config declared inside package.json', async () => {
+    // knip's other supported location. A repo configuring it here would
+    // otherwise be handed a `knip.json` that overrides the config they wrote.
+    const result = await facts({
+      '/repo/package.json': { knip: { entry: [] } },
+    });
+    expect(result.hasKnipConfig).toBe(true);
+  });
+
+  it('reports no knip config when the repo has none', async () => {
+    // The negative case is what makes the seed fire at all: a mutant that
+    // hardcoded `true` here would silently stop seeding knip.json forever.
+    const result = await facts({ '/repo/package.json': { name: 'probe' } });
+    expect(result.hasKnipConfig).toBe(false);
+  });
+
+  it('does not mistake an unrelated file for a knip config', async () => {
+    // Kills a widened filename list: `knip-report.json` and a nested
+    // `config/knip.json` are not places knip reads from.
+    const result = await facts({
+      '/repo/knip-report.json': {},
+      '/repo/config/knip.json': {},
+    });
+    expect(result.hasKnipConfig).toBe(false);
+  });
+
   /**
    * `guardrails.config.json` is SEED-ONCE: once it exists, `--analyzers` can
    * no longer change it, `--force` included. But the flag still drove the

@@ -99,3 +99,35 @@ export const STRYKER_SEED = `${JSON.stringify(
   undefined,
   2,
 )}\n`;
+
+/**
+ * Starter knip configuration.
+ *
+ * knip was the one analyzer `adopting-guardrails` recommends that had no seed,
+ * and it is the one whose defaults hurt a greenfield repo most. With no
+ * `entry`, knip infers one from `package.json`'s `main`/`bin`/`exports` — which
+ * an `npm init -y` repo points at a file that does not exist — and then reports
+ * the project's first real module as `knip/files` "Unused file" and its
+ * as-yet-unused test runner as an unused devDependency. Both are artifacts of a
+ * module graph that has not been built yet, and both land on the first `verify`
+ * the adoption guidance says has to come back green.
+ *
+ * `src/index.ts` and `src/**` are a guess, and deliberately a conventional one:
+ * this is SEED-ONCE, so a repo laid out differently edits it once and guardrails
+ * never touches it again. A wrong-but-visible starting point that the adopter
+ * corrects beats a silent default that reports their whole codebase as dead.
+ *
+ * Test files are entry points too. knip resolves `vitest`/`jest` through its own
+ * plugins, but only once a config for them exists; naming the conventional test
+ * globs here means a repo whose tests are its only consumers of a module is not
+ * told that module is unused.
+ */
+export const KNIP_SEED = `${JSON.stringify(
+  {
+    $schema: 'https://unpkg.com/knip@6/schema.json',
+    entry: ['src/index.ts', 'src/main.ts', '**/*.{test,spec}.{ts,tsx}'],
+    project: ['src/**/*.{ts,tsx}', 'test/**/*.{ts,tsx}'],
+  },
+  undefined,
+  2,
+)}\n`;

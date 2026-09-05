@@ -21,7 +21,10 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import type { RepoFacts } from '../../src/scaffold/detect.js';
-import type { ScaffoldDecisions } from '../../src/scaffold/plan.js';
+import {
+  classifyFile,
+  type ScaffoldDecisions,
+} from '../../src/scaffold/plan.js';
 import {
   buildDesiredFiles,
   canonicalKey,
@@ -40,6 +43,7 @@ function facts(over: Partial<RepoFacts> = {}): RepoFacts {
     declaredProviders: new Set<string>(),
     hasDependencyCruiserConfig: false,
     hasStrykerConfig: false,
+    hasKnipConfig: false,
     existingAnalyzers: undefined,
     manifest: undefined,
     hooksPath: undefined,
@@ -70,6 +74,7 @@ function decisions(over: Partial<ScaffoldDecisions> = {}): ScaffoldDecisions {
 
 const DEPCRUISE_PATH = '.dependency-cruiser.cjs';
 const STRYKER_PATH = 'stryker.conf.json';
+const KNIP_PATH = 'knip.json';
 
 /** `toHaveProperty` reads a dot as a nested-path separator, and every key in
  *  this map contains dots -- so membership is asserted on the key list. */
@@ -167,6 +172,33 @@ describe('buildDesiredFiles — the shipped template tree', () => {
         'utf8',
       ),
     );
+  });
+
+  it('gates git commit/push on the Claude channel, as the Copilot channel already does', () => {
+    // `--no-verify` is the documented bypass, and the design is content with
+    // that BECAUSE a human holds it. In a repo an agent develops on its own
+    // there is no such holder: `.githooks/pre-commit` is the only local check
+    // and one flag skips it. Copilot has closed this since Phase B — its
+    // `preToolUse` `bash` matcher runs the same commit gate before the command
+    // executes, `--no-verify` included. Claude Code, the surface this repo
+    // dogfoods, had no Bash matcher at all.
+    const desired = buildDesiredFiles(facts(), decisions());
+    const settings = JSON.parse(
+      contentOf(desired, '.claude/settings.json'),
+    ) as {
+      hooks?: {
+        PreToolUse?: { matcher?: string; hooks?: { command: string }[] }[];
+      };
+    };
+    const bashHook = settings.hooks?.PreToolUse?.find((entry) =>
+      (entry.matcher ?? '').includes('Bash'),
+    );
+    expect(bashHook).toBeDefined();
+    expect(
+      bashHook?.hooks?.some((hook) =>
+        hook.command.includes('gate --mode=pretooluse'),
+      ),
+    ).toBe(true);
   });
 
   it('installs every packaged RUN-TIME guidance doc under docs/guardrails', () => {
@@ -321,6 +353,15 @@ describe.each([
     // The fixer cannot reach guardrails.config.json (scope.ts's
     // DENIED_FILE_NAMES); the main agent can, and nothing else stops it.
     expect(content()).toContain('analyzers');
+  });
+
+  it('forbids skipping the commit gate outright', () => {
+    // The gate contract enumerated every way to weaken a check and omitted the
+    // one that skips it wholesale. `--no-verify` is the design's deliberate
+    // HUMAN escape hatch; nothing in a consumer repo said an agent must not
+    // reach for it, and on a solo repo with no CI there is nothing downstream
+    // that would notice.
+    expect(content()).toContain('--no-verify');
   });
 
   it('tells the agent it may never grant itself a sanctioned suppression', () => {
@@ -611,6 +652,58 @@ describe('buildDesiredFiles — analyzer gating (spec §6.4 SEED-ONCE)', () => {
     expect(keysOf(desired)).not.toContain(STRYKER_PATH);
   });
 
+  it('seeds knip.json, so a greenfield repo is not told its only module is dead', () => {
+    // knip was the one recommended analyzer with no starter config, and it is
+    // the one that most needs an `entry`. Without it, knip walks the repo and
+    // reports a greenfield project's first module as an unused file and its
+    // as-yet-unused test runner as an unused devDependency — findings that are
+    // artifacts of an empty module graph, on the very first `verify` the
+    // adoption guidance says must come back green.
+    const desired = buildDesiredFiles(
+      facts(),
+      decisions({ analyzers: { knip: 'required' } }),
+    );
+    expect(keysOf(desired)).toContain(KNIP_PATH);
+    const seed = JSON.parse(contentOf(desired, KNIP_PATH)) as {
+      entry?: string[];
+      project?: string[];
+    };
+    // The exact globs, not just "some globs": an empty or shortened `entry` is
+    // the failure this seed exists to prevent, and it fails the same silent way
+    // as no seed at all — knip reports every module no entry point reaches.
+    expect(seed.entry).toEqual([
+      'src/index.ts',
+      'src/main.ts',
+      '**/*.{test,spec}.{ts,tsx}',
+    ]);
+    expect(seed.project).toEqual(['src/**/*.{ts,tsx}', 'test/**/*.{ts,tsx}']);
+  });
+
+  it('seeds a knip config whose entry set covers tests, not only src', () => {
+    // Stated as its own case because it is the non-obvious half. A module whose
+    // only consumer is a test is live code; an `entry` of `src/index.ts` alone
+    // reports it dead, and the honest-looking fix is to delete it.
+    const desired = buildDesiredFiles(
+      facts(),
+      decisions({ analyzers: { knip: 'required' } }),
+    );
+    const seed = JSON.parse(contentOf(desired, KNIP_PATH)) as {
+      entry?: string[];
+    };
+    expect(seed.entry?.some((glob) => glob.includes('test'))).toBe(true);
+  });
+
+  it('does NOT seed knip.json when the repo already configures knip', () => {
+    // Same fact-not-filename rule as dependency-cruiser: knip reads its config
+    // from several filenames AND from a `knip` key in package.json, so a second
+    // config would be silently ignored.
+    const desired = buildDesiredFiles(
+      facts({ hasKnipConfig: true }),
+      decisions({ analyzers: { knip: 'required' } }),
+    );
+    expect(keysOf(desired)).not.toContain(KNIP_PATH);
+  });
+
   it('does NOT seed a config for an analyzer turned off', () => {
     const desired = buildDesiredFiles(
       facts({ declaredProviders: new Set(ANALYZER_PROVIDERS) }),
@@ -653,7 +746,21 @@ describe('SEED_ONCE_ANALYZERS', () => {
     expect(SEED_ONCE_ANALYZERS.map((analyzer) => analyzer.path)).toEqual([
       DEPCRUISE_PATH,
       STRYKER_PATH,
+      KNIP_PATH,
     ]);
+  });
+
+  it('is classified SEED-ONCE by the planner, every entry of it', () => {
+    // `plan.ts`'s SEED_ONCE_PATHS is a second, hand-written copy of these
+    // paths, and the two drifting apart is silent AND destructive: a seeded
+    // config missing from that set classifies as OWNED, where `--force`
+    // overwrites the consumer's edited config instead of leaving it alone.
+    for (const analyzer of SEED_ONCE_ANALYZERS) {
+      expect(
+        classifyFile(analyzer.path),
+        `${analyzer.path} must be SEED-ONCE in plan.ts`,
+      ).toBe('seed-once');
+    }
   });
 
   it('seeds a dependency-cruiser config that excludes nested worktrees', () => {

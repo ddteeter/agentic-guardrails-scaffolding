@@ -99,6 +99,7 @@ function factsWithManifest(manifestRaw: string | undefined): RepoFacts {
     declaredProviders: new Set(),
     hasDependencyCruiserConfig: false,
     hasStrykerConfig: false,
+    hasKnipConfig: false,
     manifest,
     hooksPath: undefined,
     existingAnalyzers: undefined,

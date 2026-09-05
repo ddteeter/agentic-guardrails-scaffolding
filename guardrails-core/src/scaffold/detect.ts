@@ -36,6 +36,7 @@ export interface RepoFacts {
   readonly declaredProviders: ReadonlySet<string>;
   readonly hasDependencyCruiserConfig: boolean;
   readonly hasStrykerConfig: boolean;
+  readonly hasKnipConfig: boolean;
   readonly manifest: ScaffoldManifest | undefined;
   /** Read by `hooks-path.ts` — the one config entry we refuse to overwrite. */
   readonly hooksPath: string | undefined;
@@ -164,6 +165,26 @@ export async function detect(options: DetectOptions): Promise<RepoFacts> {
       fileExists,
     ),
     hasStrykerConfig: anyExists(repoRoot, ['stryker.conf.json'], fileExists),
+    // knip reads its config from any of these filenames OR from a `knip` key in
+    // package.json, so the fact — not the seed's filename — is what gates
+    // seeding. A second config would be silently ignored by knip, which is the
+    // failure the dependency-cruiser probe above already guards against.
+    hasKnipConfig:
+      anyExists(
+        repoRoot,
+        [
+          'knip.json',
+          'knip.jsonc',
+          '.knip.json',
+          '.knip.jsonc',
+          'knip.ts',
+          'knip.js',
+          'knip.config.ts',
+          'knip.config.js',
+        ],
+        fileExists,
+      ) ||
+      (isRecord(packageJson) && 'knip' in packageJson),
     existingAnalyzers: fileExists(configPath)
       ? pickAnalyzers(analyzersField(readJson(configPath)))
       : undefined,
