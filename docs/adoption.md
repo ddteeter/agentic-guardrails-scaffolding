@@ -71,7 +71,7 @@ edit one of them by hand.
 | ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **OWNED**     | Absent → created. Unmodified since scaffolding (checksum in `.guardrails/scaffold.json` still matches) → silently rewritten on the next `init --apply`, so upgrades land automatically. Edited by you → left alone and reported as `drift` in the plan; `--force` overwrites it anyway.               | `.claude/agents/guardrail-fixer*.md`, `.codex/agents/guardrail-fixer*.toml`, `.github/agents/guardrail-fixer*.agent.md`, `.github/hooks/guardrails.json`, `.githooks/pre-commit`, `.github/workflows/guardrails.yml`, `docs/guardrails/*.md`, `.claude/skills/*/SKILL.md` |
 | **SHARED**    | Absent → the whole file is created. Present → always `merge`: guardrails splices in only its own entries (a hooks block, a gitignore stanza, the `prepare` script line, a marked doc section) and leaves everything else in your file untouched. Never reports `drift`, never sensitive to `--force`. | `.claude/settings.json`, `.codex/hooks.json`, `AGENTS.md`, `.gitignore`, `package.json`, `.github/copilot-instructions.md`                                                                                                                                                |
-| **SEED-ONCE** | Absent → created once. Present → left alone, forever — `--force` included.                                                                                                                                                                                                                            | `guardrails.config.json`, `.dependency-cruiser.cjs` (only if dependency-cruiser is enabled and no config exists yet), `stryker.conf.json` (same, for stryker)                                                                                                             |
+| **SEED-ONCE** | Absent → created once. Present → left alone, forever — `--force` included.                                                                                                                                                                                                                            | `guardrails.config.json`, `.dependency-cruiser.cjs` (only if dependency-cruiser is enabled and no config exists yet), `stryker.conf.json` (same, for stryker), `knip.json` (same, for knip)                                                                               |
 
 `guardrails.config.json` is the one file `--force` can never touch: it holds
 your policy and your `sanctionedSuppressions`, and losing it is the worst
@@ -165,6 +165,16 @@ An analyzer set to `"off"` in
 how you adopt eslint/tsc first and turn on the heavier three once your
 baseline is clean under them.
 
+**`verify` and the commit/push/CI gates name any analyzer that is enabled but
+cannot report.** An `auto` analyzer whose provider the repo never declared runs
+nothing and says nothing, so a run over such a repo would print
+`clean (0 violations)` having checked almost none of it. Every one of those
+rungs now ends with a line naming each skipped analyzer and the package it
+needs. It is a warning, not a violation — the exit code is unchanged — but a
+green run that carries it is not the guarantee it looks like. `init` prints the
+same warning; the difference is that this one is in front of you every time,
+not once at scaffold time.
+
 ## The clean-baseline prerequisite
 
 **Run `guardrails verify` clean before turning the gate on.** tsc, knip, and
@@ -206,6 +216,20 @@ the `guardrails` job required in GitHub branch protection stops a PR from
 merging only when the job actually fails — and under `enforcement: "warn"`,
 `gate --mode=ci` exits 0 regardless of what it found. Flip
 `enforcement` to `"block"` before a required check does anything.
+
+**`--no-verify` is a bypass, and on the agent surfaces it is now gated.**
+`git commit --no-verify` skips `.githooks/pre-commit` entirely; that flag
+exists for you, and nothing takes it away from you at a terminal. What changed
+is that the two agent surfaces no longer reach it silently: Copilot's
+`preToolUse` `bash` matcher has run the commit gate before the command executes
+since Phase B, and the scaffolded `.claude/settings.json` now carries the
+equivalent `Bash` matcher (`gate --mode=pretooluse`). Both run the same check
+the hook would have run, before the command, so the flag skips the git hook and
+meets the gate anyway. The scaffolded instruction files also state the
+prohibition outright, because in a repo an agent develops on its own there is
+no human holding the bypass. Remove the `Bash` entry from
+`.claude/settings.json` if you want the flag back for the agent too — with the
+same caveat as the kill-switch below, that the next `init --apply` re-merges it.
 
 **The Claude Code and Codex Stop loops are never softened by this field.** The
 per-turn Stop hook (`gate --mode=stop`) always blocks on a violation, bounded
@@ -368,6 +392,23 @@ Things worth knowing before you hit them, rather than after:
   framework runner you actually use (`@stryker-mutator/vitest-runner`, say),
   which you want to do anyway, clears it. `stryker.conf.json` is SEED-ONCE, so
   editing it is safe: `init` will never touch it again.
+- **Do not set `thresholds.break` in `stryker.conf.json`.** guardrails reads
+  stryker's report and raises one violation per surviving mutant, diff-scoped
+  to the files your change touched — that is the gate. `break` asks a
+  whole-project-score question instead and answers it with a non-zero exit,
+  which adds no check guardrails is not already making and fails on survivors
+  in files your change never went near. Set `low`/`high` to have the score
+  reported if you want it; leave `break` unset. (Guardrails now reads the
+  report on a non-zero exit rather than treating one as a crash, so a `break`
+  threshold no longer _hides_ your mutants the way it did — but it still
+  reports a failure that is not the one being asked about.)
+- **Root config files written in TypeScript are not mutation-tested.**
+  `vitest.config.ts`, `eslint.config.mts`, `playwright.config.ts` and anything
+  else matching `*.config.*ts` are excluded from stryker's `--mutate` set.
+  Every mutant they produce is `NoCoverage` by construction — a config literal
+  is read by a tool at startup, never by a test — so including them handed the
+  fixer violations no honest fix could clear. eslint and tsc still check these
+  files; only mutation skips them.
 - **`.claude/settings.json` is reformatted on every merge**, unconditionally
   (see the SHARED-file note above). If your formatter disagrees with the
   merger's output, expect a reformat/re-reformat cycle on every `init --apply`.

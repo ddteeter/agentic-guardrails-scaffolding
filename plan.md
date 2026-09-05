@@ -1854,3 +1854,214 @@ reachable rather than needing a broader ignore pattern.
   the placeholder that exits 1, producing `analyzer-failed`; and the seed is
   knip-dirty as already recorded. Seeding a detected test runner is the fix
   direction, and it belongs with the existing seed note above rather than here.
+
+### Findings: a third greenfield adoption, audited for a fully-agent-driven repo
+
+Run on 2026-09-04 against a bare `git init` + `npm init -y` repo from the packed
+tarball, then carried past the point the two earlier adoptions stopped: the
+whole recommended analyzer set installed, the configs `init` does not own
+authored, and the loop driven to green. The question asked was narrower than
+before — not "does adoption work" but "does this hold up in a repo where the
+agent is the only developer".
+
+**What worked, stated first.** Both PR #32/#33 fixes hold out of the tarball:
+the created-from-scratch `.gitignore` carries `node_modules/`, and the seed is
+`enforcement: "block"`. The commit gate blocked a `TS2322` on the unborn branch
+and passed once it was removed. The Stop ladder ran fast → thorough → full dump
+→ release across five invocations. The fixer scope-lock denied an edit to
+`guardrails.config.json` and allowed one to a manifest file. `autofix` applied
+a real `prefer-const` fix through the PostToolUse envelope. The recurrence
+memory crossed its threshold on the third non-retry Stop and attached the
+behavioral correction, exactly as designed. `install-hooks` set
+`core.hooksPath` through `prepare`. The diff-auditor caught a staged
+`eslint-disable-next-line`.
+
+**1. `thresholds.break` and the stryker adapter contradicted each other, and
+the guidance instructed the losing side — fixed.** `runStryker`'s docstring states the
+invariant plainly: "stryker exits 0 even with surviving mutants unless a
+`break` threshold is configured (this pack sets none) — so ANY non-zero exit
+here means a crash, never 'findings'." The seeded `stryker.conf.json` honors
+that and sets no thresholds. But `adopting-guardrails` step 5 tells the adopter
+to set "`break`/`low`/`high` thresholds that mean something, not the schema's
+defaults" — and the moment they do, `result.code !== 0` short-circuits before
+the report is ever read, so every surviving mutant is replaced by one opaque
+`guardrails/analyzer-failed` on `package.json` reading "a bad config, a crash,
+an unexpected flag."
+
+Measured on a vacuous `expect(tier(200)).toBeTypeOf('string')`: **15 mutation
+violations with no `thresholds.break`, one `analyzer-failed` with
+`thresholds.break: 80`** — same code, same test, same runner. The single most
+valuable thing this pack does is switched off by following its own written
+advice, and the diagnostic it leaves behind points the agent at its stryker
+config, which is not what is wrong.
+
+Two candidate fixes, and they are not exclusive: teach the adapter to read the
+report on a non-zero exit and treat a parseable report as findings rather than
+a crash (a break-threshold exit is a _reported_ failure, not a lost one), and
+correct step 5 to say that `break` must stay unset because guardrails is the
+gate. The adapter fix is the better one — it makes the invariant robust instead
+of load-bearing on a doc nobody re-reads.
+
+**2. A change set of only zero-mutant files failed the gate — fixed.** `runStryker`
+guards `production.length === 0` but not "zero mutants across the production
+set". Under the seeded `command` runner that is harmless (score `NaN`, exit 0).
+Under the framework runner step 5 tells you to swap in, Stryker's dry run
+throws `ConfigError: No tests were executed` and exits 1 — `analyzer-failed`,
+commit blocked. Reproduced with `--mutate src/types.ts` on an interface-only
+file, and again on a barrel `index.ts` of pure re-exports. Both shapes are
+routine in agent-written TypeScript, and again the recommended configuration is
+the one that breaks.
+
+**3. Root-level `*.config.ts` files were mutated as production code — fixed.**
+`isTestFile` is `/\.(test|spec)\.tsx?$/`, so the production filter classes
+`vitest.config.ts` — and `eslint.config.ts`, `playwright.config.ts`, and every
+other config-as-TypeScript file a modern greenfield repo has — as mutable
+source. Observed: four `stryker/no-coverage` violations on `vitest.config.ts`
+in the run above. They are unfixable by construction (no test covers a config
+literal), so the fixer is handed work it cannot honestly do, and the honest
+resolutions left are a sanctioned suppression or a stryker `mutate` exclusion
+the adopter has to know to write. The seed should exclude `*.config.{ts,js,mjs}`
+at the root, or the production filter should.
+
+**4. The skipped-analyzer warning fired at the wrong rung — fixed.**
+`silentlySkippedAnalyzers` lives in `scaffold/plan.ts`, so it is printed by
+`init --plan`/`--apply` and nowhere else. `verify` — the command the guidance
+names as _the exit criterion_ ("this is the exit criterion. Not 'files
+written' — green") — prints `clean (0 violations)` with no mention that three
+analyzers were skipped. Measured: with eslint and typescript declared but knip,
+dependency-cruiser and stryker absent, `verify` reported clean while running
+two of five analyzers. The PR #30 fix put the warning where the adopter first
+sees it; it belongs where they _check_, on every rung, because that is where a
+green run is interpreted as a guarantee.
+
+**5. `analyzers: {}` was the same seed/guidance mismatch `enforcement` just
+was — resolved in the documentation.** A bare `init --apply` seeds an empty analyzer block, which makes every
+analyzer `auto`. `adopting-guardrails` step 3 says the opposite: "`eslint` and
+`tsc` … Default them `required`; a repo that can't lint or type-check itself
+has no gate worth having." And because `guardrails.config.json` is SEED-ONCE,
+the copy-pasteable quickstart's choice is the one the repo keeps unless someone
+hand-edits it — exactly the shape of the `warn` finding fixed in `f33f0b2`. The
+consequence is narrower than `warn`'s (a _declared_ provider that goes missing
+still errors), but it is the same failure direction: the seed fails quiet where
+the documentation says fail loud.
+
+**6. `git commit --no-verify` was an unguarded bypass on the Claude channel —
+fixed.**
+The design names it as the deliberate human escape hatch, and Copilot's
+`preToolUse` `bash` matcher closes it there — `GIT_WRITE` matches
+`git commit|push` before the command runs, `--no-verify` included. The
+scaffolded `.claude/settings.json` has no `Bash` PreToolUse entry at all (only
+`Read|Edit|Write` → `scope-check`), and nothing in `AGENTS.md`, the guidance
+docs, or the fixer agents mentions `--no-verify`. In a repo with a human that
+is fine — the bypass is theirs. In a repo where the agent is the only
+developer, the safety argument has no holder: a wedged agent reaching for
+`--no-verify` meets no hook, no instruction, and no local check, and CI is the
+only remaining net — which a solo greenfield repo may not have wired to a
+remote at all. The cheap half is one line in the never-weaken block; the
+thorough half is scaffolding the `Bash` matcher Copilot already has.
+
+**7. knip was missing from the "configs `init` does not own" list, and had no
+seed — fixed.** Step 5
+enumerates `eslint.config.js`, `tsconfig.json`, dependency-cruiser rules, the
+stryker runner, and a validator library. It never names `knip.json`, and `init`
+does not seed one — unlike dependency-cruiser and stryker, which both get
+starter configs. A greenfield repo's first `verify` with knip enabled therefore
+reports its only module as `knip/files` "Unused file" (nothing imports it yet)
+and its test runner as an unused devDependency (no tests yet), which reads as
+"the pack is broken" rather than "knip needs an `entry`". Measured: three
+findings, all on-ramp artifacts, before a line of product code existed.
+
+**8. The exit criterion is unreachable at the moment of adoption.** Points 1,
+2, 3, and 7 compound into the finding that matters most for a repo an agent
+adopts on its own: `adopting-guardrails` ends at "green `verify`", and a
+greenfield repo with the recommended analyzer set cannot get there without
+authoring a knip config, swapping the stryker runner, _not_ setting the stryker
+thresholds the same document recommends, and excluding its own config files
+from mutation. That is a sequence of four judgement calls, three of which the
+shipped guidance either omits or actively misdirects. The pack works — every
+mechanism was proven above — but the on-ramp assumes a reader who already knows
+where the potholes are.
+
+**Unchanged from the second adoption.** No release exists; the documented
+install URL still returns 404 (verified). This remains the one blocker no code
+change clears.
+
+**Not a defect, worth recording.** `npm i -D typescript typescript-eslint` in a
+single command now resolves TypeScript down to `6.0.3` on its own, so the
+worked example's headline hazard ("`npm i -D typescript` installs a major no
+released typescript-eslint accepts") bites only on the separate-install order.
+The rule stands; the framing overstates how easily it is hit on current npm.
+
+### How the third-adoption findings were resolved
+
+Findings 1–4, 6 and 7 above are fixed in code; finding 5 was resolved the other
+way, in the documentation, because the seed is defensible and the sentence that
+contradicted it was not. Each fix is pinned by tests written before it.
+
+- **1 — the stryker exit code is no longer the completion signal.** `runStryker`
+  now decides on the REPORT, which `removeFile` guarantees is this run's or
+  nothing: a parseable report means findings whatever the exit code was, so a
+  `break` threshold reports mutants instead of replacing them with one opaque
+  `analyzer-failed`. Measured on the same vacuous test that produced the
+  original finding: 12 violations with `thresholds.break: 80` set, where before
+  there was one. Closing this also closed a fail-open on the other side — a
+  readable file at the report path used to go straight to `parseStrykerJson`,
+  which answers `[]` for anything it cannot understand, so a wrong-shaped report
+  read as a clean mutation gate. "Parses as a report" is the test now, not
+  "exists".
+- **2 — zero mutants is clean, not a crash.** Narrow and fail-closed: only an
+  explicit `0 mutant(s)` reading from stryker's instrumenter banner buys it,
+  because a suite that genuinely cannot run reports the identical
+  `No tests were executed`. That banner is hardcoded upstream prose, so it is
+  covered by a live drift guard (`test/drift/stryker-banner.test.ts`) in the
+  same spirit as the knip issue types and eslint rule ids — a stryker release
+  that reworks the line fails the build instead of silently reverting the fix.
+  Verified end to end: a change touching only an interface file, and one
+  touching only a barrel of re-exports, both report clean.
+- **3 — `*.config.*ts` is excluded from mutation only.** `isConfigFile` in
+  `verify/git.ts`; eslint and tsc still check those files, which is where their
+  real defects surface.
+- **4 — `runVerify` returns `skippedAnalyzers`.** Returned rather than
+  recomputed by each caller: `runVerify` already resolved the declared set to
+  decide what to run, and two readings of one manifest is how a warning drifts
+  out of step with the run it describes. `verify` and `gate --mode=commit/push/ci`
+  both print it. The `pretooluse` gate deliberately does not — it allows
+  silently on every non-committing shell command, and a warning there would fire
+  on all of them.
+- **5 — the guidance now matches the seed.** Step 3 said "default them
+  `required`" while a bare `init --apply` seeds `{}`. Since
+  `guardrails.config.json` is SEED-ONCE, taking the doc literally on a repo that
+  has not installed eslint yet would permanently seed a config whose first
+  `verify` cannot pass — the reverse of the `warn` mistake, and equally hard to
+  undo. The doc now says what is actually true: `auto` covers the
+  declared-but-broken case, `required` closes the never-declared one, and the
+  time to mark it is after the tool is installed. Finding 4 is what makes that
+  safe to say — the gap now announces itself on every run instead of hiding.
+- **6 — the Claude channel gets the Bash gate Copilot has had since Phase B.**
+  A `Bash` PreToolUse matcher running `gate --mode=pretooluse`, which
+  self-filters on the `git commit|push` command shape, so `--no-verify` skips
+  the git hook and meets the gate anyway. The never-weaken block in every host's
+  always-loaded instruction file now names the flag too. Both halves matter: the
+  hook is the enforcement, and the instruction is what stops an agent spending a
+  turn discovering it. Verified: a dirty tree denies, an unrelated shell command
+  and a clean tree both pass silently.
+- **7 — `knip.json` is seeded.** knip was the one recommended analyzer with no
+  starter config and the one whose defaults hurt a greenfield repo most, because
+  with no `entry` it reports the project's first module as dead. `plan.ts`'s
+  `SEED_ONCE_PATHS` is a second hand-written copy of the seeded paths, and a
+  path missing from it classifies as OWNED — where `--force` would overwrite a
+  consumer's edited config — so a test now holds the two lists together.
+  Measured: the same greenfield repo that reported three knip findings before
+  (its only module "unused", its test runner an unused devDependency, plus the
+  stryker-runner entry) reports none.
+
+**The exit criterion is reachable now, and that was the point.** The same
+end-to-end script — bare repo, packed tarball, `init`, author `tsconfig.json`
+and `eslint.config.js`, install the whole recommended analyzer set — now ends
+with `verify` reporting six real surviving mutants in the one function the repo
+contains, and nothing else. Every finding is about the code. Before, five of the
+findings were artifacts of the scaffold and one analyzer was reporting
+`analyzer-failed` on its own seed.
+
+**Unchanged.** No release exists; the documented install URL still 404s. That
+remains the one blocker no code change clears.
