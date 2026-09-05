@@ -984,6 +984,19 @@ export function silentlySkippedAnalyzers(
  * Names both halves — the tool a consumer configures and the package they
  * install — and both fixes, since either is legitimate: install it, or say
  * `required` and let the absence block.
+ *
+ * It also names `init --apply`, because installing the provider is only half of
+ * what an analyzer needs. `init` seeds a starter config ONLY for an analyzer
+ * the repo already declares (`seedOnceEntries` gates on `analyzerAsked`), which
+ * is deliberate — a seed-once file written for a tool nobody asked for is one
+ * `init` can never clean up. The consequence is that a bare greenfield
+ * `init --apply` writes no `knip.json`, `stryker.conf.json` or
+ * `.dependency-cruiser.cjs`, and the adopter who installs those tools next
+ * meets `analyzer-failed` from dependency-cruiser with upstream's own
+ * `npx dependency-cruiser --init` attached — advice that writes a DIFFERENT
+ * config than the seed. Measured on a real greenfield adoption. The gating
+ * stays; this is the pointer it was missing, and it prints from `verify` and
+ * every enforcing rung, not only from `init`.
  */
 export function silentSkipWarning(
   silent: readonly (readonly [string, string])[],
@@ -994,8 +1007,10 @@ export function silentSkipWarning(
   return (
     `these analyzers are enabled but their provider package is not in ` +
     `package.json, so each is skipped and verify reports clean without ` +
-    `running it: ${named}. Install the ones you want, or set them ` +
-    `"required" in guardrails.config.json so a missing one blocks instead.`
+    `running it: ${named}. Install the ones you want, then re-run ` +
+    `\`guardrails init --apply\` to seed the starter config each one needs. ` +
+    `Or set them "required" in guardrails.config.json so a missing one blocks ` +
+    `instead.`
   );
 }
 

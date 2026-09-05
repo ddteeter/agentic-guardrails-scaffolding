@@ -148,6 +148,23 @@ maintaining lint rules for somebody else's repository. That's this step's job:
   the seeded config is knip-dirty out of the box in exactly the
   knip-plus-stryker combination step 3 recommends.
 
+  **Check the runner plugin against your test framework's installed major.**
+  `@stryker-mutator/vitest-runner` declares `vitest: ">=2.0.0"`, so npm installs
+  it happily against a vitest major it cannot drive — and the failure is silent
+  and INVERTED: every covered mutant comes back `Survived`, so the gate
+  manufactures violations rather than missing them, and the fixer is handed work
+  no test can clear. As of 2026-09-05 that is vitest 5
+  ([stryker-js#6210](https://github.com/stryker-mutator/stryker-js/issues/6210));
+  pin `vitest` to `^4` until a fixed runner ships. Measured: 12 Killed on
+  vitest 4, 12 Survived on vitest 5, same code and same tests.
+
+  guardrails detects this shape — a mutant reported `Survived` whose covering
+  tests never ran — and reports one `guardrails/analyzer-failed` naming it
+  instead of a storm of false survivors, so you will see it named rather than
+  chase it. But the pin is what gets you a working mutation gate. The same check
+  covers the rest of that runner's open false-survivor bugs, so keep it in mind
+  on any stryker or test-framework bump.
+
   **Leave `thresholds.break` unset.** guardrails is the gate: it reads
   stryker's report and raises one violation per surviving mutant, diff-scoped to
   what this change touched. `break` asks a different question — a whole-project
@@ -187,14 +204,17 @@ right.
 A stack verified together on 2026-09-04, on top of the Vite `react-ts`
 template — a worked example, not a contract:
 
-| package                 | range  | why                                 |
-| ----------------------- | ------ | ----------------------------------- |
-| `eslint`                | `^10`  |                                     |
-| `typescript`            | `~6.0` | must be <6.1 — typescript-eslint    |
-| `typescript-eslint`     | `^8`   | sets the TypeScript ceiling         |
-| `@eslint/js`            | `^10`  |                                     |
-| `eslint-plugin-unicorn` | `^74`  | current major needs `eslint >=10.4` |
-| `eslint-plugin-sonarjs` | `^4`   |                                     |
+| package                          | range  | why                                     |
+| -------------------------------- | ------ | --------------------------------------- |
+| `eslint`                         | `^10`  |                                         |
+| `typescript`                     | `~6.0` | must be <6.1 — typescript-eslint        |
+| `typescript-eslint`              | `^8`   | sets the TypeScript ceiling             |
+| `@eslint/js`                     | `^10`  |                                         |
+| `eslint-plugin-unicorn`          | `^74`  | current major needs `eslint >=10.4`     |
+| `eslint-plugin-sonarjs`          | `^4`   |                                         |
+| `vitest`                         | `^4`   | vitest 5 breaks the stryker runner      |
+| `@stryker-mutator/core`          | `^10`  | fine on vitest 4; the runner is the pin |
+| `@stryker-mutator/vitest-runner` | `^10`  | see stryker-js#6210 above               |
 
 Note what that template gives you and what it does not: it pins TypeScript
 itself (inside the ceiling, as of this writing) and it ships **oxlint**, not

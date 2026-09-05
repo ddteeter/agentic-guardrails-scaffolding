@@ -308,7 +308,39 @@ const SHELL_TOOLS = /^(?:bash|shell|powershell)$/i;
 // matched by the `(` already in the class. An explicit `\$\(` branch was
 // unreachable — no input distinguished the two patterns — which is the kind of
 // dead alternation a regex mutator does not decompose finely enough to report.
-const GIT_WRITE = /(?:^|[\n;&|()`{}])[ \t]*git\s+(?:commit|push)\b/;
+/**
+ * A git write in COMMAND POSITION, with git's global options allowed between
+ * `git` and the subcommand.
+ *
+ * The separator and padding classes are deliberately DISJOINT -- `\n` in the
+ * separator, `[ \t]` in the padding -- so no input has two readings. An earlier
+ * version put `\n` in both, and this repo's own lint caught the super-linear
+ * backtracking before it landed. The option run is bounded the same way: each
+ * option is one non-space token, so it cannot overlap the padding around it.
+ *
+ * `-c` and `-C` are spelled out because they take a SEPARATE value token
+ * (`-c core.hooksPath=/dev/null`); every other global option is either a flag
+ * or carries its value with an `=`, so one token covers it.
+ *
+ * The option run exists for `git -c core.hooksPath=/dev/null commit`, which
+ * DEFEATS the git-hook floor and is the exact bypass the scaffolded AGENTS.md
+ * forbids by name -- an instruction naming a bypass the hook cannot see is
+ * worse than no instruction. `git -C <path> commit` and `git --no-pager commit`
+ * come along for free; the former was previously an accepted miss on the
+ * grounds that the hooks still run, which stays true and now costs nothing.
+ *
+ * Still a command-POSITION test, not a shell parser: `FOO=1 git commit` and
+ * `xargs git commit` remain misses, for the reason already recorded -- neither
+ * skips the git hooks, so the git-native floor still catches them.
+ */
+const COMMAND_START = String.raw`(?:^|[\n;&|()\`{}])[ \t]*`;
+/**
+git's global options: a flag token, or `-c`/`-C` plus its separate value.
+*/
+const GIT_GLOBAL_OPTIONS = String.raw`(?:[ \t]+(?:-[cC][ \t]+[^ \t]+|-[^ \t]+))*`;
+const GIT_WRITE = new RegExp(
+  `${COMMAND_START}git${GIT_GLOBAL_OPTIONS}[ \t]+(?:commit|push)\\b`,
+);
 
 /** `gate --mode=pretooluse`: the Copilot commit/push gate. Self-filters on the
  * shell-tool + git-commit/push command shape rather than relying on hook

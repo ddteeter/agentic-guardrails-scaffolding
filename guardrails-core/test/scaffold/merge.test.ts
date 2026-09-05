@@ -264,6 +264,7 @@ describe('mergeGitignore', () => {
     '.guardrails/state/*',
     '!.guardrails/state/recurrence.json',
     'reports/mutation/',
+    'reports/stryker-incremental.json',
     '.stryker-tmp/',
     '.claude/worktrees/',
     '# --- guardrails:end ---',
@@ -273,6 +274,19 @@ describe('mergeGitignore', () => {
   // lands: a later `init` marker-REPLACES the block and leaves this alone, and
   // a consumer who deletes it is not fought on the next run.
   const EXPECTED_CREATED = `node_modules/\n\n${EXPECTED_BLOCK}\n`;
+
+  it("ignores stryker's incremental cache, which is not under reports/mutation/", () => {
+    // Measured on a real greenfield adoption: stryker's `incrementalFile`
+    // defaults to `reports/stryker-incremental.json`, which the mutation-report
+    // entry above does not cover, so the repo's first `git add -A` COMMITTED a
+    // mutation-result cache that then churns on every run.
+    //
+    // Not a broader `reports/`: a consumer's own reports directory is theirs,
+    // and guardrails ignores only what guardrails generates.
+    expect(mergeGitignore(undefined)).toContain(
+      'reports/stryker-incremental.json',
+    );
+  });
 
   it('adds a marker-delimited block when absent', () => {
     expect(mergeGitignore(undefined)).toBe(EXPECTED_CREATED);

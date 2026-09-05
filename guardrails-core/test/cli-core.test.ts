@@ -772,6 +772,16 @@ describe('pretooluse gate trigger conditions', () => {
         preToolUseStdin('bash', 'git log --grep "git commit"'),
       ),
     ).toBe('');
+    out.length = 0;
+    // Reading commands stay cheap even once global options are allowed between
+    // `git` and the subcommand: the option run must not swallow the subcommand.
+    expect(
+      await runPreToolUse(preToolUseStdin('bash', 'git -c color.ui=false log')),
+    ).toBe('');
+    out.length = 0;
+    expect(
+      await runPreToolUse(preToolUseStdin('bash', 'git status --porcelain')),
+    ).toBe('');
   });
 
   it('still fires wherever a git write is actually a command', async () => {
@@ -789,6 +799,18 @@ describe('pretooluse gate trigger conditions', () => {
       // Command substitution is covered by the `(` in the separator class; the
       // case is listed so that stays true however the pattern is refactored.
       '$(git commit -m x)',
+      // git's GLOBAL options sit between `git` and the subcommand. The one
+      // that matters is `-c core.hooksPath=...`: unlike `git -C <path> commit`
+      // (a long-accepted miss, because the repo's hooks still run), this one
+      // DEFEATS the git-hook floor, and it is the exact bypass the scaffolded
+      // AGENTS.md forbids by name. An instruction that names a bypass the hook
+      // cannot see is worse than no instruction.
+      'git -c core.hooksPath=/dev/null commit -m x',
+      'git -c core.hooksPath=/dev/null push',
+      'git -c a=b -c c=d commit -m x',
+      'git --no-pager commit -m x',
+      'git -C packages/web commit -m x',
+      'cd /tmp && git -c core.hooksPath=/dev/null commit -m x',
     ]) {
       out.length = 0;
       expect(
@@ -1226,6 +1248,13 @@ describe('verify and audit exit codes', () => {
     expect(said).toContain('typescript');
     expect(said).toContain('knip');
     expect(said).not.toContain('(needs eslint)');
+    // ...and names the command that seeds the config the analyzer needs. `init`
+    // only seeds a starter config for an analyzer the repo ALREADY declares, so
+    // a bare greenfield `init --apply` writes none of them; installing the
+    // analyzers afterwards leaves the adopter with `analyzer-failed` from
+    // dependency-cruiser and upstream's own `--init` advice, which writes a
+    // different config than the seed. Measured on a real adoption.
+    expect(said).toContain('guardrails init --apply');
   });
 
   it('warns about silently skipped analyzers at the commit gate too', async () => {

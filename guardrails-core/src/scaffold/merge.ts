@@ -187,6 +187,13 @@ const GITIGNORE_BLOCK = [
   // them, a consumer's first mutation run leaves untracked noise they never
   // asked for.
   'reports/mutation/',
+  // Stryker's `incrementalFile` default, which is NOT under reports/mutation/.
+  // Measured on a greenfield adoption: without it the repo's first
+  // `git add -A` commits a mutation-result cache that churns on every run.
+  // `runStryker` deletes this file before each run, so guardrails' own gate is
+  // unaffected either way -- what this prevents is the committed artifact, and
+  // stale verdicts for anyone running `npx stryker run` by hand.
+  'reports/stryker-incremental.json',
   '.stryker-tmp/',
   // A git worktree checked out inside the repo is untracked but NOT ignored,
   // so knip -- which does respect .gitignore -- walks into it and reports a
