@@ -2257,6 +2257,29 @@ for anyone running `npx stryker run` by hand.
   of them. Excluded from mutation only, exactly as `isConfigFile` already is;
   eslint and tsc still check both.
 
+**A ReDoS in the fix itself, caught in review — and the lint hole that let it
+through.** Extending `GIT_WRITE` with git's global options introduced
+`(?:-[cC][ \t]+[^ \t]+|-[^ \t]+))*`, whose two alternatives can tile the same
+token run two ways (`-c -c` as one flag-plus-value, or as two flags). That is
+`(a|aa)*`: Fibonacci(k) equivalent partitions, all of which a failing match must
+exhaust. Measured on the merged pattern before the fix — 0.5ms at 20 tokens,
+2.9ms at 24, **5.69s at 40, 51s at 64** — on `input.command` from the Bash
+PreToolUse hook, the agent's highest-frequency tool. A long enough command
+would have hung the session, which is the same denial-of-service the anchoring
+fix in the third adoption was meant to end.
+
+Requiring a `-c` VALUE to start with a non-`-` character leaves exactly one
+parse and makes the run linear: 0.02ms at n=1000.
+
+The finding that outlasts the bug is **why the linter did not catch it**. This
+repo's own `sonarjs` rejected the previous super-linear pattern before it
+landed; this one got past because the literal had been split into `String.raw`
+fragments to get it under `sonarjs/regex-complexity`'s ceiling — and a pattern
+assembled at runtime is invisible to static analysis. Satisfying the complexity
+rule removed the pattern from the rule's own view. Pinned by an adversarial
+TIMING test instead, because the property is "no exponential path exists",
+which no example input can state.
+
 **Left for the roadmap.**
 
 - **The knip/`command`-runner catch-22 is now unsatisfiable.** With

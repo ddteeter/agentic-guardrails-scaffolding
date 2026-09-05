@@ -784,6 +784,29 @@ describe('pretooluse gate trigger conditions', () => {
     ).toBe('');
   });
 
+  it('cannot be made to backtrack catastrophically by a run of flags', async () => {
+    // ReDoS regression. The first version of the global-option run was
+    // `(?:-[cC][ \t]+[^ \t]+|-[^ \t]+)*`, whose two alternatives could tile the
+    // SAME token sequence two ways -- `-c -c` as one flag-plus-value, or as two
+    // flags -- giving Fibonacci(k) equivalent partitions that a failing match
+    // has to exhaust. Measured before the fix: 0.5ms at 20 tokens, 2.9ms at 24,
+    // 5.69s at 40, quadrupling every four. This runs on `input.command` from
+    // the Bash PreToolUse hook, the agent's highest-frequency tool, so a long
+    // enough command would have hung the session.
+    //
+    // The fix is to make a `-c` VALUE unable to start with `-`, which leaves
+    // exactly one way to read any sequence. Asserted by time, because the
+    // property is "no exponential path exists" and no example input can state
+    // that on its own -- and because the pattern is assembled from String.raw
+    // fragments, which is what put it out of `sonarjs`'s reach in the first
+    // place.
+    const adversarial = `git ${'-c '.repeat(64)}status`;
+    const started = process.hrtime.bigint();
+    await runPreToolUse(preToolUseStdin('bash', adversarial));
+    const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
+    expect(elapsedMs).toBeLessThan(1000);
+  });
+
   it('still fires wherever a git write is actually a command', async () => {
     // The anchor must not become a hole. Every position a shell would run a
     // command from still counts — this is the half that keeps `--no-verify`

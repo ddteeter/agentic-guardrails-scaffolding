@@ -335,9 +335,27 @@ const SHELL_TOOLS = /^(?:bash|shell|powershell)$/i;
  */
 const COMMAND_START = String.raw`(?:^|[\n;&|()\`{}])[ \t]*`;
 /**
-git's global options: a flag token, or `-c`/`-C` plus its separate value.
-*/
-const GIT_GLOBAL_OPTIONS = String.raw`(?:[ \t]+(?:-[cC][ \t]+[^ \t]+|-[^ \t]+))*`;
+ * git's global options: a flag token, or `-c`/`-C` plus its separate value.
+ *
+ * The value alternative requires a NON-`-` first character, and that is what
+ * keeps the run linear. Without it the two alternatives can tile the same token
+ * sequence two ways -- `-c -c` as one flag-plus-value, or as two flags -- so a
+ * run of k flags has Fibonacci(k) equivalent partitions, every one of which a
+ * failing overall match must exhaust. That is the textbook `(a|aa)*`
+ * catastrophic-backtracking shape, and it was real here: measured 5.69s at 40
+ * tokens and 51s at 64, on `input.command` from the Bash PreToolUse hook --
+ * the agent's highest-frequency tool, so a long enough command would have hung
+ * the session. With the constraint, a token beginning `-` can only be read as
+ * a flag and a token that does not can only be a value: exactly one parse.
+ *
+ * `sonarjs/regex-complexity` cannot see this. Assembling the pattern from
+ * `String.raw` fragments -- done to get the literal under the complexity
+ * ceiling -- also takes it out of static analysis, which is how this shipped
+ * past a lint that had caught the same class before. `cli-core.test.ts` pins
+ * the property by TIMING instead: the guarantee is "no exponential path
+ * exists", which no example input can assert on its own.
+ */
+const GIT_GLOBAL_OPTIONS = String.raw`(?:[ \t]+(?:-[cC][ \t]+[^-\s][^ \t]*|-[^ \t]+))*`;
 const GIT_WRITE = new RegExp(
   `${COMMAND_START}git${GIT_GLOBAL_OPTIONS}[ \t]+(?:commit|push)\\b`,
 );
