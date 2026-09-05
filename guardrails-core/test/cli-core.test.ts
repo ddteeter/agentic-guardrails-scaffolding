@@ -834,6 +834,13 @@ describe('pretooluse gate trigger conditions', () => {
       'git --no-pager commit -m x',
       'git -C packages/web commit -m x',
       'cd /tmp && git -c core.hooksPath=/dev/null commit -m x',
+      // A config VALUE that itself starts with `-`. The linearity fix stops the
+      // value slot accepting a `-`-leading token, so this one is read as two
+      // flags instead of flag-plus-value -- a different internal parse, same
+      // verdict. Raised in review as the one place the fix could have traded
+      // linear time for a false negative; it does not.
+      'git -c http.extraHeader=-x commit -m y',
+      'git -c a=-1 -c b=-2 push',
     ]) {
       out.length = 0;
       expect(
