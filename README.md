@@ -64,6 +64,12 @@ overwritten again once it exists, `--force` included. A file you own outright â€
 `init` merges only its own entries into whatever is already there. See
 `plan.md`'s "Phase E status" for what that merge does and does not preserve.
 
+That seeded config enforces: `enforcement` defaults to `"block"`, so the
+commit, push and CI gates fail on a violation from the first run. Pass
+`--enforcement=warn` if you are adopting onto an existing backlog and need the
+gates to report while you clear it â€” but only on the run that seeds the file,
+because it is never rewritten afterwards.
+
 ## The control loop (Claude Code and Codex CLI)
 
 ```

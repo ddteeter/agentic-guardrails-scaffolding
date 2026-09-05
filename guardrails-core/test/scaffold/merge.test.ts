@@ -215,6 +215,31 @@ describe('mergeAgentsInstructions', () => {
     expect(merged).toContain('Consumer tail.');
     expect(merged).not.toContain('old index');
   });
+
+  // The greenfield case, and the one with no test until now: a repo with no
+  // AGENTS.md at all. Asserted by exact equality rather than `toContain`,
+  // because what distinguishes "authoring the file" from "appending to it" is
+  // precisely the two blank lines an append prefixes — a `toContain` passes
+  // either way.
+  it('writes the block alone when there is no file', () => {
+    expect(mergeAgentsInstructions(undefined, block)).toBe(`${block}\n`);
+  });
+
+  // Whitespace-only is the same case, and it is what separates "is this file
+  // empty" from "is this file the empty string": a file holding two spaces and
+  // a newline must not grow a stray blank-line prefix either.
+  it('writes the block alone when the file holds only whitespace', () => {
+    expect(mergeAgentsInstructions('   \n  ', block)).toBe(`${block}\n`);
+  });
+
+  it('keeps the consumer separated from the block when there is prose', () => {
+    // The positive control for the two above: real content DOES get the blank
+    // line, so a merger that stopped separating them entirely would fail here
+    // rather than passing all three.
+    expect(mergeAgentsInstructions('# Title\n', block)).toBe(
+      `# Title\n\n${block}\n`,
+    );
+  });
 });
 
 describe('mergeGitignore', () => {
@@ -244,8 +269,34 @@ describe('mergeGitignore', () => {
     '# --- guardrails:end ---',
   ].join('\n');
 
+  // Written ABOVE the markers, so it is the consumer's line from the moment it
+  // lands: a later `init` marker-REPLACES the block and leaves this alone, and
+  // a consumer who deletes it is not fought on the next run.
+  const EXPECTED_CREATED = `node_modules/\n\n${EXPECTED_BLOCK}\n`;
+
   it('adds a marker-delimited block when absent', () => {
-    expect(mergeGitignore(undefined)).toBe(`${EXPECTED_BLOCK}\n`);
+    expect(mergeGitignore(undefined)).toBe(EXPECTED_CREATED);
+  });
+
+  // A greenfield repo has no `.gitignore` for the merger to preserve, so the
+  // guardrails block becomes the WHOLE file and `node_modules/` goes unignored.
+  // Measured: `git ls-files --others` then returned 12,669 dependency paths,
+  // which reached eslint and killed it on every turn (plan.md, second
+  // greenfield adoption). Only guardrails' own analyzers break, so guardrails
+  // writes the one line that stops it -- and only when authoring the file.
+  it('seeds node_modules/ when it is authoring the whole file', () => {
+    expect(mergeGitignore(undefined)).toContain('node_modules/');
+    expect(mergeGitignore('   \n  ')).toContain('node_modules/');
+  });
+
+  it('does not re-seed node_modules/ into a file the consumer already owns', () => {
+    // Their file, their call -- even when the entry is missing. `changedFiles`
+    // filters dependency paths regardless, so the gate is safe either way.
+    expect(mergeGitignore('dist/\n')).toBe(`dist/\n\n${EXPECTED_BLOCK}\n`);
+  });
+
+  it('is idempotent across a re-run of the file it created', () => {
+    expect(mergeGitignore(EXPECTED_CREATED)).toBe(EXPECTED_CREATED);
   });
 
   it('ignores nested Claude Code worktrees', () => {
@@ -275,7 +326,9 @@ describe('mergeGitignore', () => {
   it('adds a clean block when the file exists but is blank', () => {
     // Distinguishes "no content" from "there is content": a whitespace-only
     // file must not grow stray leading blank lines the way real content would.
-    expect(mergeGitignore('   \n  ')).toBe(`${EXPECTED_BLOCK}\n`);
+    // A blank file is still guardrails authoring the whole thing, so it gets
+    // the same dependency-ignore seed as an absent one.
+    expect(mergeGitignore('   \n  ')).toBe(EXPECTED_CREATED);
   });
 
   it('appends the block to an existing gitignore that has no markers yet', () => {

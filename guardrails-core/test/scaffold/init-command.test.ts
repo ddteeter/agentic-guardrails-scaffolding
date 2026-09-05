@@ -475,6 +475,31 @@ describe('init — flag validation', () => {
     expect(readdirSync(root)).toEqual([]);
   });
 
+  // `docs/adoption.md` and the `adopting-guardrails` skill both say a
+  // greenfield or already-clean repo starts at `block`, and that `warn` is a
+  // migration tool for an existing backlog -- but the seed defaulted to `warn`,
+  // so the README's own copy-pasteable `init --apply` produced advisory commit,
+  // push and CI gates. Measured on a scaffolded greenfield repo: a TS2322 type
+  // error committed with no resistance. `guardrails.config.json` is SEED-ONCE,
+  // so `--enforcement=block` cannot repair it afterwards; it takes a hand edit,
+  // and meanwhile `warn` lets that first violation reach the base branch, where
+  // it is out of diff scope and blocks every later commit once anyone flips.
+  // `warn` fails quiet, `block` fails loud, and every other defensive path in
+  // `config.ts` is documented as failing toward more checking.
+  it('seeds block when no --enforcement is given', async () => {
+    expect(await init('--apply')).toBe(0);
+    const config: unknown = JSON.parse(read('guardrails.config.json'));
+    expect(config).toMatchObject({ enforcement: 'block' });
+  });
+
+  it('still seeds warn when the adopter asks for it', async () => {
+    // The migration path stays one flag away -- a backlog repo is exactly the
+    // case `warn` exists for.
+    expect(await init('--apply', '--enforcement=warn')).toBe(0);
+    const config: unknown = JSON.parse(read('guardrails.config.json'));
+    expect(config).toMatchObject({ enforcement: 'warn' });
+  });
+
   it('accepts every documented flag together', async () => {
     expect(
       await init(
