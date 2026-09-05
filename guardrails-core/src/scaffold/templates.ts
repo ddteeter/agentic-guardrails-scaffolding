@@ -32,6 +32,7 @@ import type { SharedPath } from './merge.js';
 import type { ScaffoldDecisions } from './plan.js';
 import {
   DEPENDENCY_CRUISER_SEED,
+  KNIP_SEED,
   guardrailsConfigSeed,
   STRYKER_SEED,
 } from './seeds.js';
@@ -137,7 +138,7 @@ const SHARED_DERIVED_PATHS: readonly SharedPath[] = [
 ];
 
 /**
- * The two analyzers whose config `init` seeds. `hasConfig` reads the DETECTED
+ * The analyzers whose config `init` seeds. `hasConfig` reads the DETECTED
  * fact, never a filename: `detect` probes `.dependency-cruiser.{cjs,js,json}`
  * while the seed-once key is `.cjs` only, so a consumer whose config is
  * `.dependency-cruiser.js` would otherwise be handed a second, silently ignored
@@ -169,6 +170,13 @@ export const SEED_ONCE_ANALYZERS: readonly SeedOnceAnalyzer[] = [
     path: 'stryker.conf.json',
     seed: STRYKER_SEED,
     hasConfig: (facts) => facts.hasStrykerConfig,
+  },
+  {
+    tool: 'knip',
+    provider: 'knip',
+    path: 'knip.json',
+    seed: KNIP_SEED,
+    hasConfig: (facts) => facts.hasKnipConfig,
   },
 ];
 
@@ -373,6 +381,12 @@ const GATE_CONTRACT: readonly string[] = [
   "Never set an entry in `guardrails.config.json`'s `analyzers` block to",
   '`off`, never remove an analyzer from `package.json` to turn its',
   '`analyzer-missing` error into silence, and never raise a threshold.',
+  '',
+  'And never skip the gate rather than satisfy it: no `git commit',
+  '--no-verify`, no `git push --no-verify`, no unsetting `core.hooksPath`.',
+  'That flag exists for the developer, not for you. If the gate is wrong,',
+  'say so and stop — a blocked commit you report is recoverable, a bypassed',
+  'one nobody knows about is not.',
   '',
   '### Never grant yourself an exemption',
   '',

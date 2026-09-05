@@ -727,6 +727,56 @@ describe('pretooluse gate trigger conditions', () => {
     ).toBe('');
   });
 
+  it('does not fire on a git write merely MENTIONED inside an argument', async () => {
+    // The matcher governs Claude's Bash tool now, not only Copilot's much
+    // lower-frequency shell calls, so the cost of a spurious match is paid
+    // interactively on ordinary commands. Measured on this repo before the
+    // command-position anchor: `echo remember to git commit later` ran the full
+    // branch-scoped commit gate — stryker included — for 1m43s. Prose that
+    // happens to name a git write is not a git write.
+    expect(
+      await runPreToolUse(
+        preToolUseStdin('bash', 'echo remember to git commit later'),
+      ),
+    ).toBe('');
+    out.length = 0;
+    expect(
+      await runPreToolUse(
+        preToolUseStdin('bash', 'gh pr create --body "then git push it"'),
+      ),
+    ).toBe('');
+    out.length = 0;
+    expect(
+      await runPreToolUse(
+        preToolUseStdin('bash', 'git log --grep "git commit"'),
+      ),
+    ).toBe('');
+  });
+
+  it('still fires wherever a git write is actually a command', async () => {
+    // The anchor must not become a hole. Every position a shell would run a
+    // command from still counts — this is the half that keeps `--no-verify`
+    // from walking past the gate, which is the whole reason the Claude channel
+    // has this hook.
+    for (const command of [
+      'git commit --no-verify -m x',
+      'cd packages/web && git commit --no-verify -m x',
+      'npm test; git push --no-verify',
+      'npm test || git commit -m x',
+      'npm run build\ngit push',
+      '(git commit -m x)',
+      // Command substitution is covered by the `(` in the separator class; the
+      // case is listed so that stays true however the pattern is refactored.
+      '$(git commit -m x)',
+    ]) {
+      out.length = 0;
+      expect(
+        await runPreToolUse(preToolUseStdin('bash', command)),
+        `should gate: ${command}`,
+      ).toContain('deny');
+    }
+  });
+
   it('stays silent when toolName or command is absent', async () => {
     // Kills the `=== undefined` equality mutants and the `||` -> `&&` chain
     // mutants, which would let a non-matching invocation reach the gate.
@@ -1133,6 +1183,61 @@ describe('verify and audit exit codes', () => {
     expect(errors.join('')).toContain(' violation(s).');
     expect(errors.join('')).not.toContain('0 violation(s).');
     expect(errors.join('')).not.toContain('clean (0 violations)');
+  });
+
+  it('warns that an enabled analyzer was silently skipped, on the very run that reports clean', async () => {
+    // `adopting-guardrails` names a green `verify` as THE exit criterion of an
+    // adoption. Until now the only place that said "three of your five
+    // analyzers did not run" was `init`, so the command the adopter is told to
+    // trust printed `clean (0 violations)` with nothing behind it. The warning
+    // has to be where the claim is made, not only where the repo was scaffolded.
+    writeFileSync(
+      path.join(root, 'package.json'),
+      JSON.stringify({ name: 'probe', devDependencies: { eslint: '^9' } }),
+    );
+    await runCommand('verify', [], deps());
+    const said = errors.join('');
+    expect(said).toContain('clean (0 violations)');
+    expect(said).toContain('typescript');
+    expect(said).toContain('knip');
+    expect(said).not.toContain('(needs eslint)');
+  });
+
+  it('warns about silently skipped analyzers at the commit gate too', async () => {
+    // The rung that ENFORCES has the same duty as the one that reports: a
+    // passing commit gate on a repo where three analyzers never ran is a pass
+    // the adopter will read as a guarantee.
+    writeFileSync(
+      path.join(root, 'guardrails.config.json'),
+      JSON.stringify({ baseBranch: 'main', enforcement: 'block' }),
+    );
+    writeFileSync(
+      path.join(root, 'package.json'),
+      JSON.stringify({ name: 'probe', devDependencies: { eslint: '^9' } }),
+    );
+    await runCommand('gate', ['--mode=commit'], deps());
+    expect(errors.join('')).toContain('is not in package.json');
+  });
+
+  it('says nothing about skipped analyzers when every enabled one can run', async () => {
+    // Kills the "warn unconditionally" mutant: a warning that fires on a fully
+    // installed repo is noise the reader learns to skip past, which costs the
+    // real warning its only job.
+    writeFileSync(
+      path.join(root, 'package.json'),
+      JSON.stringify({
+        name: 'probe',
+        devDependencies: {
+          eslint: '^9',
+          typescript: '^5',
+          knip: '^6',
+          'dependency-cruiser': '^18',
+          '@stryker-mutator/core': '^9',
+        },
+      }),
+    );
+    await runCommand('verify', [], deps());
+    expect(errors.join('')).not.toContain('is not in package.json');
   });
 
   it('audits the working diff from cwd and exits per findings', async () => {

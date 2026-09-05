@@ -134,6 +134,11 @@ which is the only thing that can grant itself an exemption.
 - **Fix code, don't weaken rules** — never add `eslint-disable`/`@ts-ignore`/
   `as any`/`.skip`, delete code to quiet a checker, or raise gate thresholds to
   make a check pass.
+- **Never skip the gate rather than satisfy it** — no `git commit --no-verify`,
+  no `git push --no-verify`, no unsetting `core.hooksPath`. That flag is the
+  developer's, not yours. A `Bash` PreToolUse hook now runs the commit gate
+  before the command either way (this is the same contract `templates.ts`
+  ships to consumers), so the flag buys nothing but a confusing failure.
 - The pre-push gate (`npm run test:coverage && npm run check:graph`) and CI are
   authoritative. Commit in small, logical steps.
 

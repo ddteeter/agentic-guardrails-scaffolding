@@ -28,16 +28,18 @@
  * *findings* (which parse into violations), so the one signal that separates a
  * crash/misconfiguration from a clean run is "non-zero exit, yet nothing
  * parsed" — `withExitCodeCheck` applies that rule uniformly. `stryker` is
- * different: absent a configured `break` threshold (this pack sets none), it
- * exits 0 even with surviving mutants, so ANY non-zero exit from it is a crash.
- * Its report is read from its own default, gitignored, cross-run-persistent
- * location (`reports/mutation/mutation.json`) — there is no CLI flag to
- * relocate it (`--jsonReporter.fileName` does not exist; only `--dashboard.*`
- * is a registered dotted option) and a `--configFile` would break
- * consumer-genericity. So `runStryker` deletes that path before every run,
- * making a stale report from a prior run unreadable, and treats a report
- * still missing afterward as `analyzer-failed` rather than clean — see
- * `runStryker`.
+ * different: it reports through a JSON file rather than its exit code, and its
+ * exit code answers a question guardrails did not ask (the consumer's own
+ * `break` threshold). So the file, not the exit code, is what separates a
+ * completed run from a crash. That report is read from stryker's own default,
+ * gitignored, cross-run-persistent location (`reports/mutation/mutation.json`)
+ * — there is no CLI flag to relocate it (`--jsonReporter.fileName` does not
+ * exist; only `--dashboard.*` is a registered dotted option) and a
+ * `--configFile` would break consumer-genericity. So `runStryker` deletes that
+ * path before every run, which makes anything parseable there afterwards
+ * necessarily this run's output, and treats an unparseable-or-absent report as
+ * `analyzer-failed` rather than clean — see `runStryker` for the full
+ * three-outcome table.
  */
 
 import { readFile as fsReadFile, rm as fsRm } from 'node:fs/promises';
@@ -56,6 +58,7 @@ import {
 import { parseDepcruiseJson } from './depcruise-adapter.js';
 import { parseEslintJson } from './eslint-adapter.js';
 import {
+  isConfigFile,
   isInsideNestedWorktree,
   isTestFile,
   isTypeScriptFile,
@@ -66,7 +69,7 @@ import {
 } from './git.js';
 import { parseKnipJson } from './knip-adapter.js';
 import { parseNpmLsJson } from './npm-peers-adapter.js';
-import { parseStrykerJson } from './stryker-adapter.js';
+import { isStrykerReportJson, parseStrykerJson } from './stryker-adapter.js';
 import { parseTscOutput } from './tsc-adapter.js';
 
 export interface VerifyOptions {
@@ -115,6 +118,18 @@ export interface VerifyOptions {
 
 export interface VerifyResult {
   violations: Violation[];
+  /**
+   * Analyzers that were enabled but could not report — `auto` with no declared
+   * provider, so they ran nothing and said nothing. Returned rather than
+   * recomputed by callers because `runVerify` already resolved the declared set
+   * to decide what to run, and two readings of the same manifest is exactly how
+   * a warning drifts out of step with the run it describes.
+   *
+   * A caller that ignores this is claiming its own result is complete. That was
+   * the defect: `verify` printed `clean (0 violations)` after running two of
+   * five analyzers, and only `init` ever said so.
+   */
+  skippedAnalyzers: readonly (readonly [string, string])[];
 }
 
 /** How much of a failed tool's stderr reaches the violation message. Five
@@ -554,6 +569,40 @@ const STRYKER_INCREMENTAL_PATH = path.join(
   'stryker-incremental.json',
 );
 
+/**
+ * Stryker's instrumenter banner, e.g.
+ * `Instrumented 1 source file(s) with 0 mutant(s)`.
+ *
+ * This is a hardcoded upstream string, so it is covered by the drift guard
+ * (`test/drift/registry.test.ts`) against a live stryker run — the same
+ * treatment the hardcoded knip issue types and eslint rule ids get. If a future
+ * stryker reworks the banner the guard fails loudly, rather than this quietly
+ * reverting to "every zero-mutant change set is a blocked commit".
+ */
+const STRYKER_INSTRUMENTED_BANNER =
+  /Instrumented \d+ source file\(s\) with (\d+) mutant\(s\)/;
+
+/**
+ * How many mutants stryker's instrumenter reported, or `undefined` when its
+ * output carries no banner this can read.
+ *
+ * The count is returned rather than folded straight into a boolean so the
+ * pattern's two `\d+` groups are separately observable. Collapsed to
+ * "is it zero", every multi-digit reading maps to the same `false` a failed
+ * match does, which makes a single-digit-only pattern an equivalent mutant —
+ * the regex could quietly stop reading two-digit counts and no test could tell.
+ */
+export function instrumentedMutantCount(output: string): number | undefined {
+  const captured = STRYKER_INSTRUMENTED_BANNER.exec(output)?.[1];
+  return captured === undefined ? undefined : Number(captured);
+}
+
+/** Did stryker explicitly report instrumenting zero mutants? Absence of the
+ *  banner is NOT a zero reading — an unrecognised output must fail closed. */
+export function instrumentedZeroMutants(output: string): boolean {
+  return instrumentedMutantCount(output) === 0;
+}
+
 function strykerReportMissingViolation(reportPath: string): Violation {
   return {
     ruleId: 'guardrails/analyzer-failed',
@@ -582,22 +631,44 @@ function strykerReportMissingViolation(reportPath: string): Violation {
  *  Stryker can reuse survivor results when tests change but production does
  *  not, exactly the fixer-loop case where a new test is meant to kill a mutant.
  *
- *  Unlike the analyzers above, stryker exits 0 even with surviving mutants
- *  unless a `break` threshold is configured (this pack sets none) — so ANY
- *  non-zero exit here means a crash, never "findings", and is always a
- *  failure. A report still missing after a zero exit is also a failure
- *  (`analyzer-failed`, not clean): whether because stryker crashed
- *  internally without a non-zero exit, or because the consumer's own
- *  `stryker.conf.json` customises `jsonReporter.fileName` to write somewhere
- *  else — either way, the report is the only channel mutation results reach
- *  this process through, and finding none there must never read as clean. */
+ *  A report still missing after a zero exit is a failure (`analyzer-failed`,
+ *  not clean): whether because stryker crashed internally without a non-zero
+ *  exit, or because the consumer's own `stryker.conf.json` customises
+ *  `jsonReporter.fileName` to write somewhere else — either way, the report is
+ *  the only channel mutation results reach this process through, and finding
+ *  none there must never read as clean.
+ *
+ *  **A non-zero exit is not by itself a crash.** This used to assume it was,
+ *  on the grounds that "this pack sets no `break` threshold" — but the pack
+ *  does not own the consumer's `stryker.conf.json`, and `adopting-guardrails`
+ *  tells the adopter to set thresholds that mean something. The moment they
+ *  did, every surviving mutant was replaced by one opaque `analyzer-failed`,
+ *  silently disabling the most valuable check here. What actually separates
+ *  the two cases is the REPORT: `removeFile` above guarantees the default path
+ *  is empty before stryker starts, so anything parseable there afterwards was
+ *  written by a run that reached its reporter. Three outcomes, fail-closed in
+ *  every direction the evidence does not cover:
+ *
+ *  1. Report present and parseable → findings, whatever the exit code. A
+ *     `break` threshold is stryker reporting a failure, not losing one, and
+ *     guardrails is the gate that decides what to do about it.
+ *  2. No parseable report, but stryker's instrumenter reported ZERO mutants →
+ *     clean. A change touching only interfaces or a barrel of re-exports gives
+ *     the framework runners nothing to execute, so they throw
+ *     `No tests were executed` and exit non-zero with no report. There is
+ *     nothing to check, and blocking the commit there points the agent at a
+ *     stryker config that is not what is wrong. Narrow on purpose: only an
+ *     explicit zero reading buys this, because a suite that genuinely cannot
+ *     run reports the identical error.
+ *  3. Anything else → `analyzer-failed`. */
 async function runStryker(
   options: VerifyOptions,
   resolveBin: (tool: string) => string,
   files: string[],
 ): Promise<Violation[]> {
   const production = files.filter(
-    (file) => isTypeScriptFile(file) && !isTestFile(file),
+    (file) =>
+      isTypeScriptFile(file) && !isTestFile(file) && !isConfigFile(file),
   );
   if (production.length === 0) {
     return [];
@@ -628,7 +699,29 @@ async function runStryker(
     // Reported separately as guardrails/analyzer-missing by the caller.
     return [];
   }
+  // `''` rather than `string | undefined`, so "no file there" and "the file is
+  // not a report" reach the one decision below as the same thing. A separate
+  // `report !== undefined` guard in front of that decision would be an
+  // equivalent mutant — the empty string is not a report either, so both
+  // operands answer identically and no test could ever tell them apart.
+  let report = '';
+  try {
+    report = await readFile(path.join(repoRoot, reportPath));
+  } catch {
+    // Deliberately empty; a missing report is one of the outcomes decided below.
+  }
+  // Outcome 1: a parseable report means the run reached its reporter, so its
+  // findings are the answer no matter what the exit code was.
+  if (isStrykerReportJson(report)) {
+    return parseStrykerJson(report, production);
+  }
   if (result.code !== 0) {
+    // Outcome 2: nothing to mutate is vacuously clean, even though the runner
+    // threw on its way to discovering that.
+    if (instrumentedZeroMutants(`${result.stdout}\n${result.stderr}`)) {
+      return [];
+    }
+    // Outcome 3.
     return [
       analyzerFailedViolation(
         'stryker',
@@ -638,14 +731,7 @@ async function runStryker(
       ),
     ];
   }
-
-  let report: string;
-  try {
-    report = await readFile(path.join(repoRoot, reportPath));
-  } catch {
-    return [strykerReportMissingViolation(reportPath)];
-  }
-  return parseStrykerJson(report, production);
+  return [strykerReportMissingViolation(reportPath)];
 }
 
 type Rung = NonNullable<VerifyOptions['profile']>;
@@ -765,9 +851,10 @@ export const NON_PACKAGE_PROVIDERS: ReadonlySet<string> = new Set(['npm']);
 
 /**
  * Analyzer tool name -> the npm package that provides it, for every analyzer
- * a consumer can actually install. Exported for `init`'s silent-skip warning,
+ * a consumer can actually install. Read by `silentlySkippedAnalyzers` below,
  * which has to name both halves: the tool the consumer configures and the
- * package they type into `npm install`.
+ * package they type into `npm install`. Module-private now that the warning it
+ * feeds lives here rather than in the scaffolder.
  *
  * A function rather than a module-level constant, deliberately. Top-level code
  * runs once when the module is imported, which is before any mutant is
@@ -776,13 +863,61 @@ export const NON_PACKAGE_PROVIDERS: ReadonlySet<string> = new Set(['npm']);
  * Computing it per call puts the expression back inside the tests' reach. The
  * table is six entries; there is nothing here worth memoising.
  */
-export function installableAnalyzerProviders(): Readonly<
-  Record<string, string>
-> {
+function installableAnalyzerProviders(): Readonly<Record<string, string>> {
   return Object.fromEntries(
     ANALYZERS.filter(
       (analyzer) => !NON_PACKAGE_PROVIDERS.has(analyzer.provider),
     ).map((analyzer) => [analyzer.tool, analyzer.provider]),
+  );
+}
+
+/**
+ * Analyzers that are enabled but whose provider package the repo does not
+ * declare — so `decideAnalyzer('auto', false)` runs-and-never-reports them and
+ * the run prints `clean (0 violations)` having checked nothing.
+ *
+ * `required` is excluded because it is precisely the fix: a missing binary is
+ * then a blocking `guardrails/analyzer-missing`, which can never read as clean.
+ * `off` is excluded because the consumer said so. Only analyzers with an
+ * installable provider are considered — `npm-peers` shells out to `npm`, which
+ * no repo declares and nobody should be told to install.
+ *
+ * Lives here rather than in the scaffolder because the warning belongs at every
+ * rung that makes a claim about the repo, not only at the one that wrote the
+ * files. It used to be scaffold-only, which put it everywhere except the
+ * command the adoption guidance names as its exit criterion.
+ */
+export function silentlySkippedAnalyzers(
+  analyzers: Readonly<Record<string, AnalyzerMode>>,
+  declared: ReadonlySet<string>,
+): readonly (readonly [string, string])[] {
+  return Object.entries(installableAnalyzerProviders()).filter(
+    ([tool, provider]) =>
+      analyzerMode(analyzers, tool) === 'auto' && !declared.has(provider),
+  );
+}
+
+/**
+ * Says the thing a silent skip cannot say for itself. The failure this exists
+ * for looks like success: a repo that never installed eslint gets a green
+ * `verify` and a gate that checks almost nothing, which is worse than no gate
+ * because it teaches everyone to trust it.
+ *
+ * Names both halves — the tool a consumer configures and the package they
+ * install — and both fixes, since either is legitimate: install it, or say
+ * `required` and let the absence block.
+ */
+export function silentSkipWarning(
+  silent: readonly (readonly [string, string])[],
+): string {
+  const named = silent
+    .map(([tool, provider]) => `${tool} (needs ${provider})`)
+    .join(', ');
+  return (
+    `these analyzers are enabled but their provider package is not in ` +
+    `package.json, so each is skipped and verify reports clean without ` +
+    `running it: ${named}. Install the ones you want, or set them ` +
+    `"required" in guardrails.config.json so a missing one blocks instead.`
   );
 }
 
@@ -984,5 +1119,6 @@ export async function runVerify(options: VerifyOptions): Promise<VerifyResult> {
   // pure thereafter.
   return {
     violations: withPackages(scoped, loadWorkspaceResolver(options.repoRoot)),
+    skippedAnalyzers: silentlySkippedAnalyzers(analyzers, declared),
   };
 }

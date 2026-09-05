@@ -51,7 +51,7 @@ import {
   sweepStale,
 } from './state-store.js';
 import { hasErrors, type Violation } from './violation.js';
-import { runVerify } from './verify/index.js';
+import { runVerify, silentSkipWarning } from './verify/index.js';
 import { resolveBaseReference } from './verify/git.js';
 
 export interface CliDeps {
@@ -138,7 +138,7 @@ function commandRepoRoot(deps: CliDeps, hookCwd?: string): Promise<string> {
 async function verifyCommand(deps: CliDeps): Promise<number> {
   const repoRoot = await commandRepoRoot(deps);
   const config = loadConfig(repoRoot);
-  const { violations } = await runVerify({
+  const { violations, skippedAnalyzers } = await runVerify({
     repoRoot,
     baseBranch: config.baseBranch,
     exec: deps.exec,
@@ -152,7 +152,32 @@ async function verifyCommand(deps: CliDeps): Promise<number> {
       ? 'guardrails: clean (0 violations).\n'
       : `guardrails: ${violations.length} violation(s).\n`,
   );
+  warnAboutSilentSkips(deps, skippedAnalyzers);
   return hasErrors(violations) ? 1 : 0;
+}
+
+/**
+ * Print `init`'s silent-skip warning at a rung that actually checks something.
+ *
+ * `adopting-guardrails` names a green `verify` as the exit criterion of an
+ * adoption ("not 'files written' — green"), and the branch gates are what
+ * enforce it afterwards. Until now the only command that mentioned an analyzer
+ * being skipped was `init`, so every later run — including the one the adopter
+ * was told to trust — printed `clean (0 violations)` with no hint that most of
+ * the pack had not run. A warning delivered once, at scaffold time, is not
+ * where a reader is standing when they draw the conclusion.
+ *
+ * Written after the count so it reads as a qualification of the result just
+ * stated, and to stderr like every other advisory line, so a `--json` consumer
+ * on stdout is unaffected.
+ */
+function warnAboutSilentSkips(
+  deps: CliDeps,
+  silent: readonly (readonly [string, string])[],
+): void {
+  if (silent.length > 0) {
+    deps.stderr(`guardrails: ${silentSkipWarning(silent)}\n`);
+  }
 }
 
 async function autofixCommand(deps: CliDeps): Promise<number> {
@@ -221,16 +246,20 @@ async function gateCommitCommand(
 ): Promise<number> {
   const repoRoot = await commandRepoRoot(deps);
   const config = loadConfig(repoRoot);
-  const { violations, findings, blocked } = await runCommitGate({
-    repoRoot,
-    baseBranch: config.baseBranch,
-    exec: deps.exec,
-    resolveBin: binResolver(repoRoot),
-    sanctionedSuppressions: config.sanctionedSuppressions,
-    analyzers: config.analyzers,
-    changedScope,
-  });
+  const { violations, findings, blocked, skippedAnalyzers } =
+    await runCommitGate({
+      repoRoot,
+      baseBranch: config.baseBranch,
+      exec: deps.exec,
+      resolveBin: binResolver(repoRoot),
+      sanctionedSuppressions: config.sanctionedSuppressions,
+      analyzers: config.analyzers,
+      changedScope,
+    });
   printGateDetail(deps, violations, findings);
+  // Before the pass/block decision, because it qualifies either one: a gate
+  // that blocked still checked less than the adopter thinks it did.
+  warnAboutSilentSkips(deps, skippedAnalyzers);
   if (!blocked) {
     return 0;
   }
@@ -249,7 +278,34 @@ const SHELL_TOOLS = /^(?:bash|shell|powershell)$/i;
 // Requires `commit`/`push` immediately after `git`, so it won't match
 // `git -C <path> commit` — acceptable, since the git-native pre-commit hook
 // (Husky) is the hard floor that catches those commits regardless.
-const GIT_WRITE = /\bgit\s+(?:commit|push)\b/;
+//
+// `git` must also sit where a shell would START a command: the beginning of the
+// string, or just past a separator. Without that, prose naming a git write
+// counted as one — and this matcher now governs Claude Code's Bash tool, not
+// only Copilot's much rarer shell calls, so a spurious match is paid
+// interactively on an ordinary command. Measured on this repository before the
+// anchor: `echo remember to git commit later` ran the whole branch-scoped
+// commit gate, stryker included, for 1m43s.
+//
+// This is a command-POSITION test, not a shell parser — `FOO=1 git commit` and
+// `xargs git commit` are misses. That is the same direction the `git -C` note
+// above already accepts, and for the same reason: neither skips the git hooks,
+// so the git-native floor still catches them. What must never be missed is a
+// command that BYPASSES that floor, and `--no-verify` is written on a command,
+// which is exactly what this matches.
+//
+// The padding after the separator is `[ \t]*`, not `\s*`, and that is not
+// cosmetic: a newline is itself a separator, so `\s*` could match the same
+// character the class just did, and the two readings of one input are what make
+// the pattern backtrack super-linearly. Keeping the two disjoint — newline only
+// in the class, spaces and tabs only in the padding — leaves exactly one way to
+// match and no ambiguity to explore.
+//
+// Command substitution needs no alternative of its own: `$(git commit)` is
+// matched by the `(` already in the class. An explicit `\$\(` branch was
+// unreachable — no input distinguished the two patterns — which is the kind of
+// dead alternation a regex mutator does not decompose finely enough to report.
+const GIT_WRITE = /(?:^|[\n;&|()`{}])[ \t]*git\s+(?:commit|push)\b/;
 
 /** `gate --mode=pretooluse`: the Copilot commit/push gate. Self-filters on the
  * shell-tool + git-commit/push command shape rather than relying on hook

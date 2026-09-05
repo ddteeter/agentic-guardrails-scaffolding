@@ -104,6 +104,11 @@ export interface CommitGateResult {
   violations: Violation[];
   findings: AuditFinding[];
   blocked: boolean;
+  /** Passed straight through from `runVerify` — see `VerifyResult`. The rung
+   *  that enforces has the same duty as the one that reports: a gate that
+   *  passes while three analyzers never ran is a pass the adopter reads as a
+   *  guarantee. */
+  skippedAnalyzers: readonly (readonly [string, string])[];
 }
 
 /**
@@ -345,7 +350,7 @@ async function branchDiff(options: CommitGateOptions): Promise<string> {
 export async function runCommitGate(
   options: CommitGateOptions,
 ): Promise<CommitGateResult> {
-  const { violations } = await runVerify({
+  const { violations, skippedAnalyzers } = await runVerify({
     repoRoot: options.repoRoot,
     baseBranch: options.baseBranch,
     exec: options.exec,
@@ -373,6 +378,7 @@ export async function runCommitGate(
     violations: guided,
     findings,
     blocked: hasErrors(guided) || findings.length > 0,
+    skippedAnalyzers,
   };
 }
 

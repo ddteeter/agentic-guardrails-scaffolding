@@ -110,6 +110,28 @@ function failureViolation(
   };
 }
 
+/**
+ * Does this payload parse as a stryker mutation report?
+ *
+ * `parseStrykerJson` answers "[] findings" for a malformed payload and for a
+ * genuinely empty report alike, which is the right shape for its caller but
+ * cannot distinguish "the run completed and found nothing" from "this file is
+ * not a report". `runStryker` needs exactly that distinction to tell a
+ * completed-but-non-zero run (a `break` threshold) from a crash.
+ */
+export function isStrykerReportJson(reportJson: string): boolean {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(reportJson);
+  } catch {
+    // Deliberately empty. Not-JSON-at-all and parsed-but-wrong-shape are the
+    // same answer, and `isReport(undefined)` below already gives it — an
+    // explicit `return false` here would be an equivalent mutant no test could
+    // ever kill.
+  }
+  return isReport(parsed);
+}
+
 export function parseStrykerJson(
   reportJson: string,
   changedFiles: readonly string[],

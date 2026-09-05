@@ -4,6 +4,7 @@ import type { Exec, ExecResult } from '../../src/exec.js';
 import {
   isDependencyPath,
   isInsideNestedWorktree,
+  isConfigFile,
   isTestFile,
   isTypeScriptFile,
   mergeChangedFiles,
@@ -91,6 +92,36 @@ describe('isTestFile', () => {
     expect(isTestFile('test/bar.test.ts')).toBe(true);
     expect(isTestFile('src/foo.ts')).toBe(false);
     expect(isTestFile('src/testing.ts')).toBe(false);
+  });
+});
+
+describe('isConfigFile', () => {
+  it('flags config-as-TypeScript at the root and in a package', () => {
+    expect(isConfigFile('vitest.config.ts')).toBe(true);
+    expect(isConfigFile('eslint.config.mts')).toBe(true);
+    expect(isConfigFile('tailwind.config.cts')).toBe(true);
+    expect(isConfigFile('playwright.config.tsx')).toBe(true);
+    expect(isConfigFile('packages/web/vite.config.ts')).toBe(true);
+  });
+
+  it('does not flag ordinary sources that merely mention config', () => {
+    // The exclusion removes a file from MUTATION, so a match too wide silently
+    // stops mutation-testing real code — the failure mode worth pinning.
+    expect(isConfigFile('src/config.ts')).toBe(false);
+    expect(isConfigFile('src/configure.ts')).toBe(false);
+    expect(isConfigFile('src/load-config.ts')).toBe(false);
+    expect(isConfigFile('src/config/index.ts')).toBe(false);
+  });
+
+  it('anchors both ends of the pattern', () => {
+    // Kills the `$` anchor mutant: a suffixed backup would otherwise match and
+    // silently leave a real source out of the mutation set.
+    expect(isConfigFile('vitest.config.ts.bak')).toBe(false);
+    // Kills the `(^|\/)` anchor mutant: the segment has to BE the config file,
+    // not merely end with the name of one.
+    expect(isConfigFile('src/notvitest.config.ts')).toBe(true);
+    expect(isConfigFile('vitest.config.js')).toBe(false);
+    expect(isConfigFile('vitest.config.json')).toBe(false);
   });
 });
 

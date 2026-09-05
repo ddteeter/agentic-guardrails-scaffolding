@@ -63,8 +63,18 @@ CLI tool doesn't.
 they can override, not an open questionnaire:
 
 - `eslint` and `tsc` run at the `stop` rung — every turn, cheap, foundational.
-  Default them `required`; a repo that can't lint or type-check itself has no
-  gate worth having.
+  A bare `init --apply` seeds `"analyzers": {}`, which leaves them `auto`: they
+  run once installed, and a provider the repo DECLARES but cannot resolve is a
+  blocking `guardrails/analyzer-missing`. What `auto` does not catch is a
+  provider that was never declared at all — nothing to resolve, nothing to
+  report, `clean (0 violations)`. So recommend `"required"` for these two **on
+  a repo that has already installed them**, where it costs nothing and closes
+  that last gap. Do not pass `--analyzers=eslint=required` on a repo that has
+  not: `guardrails.config.json` is SEED-ONCE, so you would be permanently
+  seeding a config whose first `verify` cannot pass until someone installs
+  eslint — and reversing it is a hand edit. Install first, then mark required.
+  `verify` and the commit gate both name any analyzer in this state on every
+  run, so the gap is visible while it lasts.
 - `knip`, `dependency-cruiser`, and `stryker` run at the `commit` rung —
   heavier, and each has a real precondition. `knip` and `dependency-cruiser`
   need a whole-repo clean baseline before they can gate anything (step 7).
@@ -113,10 +123,11 @@ exclude them before I enable it?" — not "how do you want knip configured?"
 
 ### 5. Author the configs and dependencies `init` deliberately does not own
 
-`init` seeds three configs only when their analyzer is enabled and no config
+`init` seeds these configs, only when their analyzer is enabled and no config
 exists (SEED-ONCE): a starter `.dependency-cruiser.cjs` (one rule —
-`no-circular`) and a starter `stryker.conf.json` (`testRunner: "command"`, no
-thresholds). It never touches them again, and it **never writes
+`no-circular`), a starter `stryker.conf.json` (`testRunner: "command"`, no
+thresholds), and a starter `knip.json` (conventional `entry`/`project` globs).
+It never touches them again, and it **never writes
 `eslint.config.js` or `tsconfig.json` at all** — those don't exist for it to
 seed. This is deliberate, not a gap: every real TypeScript project already has
 its own lint and compiler opinions, and guardrails-core has no business
@@ -128,14 +139,27 @@ maintaining lint rules for somebody else's repository. That's this step's job:
 - **Dependency-cruiser rules beyond `no-circular`** — layer boundaries specific
   to this repo's module graph (e.g. `src/` can't import `test/`, `core/` can't
   import `adapters/`).
-- **Stryker's test-runner plugin and thresholds** — swap `command` for a
-  framework-specific runner once one is installed, and set `break`/`low`/`high`
-  thresholds that mean something, not the schema's defaults. Swapping it also
-  clears a finding you would otherwise hit immediately: knip reads
-  `stryker.conf.json`, sees `testRunner: "command"`, and reports
-  `@stryker-mutator/command-runner` as an unlisted dependency — so the seeded
-  config is knip-dirty out of the box in exactly the knip-plus-stryker
-  combination step 3 recommends.
+- **knip's `entry` and `project` globs** — the seed guesses
+  `src/index.ts`/`src/main.ts` plus the conventional test globs. If this repo
+  puts its entry points elsewhere (a `bin/`, several package entries, a
+  framework's convention), say so in `knip.json` now: knip reports every module
+  no entry point reaches, so a wrong `entry` reports live code as dead.
+- **Stryker's test-runner plugin** — swap `command` for a framework-specific
+  runner once one is installed. That also clears a finding you would otherwise
+  hit immediately: knip reads `stryker.conf.json`, sees `testRunner: "command"`,
+  and reports `@stryker-mutator/command-runner` as an unlisted dependency — so
+  the seeded config is knip-dirty out of the box in exactly the
+  knip-plus-stryker combination step 3 recommends.
+
+  **Leave `thresholds.break` unset.** guardrails is the gate: it reads
+  stryker's report and raises one violation per surviving mutant, diff-scoped to
+  what this change touched. `break` asks a different question — a whole-project
+  score — and answers it by failing the process. Setting it does not add a
+  check; it just makes stryker exit non-zero on runs guardrails would already
+  have blocked, and on runs it deliberately would not (survivors in files this
+  change never touched). Set `low`/`high` if you want the score reported;
+  leave `break` alone.
+
 - **A validator library, if a boundary cast needs redirecting** (see the
   `boundary-validation` skill) — zod, valibot, typia, or arktype, whichever
   matches the repo's existing dependency graph and the team's taste.
