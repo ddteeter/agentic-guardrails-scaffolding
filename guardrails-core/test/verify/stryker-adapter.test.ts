@@ -330,6 +330,13 @@ describe('unrunSurvivedMutants', () => {
     expect(unrunSurvivedMutants(json, ['src/a.ts'])).toBe(0);
   });
 
+  // This is the shape a runner WITHOUT per-test data produces, and it is why
+  // the guard keys on `coveredBy` rather than on `testsCompleted` alone.
+  // Measured on the `command` runner -- the one `init` seeds by default -- with
+  // a deliberately vacuous test: 11 genuine survivors, every one of them
+  // `coveredBy: []`. A runner that cannot attribute tests to mutants reports no
+  // covering list at all, so it exits at the `covering === 0` check and its
+  // honest `Survived` verdicts are never reclassified. Zero misfires.
   it('does not count a Survived mutant with no covering tests at all', () => {
     const json = reportOf([
       {
