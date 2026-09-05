@@ -1135,6 +1135,61 @@ describe('verify and audit exit codes', () => {
     expect(errors.join('')).not.toContain('clean (0 violations)');
   });
 
+  it('warns that an enabled analyzer was silently skipped, on the very run that reports clean', async () => {
+    // `adopting-guardrails` names a green `verify` as THE exit criterion of an
+    // adoption. Until now the only place that said "three of your five
+    // analyzers did not run" was `init`, so the command the adopter is told to
+    // trust printed `clean (0 violations)` with nothing behind it. The warning
+    // has to be where the claim is made, not only where the repo was scaffolded.
+    writeFileSync(
+      path.join(root, 'package.json'),
+      JSON.stringify({ name: 'probe', devDependencies: { eslint: '^9' } }),
+    );
+    await runCommand('verify', [], deps());
+    const said = errors.join('');
+    expect(said).toContain('clean (0 violations)');
+    expect(said).toContain('typescript');
+    expect(said).toContain('knip');
+    expect(said).not.toContain('(needs eslint)');
+  });
+
+  it('warns about silently skipped analyzers at the commit gate too', async () => {
+    // The rung that ENFORCES has the same duty as the one that reports: a
+    // passing commit gate on a repo where three analyzers never ran is a pass
+    // the adopter will read as a guarantee.
+    writeFileSync(
+      path.join(root, 'guardrails.config.json'),
+      JSON.stringify({ baseBranch: 'main', enforcement: 'block' }),
+    );
+    writeFileSync(
+      path.join(root, 'package.json'),
+      JSON.stringify({ name: 'probe', devDependencies: { eslint: '^9' } }),
+    );
+    await runCommand('gate', ['--mode=commit'], deps());
+    expect(errors.join('')).toContain('is not in package.json');
+  });
+
+  it('says nothing about skipped analyzers when every enabled one can run', async () => {
+    // Kills the "warn unconditionally" mutant: a warning that fires on a fully
+    // installed repo is noise the reader learns to skip past, which costs the
+    // real warning its only job.
+    writeFileSync(
+      path.join(root, 'package.json'),
+      JSON.stringify({
+        name: 'probe',
+        devDependencies: {
+          eslint: '^9',
+          typescript: '^5',
+          knip: '^6',
+          'dependency-cruiser': '^18',
+          '@stryker-mutator/core': '^9',
+        },
+      }),
+    );
+    await runCommand('verify', [], deps());
+    expect(errors.join('')).not.toContain('is not in package.json');
+  });
+
   it('audits the working diff from cwd and exits per findings', async () => {
     // Kills the audit argv/cwd mutants and `findings.length > 0` -> true/>=0.
     const calls: { args: string[]; cwd: string | undefined }[] = [];

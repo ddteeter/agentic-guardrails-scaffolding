@@ -51,7 +51,7 @@ import {
   sweepStale,
 } from './state-store.js';
 import { hasErrors, type Violation } from './violation.js';
-import { runVerify } from './verify/index.js';
+import { runVerify, silentSkipWarning } from './verify/index.js';
 import { resolveBaseReference } from './verify/git.js';
 
 export interface CliDeps {
@@ -138,7 +138,7 @@ function commandRepoRoot(deps: CliDeps, hookCwd?: string): Promise<string> {
 async function verifyCommand(deps: CliDeps): Promise<number> {
   const repoRoot = await commandRepoRoot(deps);
   const config = loadConfig(repoRoot);
-  const { violations } = await runVerify({
+  const { violations, skippedAnalyzers } = await runVerify({
     repoRoot,
     baseBranch: config.baseBranch,
     exec: deps.exec,
@@ -152,7 +152,32 @@ async function verifyCommand(deps: CliDeps): Promise<number> {
       ? 'guardrails: clean (0 violations).\n'
       : `guardrails: ${violations.length} violation(s).\n`,
   );
+  warnAboutSilentSkips(deps, skippedAnalyzers);
   return hasErrors(violations) ? 1 : 0;
+}
+
+/**
+ * Print `init`'s silent-skip warning at a rung that actually checks something.
+ *
+ * `adopting-guardrails` names a green `verify` as the exit criterion of an
+ * adoption ("not 'files written' — green"), and the branch gates are what
+ * enforce it afterwards. Until now the only command that mentioned an analyzer
+ * being skipped was `init`, so every later run — including the one the adopter
+ * was told to trust — printed `clean (0 violations)` with no hint that most of
+ * the pack had not run. A warning delivered once, at scaffold time, is not
+ * where a reader is standing when they draw the conclusion.
+ *
+ * Written after the count so it reads as a qualification of the result just
+ * stated, and to stderr like every other advisory line, so a `--json` consumer
+ * on stdout is unaffected.
+ */
+function warnAboutSilentSkips(
+  deps: CliDeps,
+  silent: readonly (readonly [string, string])[],
+): void {
+  if (silent.length > 0) {
+    deps.stderr(`guardrails: ${silentSkipWarning(silent)}\n`);
+  }
 }
 
 async function autofixCommand(deps: CliDeps): Promise<number> {
@@ -221,16 +246,20 @@ async function gateCommitCommand(
 ): Promise<number> {
   const repoRoot = await commandRepoRoot(deps);
   const config = loadConfig(repoRoot);
-  const { violations, findings, blocked } = await runCommitGate({
-    repoRoot,
-    baseBranch: config.baseBranch,
-    exec: deps.exec,
-    resolveBin: binResolver(repoRoot),
-    sanctionedSuppressions: config.sanctionedSuppressions,
-    analyzers: config.analyzers,
-    changedScope,
-  });
+  const { violations, findings, blocked, skippedAnalyzers } =
+    await runCommitGate({
+      repoRoot,
+      baseBranch: config.baseBranch,
+      exec: deps.exec,
+      resolveBin: binResolver(repoRoot),
+      sanctionedSuppressions: config.sanctionedSuppressions,
+      analyzers: config.analyzers,
+      changedScope,
+    });
   printGateDetail(deps, violations, findings);
+  // Before the pass/block decision, because it qualifies either one: a gate
+  // that blocked still checked less than the adopter thinks it did.
+  warnAboutSilentSkips(deps, skippedAnalyzers);
   if (!blocked) {
     return 0;
   }
