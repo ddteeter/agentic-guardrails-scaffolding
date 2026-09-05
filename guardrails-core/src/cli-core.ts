@@ -300,7 +300,12 @@ const SHELL_TOOLS = /^(?:bash|shell|powershell)$/i;
 // the pattern backtrack super-linearly. Keeping the two disjoint — newline only
 // in the class, spaces and tabs only in the padding — leaves exactly one way to
 // match and no ambiguity to explore.
-const GIT_WRITE = /(?:^|[\n;&|()`{}]|\$\()[ \t]*git\s+(?:commit|push)\b/;
+//
+// Command substitution needs no alternative of its own: `$(git commit)` is
+// matched by the `(` already in the class. An explicit `\$\(` branch was
+// unreachable — no input distinguished the two patterns — which is the kind of
+// dead alternation a regex mutator does not decompose finely enough to report.
+const GIT_WRITE = /(?:^|[\n;&|()`{}])[ \t]*git\s+(?:commit|push)\b/;
 
 /** `gate --mode=pretooluse`: the Copilot commit/push gate. Self-filters on the
  * shell-tool + git-commit/push command shape rather than relying on hook

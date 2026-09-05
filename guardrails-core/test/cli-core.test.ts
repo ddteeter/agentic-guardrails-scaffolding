@@ -765,6 +765,9 @@ describe('pretooluse gate trigger conditions', () => {
       'npm test || git commit -m x',
       'npm run build\ngit push',
       '(git commit -m x)',
+      // Command substitution is covered by the `(` in the separator class; the
+      // case is listed so that stays true however the pattern is refactored.
+      '$(git commit -m x)',
     ]) {
       out.length = 0;
       expect(
