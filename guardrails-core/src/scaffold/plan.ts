@@ -40,7 +40,7 @@ export interface ScaffoldDecisions {
   readonly analyzers: Readonly<Record<string, 'off' | 'auto' | 'required'>>;
   readonly enforcement: 'warn' | 'block';
   readonly distribution: 'solo' | 'team';
-  readonly force: boolean;
+  readonly shouldForce: boolean;
 }
 
 export interface ScaffoldPlan {
@@ -51,9 +51,13 @@ export interface ScaffoldPlan {
 export interface PlanInput {
   readonly facts: RepoFacts;
   readonly decisions: ScaffoldDecisions;
-  /** Repo-relative path -> the content init would write. */
+  /**
+  Repo-relative path -> the content init would write.
+  */
   readonly desired: Readonly<Record<string, string>>;
-  /** Repo-relative path -> the content on disk, absent when the file is missing. */
+  /**
+  Repo-relative path -> the content on disk, absent when the file is missing.
+  */
   readonly current: Readonly<Record<string, string>>;
 }
 
@@ -92,7 +96,9 @@ export function classifyFile(path: string): FileClass {
 interface FileDecision {
   readonly kind: ActionKind;
   readonly reason: string;
-  /** Set only for `drift`: the warning text a consumer must see. */
+  /**
+  Set only for `drift`: the warning text a consumer must see.
+  */
   readonly warning?: string;
 }
 
@@ -107,7 +113,7 @@ function decideOwned(
   desiredContent: string,
   currentContent: string | undefined,
   manifest: ScaffoldManifest | undefined,
-  force: boolean,
+  shouldForce: boolean,
 ): FileDecision {
   if (currentContent === undefined) {
     return {
@@ -132,7 +138,7 @@ function decideOwned(
       reason: `${path} is unmodified since it was scaffolded; upgrading it`,
     };
   }
-  if (force) {
+  if (shouldForce) {
     return {
       kind: 'update',
       reason: `${path} was edited, but --force overwrites it`,
@@ -205,7 +211,7 @@ function decideFile(
   desiredContent: string,
   currentContent: string | undefined,
   manifest: ScaffoldManifest | undefined,
-  force: boolean,
+  shouldForce: boolean,
 ): FileDecision {
   if (fileClass === 'seed-once') {
     return decideSeedOnce(path, currentContent);
@@ -213,7 +219,13 @@ function decideFile(
   if (fileClass === 'shared') {
     return decideShared(path, currentContent);
   }
-  return decideOwned(path, desiredContent, currentContent, manifest, force);
+  return decideOwned(
+    path,
+    desiredContent,
+    currentContent,
+    manifest,
+    shouldForce,
+  );
 }
 
 export function planScaffold(input: PlanInput): ScaffoldPlan {
@@ -223,7 +235,7 @@ export function planScaffold(input: PlanInput): ScaffoldPlan {
   // unreachable for any input that actually satisfies `PlanInput`, which is
   // exactly the kind of dead defensive branch a mutation test cannot
   // distinguish from `if (true)`.
-  const sortedEntries = Object.entries(input.desired).sort(([a], [b]) =>
+  const sortedEntries = Object.entries(input.desired).toSorted(([a], [b]) =>
     a.localeCompare(b),
   );
 
@@ -239,7 +251,7 @@ export function planScaffold(input: PlanInput): ScaffoldPlan {
       desiredContent,
       currentContent,
       input.facts.manifest,
-      input.decisions.force,
+      input.decisions.shouldForce,
     );
     actions.push({
       path,

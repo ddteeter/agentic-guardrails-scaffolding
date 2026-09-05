@@ -53,7 +53,6 @@ export function extractVersion(parsed: unknown): string {
  * taken down by this one enrichment failing.
  */
 export function packageVersion(): string {
-  return extractVersion(
-    readJsonFile(path.join(packageRoot(), 'package.json')).parsed,
-  );
+  const manifestPath = path.join(packageRoot(), 'package.json');
+  return extractVersion(readJsonFile(manifestPath).parsed);
 }

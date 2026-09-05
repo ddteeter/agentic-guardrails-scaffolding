@@ -29,7 +29,9 @@ const wiring = JSON.parse(
   readFileSync(path.join(pluginDirectory, 'hooks', 'hooks.json'), 'utf8'),
 ) as { hooks: Record<string, HookEntry[]> };
 
-/** Every command string configured for one hook event. */
+/**
+Every command string configured for one hook event.
+*/
 function commandsFor(event: string): string[] {
   return (wiring.hooks[event] ?? []).flatMap((entry) =>
     entry.hooks.map((hook) => hook.command),
@@ -39,7 +41,7 @@ function commandsFor(event: string): string[] {
 describe('guardrails-plugin hook wiring', () => {
   it('wires every session-level event the control loop depends on', () => {
     expect(
-      Object.keys(wiring.hooks).sort((a, b) => a.localeCompare(b)),
+      Object.keys(wiring.hooks).toSorted((a, b) => a.localeCompare(b)),
     ).toEqual([
       'PostToolUse',
       'PreToolUse',
@@ -63,6 +65,7 @@ describe('guardrails-plugin hook wiring', () => {
       const frontmatter =
         readFileSync(path.join(agentsDirectory, file), 'utf8').split(
           '---',
+          2,
         )[1] ?? '';
       expect(frontmatter, file).not.toContain('PreToolUse');
       expect(frontmatter, file).not.toContain('scope-check');

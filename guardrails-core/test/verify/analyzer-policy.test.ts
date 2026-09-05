@@ -59,9 +59,14 @@ describe('declaredProviders', () => {
       optionalDependencies: { 'dependency-cruiser': '^18' },
       peerDependencies: { '@stryker-mutator/core': '^9' },
     });
-    expect([...names].sort((left, right) => left.localeCompare(right))).toEqual(
-      ['@stryker-mutator/core', 'dependency-cruiser', 'eslint', 'knip'],
-    );
+    expect(
+      [...names].toSorted((left, right) => left.localeCompare(right)),
+    ).toEqual([
+      '@stryker-mutator/core',
+      'dependency-cruiser',
+      'eslint',
+      'knip',
+    ]);
   });
 
   it('returns an empty set for a manifest that is not an object', () => {

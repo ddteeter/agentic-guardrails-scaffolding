@@ -53,7 +53,9 @@ export type GateOutcome = 'clean' | 'delegate' | 'escalate' | 'release';
 
 export interface GateDecision {
   outcome: GateOutcome;
-  /** Whether to block the Stop (Claude Code) / deny the commit (Copilot). */
+  /**
+  Whether to block the Stop (Claude Code) / deny the commit (Copilot).
+  */
   block: boolean;
   message: string;
   additionalContext?: string | undefined;
@@ -147,7 +149,7 @@ export function decideGate(input: GateInput): GateDecision {
   // still cannot resolve the violation, release this retry and leave the
   // commit/CI gate as the hard backstop. Without this terminal state, resetting
   // attempts after escalation restarts the fixer ladder forever.
-  if (session.escalated && isRetry) {
+  if (isRetry && session.escalated) {
     return {
       outcome: 'release',
       block: false,
@@ -192,9 +194,9 @@ export function decideGate(input: GateInput): GateDecision {
     );
   }
 
-  const loose = violations.some((violation) => config.isLoose?.(violation));
+  const isLoose = violations.some((violation) => config.isLoose?.(violation));
   const fixerAgent =
-    loose || attempt >= config.maxAttempts
+    isLoose || attempt >= config.maxAttempts
       ? config.thoroughFixer
       : config.fastFixer;
 

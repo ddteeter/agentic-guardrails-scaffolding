@@ -93,6 +93,27 @@ describe('isTestFile', () => {
     expect(isTestFile('src/foo.ts')).toBe(false);
     expect(isTestFile('src/testing.ts')).toBe(false);
   });
+
+  it('counts a helper module living in a test directory', () => {
+    // Found by dogfooding: `test/drift/under-mutation.ts` is a helper imported
+    // by two test files, and the extension rule alone classed it as production
+    // -- so stryker mutated it and reported no-coverage on a module no test
+    // asserts about directly. A file under `test/` is test material whatever
+    // its name.
+    expect(isTestFile('guardrails-core/test/drift/under-mutation.ts')).toBe(
+      true,
+    );
+    expect(isTestFile('test/helpers/build-fixture.ts')).toBe(true);
+    expect(isTestFile('tests/support/harness.ts')).toBe(true);
+    expect(isTestFile('src/__tests__/helper.ts')).toBe(true);
+    // ...but a directory that merely CONTAINS the word is production.
+    expect(isTestFile('src/testing/latest.ts')).toBe(false);
+    expect(isTestFile('src/contest/entry.ts')).toBe(false);
+    // ...and only DIRECTORY segments count, never the file's own name: the
+    // last segment is dropped before the lookup, so a module that happens to
+    // be called `test` is production like any other.
+    expect(isTestFile('src/test')).toBe(false);
+  });
 });
 
 describe('isConfigFile', () => {

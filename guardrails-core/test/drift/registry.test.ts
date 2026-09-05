@@ -8,6 +8,7 @@ import eslintJs from '@eslint/js';
 
 import { checkDrift, type DriftEntry } from '../../src/drift-guard.js';
 import { spawnExec } from '../../src/exec.js';
+import { isUnderMutationRun } from './under-mutation.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const knipFixture = path.join(here, 'knip-fixture');
@@ -65,7 +66,9 @@ async function knipIssueTypes(): Promise<Set<string>> {
   return keys;
 }
 
-/** eslint-family probe: every rule id available from the flat config + core. */
+/**
+eslint-family probe: every rule id available from the flat config + core.
+*/
 async function eslintRuleIds(): Promise<Set<string>> {
   const { default: eslintConfig } = (await import(eslintConfigUrl)) as {
     default: unknown[];
@@ -258,7 +261,7 @@ const entries: DriftEntry[] = [
   },
 ];
 
-describe('drift-guard registry', () => {
+describe.skipIf(isUnderMutationRun(here))('drift-guard registry', () => {
   for (const entry of entries) {
     it(`${entry.tool}: every known id still exists upstream`, async () => {
       const { missing, hint } = await checkDrift(entry);

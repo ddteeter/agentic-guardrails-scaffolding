@@ -30,7 +30,9 @@ const manifest = JSON.parse(
 // `npm install npm`. The assertions below are what keep it from growing
 // silently, wherever it is declared.
 
-/** Providers that must appear in `peerDependencies`. */
+/**
+Providers that must appear in `peerDependencies`.
+*/
 const packageProviders = ANALYZER_PROVIDERS.filter(
   (provider) => !NON_PACKAGE_PROVIDERS.has(provider),
 );
@@ -53,7 +55,8 @@ describe('analyzer peer dependencies', () => {
   it('declares no peer dependency that no analyzer provides', () => {
     // Keeps the declaration honest in the other direction: a tool removed from
     // the table must not leave a phantom requirement on consumers.
-    for (const declared of Object.keys(manifest.peerDependencies ?? {})) {
+    const declaredPeers = Object.keys(manifest.peerDependencies ?? {});
+    for (const declared of declaredPeers) {
       expect(packageProviders, declared).toContain(declared);
     }
   });

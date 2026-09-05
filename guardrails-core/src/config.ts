@@ -12,13 +12,21 @@ import type { GateConfig } from './gate-decision.js';
 import { makeIsLoose } from './loose-rules.js';
 import type { AnalyzerMode } from './verify/analyzer-policy.js';
 
-/** One reviewed diff-auditor exemption: the finding key plus why it is allowed. */
+/**
+One reviewed diff-auditor exemption: the finding key plus why it is allowed.
+*/
 export interface SanctionedSuppression {
-  /** Exact `file|kind|text` finding key this exempts. */
+  /**
+  Exact `file|kind|text` finding key this exempts.
+  */
   key: string;
-  /** Human-readable justification; blank or missing drops the entry. */
+  /**
+  Human-readable justification; blank or missing drops the entry.
+  */
   reason: string;
-  /** How many occurrences of this exact finding the grant covers. Defaults to 1. */
+  /**
+  How many occurrences of this exact finding the grant covers. Defaults to 1.
+  */
   count?: number;
 }
 
@@ -166,7 +174,8 @@ export function parseSanctionsJson(text: string): SanctionParseResult {
  */
 function isMalformedCount(value: unknown): boolean {
   return (
-    value !== undefined && (!Number.isInteger(value) || (value as number) <= 0)
+    value !== undefined &&
+    (!Number.isSafeInteger(value) || (value as number) <= 0)
   );
 }
 
@@ -242,8 +251,16 @@ function pickString<T extends string>(
   return value as T;
 }
 
+/** The three modes, as a list rather than three comparisons -- the type is the
+ *  authority, this is the runtime witness of it. */
+const ANALYZER_MODES: ReadonlySet<AnalyzerMode> = new Set([
+  'off',
+  'auto',
+  'required',
+]);
+
 function isAnalyzerMode(value: unknown): value is AnalyzerMode {
-  return value === 'off' || value === 'auto' || value === 'required';
+  return ANALYZER_MODES.has(value as AnalyzerMode);
 }
 
 /**
@@ -350,12 +367,12 @@ export function loadConfig(repoRoot: string): RepoConfig {
       'team',
     ]),
     enforcement: pickEnforcement(raw.enforcement, defaults.enforcement),
-    ...(typeof raw.copilotFastModel === 'string'
-      ? { copilotFastModel: raw.copilotFastModel }
-      : {}),
-    ...(typeof raw.copilotThoroughModel === 'string'
-      ? { copilotThoroughModel: raw.copilotThoroughModel }
-      : {}),
+    ...(typeof raw.copilotFastModel === 'string' && {
+      copilotFastModel: raw.copilotFastModel,
+    }),
+    ...(typeof raw.copilotThoroughModel === 'string' && {
+      copilotThoroughModel: raw.copilotThoroughModel,
+    }),
   };
 }
 

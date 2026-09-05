@@ -11,7 +11,7 @@ import path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { type CliDeps, runCommand } from '../src/cli-core.js';
+import { type CliDependencies, runCommand } from '../src/cli-core.js';
 import type { Exec, ExecResult } from '../src/exec.js';
 import {
   loadSession,
@@ -38,7 +38,7 @@ afterEach(() => {
 
 const ok = (stdout: string): ExecResult => ({ stdout, stderr: '', code: 0 });
 
-function deps(over: Partial<CliDeps> = {}): CliDeps {
+function dependencies(over: Partial<CliDependencies> = {}): CliDependencies {
   return {
     cwd: root,
     exec: () => Promise.resolve(ok('')),
@@ -50,8 +50,12 @@ function deps(over: Partial<CliDeps> = {}): CliDeps {
       'dist',
       'cli.mjs',
     ),
-    stdout: (text) => out.push(text),
-    stderr: (text) => errors.push(text),
+    stdout: (text) => {
+      out.push(text);
+    },
+    stderr: (text) => {
+      errors.push(text);
+    },
     ...over,
   };
 }
@@ -78,7 +82,9 @@ function writeActiveViolations(
 
 /** A repo whose commit gate blocks: one eslint error on a changed TS file.
  *  `enforcement` is written into the config the command will load. */
-function blockingCommitDeps(enforcement: 'warn' | 'block'): CliDeps {
+function blockingCommitDependencies(
+  enforcement: 'warn' | 'block',
+): CliDependencies {
   writeFileSync(
     path.join(root, 'guardrails.config.json'),
     JSON.stringify({ baseBranch: 'main', enforcement }),
@@ -104,12 +110,12 @@ function blockingCommitDeps(enforcement: 'warn' | 'block'): CliDeps {
     // diff, which is empty — the block comes from the violation, not a finding.
     return Promise.resolve(ok(''));
   };
-  return deps({ exec });
+  return dependencies({ exec });
 }
 
 describe('runCommand — verify', () => {
   it('returns 0 when no TypeScript files changed', async () => {
-    expect(await runCommand('verify', [], deps())).toBe(0);
+    expect(await runCommand('verify', [], dependencies())).toBe(0);
   });
 
   it('returns 1 and reports violations when verify fails', async () => {
@@ -128,7 +134,7 @@ describe('runCommand — verify', () => {
       if (line.includes('eslint')) return Promise.resolve(ok(eslint));
       return Promise.resolve(ok(''));
     };
-    expect(await runCommand('verify', [], deps({ exec }))).toBe(1);
+    expect(await runCommand('verify', [], dependencies({ exec }))).toBe(1);
     expect(errors.join('')).toContain('no-console');
   });
 });
@@ -141,14 +147,14 @@ describe('runCommand — audit', () => {
       '+  // eslint-disable-next-line',
     ].join('\n');
     const exec = () => Promise.resolve(ok(diff));
-    expect(await runCommand('audit', [], deps({ exec }))).toBe(1);
+    expect(await runCommand('audit', [], dependencies({ exec }))).toBe(1);
     expect(errors.join('')).toContain('eslint-disable');
   });
 });
 
 describe('runCommand — state', () => {
   it('prints the current session and recurrence as JSON', async () => {
-    expect(await runCommand('state', [], deps())).toBe(0);
+    expect(await runCommand('state', [], dependencies())).toBe(0);
     const printed: unknown = JSON.parse(out.join(''));
     expect(printed).toMatchObject({
       session: { attempts: 0, ruleCounts: {}, corrected: [] },
@@ -169,7 +175,7 @@ describe('runCommand — scope-check', () => {
     await runCommand(
       'scope-check',
       [],
-      deps({ readStdin: () => Promise.resolve(stdin) }),
+      dependencies({ readStdin: () => Promise.resolve(stdin) }),
     );
     expect(out.join('')).toContain('deny');
   });
@@ -183,7 +189,7 @@ describe('runCommand — scope-check', () => {
     await runCommand(
       'scope-check',
       [],
-      deps({ readStdin: () => Promise.resolve(stdin) }),
+      dependencies({ readStdin: () => Promise.resolve(stdin) }),
     );
     expect(out.join('')).toBe('');
   });
@@ -203,7 +209,7 @@ describe('runCommand — scope-check', () => {
     await runCommand(
       'scope-check',
       [],
-      deps({ readStdin: () => Promise.resolve(stdin) }),
+      dependencies({ readStdin: () => Promise.resolve(stdin) }),
     );
     expect(out.join('')).toContain('deny');
   });
@@ -219,7 +225,7 @@ describe('runCommand — scope-check', () => {
     await runCommand(
       'scope-check',
       [],
-      deps({ readStdin: () => Promise.resolve(stdin) }),
+      dependencies({ readStdin: () => Promise.resolve(stdin) }),
     );
     expect(out.join('')).toBe('');
   });
@@ -237,7 +243,7 @@ describe('runCommand — scope-check', () => {
     await runCommand(
       'scope-check',
       [],
-      deps({ readStdin: () => Promise.resolve(stdin) }),
+      dependencies({ readStdin: () => Promise.resolve(stdin) }),
     );
     expect(out.join('')).toBe('');
   });
@@ -315,7 +321,7 @@ describe('runCommand — scope-check', () => {
     await runCommand(
       'scope-check',
       ['--dialect=copilot'],
-      deps({ readStdin: () => Promise.resolve(stdin) }),
+      dependencies({ readStdin: () => Promise.resolve(stdin) }),
     );
     expect(out.join('')).toContain('deny');
     expect(out.join('')).toContain('outside the repository');
@@ -344,7 +350,7 @@ describe('runCommand — gate stop', () => {
     await runCommand(
       'gate',
       ['--mode=stop'],
-      deps({ exec, readStdin: () => Promise.resolve(stdin) }),
+      dependencies({ exec, readStdin: () => Promise.resolve(stdin) }),
     );
     const printed: unknown = JSON.parse(out.join(''));
     expect(printed).toMatchObject({ decision: 'block' });
@@ -390,7 +396,7 @@ describe('runCommand — gate pretooluse (copilot commit/push gate)', () => {
     const code = await runCommand(
       'gate',
       ['--mode=pretooluse', '--dialect=copilot'],
-      deps({ exec, readStdin: () => Promise.resolve(stdin) }),
+      dependencies({ exec, readStdin: () => Promise.resolve(stdin) }),
     );
     expect(code).toBe(0);
     const printed: unknown = JSON.parse(out.join(''));
@@ -405,7 +411,7 @@ describe('runCommand — gate pretooluse (copilot commit/push gate)', () => {
     const code = await runCommand(
       'gate',
       ['--mode=pretooluse', '--dialect=copilot'],
-      deps({ readStdin: () => Promise.resolve(stdin) }),
+      dependencies({ readStdin: () => Promise.resolve(stdin) }),
     );
     expect(code).toBe(0);
     expect(out.join('')).toBe('');
@@ -424,7 +430,7 @@ describe('runCommand — gate pretooluse (copilot commit/push gate)', () => {
     const code = await runCommand(
       'gate',
       ['--mode=pretooluse', '--dialect=copilot'],
-      deps({ exec, readStdin: () => Promise.resolve(stdin) }),
+      dependencies({ exec, readStdin: () => Promise.resolve(stdin) }),
     );
     expect(code).toBe(0);
     expect(out.join('')).toBe('');
@@ -438,7 +444,7 @@ describe('runCommand — gate pretooluse (copilot commit/push gate)', () => {
 
 describe('runCommand — session lifecycle', () => {
   it('session-start sweeps and returns 0', async () => {
-    expect(await runCommand('session-start', [], deps())).toBe(0);
+    expect(await runCommand('session-start', [], dependencies())).toBe(0);
   });
 
   it('session-end returns 0', async () => {
@@ -447,7 +453,7 @@ describe('runCommand — session lifecycle', () => {
       await runCommand(
         'session-end',
         [],
-        deps({ readStdin: () => Promise.resolve(stdin) }),
+        dependencies({ readStdin: () => Promise.resolve(stdin) }),
       ),
     ).toBe(0);
   });
@@ -492,7 +498,7 @@ describe('runCommand — anchors on the git root, not the invocation directory',
       await runCommand(
         'session-end',
         [],
-        deps({ cwd: nested, readStdin: () => Promise.resolve(stdin) }),
+        dependencies({ cwd: nested, readStdin: () => Promise.resolve(stdin) }),
       ),
     ).toBe(0);
 
@@ -519,7 +525,7 @@ describe('runCommand — anchors on the git root, not the invocation directory',
     await runCommand(
       'scope-check',
       [],
-      deps({ cwd: nested, readStdin: () => Promise.resolve(stdin) }),
+      dependencies({ cwd: nested, readStdin: () => Promise.resolve(stdin) }),
     );
 
     expect(out.join('')).toContain('deny');
@@ -538,7 +544,7 @@ describe('runCommand — anchors on the git root, not the invocation directory',
       await runCommand(
         'session-end',
         [],
-        deps({ readStdin: () => Promise.resolve(stdin) }),
+        dependencies({ readStdin: () => Promise.resolve(stdin) }),
       ),
     ).toBe(0);
     expect(existsSync(sessionFile(stateDirectory(root), 'sid'))).toBe(false);
@@ -553,7 +559,7 @@ describe('runCommand — unknown', () => {
   // work. `--mode=push` and `--mode=ci`, and `init`'s three decision flags,
   // shipped without ever reaching it.
   it('names the real bin, not the pre-rename one', async () => {
-    await runCommand('bogus', [], deps());
+    await runCommand('bogus', [], dependencies());
     expect(errors.join('')).toContain('usage: guardrails-core');
   });
 
@@ -563,12 +569,12 @@ describe('runCommand — unknown', () => {
     '--analyzers=',
     '--distribution=solo|team',
   ])('names %s', async (flag) => {
-    await runCommand('bogus', [], deps());
+    await runCommand('bogus', [], dependencies());
     expect(errors.join('')).toContain(flag);
   });
 
   it('prints usage and returns 1', async () => {
-    expect(await runCommand('bogus', [], deps())).toBe(1);
+    expect(await runCommand('bogus', [], dependencies())).toBe(1);
     expect(errors.join('')).toContain('usage:');
   });
 });
@@ -620,7 +626,11 @@ describe('runCommand — install-hooks', () => {
     mkdirSync(subdirectory, { recursive: true });
     const { exec, calls } = installHooksExec(ok(''));
     expect(
-      await runCommand('install-hooks', [], deps({ exec, cwd: subdirectory })),
+      await runCommand(
+        'install-hooks',
+        [],
+        dependencies({ exec, cwd: subdirectory }),
+      ),
     ).toBe(0);
     expect(calls[0]).toEqual({
       args: ['rev-parse', '--show-toplevel'],
@@ -634,7 +644,9 @@ describe('runCommand — install-hooks', () => {
   // re-breaks them forever, immediately after `husky` restores them.
   it('leaves an existing foreign core.hooksPath alone and warns instead', async () => {
     const { exec, calls } = installHooksExec(ok(''), '.husky/_\n');
-    expect(await runCommand('install-hooks', [], deps({ exec }))).toBe(0);
+    expect(await runCommand('install-hooks', [], dependencies({ exec }))).toBe(
+      0,
+    );
     expect(calls.map((call) => call.args)).not.toContainEqual(HOOKS_WRITE);
     const warned = errors.join('');
     expect(warned).toContain('.husky/_');
@@ -643,7 +655,9 @@ describe('runCommand — install-hooks', () => {
 
   it('still repoints when core.hooksPath already points at .githooks', async () => {
     const { exec, calls } = installHooksExec(ok(''), '.githooks\n');
-    expect(await runCommand('install-hooks', [], deps({ exec }))).toBe(0);
+    expect(await runCommand('install-hooks', [], dependencies({ exec }))).toBe(
+      0,
+    );
     expect(calls.map((call) => call.args)).toContainEqual(HOOKS_WRITE);
     expect(errors.join('')).toBe('');
   });
@@ -654,13 +668,17 @@ describe('runCommand — install-hooks', () => {
       stderr: 'error: could not lock config file\n',
       code: 1,
     });
-    expect(await runCommand('install-hooks', [], deps({ exec }))).toBe(1);
+    expect(await runCommand('install-hooks', [], dependencies({ exec }))).toBe(
+      1,
+    );
     expect(errors.join('')).toContain('core.hooksPath');
     expect(errors.join('')).toContain('could not lock config file');
   });
 });
 
-/** stdin payload for the pretooluse gate. */
+/**
+stdin payload for the pretooluse gate.
+*/
 function preToolUseStdin(toolName: unknown, command: unknown): string {
   return JSON.stringify({ toolName, toolArgs: { command }, cwd: root });
 }
@@ -689,7 +707,10 @@ async function runPreToolUse(stdin: string): Promise<string> {
   await runCommand(
     'gate',
     ['--mode=pretooluse', '--dialect=copilot'],
-    deps({ exec: dirtyExec(), readStdin: () => Promise.resolve(stdin) }),
+    dependencies({
+      exec: dirtyExec(),
+      readStdin: () => Promise.resolve(stdin),
+    }),
   );
   return out.join('');
 }
@@ -751,6 +772,39 @@ describe('pretooluse gate trigger conditions', () => {
         preToolUseStdin('bash', 'git log --grep "git commit"'),
       ),
     ).toBe('');
+    out.length = 0;
+    // Reading commands stay cheap even once global options are allowed between
+    // `git` and the subcommand: the option run must not swallow the subcommand.
+    expect(
+      await runPreToolUse(preToolUseStdin('bash', 'git -c color.ui=false log')),
+    ).toBe('');
+    out.length = 0;
+    expect(
+      await runPreToolUse(preToolUseStdin('bash', 'git status --porcelain')),
+    ).toBe('');
+  });
+
+  it('cannot be made to backtrack catastrophically by a run of flags', async () => {
+    // ReDoS regression. The first version of the global-option run was
+    // `(?:-[cC][ \t]+[^ \t]+|-[^ \t]+)*`, whose two alternatives could tile the
+    // SAME token sequence two ways -- `-c -c` as one flag-plus-value, or as two
+    // flags -- giving Fibonacci(k) equivalent partitions that a failing match
+    // has to exhaust. Measured before the fix: 0.5ms at 20 tokens, 2.9ms at 24,
+    // 5.69s at 40, quadrupling every four. This runs on `input.command` from
+    // the Bash PreToolUse hook, the agent's highest-frequency tool, so a long
+    // enough command would have hung the session.
+    //
+    // The fix is to make a `-c` VALUE unable to start with `-`, which leaves
+    // exactly one way to read any sequence. Asserted by time, because the
+    // property is "no exponential path exists" and no example input can state
+    // that on its own -- and because the pattern is assembled from String.raw
+    // fragments, which is what put it out of `sonarjs`'s reach in the first
+    // place.
+    const adversarial = `git ${'-c '.repeat(64)}status`;
+    const started = process.hrtime.bigint();
+    await runPreToolUse(preToolUseStdin('bash', adversarial));
+    const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
+    expect(elapsedMs).toBeLessThan(1000);
   });
 
   it('still fires wherever a git write is actually a command', async () => {
@@ -768,6 +822,25 @@ describe('pretooluse gate trigger conditions', () => {
       // Command substitution is covered by the `(` in the separator class; the
       // case is listed so that stays true however the pattern is refactored.
       '$(git commit -m x)',
+      // git's GLOBAL options sit between `git` and the subcommand. The one
+      // that matters is `-c core.hooksPath=...`: unlike `git -C <path> commit`
+      // (a long-accepted miss, because the repo's hooks still run), this one
+      // DEFEATS the git-hook floor, and it is the exact bypass the scaffolded
+      // AGENTS.md forbids by name. An instruction that names a bypass the hook
+      // cannot see is worse than no instruction.
+      'git -c core.hooksPath=/dev/null commit -m x',
+      'git -c core.hooksPath=/dev/null push',
+      'git -c a=b -c c=d commit -m x',
+      'git --no-pager commit -m x',
+      'git -C packages/web commit -m x',
+      'cd /tmp && git -c core.hooksPath=/dev/null commit -m x',
+      // A config VALUE that itself starts with `-`. The linearity fix stops the
+      // value slot accepting a `-`-leading token, so this one is read as two
+      // flags instead of flag-plus-value -- a different internal parse, same
+      // verdict. Raised in review as the one place the fix could have traded
+      // linear time for a false negative; it does not.
+      'git -c http.extraHeader=-x commit -m y',
+      'git -c a=-1 -c b=-2 push',
     ]) {
       out.length = 0;
       expect(
@@ -807,7 +880,7 @@ describe('cli-core wiring', () => {
     ]);
     const exec: Exec = (command, args) =>
       Promise.resolve(ok(args.includes('--name-only') ? 'src/a.ts' : lineless));
-    await runCommand('verify', [], deps({ exec }));
+    await runCommand('verify', [], dependencies({ exec }));
     expect(errors.join('')).toContain('src/a.ts:?');
   });
 
@@ -824,7 +897,7 @@ describe('cli-core wiring', () => {
         ok(args.includes('--name-only') ? 'src/a.ts' : ''),
       );
     };
-    await runCommand('verify', [], deps({ exec }));
+    await runCommand('verify', [], dependencies({ exec }));
     expect(seen.some((command) => command.includes('node_modules'))).toBe(true);
   });
 });
@@ -856,12 +929,14 @@ async function runScopeCheck(stdin: string): Promise<string> {
   await runCommand(
     'scope-check',
     [],
-    deps({ readStdin: () => Promise.resolve(stdin) }),
+    dependencies({ readStdin: () => Promise.resolve(stdin) }),
   );
   return out.join('');
 }
 
-/** An exec that fails verify, so the stop gate produces a blocking decision. */
+/**
+An exec that fails verify, so the stop gate produces a blocking decision.
+*/
 function failingVerifyExec(): Exec {
   const eslintJson = JSON.stringify([
     {
@@ -882,7 +957,7 @@ function failingVerifyExec(): Exec {
     if (line.includes('eslint')) return Promise.resolve(ok(eslintJson));
     if (command === 'stryker') {
       // The `verify` CLI command runs at the 'ci' profile, so stryker runs too
-      // and reads its report from the REAL filesystem (CliDeps has no readFile
+      // and reads its report from the REAL filesystem (CliDependencies has no readFile
       // seam). Write an empty-but-valid report at stryker's DEFAULT path — the
       // only path it can use, since the report location is not relocatable per
       // run — so this fixture stays about eslint's finding rather than a
@@ -915,7 +990,7 @@ describe('scope-check trigger conditions', () => {
     await runCommand(
       'scope-check',
       ['--dialect=codex'],
-      deps({ readStdin: () => Promise.resolve(stdin) }),
+      dependencies({ readStdin: () => Promise.resolve(stdin) }),
     );
     expect(out.join('')).toContain('src/forbidden.ts');
   });
@@ -1071,7 +1146,7 @@ describe('scope-check trigger conditions', () => {
       await runCommand(
         'scope-check',
         ['--dialect=codex'],
-        deps({ readStdin: () => Promise.resolve(stdin) }),
+        dependencies({ readStdin: () => Promise.resolve(stdin) }),
       ),
     ).toBe(0);
     expect(out.join('')).toContain('scope-lock');
@@ -1121,14 +1196,14 @@ describe('cli-core defaults and dialects', () => {
       await runCommand(
         'gate',
         ['--mode=stop'],
-        deps({ readStdin: () => Promise.resolve('{}') }),
+        dependencies({ readStdin: () => Promise.resolve('{}') }),
       ),
     ).toBe(0);
     expect(
       await runCommand(
         'gate',
         ['--mode=pretooluse'],
-        deps({
+        dependencies({
           readStdin: () =>
             Promise.resolve(
               JSON.stringify({
@@ -1142,7 +1217,7 @@ describe('cli-core defaults and dialects', () => {
     await runCommand(
       'scope-check',
       [],
-      deps({
+      dependencies({
         readStdin: () =>
           Promise.resolve(
             JSON.stringify({ toolName: 'edit', filePath: 'a.ts' }),
@@ -1153,10 +1228,10 @@ describe('cli-core defaults and dialects', () => {
       await runCommand(
         'session-end',
         [],
-        deps({ readStdin: () => Promise.resolve('{}') }),
+        dependencies({ readStdin: () => Promise.resolve('{}') }),
       ),
     ).toBe(0);
-    expect(await runCommand('state', [], deps())).toBe(0);
+    expect(await runCommand('state', [], dependencies())).toBe(0);
   });
 
   it('prints nothing when the stop gate produces no hook output', async () => {
@@ -1164,7 +1239,9 @@ describe('cli-core defaults and dialects', () => {
     const code = await runCommand(
       'gate',
       ['--mode=stop'],
-      deps({ readStdin: () => Promise.resolve(JSON.stringify({ cwd: root })) }),
+      dependencies({
+        readStdin: () => Promise.resolve(JSON.stringify({ cwd: root })),
+      }),
     );
     expect(code).toBe(0);
     expect(out.join('')).toBe('');
@@ -1174,10 +1251,10 @@ describe('cli-core defaults and dialects', () => {
 describe('verify and audit exit codes', () => {
   it('reports the clean message only when there are no violations', async () => {
     // Kills the `violations.length === 0` conditional/equality mutants.
-    await runCommand('verify', [], deps());
+    await runCommand('verify', [], dependencies());
     expect(errors.join('')).toContain('clean (0 violations)');
     errors.length = 0;
-    await runCommand('verify', [], deps({ exec: failingVerifyExec() }));
+    await runCommand('verify', [], dependencies({ exec: failingVerifyExec() }));
     // A count, not a specific number: the fixture supplies no stryker report,
     // so the fail-closed check correctly adds an analyzer-failed violation too.
     expect(errors.join('')).toContain(' violation(s).');
@@ -1195,12 +1272,19 @@ describe('verify and audit exit codes', () => {
       path.join(root, 'package.json'),
       JSON.stringify({ name: 'probe', devDependencies: { eslint: '^9' } }),
     );
-    await runCommand('verify', [], deps());
+    await runCommand('verify', [], dependencies());
     const said = errors.join('');
     expect(said).toContain('clean (0 violations)');
     expect(said).toContain('typescript');
     expect(said).toContain('knip');
     expect(said).not.toContain('(needs eslint)');
+    // ...and names the command that seeds the config the analyzer needs. `init`
+    // only seeds a starter config for an analyzer the repo ALREADY declares, so
+    // a bare greenfield `init --apply` writes none of them; installing the
+    // analyzers afterwards leaves the adopter with `analyzer-failed` from
+    // dependency-cruiser and upstream's own `--init` advice, which writes a
+    // different config than the seed. Measured on a real adoption.
+    expect(said).toContain('guardrails init --apply');
   });
 
   it('warns about silently skipped analyzers at the commit gate too', async () => {
@@ -1215,7 +1299,7 @@ describe('verify and audit exit codes', () => {
       path.join(root, 'package.json'),
       JSON.stringify({ name: 'probe', devDependencies: { eslint: '^9' } }),
     );
-    await runCommand('gate', ['--mode=commit'], deps());
+    await runCommand('gate', ['--mode=commit'], dependencies());
     expect(errors.join('')).toContain('is not in package.json');
   });
 
@@ -1236,7 +1320,7 @@ describe('verify and audit exit codes', () => {
         },
       }),
     );
-    await runCommand('verify', [], deps());
+    await runCommand('verify', [], dependencies());
     expect(errors.join('')).not.toContain('is not in package.json');
   });
 
@@ -1249,9 +1333,9 @@ describe('verify and audit exit codes', () => {
         calls.push({ args, cwd: execOptions?.cwd });
         return Promise.resolve(ok(diff));
       };
-    expect(await runCommand('audit', [], deps({ exec: auditExec('') }))).toBe(
-      0,
-    );
+    expect(
+      await runCommand('audit', [], dependencies({ exec: auditExec('') })),
+    ).toBe(0);
     expect(calls[0]?.args).toEqual(['diff', 'HEAD']);
     expect(calls[0]?.cwd).toBe(root);
 
@@ -1261,7 +1345,7 @@ describe('verify and audit exit codes', () => {
       '+// eslint-disable-next-line',
     ].join('\n');
     expect(
-      await runCommand('audit', [], deps({ exec: auditExec(dirty) })),
+      await runCommand('audit', [], dependencies({ exec: auditExec(dirty) })),
     ).toBe(1);
   });
 });
@@ -1288,7 +1372,7 @@ describe('cli-core residual hardening', () => {
     await runCommand(
       'scope-check',
       [],
-      deps({
+      dependencies({
         readStdin: () =>
           Promise.resolve(
             JSON.stringify({
@@ -1303,25 +1387,44 @@ describe('cli-core residual hardening', () => {
     expect(out.join('')).toContain('deny');
   });
 
-  it('routes --mode=commit to the commit gate', async () => {
-    // Kills `mode === 'commit'` -> false, which would fall through to the stop
-    // gate and never block a dirty commit. `enforcement: 'block'` because the
-    // default is 'warn' (see "gate --mode=commit enforcement" below) and this
-    // test is about routing, not the enforcement policy.
-    writeFileSync(
-      path.join(root, 'guardrails.config.json'),
-      JSON.stringify({ enforcement: 'block' }),
-    );
-    const exec = gitExec({
-      'merge-base': 'BASESHA\n',
-      'diff BASESHA': [
-        '+++ b/src/a.ts',
-        '@@ -1,0 +1,1 @@',
-        '+// eslint-disable-next-line',
-      ].join('\n'),
-    });
-    expect(await runCommand('gate', ['--mode=commit'], deps({ exec }))).toBe(1);
-  });
+  /**
+   * Every blocking mode routes to the commit gate, and each kills a distinct
+   * mutant on the routing chain:
+   *
+   * - `commit` -- `mode === 'commit'` -> false would fall through to the stop
+   *   gate and never block a dirty commit.
+   * - `push` -- the rung that catches what staged scope cannot: a commit
+   *   removing the test that killed a mutant in a file it does not touch.
+   * - `ci` -- CI must ask for the branch explicitly now that `commit` means
+   *   "staged", because nothing is staged in a CI checkout.
+   *
+   * Asserting the EXIT CODE, not the git argv: the stop gate also asks for a
+   * branch diff, so an argv assertion cannot tell "routed to the commit gate"
+   * from "fell through to the stop gate". Only the commit gate exits non-zero
+   * on a blocking finding. `enforcement: 'block'` because the default is
+   * 'warn' (see "gate --mode=commit enforcement" below) and these are about
+   * routing, not the enforcement policy.
+   */
+  it.each(['commit', 'push', 'ci'])(
+    'routes --mode=%s to the commit gate',
+    async (mode) => {
+      writeFileSync(
+        path.join(root, 'guardrails.config.json'),
+        JSON.stringify({ enforcement: 'block' }),
+      );
+      const exec = gitExec({
+        'merge-base': 'BASESHA\n',
+        'diff BASESHA': [
+          '+++ b/src/a.ts',
+          '@@ -1,0 +1,1 @@',
+          '+// eslint-disable-next-line',
+        ].join('\n'),
+      });
+      expect(
+        await runCommand('gate', [`--mode=${mode}`], dependencies({ exec })),
+      ).toBe(1);
+    },
+  );
 
   it('scopes --mode=commit to the staged files', async () => {
     // The mutation tax: under branch scope the analyzers re-check everything
@@ -1332,63 +1435,21 @@ describe('cli-core residual hardening', () => {
       calls.push([command, ...args].join(' '));
       return Promise.resolve(ok(''));
     };
-    await runCommand('gate', ['--mode=commit'], deps({ exec }));
+    await runCommand('gate', ['--mode=commit'], dependencies({ exec }));
     expect(calls).toContain('git diff --cached --name-only --diff-filter=ACM');
-  });
-
-  it('routes --mode=push to the branch-scoped commit gate', async () => {
-    // The rung that catches what staged scope cannot: a commit removing the
-    // test that killed a mutant in a file it does not itself touch.
-    //
-    // Asserting the EXIT CODE, not the git argv: the stop gate also asks for a
-    // branch diff, so an argv assertion cannot tell "routed to the commit
-    // gate" from "fell through to the stop gate". Only the commit gate exits
-    // non-zero on a blocking finding.
-    writeFileSync(
-      path.join(root, 'guardrails.config.json'),
-      JSON.stringify({ enforcement: 'block' }),
-    );
-    const exec = gitExec({
-      'merge-base': 'BASESHA\n',
-      'diff BASESHA': [
-        '+++ b/src/a.ts',
-        '@@ -1,0 +1,1 @@',
-        '+// eslint-disable-next-line',
-      ].join('\n'),
-    });
-    expect(await runCommand('gate', ['--mode=push'], deps({ exec }))).toBe(1);
-  });
-
-  it('routes --mode=ci to the branch-scoped commit gate', async () => {
-    // CI must ask for the branch explicitly now that --mode=commit means
-    // "staged": nothing is staged in a CI checkout, so the old spelling would
-    // check nothing at all.
-    writeFileSync(
-      path.join(root, 'guardrails.config.json'),
-      JSON.stringify({ enforcement: 'block' }),
-    );
-    const exec = gitExec({
-      'merge-base': 'BASESHA\n',
-      'diff BASESHA': [
-        '+++ b/src/a.ts',
-        '@@ -1,0 +1,1 @@',
-        '+// eslint-disable-next-line',
-      ].join('\n'),
-    });
-    expect(await runCommand('gate', ['--mode=ci'], deps({ exec }))).toBe(1);
   });
 
   it('defaults the session id for state and session-end', async () => {
     // Kills the `flag(rest,'session') ?? 'default'` and
     // `input.sessionId ?? 'default'` -> `&&` mutants.
     writeViolations(stateDirectory(root), 'default', [violation('src/a.ts')]);
-    expect(await runCommand('state', [], deps())).toBe(0);
+    expect(await runCommand('state', [], dependencies())).toBe(0);
     expect(out.join('')).toContain('session');
     expect(
       await runCommand(
         'session-end',
         [],
-        deps({ readStdin: () => Promise.resolve('{}') }),
+        dependencies({ readStdin: () => Promise.resolve('{}') }),
       ),
     ).toBe(0);
   });
@@ -1408,7 +1469,7 @@ async function primeStopGate(
     await runCommand(
       'gate',
       ['--mode=stop', ...dialectArguments],
-      deps({
+      dependencies({
         exec: failingVerifyExec(),
         readStdin: () => Promise.resolve(stdin),
       }),
@@ -1437,7 +1498,7 @@ describe('cli-core final hardening', () => {
     const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
     utimesSync(fresh, oneDayAgo, oneDayAgo);
 
-    expect(await runCommand('session-start', [], deps())).toBe(0);
+    expect(await runCommand('session-start', [], dependencies())).toBe(0);
     expect(existsSync(stale)).toBe(false);
     expect(existsSync(fresh)).toBe(true);
   });
@@ -1469,7 +1530,7 @@ describe('cli-core final hardening', () => {
     await runCommand(
       'gate',
       ['--mode=stop'],
-      deps({
+      dependencies({
         exec: failingVerifyExec(),
         readStdin: () => Promise.resolve(JSON.stringify({ cwd: root })),
       }),
@@ -1477,30 +1538,30 @@ describe('cli-core final hardening', () => {
     expect(loadSession(directory, 'default').attempts).toBe(1);
 
     out.length = 0;
-    await runCommand('state', [], deps());
+    await runCommand('state', [], dependencies());
     expect(out.join('')).toContain('"attempts": 1');
 
     await runCommand(
       'session-end',
       [],
-      deps({ readStdin: () => Promise.resolve('{}') }),
+      dependencies({ readStdin: () => Promise.resolve('{}') }),
     );
     expect(existsSync(sessionFile(directory, 'default'))).toBe(false);
   });
 
   it('forwards the host retry marker into the stop decision', async () => {
-    const run = (stopHookActive: boolean) =>
+    const run = (isStopHookActive: boolean) =>
       runCommand(
         'gate',
         ['--mode=stop'],
-        deps({
+        dependencies({
           exec: failingVerifyExec(),
           readStdin: () =>
             Promise.resolve(
               JSON.stringify({
                 cwd: root,
                 session_id: 'retry-session',
-                stop_hook_active: stopHookActive,
+                stop_hook_active: isStopHookActive,
               }),
             ),
         }),
@@ -1525,7 +1586,7 @@ describe('cli-core final hardening', () => {
     await runCommand(
       'gate',
       ['--mode=stop'],
-      deps({
+      dependencies({
         exec: failingVerifyExec(),
         readStdin: () =>
           Promise.resolve(
@@ -1548,7 +1609,7 @@ describe('cli-core final hardening', () => {
     await runCommand(
       'gate',
       ['--mode=stop'],
-      deps({
+      dependencies({
         exec: failingVerifyExec(),
         readStdin: () =>
           Promise.resolve(
@@ -1577,7 +1638,9 @@ describe('cli-core final hardening', () => {
         '+// eslint-disable-next-line',
       ].join('\n'),
     });
-    expect(await runCommand('gate', ['--mode=commit'], deps({ exec }))).toBe(1);
+    expect(
+      await runCommand('gate', ['--mode=commit'], dependencies({ exec })),
+    ).toBe(1);
     expect(errors.join('')).toContain('added eslint-disable');
   });
 });
@@ -1610,7 +1673,9 @@ describe('sanctioned suppressions reach the commit gate', () => {
         '+// eslint-disable-next-line',
       ].join('\n'),
     });
-    expect(await runCommand('gate', ['--mode=commit'], deps({ exec }))).toBe(0);
+    expect(
+      await runCommand('gate', ['--mode=commit'], dependencies({ exec })),
+    ).toBe(0);
   });
 
   it('also forwards sanctions from the pretooluse gate', async () => {
@@ -1638,7 +1703,7 @@ describe('sanctioned suppressions reach the commit gate', () => {
     await runCommand(
       'gate',
       ['--mode=pretooluse', '--dialect=copilot'],
-      deps({
+      dependencies({
         exec,
         readStdin: () =>
           Promise.resolve(preToolUseStdin('bash', 'git commit -m x')),
@@ -1691,7 +1756,7 @@ function writeRepoConfig(sanctions: unknown[]): void {
   }
   const linesByFile = new Map<string, string[]>();
   for (const [key, total] of declared) {
-    const [file, , text] = key.split('|');
+    const [file, , text] = key.split('|', 3);
     if (file === undefined || text === undefined || total < 1) {
       continue;
     }
@@ -1742,7 +1807,7 @@ describe('runCommand — sanctions-check (CI approval-visibility gate)', () => {
       await runCommand(
         'sanctions-check',
         [],
-        deps({ exec: sanctionsExec(base).exec }),
+        dependencies({ exec: sanctionsExec(base).exec }),
       ),
     ).toBe(0);
     expect(errors.join('')).toContain('no new diff-auditor exemptions');
@@ -1757,7 +1822,7 @@ describe('runCommand — sanctions-check (CI approval-visibility gate)', () => {
       await runCommand(
         'sanctions-check',
         [],
-        deps({ exec: sanctionsExec(base).exec }),
+        dependencies({ exec: sanctionsExec(base).exec }),
       ),
     ).toBe(0);
     const printed = errors.join('');
@@ -1778,7 +1843,7 @@ describe('runCommand — sanctions-check (CI approval-visibility gate)', () => {
       await runCommand(
         'sanctions-check',
         [],
-        deps({ exec: sanctionsExec(base).exec }),
+        dependencies({ exec: sanctionsExec(base).exec }),
       ),
     ).toBe(0);
     const printed = errors.join('');
@@ -1792,7 +1857,7 @@ describe('runCommand — sanctions-check (CI approval-visibility gate)', () => {
       await runCommand(
         'sanctions-check',
         [],
-        deps({ exec: sanctionsExec(null).exec }),
+        dependencies({ exec: sanctionsExec(null).exec }),
       ),
     ).toBe(0);
     expect(errors.join('')).toContain(REVIEWED_KEY);
@@ -1805,12 +1870,16 @@ describe('runCommand — sanctions-check (CI approval-visibility gate)', () => {
       await runCommand(
         'sanctions-check',
         [],
-        deps({ exec: sanctionsExec(base).exec }),
+        dependencies({ exec: sanctionsExec(base).exec }),
       ),
     ).toBe(1);
     const printed = errors.join('');
     expect(printed).toContain('missing reason');
     expect(printed).toContain('malformed');
+    // The summary sentence, which only the trailing stderr call emits -- the
+    // per-entry violations above carry the word 'malformed' on their own, so
+    // asserting that alone left the summary untested.
+    expect(printed).toContain('fix before merging');
   });
 
   it('fails on a non-integer or non-positive count', async () => {
@@ -1820,7 +1889,7 @@ describe('runCommand — sanctions-check (CI approval-visibility gate)', () => {
       await runCommand(
         'sanctions-check',
         [],
-        deps({ exec: sanctionsExec(base).exec }),
+        dependencies({ exec: sanctionsExec(base).exec }),
       ),
     ).toBe(1);
     expect(errors.join('')).toContain('count must be a positive integer');
@@ -1834,7 +1903,7 @@ describe('runCommand — sanctions-check (CI approval-visibility gate)', () => {
     await runCommand(
       'sanctions-check',
       [],
-      deps({ exec: sanctionsExec(base).exec }),
+      dependencies({ exec: sanctionsExec(base).exec }),
     );
     expect(errors.join('')).not.toContain('newly requested');
   });
@@ -1847,7 +1916,7 @@ describe('sanctions-check git plumbing', () => {
     writeRepoConfig([REVIEWED]);
     const base = JSON.stringify({ sanctionedSuppressions: [REVIEWED] });
     const { exec, calls } = sanctionsExec(base);
-    await runCommand('sanctions-check', [], deps({ exec }));
+    await runCommand('sanctions-check', [], dependencies({ exec }));
     const mergeBaseCall = calls.find((call) => call.args[0] === 'merge-base');
     const showCall = calls.find((call) => call.args[0] === 'show');
     expect(mergeBaseCall?.args).toEqual(['merge-base', 'main', 'HEAD']);
@@ -1867,14 +1936,18 @@ describe('sanctions-check git plumbing', () => {
       stderr: '',
       code: 1,
     });
-    await runCommand('sanctions-check', [], deps({ exec: failed.exec }));
+    await runCommand(
+      'sanctions-check',
+      [],
+      dependencies({ exec: failed.exec }),
+    );
     expect(failed.calls.find((call) => call.args[0] === 'show')?.args).toEqual([
       'show',
       'main:guardrails.config.json',
     ]);
 
     const empty = sanctionsExec(base, ok('   \n'));
-    await runCommand('sanctions-check', [], deps({ exec: empty.exec }));
+    await runCommand('sanctions-check', [], dependencies({ exec: empty.exec }));
     expect(empty.calls.find((call) => call.args[0] === 'show')?.args).toEqual([
       'show',
       'main:guardrails.config.json',
@@ -1891,7 +1964,9 @@ describe('sanctions-check git plumbing', () => {
       ok('BASESHA\n'),
       128,
     );
-    expect(await runCommand('sanctions-check', [], deps({ exec }))).toBe(0);
+    expect(
+      await runCommand('sanctions-check', [], dependencies({ exec })),
+    ).toBe(0);
     expect(errors.join('')).toContain(REVIEWED_KEY);
   });
 });
@@ -1921,7 +1996,7 @@ describe('autofix command', () => {
     await runCommand(
       'autofix',
       [],
-      deps({
+      dependencies({
         exec,
         readStdin: () =>
           Promise.resolve(
@@ -1951,7 +2026,7 @@ describe('autofix command', () => {
     const code = await runCommand(
       'autofix',
       [],
-      deps({ exec, readStdin: () => Promise.resolve(stdin) }),
+      dependencies({ exec, readStdin: () => Promise.resolve(stdin) }),
     );
     expect(code).toBe(0);
     const eslintCall = calls.find(
@@ -1973,7 +2048,7 @@ describe('autofix command', () => {
     const code = await runCommand(
       'autofix',
       [],
-      deps({ exec, readStdin: () => Promise.resolve(stdin) }),
+      dependencies({ exec, readStdin: () => Promise.resolve(stdin) }),
     );
     expect(code).toBe(0);
     expect(
@@ -1992,7 +2067,7 @@ describe('autofix command', () => {
     const code = await runCommand(
       'autofix',
       [],
-      deps({ exec, readStdin: () => Promise.resolve(stdin) }),
+      dependencies({ exec, readStdin: () => Promise.resolve(stdin) }),
     );
     expect(code).toBe(0);
     expect(
@@ -2019,7 +2094,7 @@ describe('autofix command', () => {
     await runCommand(
       'autofix',
       [],
-      deps({ exec, readStdin: () => Promise.resolve(stdin) }),
+      dependencies({ exec, readStdin: () => Promise.resolve(stdin) }),
     );
     const eslintCall = calls.find(
       (call) => call[0]?.includes('eslint') === true,
@@ -2033,7 +2108,7 @@ describe('gate --mode=commit enforcement', () => {
     const code = await runCommand(
       'gate',
       ['--mode=commit'],
-      blockingCommitDeps('block'),
+      blockingCommitDependencies('block'),
     );
     expect(code).toBe(1);
     expect(errors.join('')).not.toContain('enforcement: warn');
@@ -2043,7 +2118,7 @@ describe('gate --mode=commit enforcement', () => {
     const code = await runCommand(
       'gate',
       ['--mode=commit'],
-      blockingCommitDeps('warn'),
+      blockingCommitDependencies('warn'),
     );
     expect(code).toBe(0);
     const output = errors.join('');
@@ -2055,8 +2130,10 @@ describe('gate --mode=commit enforcement', () => {
 
 /** As blockingCommitDeps, plus the preToolUse hook payload that gets past the
  *  command's shell-tool + git-commit self-filter. */
-function blockingPreToolUseDeps(enforcement: 'warn' | 'block'): CliDeps {
-  const base = blockingCommitDeps(enforcement);
+function blockingPreToolUseDependencies(
+  enforcement: 'warn' | 'block',
+): CliDependencies {
+  const base = blockingCommitDependencies(enforcement);
   return {
     ...base,
     readStdin: () =>
@@ -2075,7 +2152,7 @@ describe('gate --mode=pretooluse enforcement', () => {
     await runCommand(
       'gate',
       ['--mode=pretooluse'],
-      blockingPreToolUseDeps('block'),
+      blockingPreToolUseDependencies('block'),
     );
     expect(out.join('')).toContain('deny');
   });
@@ -2084,7 +2161,7 @@ describe('gate --mode=pretooluse enforcement', () => {
     await runCommand(
       'gate',
       ['--mode=pretooluse'],
-      blockingPreToolUseDeps('warn'),
+      blockingPreToolUseDependencies('warn'),
     );
     // A deny payload IS the block in both hook dialects, so there is no
     // allow-with-message channel: stdout must stay empty.
@@ -2096,6 +2173,10 @@ describe('gate --mode=pretooluse enforcement', () => {
     // does, and the same pointer at the setting that makes it enforce.
     expect(output).toContain('src/foo.ts:1 [no-console] Unexpected console.');
     expect(output).toContain('"enforcement": "block"');
+    // The summary line itself, distinct from the per-violation detail above
+    // and from the not-blocking note below it: dropping it would leave the
+    // reader the findings and the policy but not the verdict.
+    expect(output).toContain('violation(s)');
   });
 });
 
@@ -2106,7 +2187,7 @@ describe('sanctions-check base branch resolution', () => {
   it('takes the merge-base against origin/<branch> when only that resolves', async () => {
     writeRepoConfig([REVIEWED]);
     const { exec, calls } = baseReferenceExec(['origin/main']);
-    await runCommand('sanctions-check', [], deps({ exec }));
+    await runCommand('sanctions-check', [], dependencies({ exec }));
     const mergeBase = calls.find((call) => call[1] === 'merge-base');
     expect(mergeBase).toContain('origin/main');
   });
@@ -2116,7 +2197,7 @@ describe('sanctions-check base branch resolution', () => {
     // (rather than the branch name) fails here instead of silently passing.
     writeRepoConfig([REVIEWED]);
     const { exec, calls } = baseReferenceExec([]);
-    await runCommand('sanctions-check', [], deps({ exec }));
+    await runCommand('sanctions-check', [], dependencies({ exec }));
     const mergeBase = calls.find((call) => call[1] === 'merge-base');
     expect(mergeBase).toEqual(['git', 'merge-base', 'main', 'HEAD']);
     expect(mergeBase?.includes('undefined')).toBe(false);
@@ -2132,7 +2213,7 @@ describe('sanctions-check count drift-guard', () => {
     const code = await runCommand(
       'sanctions-check',
       [],
-      deps({ exec: sanctionsExec('{}').exec }),
+      dependencies({ exec: sanctionsExec('{}').exec }),
     );
     expect(code).toBe(1);
     const printed = errors.join('');
@@ -2147,7 +2228,7 @@ describe('sanctions-check count drift-guard', () => {
     const code = await runCommand(
       'sanctions-check',
       [],
-      deps({ exec: sanctionsExec('{}').exec }),
+      dependencies({ exec: sanctionsExec('{}').exec }),
     );
     expect(code).toBe(0);
     expect(errors.join('')).not.toContain('no longer match the source');
@@ -2171,7 +2252,7 @@ describe('sanctions-check count drift-guard', () => {
       const code = await runCommand(
         'sanctions-check',
         [],
-        deps({ exec: sanctionsExec('{}').exec }),
+        dependencies({ exec: sanctionsExec('{}').exec }),
       );
       expect(code).toBe(1);
       expect(errors.join('')).toContain('declared 1, found 0');
@@ -2195,7 +2276,11 @@ describe('out-of-repo self-check', () => {
       'cli.mjs',
     );
 
-    const code = await runCommand('verify', [], deps({ selfPath: outside }));
+    const code = await runCommand(
+      'verify',
+      [],
+      dependencies({ selfPath: outside }),
+    );
 
     expect(code).not.toBe(0);
     expect(errors.join('')).toContain(outside);
@@ -2212,7 +2297,11 @@ describe('out-of-repo self-check', () => {
       'cli.mjs',
     );
 
-    const code = await runCommand('verify', [], deps({ selfPath: inside }));
+    const code = await runCommand(
+      'verify',
+      [],
+      dependencies({ selfPath: inside }),
+    );
 
     expect(code).toBe(0);
     expect(errors.join('')).not.toContain('outside');
@@ -2224,7 +2313,11 @@ describe('out-of-repo self-check', () => {
     // it cannot bound. `root` has no .git here.
     const outside = path.join(path.dirname(root), 'elsewhere', 'cli.mjs');
 
-    const code = await runCommand('verify', [], deps({ selfPath: outside }));
+    const code = await runCommand(
+      'verify',
+      [],
+      dependencies({ selfPath: outside }),
+    );
 
     expect(code).toBe(0);
     expect(errors.join('')).not.toContain('outside');
@@ -2238,7 +2331,7 @@ describe('out-of-repo self-check', () => {
     // cli-core.ts's own real source path, so the fixture directory must be
     // this real repository (not a disposable temp directory the way the
     // other tests here use) for that path to land inside the bound.
-    const { selfPath: _selfPath, ...withoutSelfPath } = deps({
+    const { selfPath: _selfPath, ...withoutSelfPath } = dependencies({
       cwd: process.cwd(),
     });
 

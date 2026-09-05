@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   isStrykerReportJson,
   parseStrykerJson,
+  unrunSurvivedMutants,
 } from '../../src/verify/stryker-adapter.js';
 
 const report = JSON.stringify({
@@ -99,7 +100,7 @@ describe('parseStrykerJson', () => {
     const result = parseStrykerJson(report, ['src/changed.ts']);
     expect(result).toHaveLength(2);
     expect(
-      result.map((v) => v.line).sort((a, b) => (a ?? 0) - (b ?? 0)),
+      result.map((v) => v.line).toSorted((a, b) => (a ?? 0) - (b ?? 0)),
     ).toEqual([12, 30]);
     expect(result.every((v) => v.file === 'src/changed.ts')).toBe(true);
   });
@@ -109,7 +110,7 @@ describe('parseStrykerJson', () => {
     // assertion — so the fixer routes on ruleId.
     const result = parseStrykerJson(report, ['src/changed.ts']);
     expect(
-      result.map((v) => v.ruleId).sort((a, b) => a.localeCompare(b)),
+      result.map((v) => v.ruleId).toSorted((a, b) => a.localeCompare(b)),
     ).toEqual(['stryker/no-coverage', 'stryker/survived']);
   });
 
@@ -146,7 +147,9 @@ function reportWith(mutants: unknown[]): string {
 
 const changed = ['src/changed.ts'];
 
-/** A report whose first mutant overrides `validMutant` with a bad field. */
+/**
+A report whose first mutant overrides `validMutant` with a bad field.
+*/
 function bad(fields: Record<string, unknown>): string {
   return reportWith([{ ...validMutant, ...fields }, validMutant]);
 }
@@ -265,5 +268,156 @@ describe('isStrykerReportJson', () => {
     expect(isStrykerReportJson('')).toBe(false);
     expect(isStrykerReportJson('{"files":')).toBe(false);
     expect(isStrykerReportJson('<html>500</html>')).toBe(false);
+  });
+});
+
+const at = (line: number) => ({ start: { line } });
+
+function reportOf(mutants: unknown[]): string {
+  return JSON.stringify({ files: { 'src/a.ts': { mutants } } });
+}
+
+describe('unrunSurvivedMutants', () => {
+  it('counts a Survived mutant whose covering tests never ran', () => {
+    const json = reportOf([
+      {
+        status: 'Survived',
+        mutatorName: 'EqualityOperator',
+        location: at(1),
+        coveredBy: ['0', '1'],
+        testsCompleted: 0,
+      },
+    ]);
+    expect(unrunSurvivedMutants(json, ['src/a.ts'])).toBe(1);
+  });
+
+  it('does not count a genuine survivor, whose covering test did run', () => {
+    const json = reportOf([
+      {
+        status: 'Survived',
+        mutatorName: 'EqualityOperator',
+        location: at(1),
+        coveredBy: ['0'],
+        testsCompleted: 1,
+      },
+    ]);
+    expect(unrunSurvivedMutants(json, ['src/a.ts'])).toBe(0);
+  });
+
+  it('does not count a Killed mutant, whatever its counters say', () => {
+    const json = reportOf([
+      {
+        status: 'Killed',
+        mutatorName: 'EqualityOperator',
+        location: at(1),
+        coveredBy: ['0', '1'],
+        testsCompleted: 0,
+      },
+    ]);
+    expect(unrunSurvivedMutants(json, ['src/a.ts'])).toBe(0);
+  });
+
+  it('does not count NoCoverage, which legitimately runs no tests', () => {
+    const json = reportOf([
+      {
+        status: 'NoCoverage',
+        mutatorName: 'EqualityOperator',
+        location: at(1),
+        coveredBy: [],
+        testsCompleted: 0,
+      },
+    ]);
+    expect(unrunSurvivedMutants(json, ['src/a.ts'])).toBe(0);
+  });
+
+  // This is the shape a runner WITHOUT per-test data produces, and it is why
+  // the guard keys on `coveredBy` rather than on `testsCompleted` alone.
+  // Measured on the `command` runner -- the one `init` seeds by default -- with
+  // a deliberately vacuous test: 11 genuine survivors, every one of them
+  // `coveredBy: []`. A runner that cannot attribute tests to mutants reports no
+  // covering list at all, so it exits at the `covering === 0` check and its
+  // honest `Survived` verdicts are never reclassified. Zero misfires.
+  it('does not count a Survived mutant with no covering tests at all', () => {
+    const json = reportOf([
+      {
+        status: 'Survived',
+        mutatorName: 'EqualityOperator',
+        location: at(1),
+        coveredBy: [],
+        testsCompleted: 0,
+      },
+    ]);
+    expect(unrunSurvivedMutants(json, ['src/a.ts'])).toBe(0);
+  });
+
+  it('does not count a mutant from a file outside the changed set', () => {
+    const json = JSON.stringify({
+      files: {
+        'src/other.ts': {
+          mutants: [
+            {
+              status: 'Survived',
+              mutatorName: 'EqualityOperator',
+              location: at(1),
+              coveredBy: ['0'],
+              testsCompleted: 0,
+            },
+          ],
+        },
+      },
+    });
+    expect(unrunSurvivedMutants(json, ['src/a.ts'])).toBe(0);
+  });
+
+  it('treats a missing testsCompleted as unrun, failing closed', () => {
+    const json = reportOf([
+      {
+        status: 'Survived',
+        mutatorName: 'EqualityOperator',
+        location: at(1),
+        coveredBy: ['0'],
+      },
+    ]);
+    expect(unrunSurvivedMutants(json, ['src/a.ts'])).toBe(1);
+  });
+
+  it('answers 0 for a payload that is not JSON at all', () => {
+    expect(unrunSurvivedMutants('not json', ['src/a.ts'])).toBe(0);
+  });
+
+  it('answers 0 for JSON that parses but is not a report', () => {
+    expect(unrunSurvivedMutants('{"nope":1}', ['src/a.ts'])).toBe(0);
+  });
+
+  it('treats an absent coveredBy as no covering tests, not as unrun', () => {
+    const json = reportOf([
+      {
+        status: 'Survived',
+        mutatorName: 'EqualityOperator',
+        location: at(1),
+        testsCompleted: 0,
+      },
+    ]);
+    expect(unrunSurvivedMutants(json, ['src/a.ts'])).toBe(0);
+  });
+
+  it('counts every affected mutant, so the message can say how many', () => {
+    const json = reportOf([
+      {
+        status: 'Survived',
+        mutatorName: 'EqualityOperator',
+        location: at(1),
+        coveredBy: ['0'],
+        testsCompleted: 0,
+      },
+      {
+        status: 'Survived',
+        mutatorName: 'ConditionalExpression',
+        location: at(2),
+        coveredBy: ['0'],
+        testsCompleted: 0,
+      },
+    ]);
+    expect(unrunSurvivedMutants(json, ['src/a.ts'])).toBe(2);
   });
 });

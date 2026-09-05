@@ -187,6 +187,13 @@ const GITIGNORE_BLOCK = [
   // them, a consumer's first mutation run leaves untracked noise they never
   // asked for.
   'reports/mutation/',
+  // Stryker's `incrementalFile` default, which is NOT under reports/mutation/.
+  // Measured on a greenfield adoption: without it the repo's first
+  // `git add -A` commits a mutation-result cache that churns on every run.
+  // `runStryker` deletes this file before each run, so guardrails' own gate is
+  // unaffected either way -- what this prevents is the committed artifact, and
+  // stale verdicts for anyone running `npx stryker run` by hand.
+  'reports/stryker-incremental.json',
   '.stryker-tmp/',
   // A git worktree checked out inside the repo is untracked but NOT ignored,
   // so knip -- which does respect .gitignore -- walks into it and reports a
@@ -226,9 +233,9 @@ const GITIGNORE_SEED = 'node_modules/';
 export function mergeGitignore(current: string | undefined): string {
   // Authoring the whole file -- an absent file and a whitespace-only one are
   // the same case, and `replaceMarkedBlock` already treats them alike.
-  const authoring = current === undefined || current.trim() === '';
+  const isAuthoring = current === undefined || current.trim() === '';
   return replaceMarkedBlock(
-    authoring ? GITIGNORE_SEED : current,
+    isAuthoring ? GITIGNORE_SEED : current,
     GITIGNORE_START,
     GITIGNORE_END,
     GITIGNORE_BLOCK,
@@ -262,9 +269,12 @@ export function mergePrepareScript(current: string | undefined): string {
   if (current === undefined) {
     return OUR_PREPARE_COMMAND;
   }
+  // Function replacement, not the string: a `$`-sequence in the replacement is
+  // a substitution pattern to `replaceAll`, and this value is a command line we
+  // do not control the future shape of.
   const migrated = current.replaceAll(
     LEGACY_PREPARE_COMMAND,
-    OUR_PREPARE_COMMAND,
+    () => OUR_PREPARE_COMMAND,
   );
   if (migrated.includes(OUR_PREPARE_COMMAND)) {
     return migrated;
@@ -300,7 +310,9 @@ export function mergeCopilotInstructions(
   );
 }
 
-/** Merges the portable guardrails index into the repository's AGENTS.md. */
+/**
+Merges the portable guardrails index into the repository's AGENTS.md.
+*/
 export function mergeAgentsInstructions(
   current: string | undefined,
   block: string,

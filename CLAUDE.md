@@ -87,6 +87,17 @@ Stale entries fail silently (a loose rule routed to the wrong tier, or a
 suppression the auditor no longer recognizes), so this review is part of any
 tool upgrade — add/adjust with a test.
 
+A **third failure mode** an upgrade can introduce is neither of the two above:
+an analyzer that still runs, still exits 0, and still reports — **wrongly**.
+Rule ids and suppression syntax are the id-shaped drifts; runner integrity is
+the behavioural one. `guardrails-core/test/drift/stryker-runner.test.ts` holds
+it: real stryker, through the vitest runner, over code whose tests kill every
+mutant, asserting kills come back. It exists because vitest 5 silently inverted
+the mutation gate (stryker-js#6210 — see plan.md's fourth-adoption findings) and
+nothing in this repo noticed. If you add an analyzer whose value depends on a
+framework integration, it needs a live guard of the same shape: a fixture whose
+expected finding is known, run through the real tool.
+
 The **id-existence half of this review is now mechanized**: the drift-guard
 (`guardrails-core/test/drift/registry.test.ts`) fails the build if a hardcoded
 loose id or knip issue type no longer exists upstream. You must still review the

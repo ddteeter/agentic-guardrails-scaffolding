@@ -1,7 +1,7 @@
 /**
  * Drift guard for the one piece of stryker OUTPUT TEXT guardrails parses.
  *
- * `instrumentedZeroMutants` reads stryker's instrumenter banner to decide that
+ * `isZeroMutantRun` reads stryker's instrumenter banner to decide that
  * a change set had nothing to mutate — the reading that keeps a commit touching
  * only interfaces or a barrel of re-exports from being blocked as a crashed
  * analyzer. The banner is upstream-owned prose, so a stryker upgrade can change
@@ -25,7 +25,7 @@ import { describe, expect, it } from 'vitest';
 import { spawnExec } from '../../src/exec.js';
 import {
   instrumentedMutantCount,
-  instrumentedZeroMutants,
+  isZeroMutantRun,
 } from '../../src/verify/index.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -66,8 +66,8 @@ describe('drift-guard: stryker instrumenter banner', () => {
   it('still reports a mutant count guardrails can read as zero', async () => {
     const output = await strykerOutputForZeroMutants();
     expect(
-      instrumentedZeroMutants(output),
-      'stryker changed the instrumenter banner that `instrumentedZeroMutants` ' +
+      isZeroMutantRun(output),
+      'stryker changed the instrumenter banner that `isZeroMutantRun` ' +
         '(guardrails-core/src/verify/index.ts) parses. Until it is reconciled, ' +
         'every change set with nothing to mutate fails the commit gate as a ' +
         'crashed analyzer. Output was:\n' +
@@ -81,7 +81,7 @@ describe('drift-guard: stryker instrumenter banner', () => {
     // silently excuse every genuine dry-run failure.
     const output =
       'INFO Instrumenter Instrumented 3 source file(s) with 16 mutant(s)';
-    expect(instrumentedZeroMutants(output)).toBe(false);
+    expect(isZeroMutantRun(output)).toBe(false);
   });
 
   it('reads the MUTANT count, not the file count', () => {
@@ -89,10 +89,10 @@ describe('drift-guard: stryker instrumenter banner', () => {
     // would call every single-file run zero-mutant — which is most runs — and
     // excuse a genuinely broken test suite on all of them.
     expect(
-      instrumentedZeroMutants('Instrumented 0 source file(s) with 4 mutant(s)'),
+      isZeroMutantRun('Instrumented 0 source file(s) with 4 mutant(s)'),
     ).toBe(false);
     expect(
-      instrumentedZeroMutants('Instrumented 4 source file(s) with 0 mutant(s)'),
+      isZeroMutantRun('Instrumented 4 source file(s) with 0 mutant(s)'),
     ).toBe(true);
   });
 
@@ -100,12 +100,12 @@ describe('drift-guard: stryker instrumenter banner', () => {
     // The excuse must require positive evidence. An unrecognised crash — a heap
     // limit, a killed process, a reworked banner — has to stay a failed
     // analyzer, never a clean gate.
-    expect(instrumentedZeroMutants('')).toBe(false);
-    expect(
-      instrumentedZeroMutants('FATAL ERROR: Reached heap limit\nAborted'),
-    ).toBe(false);
-    expect(instrumentedZeroMutants('with 0 mutant(s)')).toBe(false);
-    expect(instrumentedZeroMutants('Instrumented source files')).toBe(false);
+    expect(isZeroMutantRun('')).toBe(false);
+    expect(isZeroMutantRun('FATAL ERROR: Reached heap limit\nAborted')).toBe(
+      false,
+    );
+    expect(isZeroMutantRun('with 0 mutant(s)')).toBe(false);
+    expect(isZeroMutantRun('Instrumented source files')).toBe(false);
   });
 
   it('reads a multi-digit mutant count', () => {
@@ -130,9 +130,7 @@ describe('drift-guard: stryker instrumenter banner', () => {
       ),
     ).toBe(0);
     expect(
-      instrumentedZeroMutants(
-        'Instrumented 12 source file(s) with 0 mutant(s)',
-      ),
+      isZeroMutantRun('Instrumented 12 source file(s) with 0 mutant(s)'),
     ).toBe(true);
   });
 

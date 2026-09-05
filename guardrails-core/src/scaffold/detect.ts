@@ -3,7 +3,7 @@
  * has, so `planScaffold` (pure) can decide what to do with it without ever
  * touching a filesystem or a spawn itself.
  *
- * Every probe is injectable (`fileExists`, `readJson`) precisely so this
+ * Every probe is injectable (`isFilePresent`, `readJson`) precisely so this
  * module's own tests build a fake world instead of touching the real
  * filesystem — the same reasoning that keeps `planScaffold` pure applies here
  * one layer up: I/O is a seam, not a detail buried inside the function.
@@ -32,13 +32,17 @@ import { parseManifest, type ScaffoldManifest } from './manifest.js';
 export interface RepoFacts {
   readonly repoRoot: string;
   readonly baseBranch: string;
-  /** Read by `templates.ts` — which analyzer configs to offer to seed. */
+  /**
+  Read by `templates.ts` — which analyzer configs to offer to seed.
+  */
   readonly declaredProviders: ReadonlySet<string>;
   readonly hasDependencyCruiserConfig: boolean;
   readonly hasStrykerConfig: boolean;
   readonly hasKnipConfig: boolean;
   readonly manifest: ScaffoldManifest | undefined;
-  /** Read by `hooks-path.ts` — the one config entry we refuse to overwrite. */
+  /**
+  Read by `hooks-path.ts` — the one config entry we refuse to overwrite.
+  */
   readonly hooksPath: string | undefined;
   /**
    * The `analyzers` block of an existing `guardrails.config.json`, or
@@ -74,9 +78,13 @@ export function effectiveAnalyzers(
 export interface DetectOptions {
   readonly exec: Exec;
   readonly cwd: string;
-  /** Existence probe, injected in tests. Defaults to node:fs existsSync. */
-  readonly fileExists?: (filePath: string) => boolean;
-  /** File reader seam, injected in tests. Defaults to readJsonFile. */
+  /**
+  Existence probe, injected in tests. Defaults to node:fs existsSync.
+  */
+  readonly isFilePresent?: (filePath: string) => boolean;
+  /**
+  File reader seam, injected in tests. Defaults to readJsonFile.
+  */
   readonly readJson?: (filePath: string) => unknown;
 }
 
@@ -91,14 +99,16 @@ function analyzersField(config: unknown): unknown {
   return isRecord(config) ? config.analyzers : undefined;
 }
 
-/** True when any of `candidates` (repo-root-relative) exists. */
-function anyExists(
+/**
+True when any of `candidates` (repo-root-relative) exists.
+*/
+function hasAny(
   repoRoot: string,
   candidates: readonly string[],
-  fileExists: (filePath: string) => boolean,
+  isFilePresent: (filePath: string) => boolean,
 ): boolean {
   return candidates.some((candidate) =>
-    fileExists(path.join(repoRoot, candidate)),
+    isFilePresent(path.join(repoRoot, candidate)),
   );
 }
 
@@ -134,7 +144,7 @@ async function detectHooksPath(
 
 export async function detect(options: DetectOptions): Promise<RepoFacts> {
   const { exec, cwd } = options;
-  const fileExists = options.fileExists ?? existsSync;
+  const isFilePresent = options.isFilePresent ?? existsSync;
   const readJson =
     options.readJson ?? ((filePath) => readJsonFile(filePath).parsed);
 
@@ -155,22 +165,22 @@ export async function detect(options: DetectOptions): Promise<RepoFacts> {
     baseBranch,
     hooksPath,
     declaredProviders: declaredProviders(packageJson),
-    hasDependencyCruiserConfig: anyExists(
+    hasDependencyCruiserConfig: hasAny(
       repoRoot,
       [
         '.dependency-cruiser.cjs',
         '.dependency-cruiser.js',
         '.dependency-cruiser.json',
       ],
-      fileExists,
+      isFilePresent,
     ),
-    hasStrykerConfig: anyExists(repoRoot, ['stryker.conf.json'], fileExists),
+    hasStrykerConfig: hasAny(repoRoot, ['stryker.conf.json'], isFilePresent),
     // knip reads its config from any of these filenames OR from a `knip` key in
     // package.json, so the fact — not the seed's filename — is what gates
     // seeding. A second config would be silently ignored by knip, which is the
     // failure the dependency-cruiser probe above already guards against.
     hasKnipConfig:
-      anyExists(
+      hasAny(
         repoRoot,
         [
           'knip.json',
@@ -182,10 +192,10 @@ export async function detect(options: DetectOptions): Promise<RepoFacts> {
           'knip.config.ts',
           'knip.config.js',
         ],
-        fileExists,
+        isFilePresent,
       ) ||
       (isRecord(packageJson) && 'knip' in packageJson),
-    existingAnalyzers: fileExists(configPath)
+    existingAnalyzers: isFilePresent(configPath)
       ? pickAnalyzers(analyzersField(readJson(configPath)))
       : undefined,
     manifest,

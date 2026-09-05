@@ -55,7 +55,9 @@ import {
  */
 const ADOPTION_TIME_SKILL = 'adopting-guardrails';
 
-/** The consumer-facing template tree, shipped in the tarball (`files`). */
+/**
+The consumer-facing template tree, shipped in the tarball (`files`).
+*/
 export function templatesRoot(): string {
   return path.join(packageRoot(), 'templates');
 }
@@ -67,7 +69,9 @@ export function guidanceRoot(): string {
   return path.join(packageRoot(), 'guidance');
 }
 
-/** One entry of the desired map: a canonical repo-relative path and its bytes. */
+/**
+One entry of the desired map: a canonical repo-relative path and its bytes.
+*/
 type DesiredEntry = readonly [string, string];
 
 /**
@@ -245,7 +249,8 @@ function skillIndex(directory: string): Record<string, string> {
  */
 function runtimeSkillIndex(directory: string): Record<string, string> {
   const runtime: Record<string, string> = {};
-  for (const [name, description] of Object.entries(skillIndex(directory))) {
+  const indexed = Object.entries(skillIndex(directory));
+  for (const [name, description] of indexed) {
     if (name !== ADOPTION_TIME_SKILL) {
       runtime[name] = description;
     }
@@ -406,7 +411,9 @@ const GATE_CONTRACT: readonly string[] = [
   'what a reviewer reads later. If they do not, fix the code instead.',
 ];
 
-/** Portable instruction index used by Codex and any other AGENTS.md host. */
+/**
+Portable instruction index used by Codex and any other AGENTS.md host.
+*/
 function agentsInstructionsBlock(directory: string): string {
   return [
     AGENTS_GUARDRAILS_START,
@@ -439,7 +446,7 @@ function agentsInstructionsBlock(directory: string): string {
  * config for an analyzer nobody asked for would leave a file in the consumer's
  * repo that `init`, being seed-once, will never clean up.
  */
-function analyzerAsked(
+function isAnalyzerAsked(
   analyzer: SeedOnceAnalyzer,
   facts: RepoFacts,
   decisions: ScaffoldDecisions,
@@ -466,7 +473,7 @@ function seedOnceEntries(
   ];
   for (const analyzer of SEED_ONCE_ANALYZERS) {
     if (
-      analyzerAsked(analyzer, facts, decisions) &&
+      isAnalyzerAsked(analyzer, facts, decisions) &&
       !analyzer.hasConfig(facts)
     ) {
       entries.push([analyzer.path, analyzer.seed]);

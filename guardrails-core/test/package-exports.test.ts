@@ -4,7 +4,7 @@
  * source file in this repo consumes. Narrowing the map, or renaming the built
  * file, would break every adopter's hooks simultaneously with no local signal.
  */
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
 import { describe, expect, it } from 'vitest';
@@ -17,6 +17,19 @@ const manifest = JSON.parse(
 };
 
 describe('guardrails-core package exports', () => {
+  it('actually ships the declaration files the exports map promises', () => {
+    // The build emits declarations with `tsc --emitDeclarationOnly` rather than
+    // tsup's dts pass (tsup 8.5.1's cannot parse TypeScript 6), so the type
+    // output is one .d.ts per module instead of one bundle. `types` still has
+    // to resolve, and only a build can prove it -- run `npm run build` first.
+    const builtOutput = path.join(import.meta.dirname, '..', 'dist');
+    const root = manifest.exports['.'] as { types: string };
+    expect(existsSync(path.join(builtOutput, path.basename(root.types)))).toBe(
+      true,
+    );
+    expect(existsSync(path.join(builtOutput, 'cli.mjs'))).toBe(true);
+  });
+
   it('publishes the CLI as ./cli for hook commands', () => {
     expect(manifest.exports['./cli']).toBe('./dist/cli.mjs');
   });

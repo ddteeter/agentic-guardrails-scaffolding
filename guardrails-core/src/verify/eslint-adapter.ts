@@ -71,7 +71,7 @@ export function parseEslintJson(stdout: string, repoRoot: string): Violation[] {
         severity: message.severity === 2 ? 'error' : 'warn',
         fixable: message.fix !== undefined,
         tool: 'eslint',
-        ...(message.line === undefined ? {} : { line: message.line }),
+        ...(message.line !== undefined && { line: message.line }),
       };
       violations.push(violation);
     }

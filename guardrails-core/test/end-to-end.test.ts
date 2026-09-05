@@ -96,7 +96,9 @@ const config: GateConfig = {
   thoroughFixer: 'guardrail-fixer-thorough',
 };
 
-/** Write an executable node stub that ignores its args and prints `output`. */
+/**
+Write an executable node stub that ignores its args and prints `output`.
+*/
 function writeStub(name: string, output: string): string {
   const file = path.join(root, name);
   writeFileSync(
@@ -107,7 +109,9 @@ function writeStub(name: string, output: string): string {
   return file;
 }
 
-/** Write a tsc stub that emits a valid config only for `--showConfig`. */
+/**
+Write a tsc stub that emits a valid config only for `--showConfig`.
+*/
 function writeTscStub(name: string): string {
   const file = path.join(root, name);
   writeFileSync(

@@ -24,6 +24,18 @@ export default tseslint.config(
       // registry.test.ts) — its own standalone project, deliberately outside
       // guardrails-core's tsconfig, so ESLint's typed linting can't parse it.
       'guardrails-core/test/drift/knip-fixture/**',
+      // A git worktree checked out inside the repository is a whole second
+      // checkout of it, carrying its own `eslint.config.js`. ESLint 10 resolves
+      // config files per directory, so without this it LOADS those configs --
+      // and an older one naming a rule id this major renamed (unicorn 74's
+      // `prevent-abbreviations` -> `name-replacements`) fails the whole run
+      // with a schema error pointing at a file that is not this checkout's.
+      // Same untracked-but-not-ignored failure class as the nested-worktree
+      // finding in plan.md; `verify` already drops violations resolving inside
+      // a worktree, and this is the bare `eslint .` half of it.
+      '.claude/worktrees/**',
+      // Stryker's sandbox is a copy of the repo, worktrees and all.
+      '.stryker-tmp/**',
     ],
   },
 
@@ -45,8 +57,10 @@ export default tseslint.config(
     rules: {
       'unicorn/no-useless-undefined': ['error', { checkArguments: false }],
 
-      // Allowlist common short names
-      'unicorn/prevent-abbreviations': [
+      // Allowlist common short names. Renamed from
+      // `unicorn/prevent-abbreviations` in unicorn 74, which deprecated the old
+      // id and moved the identical `allowList` option under the new one.
+      'unicorn/name-replacements': [
         'error',
         {
           allowList: {
@@ -121,6 +135,20 @@ export default tseslint.config(
       '@typescript-eslint/no-explicit-any': 'off',
       'sonarjs/no-duplicate-string': 'off',
       'vitest/expect-expect': 'error',
+
+      // Both of the following arrived with eslint-plugin-unicorn 74 and are
+      // right for `src/` (where they stay on at their defaults) and wrong for
+      // test files. Relaxed HERE rather than repo-wide, deliberately.
+
+      // `let subject; beforeEach(() => { subject = ... })` is how vitest sets
+      // up per-test state; there is no other place to assign it. The rule flags
+      // all 31 occurrences of the framework's own idiom.
+      'unicorn/no-top-level-assignment-in-function': 'off',
+      // One level over the default 3, because `expect(await run(build(arg)))`
+      // is the assertion idiom and naming an intermediate for each of 35 sites
+      // adds noise without adding clarity. Four, not unlimited: a fifth level
+      // is a fixture that wants a builder.
+      'unicorn/max-nested-calls': ['error', { max: 4 }],
     },
   },
 

@@ -91,28 +91,24 @@ describe('spawn failure is distinguishable from a failing run', () => {
 });
 
 describe('env replacement', () => {
-  it('passes an explicit env through, replacing the inherited one', () => {
+  it('passes an explicit env through, replacing the inherited one', async () => {
     // Load-bearing: hooks run with GIT_DIR / GIT_WORK_TREE / GIT_INDEX_FILE
     // exported into the environment, and a `git` spawned from inside a hook
     // would target the HOOK's repo regardless of cwd unless they are stripped.
-    return expect(
-      spawnExec(
-        process.execPath,
-        ['-e', 'console.log(process.env.GUARDRAILS_PROBE)'],
-        {
-          env: { GUARDRAILS_PROBE: 'replaced' },
-        },
-      ).then((result) => result.stdout.trim()),
-    ).resolves.toBe('replaced');
+    const result = await spawnExec(
+      process.execPath,
+      ['-e', 'console.log(process.env.GUARDRAILS_PROBE)'],
+      { env: { GUARDRAILS_PROBE: 'replaced' } },
+    );
+    expect(result.stdout.trim()).toBe('replaced');
   });
 
-  it('inherits the parent environment when no env is given', () => {
-    return expect(
-      spawnExec(process.execPath, [
-        '-e',
-        'console.log(process.env.PATH === undefined ? "stripped" : "inherited")',
-      ]).then((result) => result.stdout.trim()),
-    ).resolves.toBe('inherited');
+  it('inherits the parent environment when no env is given', async () => {
+    const result = await spawnExec(process.execPath, [
+      '-e',
+      'console.log(process.env.PATH === undefined ? "stripped" : "inherited")',
+    ]);
+    expect(result.stdout.trim()).toBe('inherited');
   });
 });
 

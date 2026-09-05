@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest';
 
 import { parseWorkspaceGlob } from '../src/workspace-glob.js';
 
-/** Match helper: parse then test, failing loudly if the glob was unsupported. */
-function matches(glob: string, directory: string): boolean {
+/**
+Match helper: parse then test, failing loudly if the glob was unsupported.
+*/
+function isMatch(glob: string, directory: string): boolean {
   const parsed = parseWorkspaceGlob(glob);
   if (parsed === undefined) {
     throw new Error(`expected ${glob} to be supported`);
@@ -13,22 +15,22 @@ function matches(glob: string, directory: string): boolean {
 
 describe('parseWorkspaceGlob', () => {
   it('matches a single segment with *', () => {
-    expect(matches('packages/*', 'packages/api')).toBe(true);
+    expect(isMatch('packages/*', 'packages/api')).toBe(true);
     // * is ONE segment: it must not reach into a nested directory.
-    expect(matches('packages/*', 'packages/api/src')).toBe(false);
-    expect(matches('packages/*', 'apps/api')).toBe(false);
+    expect(isMatch('packages/*', 'packages/api/src')).toBe(false);
+    expect(isMatch('packages/*', 'apps/api')).toBe(false);
   });
 
   it('matches any depth with **', () => {
-    expect(matches('packages/**', 'packages/api')).toBe(true);
-    expect(matches('packages/**', 'packages/group/api')).toBe(true);
-    expect(matches('packages/**', 'apps/api')).toBe(false);
+    expect(isMatch('packages/**', 'packages/api')).toBe(true);
+    expect(isMatch('packages/**', 'packages/group/api')).toBe(true);
+    expect(isMatch('packages/**', 'apps/api')).toBe(false);
   });
 
   it('matches a literal path exactly', () => {
-    expect(matches('guardrails-core', 'guardrails-core')).toBe(true);
-    expect(matches('guardrails-core', 'guardrails-core/src')).toBe(false);
-    expect(matches('guardrails-core', 'other')).toBe(false);
+    expect(isMatch('guardrails-core', 'guardrails-core')).toBe(true);
+    expect(isMatch('guardrails-core', 'guardrails-core/src')).toBe(false);
+    expect(isMatch('guardrails-core', 'other')).toBe(false);
   });
 
   it('treats a leading ! as negation, without it being part of the pattern', () => {
@@ -40,13 +42,13 @@ describe('parseWorkspaceGlob', () => {
 
   it('escapes regex metacharacters in literal segments', () => {
     // A dot must match a dot, not any character.
-    expect(matches('packages/a.b', 'packages/a.b')).toBe(true);
-    expect(matches('packages/a.b', 'packages/axb')).toBe(false);
+    expect(isMatch('packages/a.b', 'packages/a.b')).toBe(true);
+    expect(isMatch('packages/a.b', 'packages/axb')).toBe(false);
   });
 
   it('supports a partial-segment star', () => {
-    expect(matches('packages/api-*', 'packages/api-core')).toBe(true);
-    expect(matches('packages/api-*', 'packages/web-core')).toBe(false);
+    expect(isMatch('packages/api-*', 'packages/api-core')).toBe(true);
+    expect(isMatch('packages/api-*', 'packages/web-core')).toBe(false);
   });
 
   it('returns undefined for syntax outside the supported subset', () => {
@@ -64,6 +66,6 @@ describe('parseWorkspaceGlob', () => {
   });
 
   it('ignores a trailing slash', () => {
-    expect(matches('packages/*/', 'packages/api')).toBe(true);
+    expect(isMatch('packages/*/', 'packages/api')).toBe(true);
   });
 });

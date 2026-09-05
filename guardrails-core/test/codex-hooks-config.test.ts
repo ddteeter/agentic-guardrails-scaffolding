@@ -33,7 +33,7 @@ function commands(event: string): HookCommand[] {
 describe('Codex hooks config', () => {
   it('wires the complete session/edit/stop lifecycle', () => {
     expect(
-      Object.keys(config.hooks).sort((left, right) =>
+      Object.keys(config.hooks).toSorted((left, right) =>
         left.localeCompare(right),
       ),
     ).toEqual([

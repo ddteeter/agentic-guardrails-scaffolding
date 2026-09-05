@@ -24,7 +24,9 @@
 
 import type { Violation } from './violation.js';
 
-/** rule-id prefix → repo-relative guidance doc. Longest match wins. */
+/**
+rule-id prefix → repo-relative guidance doc. Longest match wins.
+*/
 const GUIDANCE: readonly (readonly [string, string])[] = [
   ['stryker/', 'docs/guardrails/crushing-mutants.md'],
 ];

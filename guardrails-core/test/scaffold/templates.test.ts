@@ -67,7 +67,7 @@ function decisions(over: Partial<ScaffoldDecisions> = {}): ScaffoldDecisions {
     analyzers: {},
     enforcement: 'warn',
     distribution: 'solo',
-    force: false,
+    shouldForce: false,
     ...over,
   };
 }
@@ -463,7 +463,7 @@ describe('guidanceEntries', () => {
     writeFileSync(path.join(guidance, 'index.json'), '{}\n');
 
     expect(
-      guidanceEntries(guidance).sort(([left], [right]) =>
+      guidanceEntries(guidance).toSorted(([left], [right]) =>
         left.localeCompare(right),
       ),
     ).toEqual([
@@ -529,12 +529,13 @@ describe('buildDesiredFiles — canonical keys', () => {
     // './guardrails.config.json' or a backslash-separated key silently
     // classifies as OWNED, where --force would overwrite a file that must
     // never be overwritten.
-    for (const key of Object.keys(
+    const desiredKeys = Object.keys(
       buildDesiredFiles(
         facts({ declaredProviders: new Set(ANALYZER_PROVIDERS) }),
         decisions(),
       ),
-    )) {
+    );
+    for (const key of desiredKeys) {
       expect(key.startsWith('./')).toBe(false);
       expect(key).not.toContain('\\');
       expect(path.posix.isAbsolute(key)).toBe(false);

@@ -1,7 +1,10 @@
 {
   "compilerOptions": {
     "target": "ES2023",
-    "lib": ["ES2023"],
+    // ES2024 plus iterator helpers: `engines.node` is >=24, which has had
+    // them since Node 22, and `Iterator#toArray` is what
+    // `unicorn/prefer-iterator-to-array` asks for over a throwaway spread.
+    "lib": ["ES2024", "ESNext.Iterator"],
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "strict": true,

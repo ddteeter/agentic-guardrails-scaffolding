@@ -7,23 +7,37 @@
  * native output into `Violation[]`.
  */
 
-/** A violation is either a hard failure (`error`) or advisory (`warn`). */
+/**
+A violation is either a hard failure (`error`) or advisory (`warn`).
+*/
 export type Severity = 'error' | 'warn';
 
 export interface Violation {
-  /** Stable, namespaced id, e.g. `ts/no-assertionless-test`. */
+  /**
+  Stable, namespaced id, e.g. `ts/no-assertionless-test`.
+  */
   ruleId: string;
-  /** Repo-relative path. */
+  /**
+  Repo-relative path.
+  */
   file: string;
-  /** 1-indexed line, when the tool reports one. */
+  /**
+  1-indexed line, when the tool reports one.
+  */
   line?: number;
   message: string;
   severity: Severity;
-  /** `true` → belongs to the silent PostToolUse autofix class. */
+  /**
+  `true` → belongs to the silent PostToolUse autofix class.
+  */
   fixable: boolean;
-  /** The producing tool, e.g. `eslint` | `tsc` | `knip` | `pmd`. */
+  /**
+  The producing tool, e.g. `eslint` | `tsc` | `knip` | `pmd`.
+  */
   tool: string;
-  /** Workspace/module id in monorepos; `undefined` in single-repo layouts. */
+  /**
+  Workspace/module id in monorepos; `undefined` in single-repo layouts.
+  */
   package?: string;
   /**
    * Repo-relative path to guidance for this violation class, when one exists.
@@ -60,7 +74,9 @@ function hasRequiredFields(v: Record<string, unknown>): boolean {
   );
 }
 
-/** Optional fields: absent is fine, present-but-wrongly-typed is not. */
+/**
+Optional fields: absent is fine, present-but-wrongly-typed is not.
+*/
 function hasValidOptionalFields(v: Record<string, unknown>): boolean {
   return (
     (v.line === undefined || typeof v.line === 'number') &&
@@ -69,7 +85,9 @@ function hasValidOptionalFields(v: Record<string, unknown>): boolean {
   );
 }
 
-/** Runtime validator — a type guard for a single violation. */
+/**
+Runtime validator — a type guard for a single violation.
+*/
 export function isViolation(value: unknown): value is Violation {
   // Equivalent mutant on the typeof half: `value === null` still catches null,
   // and a primitive that slips past is rejected field-by-field below
@@ -82,7 +100,9 @@ export function isViolation(value: unknown): value is Violation {
   return hasRequiredFields(v) && hasValidOptionalFields(v);
 }
 
-/** `verify` exits non-zero when any error-severity violation exists. */
+/**
+`verify` exits non-zero when any error-severity violation exists.
+*/
 export function hasErrors(violations: readonly Violation[]): boolean {
   return violations.some((v) => v.severity === 'error');
 }

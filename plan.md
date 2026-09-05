@@ -2101,3 +2101,215 @@ have.
 
 **Unchanged.** No release exists; the documented install URL still 404s. That
 remains the one blocker no code change clears.
+
+### Findings: a fourth greenfield adoption, on the stack consumers install
+
+Run on 2026-09-05 from the packed tarball into a bare `git init` + `npm init -y`
+repo, then carried further than the third: the recommended analyzer set
+installed at the versions **npm resolves today**, rather than the ones this
+repository happens to pin. That difference is the whole finding.
+
+**What worked, stated first.** Every PR #30–#34 fix held out of the tarball.
+The created-from-scratch `.gitignore` carries `node_modules/`; the seed is
+`enforcement: "block"`; the commit gate blocked a `TS2322` on the unborn branch
+and passed once it was removed; the Stop ladder ran fast → fast → thorough
+(with the recurrence correction attached on the third turn) → full dump →
+release across five invocations; `git commit --no-verify` was denied by the
+Bash gate while an unrelated command and a prose mention both passed in 0.03s;
+and the skipped-analyzer warning fired at the `verify` rung, where the guidance
+names the exit criterion. `init --plan` → `--apply` → `install-hooks` through
+`prepare` all behaved.
+
+**1. The mutation gate is broken on the current stack, and inverted — fixed as
+far as we can fix it.** `@stryker-mutator/vitest-runner` reports **every covered
+mutant as `Survived`** on vitest 5. Measured on one `tier(spend)` function whose
+tests assert both sides of every boundary:
+
+| stack                                        | result          |
+| -------------------------------------------- | --------------- |
+| stryker 10 + vitest-runner 10 + **vitest 4** | 12 Killed       |
+| stryker 10 + vitest-runner 10 + **vitest 5** | **12 Survived** |
+| stryker 9 + vitest-runner 9 + vitest 4       | 12 Killed       |
+
+Stryker 10 is fine; vitest 5 is the breaking variable. A probe test that
+appended to a log on every execution ran **once** — the dry run — and never
+again, under `coverageAnalysis: "off"` with 13 mutants: the mutant runs execute
+no tests at all. No configuration works around it (all six combinations of
+`coverageAnalysis` ∈ {`all`, `perTest`, `off`} × `vitest.related` ∈ {default,
+`false`} report 12/12 Survived).
+
+The cause is upstream and known:
+[stryker-js#6210](https://github.com/stryker-mutator/stryker-js/issues/6210),
+filed 2026-09-04 — vitest 5 changed `testNamePattern` to join the name chain
+with `' > '`, and the runner still builds its per-test filter with a space join,
+so the filter selects nothing.
+
+This is the worst shape a guardrail failure can take. It does not miss
+violations, it **manufactures** them: the fixer is handed twelve mutants no test
+can kill, the ladder exhausts, and the two exits an agent can actually reach —
+a sanctioned suppression, or `analyzers.stryker: "off"` — are both forbidden by
+the scaffolded `AGENTS.md`. The guardrail ends up teaching the agent to disable
+the guardrail.
+
+We cannot fix the runner. We can stop it lying, and the report carries an
+exactly discriminating signal:
+
+|                                           | `coveredBy` | `testsCompleted` |
+| ----------------------------------------- | ----------- | ---------------- |
+| genuine survivor (vitest 4, vacuous test) | non-empty   | `1` — all 9      |
+| broken runner (vitest 5)                  | non-empty   | `0` — all 12     |
+
+A mutant reported `Survived` with covering tests and zero test executions is not
+evidence of survival; it is a run that never happened. `unrunSurvivedMutants`
+recognises it and `runStryker` raises one `guardrails/analyzer-failed` naming
+the count, instead of a storm of false `stryker/survived`. Upstream proposes the
+same invariant for itself in
+[#6146](https://github.com/stryker-mutator/stryker-js/issues/6146) (unmerged
+since July), and the same runner has three more open false-survivor bugs
+([#6150](https://github.com/stryker-mutator/stryker-js/issues/6150),
+[#6179](https://github.com/stryker-mutator/stryker-js/issues/6179),
+[#6209](https://github.com/stryker-mutator/stryker-js/issues/6209)) — so the
+guard stays after #6210 is fixed. `vitest` is pinned to `^4` here and in the
+guidance; unpinning is tracked in **issue #35**.
+
+**2. Dogfooding was validating a stack no adopter gets — fixed.** This is the
+finding behind the finding, and the reason #6210 reached a release candidate
+unnoticed:
+
+|            | this repo (before) | greenfield today |
+| ---------- | ------------------ | ---------------- |
+| vitest     | 4.1.10             | **5.0.0**        |
+| stryker    | 9.6.1              | **10.0.0**       |
+| eslint     | 9.39               | **10.10**        |
+| typescript | 5.9                | **6.0**          |
+
+The trust argument for this project is "we run it on ourselves." It did not
+reach the versions a consumer installs. Everything except vitest is now current
+— eslint 10, unicorn 74, sonarjs 4.2, typescript-eslint 8.69, knip 6.34,
+dependency-cruiser 18.2, stryker 10, TypeScript 6 — and TypeScript 6 needed
+tsup's dts pass replaced with `tsc --emitDeclarationOnly`, because tsup 8.5.1
+(the latest) cannot parse it.
+
+**And the mechanism that was missing.** `CLAUDE.md`'s tool-upgrade rule watches
+two id-shaped drifts — a renamed rule-id, a changed suppression syntax — and the
+drift-guard mechanises the existence half of both. Neither can see the third
+failure mode: **an analyzer that still runs, still exits 0, and still reports —
+wrongly.** `test/drift/stryker-runner.test.ts` now runs real stryker through the
+vitest runner over code whose tests kill every mutant, and asserts kills come
+back. Verified both ways: passes on vitest 4, fails on vitest 5 with 14 unrun
+survivors. It is the only test in the suite that would have failed on a
+`vitest@5` bump.
+
+**3. The seed-ordering trap — fixed with a pointer, not a rewrite.**
+`seedOnceEntries` gates the three analyzer configs on the provider already being
+declared, so a bare greenfield `init --apply` — the README quickstart, i.e. the
+default path — writes no `knip.json`, `stryker.conf.json` or
+`.dependency-cruiser.cjs`. Install the analyzers next and the first `verify`
+reports `analyzer-failed` for dependency-cruiser carrying upstream's own advice:
+`npx dependency-cruiser --init`, which writes a different config than the seed.
+
+The gating is right (a seed-once file written for a tool nobody asked for is one
+`init` can never clean up); the pointer was missing. `silentSkipWarning` already
+fires in exactly this state, from `verify` and every enforcing rung, and now
+names `guardrails init --apply` as the second half of the fix.
+
+**4. `git -c core.hooksPath=… commit` walked past the Bash gate — fixed.**
+`GIT_WRITE` required `git` to be immediately followed by the subcommand, so
+every global option in between was a miss. `git -C <path> commit` was a
+documented, accepted miss because the repo's hooks still run. This one is not in
+that class: it **defeats** the hook floor, and it is the exact bypass the
+scaffolded `AGENTS.md` forbids by name — an instruction naming a bypass the hook
+cannot see is worse than no instruction. The matcher learned git's global
+options (`-c`/`-C` take a separate value token; everything else is one token),
+stayed a command-position test rather than a shell parser, and prose still
+returns in 0.03s.
+
+**5. `reports/stryker-incremental.json` was committed by the first
+`git add -A` — fixed.** Stryker's `incrementalFile` default is not under
+`reports/mutation/`, which is all the seeded block covered. **Not a gate
+fail-open**, which an earlier draft of this note got wrong: `runStryker` deletes
+that file before every run, so guardrails' own invocation is always a fresh one.
+What it cost was a committed cache that churns on every run, and stale verdicts
+for anyone running `npx stryker run` by hand.
+
+**Three more, surfaced by running the upgraded gate on ourselves.**
+
+- **ESLint 10 resolves config files per directory**, so it walked into the 11
+  nested `.claude/worktrees/` and loaded _their_ `eslint.config.js` — one of
+  which named a rule id this upgrade renamed, failing the whole run with a
+  schema error pointing at a file that is not this checkout's. The same
+  untracked-but-not-ignored class as the nested-worktree finding above, on a new
+  surface; worktrees and `.stryker-tmp` are now in eslint's ignore list.
+- **The drift guards cannot run inside our own mutation run.** ESLint 10 +
+  typescript-eslint's project service use worker threads that die in a stryker
+  worker (`Cannot destructure property 'mod' of 'threads.workerData'`), and the
+  new runner guard nests a vitest in a vitest. Either aborts stryker's dry run,
+  which the gate then reports as `analyzer-failed` — a broken mutation gate
+  caused by tests with nothing to say about mutants. Both now stand down there,
+  sharing one documented rule, and still run everywhere else.
+- **Test-directory helpers and executable entries were mutated as production
+  code.** `isTestFile` matched only `*.test.ts`/`*.spec.ts`, so a helper module
+  a test imports was classed production and reported `no-coverage`; it now also
+  counts any file under a `test`/`tests`/`__tests__` directory, matching whole
+  segments so `src/testing/latest.ts` stays production. And a file whose first
+  line is a `#!` shebang is run as a program, never imported, so every mutant in
+  it is `no-coverage` by construction — `guardrails-core/src/cli.ts` produced 14
+  of them. Excluded from mutation only, exactly as `isConfigFile` already is;
+  eslint and tsc still check both.
+
+**A ReDoS in the fix itself, caught in review — and the lint hole that let it
+through.** Extending `GIT_WRITE` with git's global options introduced
+`(?:-[cC][ \t]+[^ \t]+|-[^ \t]+))*`, whose two alternatives can tile the same
+token run two ways (`-c -c` as one flag-plus-value, or as two flags). That is
+`(a|aa)*`: Fibonacci(k) equivalent partitions, all of which a failing match must
+exhaust. Measured on the merged pattern before the fix — 0.5ms at 20 tokens,
+2.9ms at 24, **5.69s at 40, 51s at 64** — on `input.command` from the Bash
+PreToolUse hook, the agent's highest-frequency tool. A long enough command
+would have hung the session, which is the same denial-of-service the anchoring
+fix in the third adoption was meant to end.
+
+Requiring a `-c` VALUE to start with a non-`-` character leaves exactly one
+parse and makes the run linear: 0.02ms at n=1000.
+
+The finding that outlasts the bug is **why the linter did not catch it**. This
+repo's own `sonarjs` rejected the previous super-linear pattern before it
+landed; this one got past because the literal had been split into `String.raw`
+fragments to get it under `sonarjs/regex-complexity`'s ceiling — and a pattern
+assembled at runtime is invisible to static analysis. Satisfying the complexity
+rule removed the pattern from the rule's own view. Pinned by an adversarial
+TIMING test instead, because the property is "no exponential path exists",
+which no example input can state.
+
+**Left for the roadmap.**
+
+- **The knip/`command`-runner catch-22 is now unsatisfiable.** With
+  `testRunner: "command"`, knip reports `@stryker-mutator/command-runner` as an
+  unlisted dependency — and on stryker 10 that package **does not exist** (404;
+  it is bundled into core). The documented resolution, swapping in the framework
+  runner, is what §6.4's vitest pin makes safe again. Revisit if the seed's
+  default runner changes.
+- **No release exists**, so every documented install URL still 404s. Unchanged
+  across four adoptions; still the one blocker no code change clears.
+
+**Verified from the tarball, after the fixes.** The same end-to-end script was
+re-run on a bare repo against the packed tarball built from this branch, with
+the analyzer set at the versions the corrected guidance now pins:
+
+- `init --apply` on the bare repo named `guardrails init --apply` as the second
+  half of the fix in its skipped-analyzer warning, and the re-run after
+  installing the analyzers seeded all three configs.
+- **The exit criterion is reachable in one pass.** Author `tsconfig.json` and
+  `eslint.config.js`, swap in the framework runner as step 5 says, and `verify`
+  goes green — no knip catch-22, no `analyzer-failed`, no hand-editing. The
+  first commit gated correctly on the unborn branch under `enforcement: block`.
+- **The mutation gate reports honestly on both sides.** A vacuous
+  `expect(tier(200)).toBeTypeOf('string')` produced 11 real mutation findings;
+  strengthening the test cleared them.
+- **And the guard does its job on the stack that breaks.** Raising the same
+  repo to vitest 5 turned what would have been **17 false `stryker/survived`
+  violations sent to the fixer** into one `guardrails/analyzer-failed` naming
+  the cause and the upstream issue. Dropping back to vitest 4 returns it to
+  clean, same code and same tests.
+- `git -c core.hooksPath=/dev/null commit` is denied on a dirty tree; an
+  unrelated shell command still passes silently; and
+  `reports/stryker-incremental.json` is ignored.

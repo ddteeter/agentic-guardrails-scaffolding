@@ -31,7 +31,9 @@ import { auditSource, findingKey } from './audit.js';
 import type { SanctionedSuppression } from './config.js';
 import type { Violation } from './violation.js';
 
-/** A sanction's occurrence budget: the declared `count`, defaulting to 1. */
+/**
+A sanction's occurrence budget: the declared `count`, defaulting to 1.
+*/
 function effectiveCount(sanction: SanctionedSuppression): number {
   return sanction.count ?? 1;
 }
@@ -55,9 +57,13 @@ function totalsByKey(
  * whose total granted count increased on this branch. */
 export interface SanctionGrant {
   key: string;
-  /** Total occurrence budget now granted for this key (all entries summed). */
+  /**
+  Total occurrence budget now granted for this key (all entries summed).
+  */
   count: number;
-  /** `reason` text of every entry granting this key, in config order. */
+  /**
+  `reason` text of every entry granting this key, in config order.
+  */
   reasons: readonly string[];
 }
 
@@ -120,7 +126,9 @@ export function toMalformedViolations(
   }));
 }
 
-/** One key whose declared budget no longer matches the source. */
+/**
+One key whose declared budget no longer matches the source.
+*/
 export interface SanctionCountDrift {
   key: string;
   declared: number;
@@ -148,7 +156,9 @@ export interface SanctionCountDrift {
  * A file that cannot be read counts as zero occurrences, which is the deleted-
  * file case and should be reported, not skipped.
  */
-/** Sum each key's declared budget (default 1) across every entry granting it. */
+/**
+Sum each key's declared budget (default 1) across every entry granting it.
+*/
 function declaredTotals(
   sanctions: readonly SanctionedSuppression[],
 ): Map<string, number> {
@@ -162,11 +172,13 @@ function declaredTotals(
   return totals;
 }
 
-/** Group keys by the file they name, so each file is read and audited once. */
+/**
+Group keys by the file they name, so each file is read and audited once.
+*/
 function groupKeysByFile(keys: Iterable<string>): Map<string, string[]> {
   const byFile = new Map<string, string[]>();
   for (const key of keys) {
-    const file = key.split('|')[0] ?? '';
+    const file = key.split('|', 1)[0] ?? '';
     const existing = byFile.get(file);
     // Push into the existing list rather than rebuilding from a `?? []`
     // default: the default-array form yields an equivalent mutant, this shape
@@ -180,7 +192,9 @@ function groupKeysByFile(keys: Iterable<string>): Map<string, string[]> {
   return byFile;
 }
 
-/** Occurrences of each suppression key actually present in one file. */
+/**
+Occurrences of each suppression key actually present in one file.
+*/
 function actualCounts(
   file: string,
   source: string | undefined,

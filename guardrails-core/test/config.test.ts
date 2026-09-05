@@ -141,7 +141,9 @@ describe('toGateConfig', () => {
   });
 });
 
-/** Write a repo config file into the per-test temp root. */
+/**
+Write a repo config file into the per-test temp root.
+*/
 function writeConfig(contents: string): void {
   writeFileSync(path.join(root, 'guardrails.config.json'), contents);
 }
@@ -230,7 +232,7 @@ describe('loadConfig mutation-hardening', () => {
         sanctionedSuppressions: [
           { key: 'a.ts|cast-any|x', reason: 'proven equivalent mutant' },
           { key: 'b.ts|cast-any|y' },
-          { key: 'c.ts|cast-any|z', reason: '   ' },
+          { key: 'c.ts|cast-any|z', reason: ' '.repeat(3) },
           'd.ts|cast-any|w',
           { reason: 'no key' },
           7,
@@ -359,7 +361,7 @@ describe('parseSanctionsJson', () => {
         sanctionedSuppressions: [
           { key: 'a.ts|x|y', reason: 'reviewed' },
           { key: 'b.ts|x|y' },
-          { key: 'c.ts|x|y', reason: '   ' },
+          { key: 'c.ts|x|y', reason: ' '.repeat(3) },
           { reason: 'no key' },
           { key: 'd.ts|x|y', reason: 'reviewed', count: 0 },
           'e.ts|x|y',
@@ -381,7 +383,7 @@ describe('parseSanctionsJson', () => {
     // an untrimmed check would let "   " through as a "valid" key.
     const result = parseSanctionsJson(
       JSON.stringify({
-        sanctionedSuppressions: [{ key: '   ', reason: 'reviewed' }],
+        sanctionedSuppressions: [{ key: ' '.repeat(3), reason: 'reviewed' }],
       }),
     );
     expect(result.valid).toEqual([]);

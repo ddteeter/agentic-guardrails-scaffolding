@@ -28,6 +28,12 @@ interface StrykerMutant {
   status: string;
   mutatorName: string;
   location: { start: { line: number } };
+  /** Test ids stryker determined cover this mutant. Absent in reports from
+   *  runners that provide no per-test data. */
+  coveredBy?: string[];
+  /** How many tests actually EXECUTED during this mutant's run. The field that
+   *  separates "the tests ran and none failed" from "no test ran at all". */
+  testsCompleted?: number;
 }
 
 interface StrykerFile {
@@ -81,7 +87,9 @@ function isReport(
   );
 }
 
-/** Mutant status → (rule id, message tail). Absent status = not a failure. */
+/**
+Mutant status → (rule id, message tail). Absent status = not a failure.
+*/
 const FAILING_STATUSES: Record<string, { ruleId: string; reason: string }> = {
   Survived: {
     ruleId: 'stryker/survived',
@@ -120,35 +128,44 @@ function failureViolation(
  * completed-but-non-zero run (a `break` threshold) from a crash.
  */
 export function isStrykerReportJson(reportJson: string): boolean {
+  return parseReport(reportJson) !== undefined;
+}
+
+/**
+ * The one place this module turns a payload into a report, shared by all three
+ * public entry points.
+ *
+ * Shared rather than repeated because the `try`/`catch` carries a sanctioned
+ * equivalent-mutant directive: emptying either block leaves `parsed`
+ * undefined, which `isReport` rejects anyway, so no test can tell the
+ * difference. One copy is one sanctioned line; a second copy would have been a
+ * second, for no new behaviour.
+ */
+function parseReport(
+  reportJson: string,
+): { files: Record<string, StrykerFile> } | undefined {
   let parsed: unknown;
+  // A range directive is used because `disable next-line` only attaches to a
+  // statement-LEADING comment, and a `} catch {` line has none.
+  // Stryker disable BlockStatement
   try {
     parsed = JSON.parse(reportJson);
   } catch {
-    // Deliberately empty. Not-JSON-at-all and parsed-but-wrong-shape are the
-    // same answer, and `isReport(undefined)` below already gives it — an
-    // explicit `return false` here would be an equivalent mutant no test could
-    // ever kill.
+    return undefined;
   }
-  return isReport(parsed);
+  // Stryker restore BlockStatement
+  if (!isReport(parsed)) {
+    return undefined;
+  }
+  return parsed;
 }
 
 export function parseStrykerJson(
   reportJson: string,
   changedFiles: readonly string[],
 ): Violation[] {
-  let parsed: unknown;
-  // Equivalent mutants: emptying either block leaves `parsed` undefined, which
-  // `isReport` rejects below — the function still returns []. A range directive
-  // is used because `disable next-line` only attaches to a statement-LEADING
-  // comment, and a `} catch {` line has none.
-  // Stryker disable BlockStatement
-  try {
-    parsed = JSON.parse(reportJson);
-  } catch {
-    return [];
-  }
-  // Stryker restore BlockStatement
-  if (!isReport(parsed)) {
+  const parsed = parseReport(reportJson);
+  if (parsed === undefined) {
     return [];
   }
   const changed = new Set(changedFiles);
@@ -165,4 +182,66 @@ export function parseStrykerJson(
     }
   }
   return violations;
+}
+
+/**
+ * Is this mutant's `Survived` verdict unsupported by any test execution?
+ *
+ * Written as three separate answers rather than one `&&` chain on purpose. Each
+ * clause rules out a different, individually-tested shape, and stryker's
+ * per-test coverage attributes a sequence of early returns to the tests that
+ * actually reach each one — a three-clause condition on one line gets
+ * attributed as a unit, which is how a mutant on its middle clause survives
+ * against tests that do kill it.
+ */
+function isUnrunSurvivor(mutant: StrykerMutant): boolean {
+  if (mutant.status !== 'Survived') {
+    return false;
+  }
+  const covering = mutant.coveredBy?.length ?? 0;
+  if (covering === 0) {
+    return false;
+  }
+  return (mutant.testsCompleted ?? 0) === 0;
+}
+
+/**
+ * How many mutants in the changed set were reported `Survived` without a single
+ * covering test having run?
+ *
+ * A `Survived` verdict means "every covering test executed and none failed". If
+ * `coveredBy` is non-empty and `testsCompleted` is zero, the second half never
+ * happened: the runner returned an unexamined default, and the verdict is not
+ * evidence of anything. `@stryker-mutator/vitest-runner` does exactly this on
+ * vitest 5 (stryker-js#6210 — the per-test name filter stopped matching, so
+ * every mutant run executes nothing), and has three more open bugs in the same
+ * family. Upstream proposes the same invariant for itself in #6146.
+ *
+ * `NoCoverage` is deliberately excluded: running no tests is what that status
+ * MEANS, and it is reported on its own merits by `parseStrykerJson`.
+ *
+ * A missing `testsCompleted` counts as unrun. Every runner that reports a
+ * `Survived` mutant it actually exercised emits the field; treating its absence
+ * as "probably fine" would fail open on precisely the malformed report this
+ * guard exists to catch.
+ */
+export function unrunSurvivedMutants(
+  reportJson: string,
+  changedFiles: readonly string[],
+): number {
+  const parsed = parseReport(reportJson);
+  if (parsed === undefined) {
+    return 0;
+  }
+  const changed = new Set(changedFiles);
+  let count = 0;
+  for (const [file, fileResult] of Object.entries(parsed.files)) {
+    if (!changed.has(file)) {
+      continue;
+    }
+    count += fileResult.mutants.filter((mutant) =>
+      isUnrunSurvivor(mutant),
+    ).length;
+  }
+  return count;
 }

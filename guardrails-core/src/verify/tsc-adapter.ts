@@ -31,26 +31,25 @@ export function parseTscOutput(stdout: string, repoRoot: string): Violation[] {
       continue;
     }
     const [, rawFile, lineNumber, code, message] = match;
-    const file =
-      // `path.isAbsolute(rawFile ?? '')` leads (not `rawFile !== undefined`)
-      // so the equivalent mutant below sits on its own line: Stryker's
-      // disable comments match by mutator + line, and the leftmost clause of
-      // an `&&` chain always shares its start line with the whole chain
-      // (measured; see guardrails.config.json). `?? ''` here is just to keep
-      // this clause reorderable without relying on the narrowing the
-      // original order provided — `path.isAbsolute('')` is `false`, so an
-      // undefined `rawFile` still short-circuits the `&&` to `false` exactly
-      // as before.
-      path.isAbsolute(rawFile ?? '') &&
+    // Bound to a name, and broken across lines, so two constraints can hold at
+    // once. `unicorn/prefer-simple-condition-first` wants the cheap
+    // `rawFile !== undefined` test to lead; Stryker's disable comments match by
+    // mutator + LINE, and the leftmost clause of an `&&` chain shares its start
+    // line with the whole chain (measured; see guardrails.config.json) — so
+    // leading with it inside the condition would put the directive on a line
+    // carrying both clauses and suppress the killable `path.isAbsolute` mutant
+    // too. Starting the expression on its own line gives each clause a line.
+    const isAbsoluteDiagnosticPath =
       // Equivalent mutant: `rawFile` is `match[1]`, the DIAGNOSTIC regex's
       // first capture group. That group is mandatory (`(.+)`, not optional
       // and not behind an alternation), so whenever `match` is non-null,
       // `rawFile` is already guaranteed to be a defined string — no input can
       // make `rawFile === undefined` while `match` still succeeds.
       // Stryker disable next-line ConditionalExpression
-      rawFile !== undefined
-        ? path.relative(repoRoot, rawFile)
-        : (rawFile ?? '');
+      rawFile !== undefined && path.isAbsolute(rawFile);
+    const file = isAbsoluteDiagnosticPath
+      ? path.relative(repoRoot, rawFile)
+      : (rawFile ?? '');
     violations.push({
       ruleId: code ?? 'tsc/unknown',
       file,

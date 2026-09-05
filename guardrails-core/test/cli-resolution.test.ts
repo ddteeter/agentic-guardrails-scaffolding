@@ -43,7 +43,9 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
-/** Install a synthetic guardrails-core into `<where>/node_modules`. */
+/**
+Install a synthetic guardrails-core into `<where>/node_modules`.
+*/
 function install(where: string): string {
   const installed = path.join(where, 'node_modules', 'guardrails-core', 'dist');
   mkdirSync(installed, { recursive: true });
@@ -77,7 +79,9 @@ interface Probe {
   stderr: string;
 }
 
-/** Run the exact invocation the hook configs generate, from `cwd`. */
+/**
+Run the exact invocation the hook configs generate, from `cwd`.
+*/
 function probe(cwd: string): Probe {
   const result = spawnSync(
     process.execPath,

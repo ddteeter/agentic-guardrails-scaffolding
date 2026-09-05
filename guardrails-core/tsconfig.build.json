@@ -1,0 +1,21 @@
+{
+  // Declarations only. tsup bundles the JS; its dts pass cannot parse
+  // TypeScript 6 (`Error: error occurred in dts build`) and tsup 8.5.1 is the
+  // latest release, so `tsc` emits the type output instead. See
+  // docs/superpowers/specs/2026-09-05-mutation-integrity-and-stack-upgrade-design.md
+  // §5.3.
+  //
+  // Runs AFTER tsup in the `build` script: tsup cleans `dist/`, so emitting
+  // first would throw the declarations away.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "emitDeclarationOnly": true,
+    "declaration": true,
+    "declarationMap": true,
+    "rootDir": "src",
+    "outDir": "dist"
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": []
+}

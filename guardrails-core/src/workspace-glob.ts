@@ -8,13 +8,19 @@
  * Guessing is not — a wrong match silently corrupts recurrence memory.
  */
 
-/** Syntax we do not implement: braces, character classes, `?`, extglobs. */
+/**
+Syntax we do not implement: braces, character classes, `?`, extglobs.
+*/
 const UNSUPPORTED = /[{}[\]()?+]/;
 
 export interface ParsedGlob {
-  /** A leading `!` marks an exclusion, applied after the positive matches. */
+  /**
+  A leading `!` marks an exclusion, applied after the positive matches.
+  */
   negated: boolean;
-  /** `directory` is repo-relative and slash-separated, with no trailing slash. */
+  /**
+  `directory` is repo-relative and slash-separated, with no trailing slash.
+  */
   matches: (directory: string) => boolean;
 }
 
@@ -22,7 +28,9 @@ function escapeLiteral(text: string): string {
   return text.replaceAll(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`);
 }
 
-/** `*` matches within one segment; `**` spans segments. */
+/**
+`*` matches within one segment; `**` spans segments.
+*/
 function segmentToPattern(segment: string): string {
   if (segment === '**') {
     return '.*';
@@ -34,8 +42,8 @@ function segmentToPattern(segment: string): string {
 }
 
 export function parseWorkspaceGlob(glob: string): ParsedGlob | undefined {
-  const negated = glob.startsWith('!');
-  let body = negated ? glob.slice(1) : glob;
+  const isNegated = glob.startsWith('!');
+  let body = isNegated ? glob.slice(1) : glob;
   while (body.endsWith('/')) {
     body = body.slice(0, -1);
   }
@@ -47,5 +55,8 @@ export function parseWorkspaceGlob(glob: string): ParsedGlob | undefined {
     .map((segment) => segmentToPattern(segment))
     .join('/');
   const pattern = new RegExp(`^${source}$`);
-  return { negated, matches: (directory) => pattern.test(directory) };
+  return {
+    negated: isNegated,
+    matches: (directory) => pattern.test(directory),
+  };
 }

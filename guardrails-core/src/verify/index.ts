@@ -69,7 +69,11 @@ import {
 } from './git.js';
 import { parseKnipJson } from './knip-adapter.js';
 import { parseNpmLsJson } from './npm-peers-adapter.js';
-import { isStrykerReportJson, parseStrykerJson } from './stryker-adapter.js';
+import {
+  isStrykerReportJson,
+  parseStrykerJson,
+  unrunSurvivedMutants,
+} from './stryker-adapter.js';
 import { parseTscOutput } from './tsc-adapter.js';
 
 export interface VerifyOptions {
@@ -252,7 +256,7 @@ function withExitCodeCheck(
  *  `spawnFailed !== true` half would be unreachable code that no test can
  *  exercise — and mutation testing says so. A tool that could not be STARTED is
  *  still reported only as `analyzer-missing`, never also as `analyzer-failed`. */
-function gitCallFailed(result: ExecResult): boolean {
+function didGitCallFail(result: ExecResult): boolean {
   return result.code !== 0;
 }
 
@@ -273,7 +277,7 @@ async function changedTypeScriptFiles(
     if (staged.spawnFailed === true) {
       return { files: [], violations: [] };
     }
-    if (gitCallFailed(staged)) {
+    if (didGitCallFail(staged)) {
       return {
         files: [],
         violations: [
@@ -336,7 +340,7 @@ async function changedTypeScriptFiles(
   // Neither invocation's exit code carries a "findings" case (unlike the
   // analyzers above) — a non-zero git exit is always a failure.
   const failedGitCall = [tracked, untracked].find((result) =>
-    gitCallFailed(result),
+    didGitCallFail(result),
   );
   if (failedGitCall !== undefined) {
     return {
@@ -599,8 +603,37 @@ export function instrumentedMutantCount(output: string): number | undefined {
 
 /** Did stryker explicitly report instrumenting zero mutants? Absence of the
  *  banner is NOT a zero reading — an unrecognised output must fail closed. */
-export function instrumentedZeroMutants(output: string): boolean {
+export function isZeroMutantRun(output: string): boolean {
   return instrumentedMutantCount(output) === 0;
+}
+
+/**
+ * Stryker completed and wrote a report, but the verdicts in it are not
+ * evidence: every one of these mutants was covered by tests that never
+ * executed.
+ *
+ * Reported once for the RUN rather than once per mutant, because the finding is
+ * about the runner and not about any mutant — N copies of "your runner is
+ * broken" is the context flood the terse-pointer design exists to prevent. And
+ * reported at all, rather than dropped, because a silent empty result would be
+ * a fail-open on the analyzer this pack most depends on.
+ */
+function strykerUnrunMutantsViolation(count: number): Violation {
+  return {
+    ruleId: 'guardrails/analyzer-failed',
+    file: 'package.json',
+    message:
+      `stryker reported ${count} mutant(s) as "survived" whose covering tests ` +
+      `never ran (testsCompleted: 0), so those verdicts are not evidence of ` +
+      `anything — treating the mutation check as failed, not clean. This is ` +
+      `the signature of a broken test-runner integration, not of weak tests: ` +
+      `@stryker-mutator/vitest-runner does it on vitest 5 (stryker-js#6210). ` +
+      `Check that your testRunner and its plugin support the installed major ` +
+      `of your test framework.`,
+    severity: 'error',
+    fixable: false,
+    tool: 'guardrails',
+  };
 }
 
 function strykerReportMissingViolation(reportPath: string): Violation {
@@ -661,21 +694,61 @@ function strykerReportMissingViolation(reportPath: string): Violation {
  *     explicit zero reading buys this, because a suite that genuinely cannot
  *     run reports the identical error.
  *  3. Anything else → `analyzer-failed`. */
+/**
+ * Drops executable entry points from the mutation set.
+ *
+ * A file whose first line is a `#!` shebang is run as a PROGRAM, never
+ * imported, so no unit test can exercise it in-process and every mutant in it
+ * comes back `no-coverage` by construction -- work handed to a fixer that it
+ * cannot honestly do, and whose only honest resolutions are a sanctioned
+ * suppression or a stryker exclusion the adopter has to know to write.
+ *
+ * Mutation only: eslint and tsc still check these files, which is where a CLI
+ * shim's real defects surface. Exactly the treatment, and the reasoning, that
+ * `isConfigFile` already applies to `*.config.ts`.
+ *
+ * A file that cannot be read is KEPT in the set: failing toward more checking
+ * is the rule everywhere else in this module, and a stryker run over a file
+ * that has since vanished is a harmless no-op.
+ */
+async function excludeExecutableEntries(
+  files: readonly string[],
+  repoRoot: string,
+  readFile: (filePath: string) => Promise<string>,
+): Promise<string[]> {
+  const verdicts = await Promise.all(
+    files.map(async (file) => {
+      try {
+        const content = await readFile(path.join(repoRoot, file));
+        return !content.startsWith('#!');
+      } catch {
+        return true;
+      }
+    }),
+  );
+  return files.filter((_, index) => verdicts[index] === true);
+}
+
 async function runStryker(
   options: VerifyOptions,
   resolveBin: (tool: string) => string,
   files: string[],
 ): Promise<Violation[]> {
-  const production = files.filter(
+  const { exec, repoRoot } = options;
+  const readFile =
+    options.readFile ?? ((filePath) => fsReadFile(filePath, 'utf8'));
+  const candidates = files.filter(
     (file) =>
       isTypeScriptFile(file) && !isTestFile(file) && !isConfigFile(file),
+  );
+  const production = await excludeExecutableEntries(
+    candidates,
+    repoRoot,
+    readFile,
   );
   if (production.length === 0) {
     return [];
   }
-  const { exec, repoRoot } = options;
-  const readFile =
-    options.readFile ?? ((filePath) => fsReadFile(filePath, 'utf8'));
   const removeFile =
     options.removeFile ?? ((filePath) => fsRm(filePath, { force: true }));
   const reportPath = STRYKER_REPORT_PATH;
@@ -711,14 +784,19 @@ async function runStryker(
     // Deliberately empty; a missing report is one of the outcomes decided below.
   }
   // Outcome 1: a parseable report means the run reached its reporter, so its
-  // findings are the answer no matter what the exit code was.
+  // findings are the answer no matter what the exit code was -- unless the
+  // verdicts in it were never produced by a test run at all.
   if (isStrykerReportJson(report)) {
+    const unrun = unrunSurvivedMutants(report, production);
+    if (unrun > 0) {
+      return [strykerUnrunMutantsViolation(unrun)];
+    }
     return parseStrykerJson(report, production);
   }
   if (result.code !== 0) {
     // Outcome 2: nothing to mutate is vacuously clean, even though the runner
     // threw on its way to discovering that.
-    if (instrumentedZeroMutants(`${result.stdout}\n${result.stderr}`)) {
+    if (isZeroMutantRun(`${result.stdout}\n${result.stderr}`)) {
       return [];
     }
     // Outcome 3.
@@ -906,6 +984,19 @@ export function silentlySkippedAnalyzers(
  * Names both halves — the tool a consumer configures and the package they
  * install — and both fixes, since either is legitimate: install it, or say
  * `required` and let the absence block.
+ *
+ * It also names `init --apply`, because installing the provider is only half of
+ * what an analyzer needs. `init` seeds a starter config ONLY for an analyzer
+ * the repo already declares (`seedOnceEntries` gates on `analyzerAsked`), which
+ * is deliberate — a seed-once file written for a tool nobody asked for is one
+ * `init` can never clean up. The consequence is that a bare greenfield
+ * `init --apply` writes no `knip.json`, `stryker.conf.json` or
+ * `.dependency-cruiser.cjs`, and the adopter who installs those tools next
+ * meets `analyzer-failed` from dependency-cruiser with upstream's own
+ * `npx dependency-cruiser --init` attached — advice that writes a DIFFERENT
+ * config than the seed. Measured on a real greenfield adoption. The gating
+ * stays; this is the pointer it was missing, and it prints from `verify` and
+ * every enforcing rung, not only from `init`.
  */
 export function silentSkipWarning(
   silent: readonly (readonly [string, string])[],
@@ -916,8 +1007,10 @@ export function silentSkipWarning(
   return (
     `these analyzers are enabled but their provider package is not in ` +
     `package.json, so each is skipped and verify reports clean without ` +
-    `running it: ${named}. Install the ones you want, or set them ` +
-    `"required" in guardrails.config.json so a missing one blocks instead.`
+    `running it: ${named}. Install the ones you want, then re-run ` +
+    `\`guardrails init --apply\` to seed the starter config each one needs. ` +
+    `Or set them "required" in guardrails.config.json so a missing one blocks ` +
+    `instead.`
   );
 }
 
@@ -1039,7 +1132,7 @@ function selectAnalyzers(
     if (RUNG_ORDER[profile] < RUNG_ORDER[analyzer.minRung]) {
       continue;
     }
-    if (analyzer.scope === 'changed-files' && !hasChangedFiles) {
+    if (!hasChangedFiles && analyzer.scope === 'changed-files') {
       continue;
     }
     // `analyzer.provider` is already `string | undefined`, so a provider-less
@@ -1084,15 +1177,16 @@ export async function runVerify(options: VerifyOptions): Promise<VerifyResult> {
     );
   violations.push(...unknownAnalyzerViolations(analyzers));
 
-  for (const { analyzer, missingProvider } of selectAnalyzers(
+  const selected = selectAnalyzers(
     analyzers,
     declared,
     profile,
     files.length > 0,
-  )) {
+  );
+  for (const { analyzer, missingProvider } of selected) {
     const before = failures.length;
     violations.push(...(await analyzer.run(tracked, resolveBin, files)));
-    if (failures.length > before && missingProvider !== undefined) {
+    if (missingProvider !== undefined && failures.length > before) {
       violations.push(missingToolViolation(analyzer.tool, missingProvider));
     }
   }

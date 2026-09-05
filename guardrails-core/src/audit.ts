@@ -29,10 +29,14 @@ export type AuditKind =
 
 export interface AuditFinding {
   file: string;
-  /** 1-indexed line in the new (post-fix) file. */
+  /**
+  1-indexed line in the new (post-fix) file.
+  */
   line: number;
   kind: AuditKind;
-  /** The offending added line, trimmed. */
+  /**
+  The offending added line, trimmed.
+  */
   text: string;
 }
 
@@ -187,13 +191,19 @@ function isQuoteChar(ch: string): boolean {
 }
 
 interface BlockComment {
-  /** Index just past the closing `*\/` (or end-of-line if unclosed). */
+  /**
+  Index just past the closing `*\/` (or end-of-line if unclosed).
+  */
   end: number;
-  /** Trimmed text between `/*` and `*\/`. */
+  /**
+  Trimmed text between `/*` and `*\/`.
+  */
   content: string;
 }
 
-/** Parse a single-line `/* *\/` block comment starting at `index`. */
+/**
+Parse a single-line `/* *\/` block comment starting at `index`.
+*/
 function scanBlockComment(text: string, index: number): BlockComment {
   const close = text.indexOf('*/', index + 2);
   const contentEnd = close === -1 ? text.length : close;
@@ -201,7 +211,9 @@ function scanBlockComment(text: string, index: number): BlockComment {
   return { end, content: text.slice(index + 2, contentEnd).trim() };
 }
 
-/** Lex one line into every comment's content (leading or trailing) and code-only text. */
+/**
+Lex one line into every comment's content (leading or trailing) and code-only text.
+*/
 function lexLine(text: string): LineLex {
   let code = '';
   const commentContents: string[] = [];
@@ -210,7 +222,7 @@ function lexLine(text: string): LineLex {
 
   while (index < length) {
     const ch = text.charAt(index);
-    if (isQuoteChar(ch) || ch === '`') {
+    if (ch === '`' || isQuoteChar(ch)) {
       const span = consumeStringSpan(text, index, ch);
       code += span.code;
       index = span.end;
@@ -259,7 +271,9 @@ function consumeStringSpan(
   return { end: findStringEnd(text, index, ch), code: '' };
 }
 
-/** Find the index just past a string literal starting at `start` (the quote char). */
+/**
+Find the index just past a string literal starting at `start` (the quote char).
+*/
 function findStringEnd(text: string, start: number, quote: string): number {
   let index = start + 1;
   const length = text.length;
@@ -350,7 +364,7 @@ function scanInterpolation(
 
   while (index < length) {
     const ch = text.charAt(index);
-    if (isQuoteChar(ch) || ch === '`') {
+    if (ch === '`' || isQuoteChar(ch)) {
       index = findStringEnd(text, index, ch);
       continue;
     }
@@ -375,10 +389,14 @@ function scanInterpolation(
   return { end: length, code };
 }
 
-/** Punctuators after which a `/` starts a regex literal, not a division. */
+/**
+Punctuators after which a `/` starts a regex literal, not a division.
+*/
 const REGEX_PRECEDING_PUNCTUATORS = new Set('([{,;:=!&|?+-*%^~<>');
 
-/** True when a `/` at the end of `precedingCode` would start a regex literal. */
+/**
+True when a `/` at the end of `precedingCode` would start a regex literal.
+*/
 function isRegexStart(precedingCode: string): boolean {
   const trimmed = precedingCode.trimEnd();
   if (trimmed === '') {
@@ -390,11 +408,13 @@ function isRegexStart(precedingCode: string): boolean {
   return REGEX_PRECEDING_PUNCTUATORS.has(trimmed.at(-1) ?? '');
 }
 
-/** Find the index just past a regex literal (including flags) starting at `start` (the `/`). */
+/**
+Find the index just past a regex literal (including flags) starting at `start` (the `/`).
+*/
 function findRegexEnd(text: string, start: number): number {
   let index = start + 1;
   const length = text.length;
-  let inCharClass = false;
+  let isInCharClass = false;
   while (index < length) {
     const ch = text.charAt(index);
     if (ch === '\\') {
@@ -402,10 +422,10 @@ function findRegexEnd(text: string, start: number): number {
       continue;
     }
     if (ch === '[') {
-      inCharClass = true;
+      isInCharClass = true;
     } else if (ch === ']') {
-      inCharClass = false;
-    } else if (ch === '/' && !inCharClass) {
+      isInCharClass = false;
+    } else if (ch === '/' && !isInCharClass) {
       return skipRegexFlags(text, index + 1);
     }
     index += 1;
@@ -413,7 +433,9 @@ function findRegexEnd(text: string, start: number): number {
   return length;
 }
 
-/** Advance past trailing regex flags (`g`, `i`, `m`, …) after the closing `/`. */
+/**
+Advance past trailing regex flags (`g`, `i`, `m`, …) after the closing `/`.
+*/
 function skipRegexFlags(text: string, start: number): number {
   let index = start;
   while (index < text.length && /[a-z]/i.test(text.charAt(index))) {
@@ -440,7 +462,9 @@ function matchSignature(text: string): AuditKind | undefined {
 
 const HUNK_HEADER = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/;
 
-/** The `b/path` (or `a/path`) target of a `+++`/`---` header, prefix stripped. */
+/**
+The `b/path` (or `a/path`) target of a `+++`/`---` header, prefix stripped.
+*/
 function headerPath(line: string): string {
   return line
     .slice(4)
@@ -448,7 +472,9 @@ function headerPath(line: string): string {
     .trim();
 }
 
-/** Scan the added lines of a unified diff for gate-cheating signatures. */
+/**
+Scan the added lines of a unified diff for gate-cheating signatures.
+*/
 export function auditDiff(diffText: string): AuditFinding[] {
   const findings: AuditFinding[] = [];
   let file = '';

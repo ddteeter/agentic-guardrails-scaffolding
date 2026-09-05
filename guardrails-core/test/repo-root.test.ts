@@ -9,7 +9,9 @@ import { findGitRoot, resolveRepoRoot } from '../src/repo-root.js';
 
 const ok = (stdout: string): ExecResult => ({ stdout, stderr: '', code: 0 });
 
-/** An `Exec` fake that always resolves to the given result, ignoring its call. */
+/**
+An `Exec` fake that always resolves to the given result, ignoring its call.
+*/
 function constantExec(result: ExecResult): Exec {
   return () => Promise.resolve(result);
 }
@@ -20,7 +22,9 @@ interface RecordedCall {
   cwd: string | undefined;
 }
 
-/** An `Exec` fake that records every call it receives. */
+/**
+An `Exec` fake that records every call it receives.
+*/
 function recordingExec(result: ExecResult): {
   exec: Exec;
   calls: RecordedCall[];

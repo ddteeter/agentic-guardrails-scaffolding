@@ -24,12 +24,16 @@ import type {
 import type { GateDecision } from './gate-decision.js';
 import { upwardFrom } from './path-walk.js';
 
-/** Our normalized (camelCase) view of the fields we read from the payload. */
+/**
+Our normalized (camelCase) view of the fields we read from the payload.
+*/
 export interface HookInput {
   sessionId?: string;
   cwd?: string;
   filePath?: string;
-  /** Every path named by a Codex `apply_patch` payload. */
+  /**
+  Every path named by a Codex `apply_patch` payload.
+  */
   filePaths?: readonly string[];
   toolName?: string;
   command?: string;
@@ -87,7 +91,9 @@ export function hookFilePaths(input: HookInput): string[] {
   return [...paths];
 }
 
-/** The raw payload fields we read, typed against the SDK schema. */
+/**
+The raw payload fields we read, typed against the SDK schema.
+*/
 type RawHookPayload = Partial<
   // `agent_id`/`agent_type` are picked from the SDK type rather than declared
   // locally, so a rename upstream breaks this build instead of silently
@@ -111,7 +117,9 @@ type RawHookPayload = Partial<
  */
 interface CopilotHookPayload {
   sessionId?: unknown;
-  /** Present on `subagentStop`, absent on `preToolUse` -- see `HookInput`. */
+  /**
+  Present on `subagentStop`, absent on `preToolUse` -- see `HookInput`.
+  */
   agentId?: unknown;
   agentType?: unknown;
   workingDirectory?: unknown;
@@ -124,7 +132,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-/** First candidate that is a string, else undefined. */
+/**
+First candidate that is a string, else undefined.
+*/
 function firstString(...candidates: readonly unknown[]): string | undefined {
   for (const candidate of candidates) {
     if (typeof candidate === 'string') {
@@ -134,7 +144,9 @@ function firstString(...candidates: readonly unknown[]): string | undefined {
   return undefined;
 }
 
-/** The tool-argument bag: Claude's `tool_input` or Copilot's `toolArgs`. */
+/**
+The tool-argument bag: Claude's `tool_input` or Copilot's `toolArgs`.
+*/
 function selectArguments(
   claude: RawHookPayload,
   copilot: CopilotHookPayload,
@@ -208,7 +220,9 @@ export function parseHookInput(stdin: string): HookInput {
   return input;
 }
 
-/** Claude Code hook output — the SDK's canonical synchronous shape. */
+/**
+Claude Code hook output — the SDK's canonical synchronous shape.
+*/
 export type HookOutput = SyncHookJSONOutput;
 
 /**

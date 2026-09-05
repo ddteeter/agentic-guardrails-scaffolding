@@ -35,7 +35,7 @@ export const spawnExec: Exec = (command, args, options) =>
       // strip inherited git variables (GIT_DIR / GIT_WORK_TREE / GIT_INDEX_FILE)
       // that git exports into hook processes — without it, a `git` spawned from
       // inside a hook would target the hook's repo regardless of `cwd`.
-      ...(options?.env === undefined ? {} : { env: options.env }),
+      ...(options?.env !== undefined && { env: options.env }),
       shell: false,
     });
     let stdout = '';
