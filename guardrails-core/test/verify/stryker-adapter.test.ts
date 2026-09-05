@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
-import { parseStrykerJson } from '../../src/verify/stryker-adapter.js';
+import {
+  isStrykerReportJson,
+  parseStrykerJson,
+} from '../../src/verify/stryker-adapter.js';
 
 const report = JSON.stringify({
   schemaVersion: '1.0',
@@ -231,5 +234,36 @@ describe('parseStrykerJson guard rejection', () => {
       files: { 'src/changed.ts': { mutants: [{ status: 'Survived' }] } },
     });
     expect(parseStrykerJson(shaped, changed)).toEqual([]);
+  });
+});
+
+describe('isStrykerReportJson', () => {
+  it('accepts a real report, empty or not', () => {
+    expect(isStrykerReportJson(report)).toBe(true);
+    expect(isStrykerReportJson(JSON.stringify({ files: {} }))).toBe(true);
+  });
+
+  it('rejects payloads that parse as JSON but are not a report', () => {
+    // This is the whole reason the predicate exists. `parseStrykerJson` answers
+    // `[]` for a malformed payload and for a genuinely empty report alike, so
+    // `runStryker` cannot use it to tell "the run completed and found nothing"
+    // from "what is at the report path is not a report" — and reading the
+    // second as the first is a silently clean mutation gate.
+    expect(isStrykerReportJson('{}')).toBe(false);
+    expect(isStrykerReportJson('null')).toBe(false);
+    expect(isStrykerReportJson('[]')).toBe(false);
+    expect(isStrykerReportJson('5')).toBe(false);
+    expect(isStrykerReportJson(JSON.stringify({ files: 'nope' }))).toBe(false);
+    expect(isStrykerReportJson(JSON.stringify({ files: { 'a.ts': {} } }))).toBe(
+      false,
+    );
+  });
+
+  it('rejects output that is not JSON at all', () => {
+    // A truncated or half-written file throws in `JSON.parse`; the catch must
+    // answer "not a report", never let the exception escape into the gate.
+    expect(isStrykerReportJson('')).toBe(false);
+    expect(isStrykerReportJson('{"files":')).toBe(false);
+    expect(isStrykerReportJson('<html>500</html>')).toBe(false);
   });
 });

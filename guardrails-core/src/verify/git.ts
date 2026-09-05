@@ -100,6 +100,24 @@ export function isTestFile(file: string): boolean {
   return /\.(test|spec)\.tsx?$/.test(file);
 }
 
+/**
+ * Config-as-TypeScript: `vitest.config.ts`, `eslint.config.mts`,
+ * `playwright.config.ts`, and every other `*.config.*ts` a modern TypeScript
+ * repo declares its tooling in.
+ *
+ * These are TypeScript and are not named `*.test.ts`, so a plain
+ * "TypeScript minus tests" production filter classes them as mutable source.
+ * Every mutant they yield is `NoCoverage` by construction — a config literal is
+ * read by a tool at startup, never by a test — so mutation-testing them hands
+ * the fixer violations no honest fix can clear, and the only exits left are a
+ * sanctioned suppression or a stryker `mutate` exclusion the adopter has to
+ * know to write. Excluded from MUTATION only: eslint and tsc still check these
+ * files, which is where their real defects surface.
+ */
+export function isConfigFile(file: string): boolean {
+  return /(^|\/)[^/]*\.config\.[cm]?tsx?$/.test(file);
+}
+
 const WORKTREE_PREFIX = 'worktree ';
 
 /**
