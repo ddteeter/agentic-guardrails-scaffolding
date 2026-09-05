@@ -23,7 +23,7 @@
     "templates"
   ],
   "scripts": {
-    "build": "tsup"
+    "build": "tsup && tsc -p tsconfig.build.json"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.5",
