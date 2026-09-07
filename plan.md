@@ -2586,6 +2586,34 @@ It is a separate issue because every analyzer here is _spawn a binary, parse its
 JSON_. That one has no binary, and under a `required` Stryker gate it would be
 the largest analyzer in the pack while owning detection rather than parsing.
 
+### Finding 3: the detector's token floor hides the most-duplicated function we have
+
+Raised in review of the PR: `verify/analyzer-policy.ts` still carried its own
+`isRecord`, byte-identical to the one just extracted. Checking rather than
+taking the one instance at face value, the repository holds **nine** definitions
+of that same one-line predicate:
+
+`config.ts` (exported, and carrying a Stryker suppression), `state-store.ts`,
+`hook-io.ts`, `workspaces.ts`, `package-root.ts`, `scaffold/record.ts`
+(exported), `verify/analyzer-policy.ts`, `verify/npm-peers-adapter.ts`, and the
+new `verify/report-shape.ts`.
+
+**The `dupes` analyzer reported none of them**, and correctly so: each copy is
+one statement, far under `minTokens: 50`. That floor exists to keep rhyming code
+out of the report, and the cost of it is exactly this — the single most-repeated
+function in the codebase is invisible. Worth stating because it bounds what the
+analyzer is for: it finds duplicated _blocks_, not duplicated _ideas_, and a
+short predicate copied nine times is the latter.
+
+Only the reviewer's instance was fixed here (`analyzer-policy.ts` now imports
+from `report-shape.ts`), because it is in a file this change already touches.
+The remaining seven are roadmapped rather than folded in: consolidating them
+crosses the `src/` ↔ `src/verify/` ↔ `src/scaffold/` layering (`report-shape.ts`
+sits under `verify/`, and `scaffold/record.ts` already exports a second copy for
+its own layer), it would collapse a Stryker suppression in `config.ts`, and it
+needs a mutation re-measurement across eight modules. That is its own change,
+and it should start by deciding where a shared JSON-shape guard actually lives.
+
 ### Known limit, stated
 
 The changed-file set is TypeScript-only (`changedTypeScriptFiles` filters on

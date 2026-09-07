@@ -15,6 +15,8 @@
  * worth proving, and proving it should not require spawning anything.
  */
 
+import { isRecord } from './report-shape.js';
+
 /**
 How a repo has opted into one analyzer. Absent from config means `auto`.
 */
@@ -94,10 +96,6 @@ const DEPENDENCY_FIELDS = [
   'optionalDependencies',
   'peerDependencies',
 ] as const;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
 
 /**
  * Every package name a `package.json` declares, across all four dependency
