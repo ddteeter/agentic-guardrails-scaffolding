@@ -122,14 +122,27 @@ const SIGNATURES: readonly Signature[] = [
   //      under-match needs a line break normal formatting does not produce.
   // The real fix for both is the roadmapped cross-line lexer, which is the same
   // fix `LineLex`'s block-comment limitation is waiting on.
+  // The lookbehind confines the match to a genuinely UNQUALIFIED identifier.
+  // `\b` is satisfied by any non-word character, `.` included, so `model.fit(`
+  // matched -- and `fit` is the conventional name for "train this model" right
+  // across the JS ML ecosystem (TensorFlow.js, ml5, brain.js, scikit-learn
+  // ports). That is #43's failure mode one dependency away, and the one shape
+  // the call-syntax requirement above cannot catch by itself, since a member
+  // call IS a call. `$` and `#` are excluded for the same reason: `$fit(` and
+  // `this.#fit(` are somebody's function, not a focused test.
   {
     kind: 'skipped-test',
     class: 'code',
-    pattern: /\b(?:x(?:it|describe|test)|f(?:it|describe))\s*(?:\(|\.each\b)/,
+    pattern:
+      /(?<![\w.$#])(?:x(?:it|describe|test)|f(?:it|describe))\s*(?:\(|\.each\b)/,
   },
   // HALF 2 -- the dotted forms, which do NOT require a call: `.skip` and
   // `.only` are distinctive enough on their own, and neither is an ordinary
   // English word or a library option name the way `fit` is.
+  //
+  // NO lookbehind here, deliberately, and it is not an oversight: Playwright's
+  // focused test IS a member expression (`test.describe.only(...)`). The same
+  // guard that makes HALF 1 safe would stop detecting it.
   {
     kind: 'skipped-test',
     class: 'code',

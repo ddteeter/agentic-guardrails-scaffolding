@@ -159,6 +159,40 @@ describe('auditDiff', () => {
     }
   });
 
+  it('does not flag a method named fit on a receiver', () => {
+    // Raised in review of #45. `\b` is satisfied by any non-word character,
+    // including `.`, so a member call still matched -- which is #43's exact
+    // failure mode one dependency away: `fit` is the conventional name for
+    // "train this model" across the JS ML ecosystem (TensorFlow.js, ml5,
+    // brain.js, scikit-learn ports). Pre-existing rather than introduced by the
+    // call-syntax fix, and closed here because a call-form collision is the one
+    // the call-syntax requirement cannot catch on its own.
+    for (const line of [
+      '+  await model.fit(xs, ys, { epochs: 10 });',
+      '+  classifier.fit(trainX, trainY);',
+      '+  this.#fit(data);',
+      '+  const scaled = $fit(element);',
+      '+  return chart.xtest(series);',
+    ]) {
+      expect(auditDiff(diff('a.ts', line)), line).toEqual([]);
+    }
+  });
+
+  it('still flags a focus/skip API reached through a receiver', () => {
+    // The counterweight, and the reason the guard is on the bare-identifier
+    // half ONLY. Playwright's focused test is `test.describe.only(...)` -- a
+    // genuine skip/focus API that IS a member expression. Putting the same
+    // lookbehind on the dotted half would stop detecting it.
+    for (const line of [
+      "+  test.describe.only('x', () => {});",
+      "+  test.describe.skip('x', () => {});",
+    ]) {
+      expect(auditDiff(diff('a.test.ts', line))[0]?.kind, line).toBe(
+        'skipped-test',
+      );
+    }
+  });
+
   it('does not flag the other bare identifier forms outside a call', () => {
     // Same defect, same fix, for the siblings of `fit`.
     for (const line of [
