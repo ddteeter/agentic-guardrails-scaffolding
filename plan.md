@@ -2599,6 +2599,30 @@ Both this and the block-comment limitation want the same thing: a lexer that
 tracks state across lines. That is the roadmap item, and this is now its second
 concrete argument.
 
+**A third collision, found by review rather than by us.** The call-syntax fix
+above closes the NON-call collisions #43 reported — object keys, CSS values,
+prose. Review of #45 found the one it cannot: `\b` is satisfied by any non-word
+character, `.` included, so a member call still matched. `model.fit(xs, ys)` and
+`classifier.fit(X, y)` read as focused tests — and `fit` is the conventional
+name for "train this model" across the JS ML ecosystem (TensorFlow.js, ml5,
+brain.js, scikit-learn ports). #43's failure mode one dependency away, and
+invisible to a call-syntax requirement because a member call IS a call.
+
+Closed with a `(?<![\w.$#])` lookbehind confining the bare-identifier half to a
+genuinely unqualified identifier (`$fit(` and `this.#fit(` are somebody's
+function too). The guard is on that half ONLY, and the asymmetry is
+load-bearing: Playwright's focused test is itself a member expression
+(`test.describe.only(...)`), caught by the dotted half, and the same lookbehind
+there would have traded a false positive for a false negative on a real
+focused-test API. Both entries now say so, with a test pinning it.
+
+Probing that fix surfaced a genuine UNDER-match, left for #46:
+`test.describe.serial.only(...)` and `.parallel.only(...)` are not detected,
+because the dotted half requires its identifier immediately before `.only` and
+there the preceding token is `serial`. Pre-existing, unrelated to #43, and it
+wants a survey of modifier chains across runners rather than names added one
+report at a time.
+
 The lesson worth keeping: a plausible mechanism that fully explains the observed
 instance is still not proof it is the only one. The `//`-comment case being
 clean was the evidence that should have prompted a second look — the lexer
