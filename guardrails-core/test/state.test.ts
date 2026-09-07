@@ -181,3 +181,25 @@ describe('violationDigest', () => {
     expect(violationDigest([])).toBe('');
   });
 });
+
+describe('violationDigest: separator safety', () => {
+  it('does not confuse two violations whose fields contain the separators', () => {
+    // Raised in review of #47. A hand-rolled `file:line:ruleId` joined on `|`
+    // collides the moment a field carries one of those characters. No adapter
+    // emits such a path or rule-id today, but "unambiguous by construction" is
+    // a stronger property than "not currently exploitable", and JSON quoting
+    // costs nothing for a value only ever compared with itself.
+    const colonInFile = v({ ruleId: 'a/one', file: 'weird:1:a/two', line: 3 });
+    const plainFile = v({ ruleId: 'a/one', file: 'weird', line: 1 });
+
+    expect(violationDigest([colonInFile])).not.toBe(
+      violationDigest([plainFile]),
+    );
+  });
+
+  it('distinguishes a missing line from a line that is present', () => {
+    expect(violationDigest([v({ ruleId: 'a/one', file: 'a.ts' })])).not.toBe(
+      violationDigest([v({ ruleId: 'a/one', file: 'a.ts', line: 1 })]),
+    );
+  });
+});

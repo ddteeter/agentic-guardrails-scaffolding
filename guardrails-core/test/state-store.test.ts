@@ -69,6 +69,58 @@ describe('session round-trip', () => {
     expect(loadSession(directory, 'sid1')).toEqual(state);
   });
 
+  it('round-trips lastViolationDigest, which the stop loop reads across processes', () => {
+    // Each Stop-hook fire is a FRESH CLI process, so the only channel between
+    // one block and the next retry is this file. A field `saveSession` writes
+    // and `loadSession` drops is a field the gate can never read -- the
+    // unchanged-retry check would be dead code in production while passing
+    // every in-memory unit test. Found in review of #47, where it was exactly
+    // that.
+    const state = {
+      attempts: 1,
+      escalated: false,
+      ruleCounts: {},
+      corrected: [],
+      lastViolationDigest: 'src/a.ts:3:eslint/no-console',
+    };
+    saveSession(directory, 'sid-digest', state);
+
+    expect(loadSession(directory, 'sid-digest')).toEqual(state);
+  });
+
+  it('loads a session written before digests were tracked', () => {
+    // Backward compatibility, same shape as `escalated`: an older state file
+    // has no digest, and its absence must read as "nothing to compare against"
+    // rather than corrupting the session into a fresh one.
+    writeFileSync(
+      sessionFile(directory, 'sid-old'),
+      JSON.stringify({ attempts: 2, ruleCounts: {}, corrected: [] }),
+    );
+
+    const loaded = loadSession(directory, 'sid-old');
+    expect(loaded.attempts).toBe(2);
+    expect(loaded.lastViolationDigest).toBeUndefined();
+  });
+
+  it('discards a non-string digest rather than trusting the file', () => {
+    // Values are validated, not just shape -- the same rule the ruleCounts
+    // check below states. A tampered digest of the wrong type must not reach
+    // the gate's comparison.
+    writeFileSync(
+      sessionFile(directory, 'sid-bad'),
+      JSON.stringify({
+        attempts: 1,
+        ruleCounts: {},
+        corrected: [],
+        lastViolationDigest: 42,
+      }),
+    );
+
+    expect(
+      loadSession(directory, 'sid-bad').lastViolationDigest,
+    ).toBeUndefined();
+  });
+
   it('returns a fresh session when the file is missing', () => {
     expect(loadSession(directory, 'nope')).toEqual(createSession());
   });

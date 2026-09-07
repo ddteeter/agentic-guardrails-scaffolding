@@ -83,7 +83,8 @@ export function loadSession(
   if (!isRecord(raw)) {
     return createSession();
   }
-  const { attempts, escalated, ruleCounts, corrected } = raw;
+  const { attempts, escalated, ruleCounts, corrected, lastViolationDigest } =
+    raw;
   if (
     typeof attempts !== 'number' ||
     !isRecord(ruleCounts) ||
@@ -100,6 +101,21 @@ export function loadSession(
     escalated: typeof escalated === 'boolean' ? escalated : false,
     ruleCounts: numberRecord(ruleCounts),
     corrected: corrected.filter((entry) => typeof entry === 'string'),
+    // Spread rather than an unconditional key so an absent digest stays ABSENT
+    // rather than becoming an explicit `undefined` — `loadSession`'s result is
+    // compared with `toEqual` against a session that never had the field, and
+    // more importantly the gate's `=== digest` check must not treat "no
+    // previous block" as a value.
+    //
+    // Validated as a string for the same reason `ruleCounts` validates its
+    // numbers: this file is on disk and a wrong type here would reach the
+    // gate's comparison. This field is why the unchanged-retry check works at
+    // all — every Stop-hook fire is a fresh CLI process, so this file is the
+    // only channel between one block and the next retry. It was omitted from
+    // this whitelist when the field was added, which made the check dead code
+    // in production while every in-memory unit test passed (found in review of
+    // #47).
+    ...(typeof lastViolationDigest === 'string' && { lastViolationDigest }),
   };
 }
 

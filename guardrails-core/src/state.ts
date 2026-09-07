@@ -69,12 +69,22 @@ export function createSession(): SessionState {
  * A plain joined string rather than a hash: it is compared, never transmitted,
  * and a hash would add a dependency on `node:crypto` for no benefit while making
  * a failing test unreadable.
+ *
+ * Each entry is `JSON.stringify`d rather than interpolated with separators.
+ * Raised in review: a hand-rolled `file:line:ruleId` joined on `|` is ambiguous
+ * the moment any field contains one of those characters, and while no adapter
+ * emits such a path or rule-id today, "not currently exploitable" is a weaker
+ * property than "unambiguous by construction" — and JSON quoting costs nothing
+ * here, since the value is only ever compared to itself.
  */
 export function violationDigest(violations: readonly Violation[]): string {
   return violations
-    .map(
-      (violation) =>
-        `${violation.file}:${violation.line ?? ''}:${violation.ruleId}`,
+    .map((violation) =>
+      JSON.stringify([
+        violation.file,
+        violation.line ?? null,
+        violation.ruleId,
+      ]),
     )
     .toSorted((left, right) => left.localeCompare(right))
     .join('|');
