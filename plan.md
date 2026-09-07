@@ -2555,6 +2555,79 @@ positive (nothing was weakened). Recorded under **"Auditor soundness: text lexer
 its first measured instance, and it argues for that item being about block-scope
 tracking, not only string spans.
 
+**Correction, from issue #43.** This finding named the block-comment lexer as
+the cause, and for the instance in hand that was right — but it was the smaller
+of two defects sharing one symptom, and the diagnosis stopped at the first
+mechanism that explained what was in front of it. An independent adoption report
+(#43, a repo using `sharp`, whose resize option is literally named `fit`) found
+the other half: the `skipped-test` pattern matched `fit` as a **bare word**, with
+no requirement that it be a call. Probed against the shipped auditor:
+
+| added line                                              | flagged | fixed by                     |
+| ------------------------------------------------------- | ------- | ---------------------------- |
+| `.resize({ width: 200, fit: 'inside' })` — real CODE    | yes     | the pattern only             |
+| `// would not fit the resized base`                     | no      | already handled by the lexer |
+| `* would not fit the resized base` (block continuation) | yes     | either                       |
+| `fit(`, `xit(`, `fit.each(`                             | yes     | must stay flagged            |
+
+The distinction matters because **no amount of comment-lexing fixes the first
+row** — `fit: 'inside'` is genuine code, and the reporter's workaround was to
+stop using a library's documented API. That is the more serious defect, and it
+was reported by someone adopting the tool rather than found by us running it on
+ourselves. Fixed in #43 by requiring call syntax for the bare-identifier forms;
+the block-comment limitation stays where it was, roadmapped and now documented in
+`LineLex` with the over-match direction spelled out.
+
+**The trade the fix makes, stated.** Requiring the call on the same line swaps a
+broad over-match for a narrow under-match: `fit` split from its `(` across two
+lines no longer matches. Raised in review of #45, then measured rather than
+argued:
+
+- It is **not a new evasion class**. Every multi-token `code`-class signature
+  already behaves this way under the single-line lexer — `it.skip`, `as any` and
+  `as unknown as` all evade an identical split (verified against the built
+  auditor). The change moves `fit` from the single-token set, where it was
+  unsplittable, into the set everything else already lives in.
+- **Closing it would reintroduce #43.** The only same-line rule that catches the
+  split form is "identifier at end of code" — and a prettier-formatted
+  multi-line destructure puts a bare `fit,` on its own line. The fix for the
+  evasion is the bug it replaced.
+- The over-match blocked ordinary code with no way past it. The under-match
+  needs a line break normal formatting does not produce.
+
+Both this and the block-comment limitation want the same thing: a lexer that
+tracks state across lines. That is the roadmap item, and this is now its second
+concrete argument.
+
+**A third collision, found by review rather than by us.** The call-syntax fix
+above closes the NON-call collisions #43 reported — object keys, CSS values,
+prose. Review of #45 found the one it cannot: `\b` is satisfied by any non-word
+character, `.` included, so a member call still matched. `model.fit(xs, ys)` and
+`classifier.fit(X, y)` read as focused tests — and `fit` is the conventional
+name for "train this model" across the JS ML ecosystem (TensorFlow.js, ml5,
+brain.js, scikit-learn ports). #43's failure mode one dependency away, and
+invisible to a call-syntax requirement because a member call IS a call.
+
+Closed with a `(?<![\w.$#])` lookbehind confining the bare-identifier half to a
+genuinely unqualified identifier (`$fit(` and `this.#fit(` are somebody's
+function too). The guard is on that half ONLY, and the asymmetry is
+load-bearing: Playwright's focused test is itself a member expression
+(`test.describe.only(...)`), caught by the dotted half, and the same lookbehind
+there would have traded a false positive for a false negative on a real
+focused-test API. Both entries now say so, with a test pinning it.
+
+Probing that fix surfaced a genuine UNDER-match, left for #46:
+`test.describe.serial.only(...)` and `.parallel.only(...)` are not detected,
+because the dotted half requires its identifier immediately before `.only` and
+there the preceding token is `serial`. Pre-existing, unrelated to #43, and it
+wants a survey of modifier chains across runners rather than names added one
+report at a time.
+
+The lesson worth keeping: a plausible mechanism that fully explains the observed
+instance is still not proof it is the only one. The `//`-comment case being
+clean was the evidence that should have prompted a second look — the lexer
+handles line comments correctly, so the pattern was never under suspicion.
+
 ### Also landed with it
 
 - **`audit.ts` learned `fallow-ignore`** (a new `analyzer-ignore` kind). This is

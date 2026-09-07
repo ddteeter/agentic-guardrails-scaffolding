@@ -78,11 +78,75 @@ const SIGNATURES: readonly Signature[] = [
   },
   { kind: 'suppress-warnings', class: 'code', pattern: /@SuppressWarnings\b/ },
   { kind: 'disabled-test', class: 'code', pattern: /@Disabled\b/ },
+  // Focused/skipped tests, split across TWO entries of the same kind. The two
+  // halves need genuinely different rules, and combining them tripped this
+  // repo's own `sonarjs/regex-complexity` ceiling -- so the split is the honest
+  // fix rather than raising the limit.
+  //
+  // `matchSignature` returns on the first match, so a line satisfying both
+  // still produces exactly one `skipped-test` finding.
+  //
+  // HALF 1 -- the bare identifiers, which REQUIRE call syntax. This is the fix
+  // for issue #43: `fit` was matched as a bare word, and `fit` is unusually
+  // exposed -- it is `sharp`'s resize option (`{ fit: 'inside' }`), a CSS value
+  // (`object-fit`), a common identifier, and an ordinary English verb. Each of
+  // those read as a focused test and blocked a commit with no obvious cause and
+  // no way past it but renaming an identifier the author does not own.
+  // Reported from a real adoption, not hypothesised.
+  //
+  // Requiring a call costs no real detection: a focused test is always invoked.
+  //
+  // `.each` qualifies WITHOUT a following paren, and that is a lexer
+  // constraint rather than laziness. `.each` has two calling conventions -- an
+  // argument list (`fit.each([...])( ... )`) and a tagged template
+  // (`xit.each\`table\`( ... )`) -- and in the second, the next character is a
+  // backtick, which `lexLine` has already stripped with the rest of the
+  // template span before any signature is tested. Demanding a paren would
+  // therefore silently stop detecting the tagged-template form. `.each` on one
+  // of these identifiers is unambiguous anyway: nothing else is spelled
+  // `fit.each`.
+  //
+  // ACCEPTED COST, measured rather than assumed: requiring the call on the
+  // SAME line trades the old over-match for a narrower under-match --
+  // `fit\n  ('x', ...)` split across two lines no longer matches, where the
+  // bare word did. Three things make that the right trade:
+  //   1. It is not a new evasion class. Every multi-token code-class signature
+  //      already behaves this way under the single-line lexer -- `it.skip`,
+  //      `as any` and `as unknown as` all evade an identical split (verified).
+  //      This moves `fit` from the single-token set into that existing set.
+  //   2. Closing it would reintroduce #43. The only same-line rule that catches
+  //      the split form is "identifier at end of code", and a prettier-
+  //      formatted multi-line destructure puts a bare `fit,` on its own line --
+  //      so the fix for the evasion is the bug it replaced.
+  //   3. The over-match blocked ordinary code with no way past it; the
+  //      under-match needs a line break normal formatting does not produce.
+  // The real fix for both is the roadmapped cross-line lexer, which is the same
+  // fix `LineLex`'s block-comment limitation is waiting on.
+  // The lookbehind confines the match to a genuinely UNQUALIFIED identifier.
+  // `\b` is satisfied by any non-word character, `.` included, so `model.fit(`
+  // matched -- and `fit` is the conventional name for "train this model" right
+  // across the JS ML ecosystem (TensorFlow.js, ml5, brain.js, scikit-learn
+  // ports). That is #43's failure mode one dependency away, and the one shape
+  // the call-syntax requirement above cannot catch by itself, since a member
+  // call IS a call. `$` and `#` are excluded for the same reason: `$fit(` and
+  // `this.#fit(` are somebody's function, not a focused test.
   {
     kind: 'skipped-test',
     class: 'code',
     pattern:
-      /\b(?:x(?:it|describe|test)|f(?:it|describe)|(?:it|test|describe|context|suite)\.(?:skip|only))\b/,
+      /(?<![\w.$#])(?:x(?:it|describe|test)|f(?:it|describe))\s*(?:\(|\.each\b)/,
+  },
+  // HALF 2 -- the dotted forms, which do NOT require a call: `.skip` and
+  // `.only` are distinctive enough on their own, and neither is an ordinary
+  // English word or a library option name the way `fit` is.
+  //
+  // NO lookbehind here, deliberately, and it is not an oversight: Playwright's
+  // focused test IS a member expression (`test.describe.only(...)`). The same
+  // guard that makes HALF 1 safe would stop detecting it.
+  {
+    kind: 'skipped-test',
+    class: 'code',
+    pattern: /\b(?:it|test|describe|context|suite)\.(?:skip|only)\b/,
   },
   // stryker's mutation-suppression directives. `directive` class, so a mention
   // in prose ("we removed the Stryker disable comment") doesn't flag — only a

@@ -116,6 +116,95 @@ describe('auditDiff', () => {
     ).toBe('skipped-test');
   });
 
+  it('flags every focus/skip form that is actually invoked', () => {
+    // The positive control for the call-syntax requirement below: narrowing the
+    // pattern must not cost a single real detection. `.each` appears in both of
+    // its calling conventions -- an argument list and a tagged template.
+    for (const line of [
+      "+  fit('x', () => {});",
+      '+  fit(`x`, () => {});',
+      "+  fdescribe('x', () => {});",
+      "+  xdescribe('x', () => {});",
+      "+  xtest('x', () => {});",
+      "+  fit.each([1, 2])('n %i', (n) => {});",
+      '+  xit.each`a | b`("n", () => {});',
+      "+  fit ('spaced call', () => {});",
+    ]) {
+      expect(auditDiff(diff('a.test.ts', line))[0]?.kind, line).toBe(
+        'skipped-test',
+      );
+    }
+  });
+
+  it('does not flag `fit` used as anything other than a call', () => {
+    // Issue #43, found while adopting guardrails into a repo using `sharp`,
+    // whose resize option is literally named `fit`. The pattern matched `fit`
+    // as a BARE WORD, so an object key, an identifier and the ordinary English
+    // verb all read as a focused test -- blocking a commit with no obvious
+    // cause and no way past it but renaming something you do not own.
+    //
+    // `fit` is unusually exposed: sharp's option, the CSS `object-fit` value,
+    // a common identifier, and a plain English word.
+    for (const line of [
+      "+  await sharp(x).resize({ width: 200, fit: 'inside' }).toBuffer();",
+      '+  const { fit } = options;',
+      '+  return { fit, width };',
+      "+  const style = { objectFit: 'cover', fit: 'contain' };",
+      '+  // the marker would not fit the resized base',
+      '+ * the marker would not fit the resized base',
+      '+  type Options = { fit: string };',
+      '+  if (fit === undefined) {',
+    ]) {
+      expect(auditDiff(diff('a.ts', line)), line).toEqual([]);
+    }
+  });
+
+  it('does not flag a method named fit on a receiver', () => {
+    // Raised in review of #45. `\b` is satisfied by any non-word character,
+    // including `.`, so a member call still matched -- which is #43's exact
+    // failure mode one dependency away: `fit` is the conventional name for
+    // "train this model" across the JS ML ecosystem (TensorFlow.js, ml5,
+    // brain.js, scikit-learn ports). Pre-existing rather than introduced by the
+    // call-syntax fix, and closed here because a call-form collision is the one
+    // the call-syntax requirement cannot catch on its own.
+    for (const line of [
+      '+  await model.fit(xs, ys, { epochs: 10 });',
+      '+  classifier.fit(trainX, trainY);',
+      '+  this.#fit(data);',
+      '+  const scaled = $fit(element);',
+      '+  return chart.xtest(series);',
+    ]) {
+      expect(auditDiff(diff('a.ts', line)), line).toEqual([]);
+    }
+  });
+
+  it('still flags a focus/skip API reached through a receiver', () => {
+    // The counterweight, and the reason the guard is on the bare-identifier
+    // half ONLY. Playwright's focused test is `test.describe.only(...)` -- a
+    // genuine skip/focus API that IS a member expression. Putting the same
+    // lookbehind on the dotted half would stop detecting it.
+    for (const line of [
+      "+  test.describe.only('x', () => {});",
+      "+  test.describe.skip('x', () => {});",
+    ]) {
+      expect(auditDiff(diff('a.test.ts', line))[0]?.kind, line).toBe(
+        'skipped-test',
+      );
+    }
+  });
+
+  it('does not flag the other bare identifier forms outside a call', () => {
+    // Same defect, same fix, for the siblings of `fit`.
+    for (const line of [
+      '+  const xit = 1;',
+      '+  return { xtest: true };',
+      '+  // xdescribe what the function does',
+      '+  const fdescribe = describeFactory();',
+    ]) {
+      expect(auditDiff(diff('a.ts', line)), line).toEqual([]);
+    }
+  });
+
   it('flags Java @SuppressWarnings and @Disabled', () => {
     expect(
       auditDiff(diff('A.java', '+  @SuppressWarnings("unchecked")'))[0]?.kind,
