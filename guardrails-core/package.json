@@ -34,7 +34,8 @@
     "typescript": ">=5",
     "knip": ">=6",
     "dependency-cruiser": ">=18",
-    "@stryker-mutator/core": ">=9"
+    "@stryker-mutator/core": ">=9",
+    "fallow": ">=3"
   },
   "peerDependenciesMeta": {
     "eslint": {
@@ -50,6 +51,9 @@
       "optional": true
     },
     "@stryker-mutator/core": {
+      "optional": true
+    },
+    "fallow": {
       "optional": true
     }
   }

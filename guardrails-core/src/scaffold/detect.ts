@@ -39,6 +39,7 @@ export interface RepoFacts {
   readonly hasDependencyCruiserConfig: boolean;
   readonly hasStrykerConfig: boolean;
   readonly hasKnipConfig: boolean;
+  readonly hasFallowConfig: boolean;
   readonly manifest: ScaffoldManifest | undefined;
   /**
   Read by `hooks-path.ts` — the one config entry we refuse to overwrite.
@@ -195,6 +196,15 @@ export async function detect(options: DetectOptions): Promise<RepoFacts> {
         isFilePresent,
       ) ||
       (isRecord(packageJson) && 'knip' in packageJson),
+    // fallow reads its config from any of these four filenames. The seed
+    // writes `.fallowrc.jsonc` only, so gating on that one name would hand a
+    // repo already configured through another a second config fallow silently
+    // ignores -- the same fact-not-filename rule as the two probes above.
+    hasFallowConfig: hasAny(
+      repoRoot,
+      ['.fallowrc.json', '.fallowrc.jsonc', 'fallow.toml', '.fallow.toml'],
+      isFilePresent,
+    ),
     existingAnalyzers: isFilePresent(configPath)
       ? pickAnalyzers(analyzersField(readJson(configPath)))
       : undefined,

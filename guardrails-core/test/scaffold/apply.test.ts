@@ -107,6 +107,7 @@ function factsWithManifest(manifestRaw: string | undefined): RepoFacts {
     hasDependencyCruiserConfig: false,
     hasStrykerConfig: false,
     hasKnipConfig: false,
+    hasFallowConfig: false,
     manifest,
     hooksPath: undefined,
     existingAnalyzers: undefined,

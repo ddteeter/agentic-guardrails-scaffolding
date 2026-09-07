@@ -64,6 +64,37 @@ describe('auditDiff', () => {
     ).toEqual([]);
   });
 
+  it('flags a newly-added fallow suppression directive', () => {
+    // fallow's `// fallow-ignore-*` silences a fallow/code-duplication
+    // violation instead of removing the duplication -- the same weakening
+    // class as eslint-disable and Stryker disable. Added alongside the `dupes`
+    // analyzer: an analyzer whose suppression syntax the auditor does not know
+    // is an analyzer a fixer can silence with a comment nobody reviews. This is
+    // the audit.ts half of CLAUDE.md's "upgrading leveraged tools" review.
+    expect(
+      auditDiff(diff('a.ts', '+// fallow-ignore-next-line code-duplication'))[0]
+        ?.kind,
+    ).toBe('analyzer-ignore');
+    expect(
+      auditDiff(diff('a.ts', '+  // fallow-ignore-file duplicate-export'))[0]
+        ?.kind,
+    ).toBe('analyzer-ignore');
+    expect(auditDiff(diff('a.ts', '+// fallow-ignore'))[0]?.kind).toBe(
+      'analyzer-ignore',
+    );
+  });
+
+  it('does not flag a fallow directive merely mentioned in prose or a string', () => {
+    expect(
+      auditDiff(diff('a.ts', '+  // never add a fallow-ignore-next-line here')),
+    ).toEqual([]);
+    expect(
+      auditDiff(
+        diff('a.ts', "+  const marker = '// fallow-ignore-next-line';"),
+      ),
+    ).toEqual([]);
+  });
+
   it('flags an added `as any` cast', () => {
     expect(auditDiff(diff('a.ts', '+  const x = foo as any;'))[0]?.kind).toBe(
       'cast-any',

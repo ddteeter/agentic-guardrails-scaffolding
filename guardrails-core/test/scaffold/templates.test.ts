@@ -44,6 +44,7 @@ function facts(over: Partial<RepoFacts> = {}): RepoFacts {
     hasDependencyCruiserConfig: false,
     hasStrykerConfig: false,
     hasKnipConfig: false,
+    hasFallowConfig: false,
     existingAnalyzers: undefined,
     manifest: undefined,
     hooksPath: undefined,
@@ -75,6 +76,7 @@ function decisions(over: Partial<ScaffoldDecisions> = {}): ScaffoldDecisions {
 const DEPCRUISE_PATH = '.dependency-cruiser.cjs';
 const STRYKER_PATH = 'stryker.conf.json';
 const KNIP_PATH = 'knip.json';
+const FALLOW_PATH = '.fallowrc.jsonc';
 
 /** `toHaveProperty` reads a dot as a nested-path separator, and every key in
  *  this map contains dots -- so membership is asserted on the key list. */
@@ -705,6 +707,65 @@ describe('buildDesiredFiles — analyzer gating (spec §6.4 SEED-ONCE)', () => {
     expect(keysOf(desired)).not.toContain(KNIP_PATH);
   });
 
+  it('seeds a .fallowrc.jsonc when dupes is explicitly enabled', () => {
+    const desired = buildDesiredFiles(
+      facts(),
+      decisions({ analyzers: { dupes: 'required' } }),
+    );
+    expect(keysOf(desired)).toContain(FALLOW_PATH);
+  });
+
+  it('seeds the near-duplicate mode, which is the whole point of the analyzer', () => {
+    // fallow's own default is `mild`; `semantic` is the mode that catches the
+    // renamed-variable clones exact token matching misses -- the class #40 was
+    // opened about.
+    const desired = buildDesiredFiles(
+      facts(),
+      decisions({ analyzers: { dupes: 'required' } }),
+    );
+    expect(contentOf(desired, FALLOW_PATH)).toContain('"mode": "semantic"');
+  });
+
+  it('seeds no duplication threshold', () => {
+    // fallow's --threshold gates on stats.duplication_percentage, which under a
+    // diff-scoped run is computed over the SCOPED file set (measured at 71.4%
+    // on a two-file fixture). It is not a project metric here, so seeding one
+    // would seed a number that means nothing.
+    expect(
+      contentOf(
+        buildDesiredFiles(
+          facts(),
+          decisions({ analyzers: { dupes: 'required' } }),
+        ),
+        FALLOW_PATH,
+      ),
+    ).not.toContain('threshold');
+  });
+
+  it('does NOT seed a .fallowrc.jsonc for an unconfigured repo', () => {
+    // `dupes` defaults to `off` (analyzer-policy's DEFAULT_MODES), so an
+    // adopter who never asked for duplication checking must not find a fallow
+    // config in their repo -- init is SEED-ONCE and would never clean it up.
+    const desired = buildDesiredFiles(
+      facts({ declaredProviders: new Set(ANALYZER_PROVIDERS) }),
+      decisions(),
+    );
+    expect(keysOf(desired)).not.toContain(FALLOW_PATH);
+  });
+
+  it('does NOT seed .fallowrc.jsonc when the repo already configures fallow', () => {
+    const desired = buildDesiredFiles(
+      facts({ hasFallowConfig: true }),
+      decisions({ analyzers: { dupes: 'required' } }),
+    );
+    expect(keysOf(desired)).not.toContain(FALLOW_PATH);
+  });
+
+  it('classifies .fallowrc.jsonc as seed-once', () => {
+    // The adopter owns the ignore list; init must never rewrite it.
+    expect(classifyFile(FALLOW_PATH)).toBe('seed-once');
+  });
+
   it('does NOT seed a config for an analyzer turned off', () => {
     const desired = buildDesiredFiles(
       facts({ declaredProviders: new Set(ANALYZER_PROVIDERS) }),
@@ -748,6 +809,7 @@ describe('SEED_ONCE_ANALYZERS', () => {
       DEPCRUISE_PATH,
       STRYKER_PATH,
       KNIP_PATH,
+      FALLOW_PATH,
     ]);
   });
 

@@ -57,6 +57,7 @@ import {
 } from './analyzer-policy.js';
 import { parseDepcruiseJson } from './depcruise-adapter.js';
 import { parseEslintJson } from './eslint-adapter.js';
+import { parseFallowDupesJson } from './fallow-adapter.js';
 import {
   isConfigFile,
   isInsideNestedWorktree,
@@ -361,6 +362,44 @@ async function changedTypeScriptFiles(
   return { files, violations: [] };
 }
 
+/**
+ * The shape three analyzers share exactly: spawn a tool that prints a JSON
+ * report to stdout, and hand that report to an adapter under the
+ * `withExitCodeCheck` rule.
+ *
+ * Extracted after the `dupes` analyzer reported `runKnip`/`runEslint` and
+ * `runDepcruise`/`runDupes` as clone pairs on its first run against this
+ * repository — the duplication was real, and had been invisible to review
+ * because each copy sits under its own long docstring. Only the three that
+ * match WITHOUT a flag use it: `runTsc`, `runStryker`, `runNpmPeers` and `runDupes`
+ * each differ in a way (no exit-code check, a report read off disk, a parse
+ * signature that takes the changed files) that a parameter would paper over
+ * rather than express, and an abstraction stretched to cover them would be
+ * worse than the repetition it removed.
+ *
+ * `tool` and `bin` are separate because they genuinely differ:
+ * dependency-cruiser's binary is `depcruise`, and the violation must be
+ * attributed to the analyzer name a consumer configures.
+ */
+async function runJsonAnalyzer(
+  options: VerifyOptions,
+  resolveBin: (tool: string) => string,
+  spec: {
+    tool: string;
+    bin: string;
+    args: string[];
+    parse: (stdout: string, repoRoot: string) => Violation[];
+  },
+): Promise<Violation[]> {
+  const { exec, repoRoot } = options;
+  const result = await exec(resolveBin(spec.bin), spec.args, { cwd: repoRoot });
+  return withExitCodeCheck(
+    spec.tool,
+    result,
+    spec.parse(result.stdout, repoRoot),
+  );
+}
+
 /** knip is whole-graph (not diff-scoped) and seconds-scale, so it runs only at
  *  the commit/ci rungs — never on the per-turn stop gate — but independent of
  *  whether any `.ts` file changed (a dependency-only change, e.g. a
@@ -370,11 +409,12 @@ async function runKnip(
   options: VerifyOptions,
   resolveBin: (tool: string) => string,
 ): Promise<Violation[]> {
-  const { exec, repoRoot } = options;
-  const knip = await exec(resolveBin('knip'), ['--reporter', 'json'], {
-    cwd: repoRoot,
+  return runJsonAnalyzer(options, resolveBin, {
+    tool: 'knip',
+    bin: 'knip',
+    args: ['--reporter', 'json'],
+    parse: parseKnipJson,
   });
-  return withExitCodeCheck('knip', knip, parseKnipJson(knip.stdout, repoRoot));
 }
 
 /**
@@ -414,23 +454,59 @@ async function runDepcruise(
   options: VerifyOptions,
   resolveBin: (tool: string) => string,
 ): Promise<Violation[]> {
-  const { exec, repoRoot } = options;
   // Config-agnostic and layout-generic, exactly as runKnip: no `--config` (DC
   // auto-detects the consumer repo's own `.dependency-cruiser.{cjs,js,json}` /
   // `package.json#dependency-cruiser`) and no hardcoded target (cruise `.` from
   // repoRoot; the consumer's config `forbidden[].from/to` matchers + `exclude`/
   // `doNotFollow` do the scoping). A repo-specific target here would silently
   // break — a consumer repo has no `guardrails-core/src` directory.
+  //
+  // `depcruise` is the binary; `dependency-cruiser` is the analyzer name a
+  // consumer configures and the one violations are attributed to.
+  return runJsonAnalyzer(options, resolveBin, {
+    tool: 'dependency-cruiser',
+    bin: 'depcruise',
+    args: ['--output-type', 'json', '.'],
+    parse: parseDepcruiseJson,
+  });
+}
+
+/**
+ * Cross-file clone detection (issue #40). `eslint-plugin-sonarjs` ships
+ * `sonarjs/no-identical-functions`, which reads as copy-paste coverage and is
+ * not — ESLint is per-file, so two identical functions in two files are
+ * invisible to it. This is the analyzer that sees them.
+ *
+ * Changed-files-TRIGGERED but whole-tree-DISCOVERED, like `tsc`: a clone
+ * detector needs the whole tree to find a pair. The diff scoping happens in
+ * the adapter, which keeps only groups touching `files` — see
+ * `fallow-adapter.ts` for why that is not fallow's own `--changed-since`.
+ *
+ * Config-agnostic and layout-generic, exactly as `runKnip` and `runDepcruise`:
+ * no `--config` (fallow auto-detects the consumer's own `.fallowrc.*` /
+ * `fallow.toml`), no `--mode`/`--min-tokens` (those live in that file, which is
+ * the file the adopter is told to tune), and no path argument (fallow cruises
+ * from `cwd`).
+ *
+ * Deliberately NOT wrapped in `withExitCodeCheck`: `fallow dupes` exits 0 on a
+ * tree it has just reported clones for — it only fails the run under
+ * `--fail-on-issues`, which we do not pass — so its exit code carries no
+ * findings signal and an exit-code check would read every clean run as a crash.
+ * Same reasoning as `runNpmPeers`. A spawn failure is still caught, by the
+ * orchestrator's `trackSpawnFailures` / `analyzer-missing` machinery.
+ */
+async function runDupes(
+  options: VerifyOptions,
+  resolveBin: (tool: string) => string,
+  files: string[],
+): Promise<Violation[]> {
+  const { exec, repoRoot } = options;
   const result = await exec(
-    resolveBin('depcruise'),
-    ['--output-type', 'json', '.'],
+    resolveBin('fallow'),
+    ['dupes', '--format', 'json', '--quiet'],
     { cwd: repoRoot },
   );
-  return withExitCodeCheck(
-    'dependency-cruiser',
-    result,
-    parseDepcruiseJson(result.stdout, repoRoot),
-  );
+  return parseFallowDupesJson(result.stdout, files);
 }
 
 async function runEslint(
@@ -438,17 +514,12 @@ async function runEslint(
   resolveBin: (tool: string) => string,
   files: string[],
 ): Promise<Violation[]> {
-  const { exec, repoRoot } = options;
-  const eslint = await exec(
-    resolveBin('eslint'),
-    ['--format', 'json', '--no-warn-ignored', ...files],
-    { cwd: repoRoot },
-  );
-  return withExitCodeCheck(
-    'eslint',
-    eslint,
-    parseEslintJson(eslint.stdout, repoRoot),
-  );
+  return runJsonAnalyzer(options, resolveBin, {
+    tool: 'eslint',
+    bin: 'eslint',
+    args: ['--format', 'json', '--no-warn-ignored', ...files],
+    parse: parseEslintJson,
+  });
 }
 
 /** `tsc` is changed-files-TRIGGERED but whole-project-CHECKED: it takes no file
@@ -897,6 +968,16 @@ const ANALYZERS: Analyzer[] = [
     minRung: 'commit',
     scope: 'changed-files',
     run: runStryker,
+  },
+  {
+    // Default `off` -- see DEFAULT_MODES in analyzer-policy.ts. A clone
+    // detector's noise sources are repo-specific, so it is opt-in rather than
+    // installed-means-enabled like the five above.
+    tool: 'dupes',
+    provider: 'fallow',
+    minRung: 'commit',
+    scope: 'changed-files',
+    run: runDupes,
   },
 ];
 

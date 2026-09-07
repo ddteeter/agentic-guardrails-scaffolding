@@ -78,6 +78,26 @@ const depcruiseJson = JSON.stringify({
   modules: [],
 });
 
+/**
+ * A `fallow dupes --format json` report holding one cross-file clone. The
+ * changed set the fake exec reports is `src/foo.ts` + `src/new.ts`, so this
+ * group is in scope for the diff filter with `src/new.ts` as the changed side.
+ */
+const fallowJson = JSON.stringify({
+  kind: 'dupes',
+  schema_version: 7,
+  clone_groups: [
+    {
+      line_count: 7,
+      instances: [
+        { file: 'src/new.ts', start_line: 3 },
+        { file: 'src/other.ts', start_line: 18 },
+      ],
+    },
+  ],
+  stats: { duplication_percentage: 4.2 },
+});
+
 const knipMissing = {
   'knip --reporter json': {
     stdout: '',
@@ -126,6 +146,9 @@ function fakeExec(overrides: Record<string, ExecResult> = {}): {
     }
     if (command === 'depcruise' || args.includes('depcruise')) {
       return Promise.resolve(ok(depcruiseJson));
+    }
+    if (command === 'fallow' || args.includes('fallow')) {
+      return Promise.resolve(ok(fallowJson));
     }
     return Promise.resolve(ok(''));
   };
@@ -359,6 +382,7 @@ describe('runVerify', () => {
       'npm-peers',
       'dependency-cruiser',
       'stryker',
+      'dupes',
     ]);
   });
 
@@ -2648,5 +2672,113 @@ describe('runVerify nested-worktree filtering', () => {
       '.claude/worktrees/wt/src/dead.ts',
       'src/really-dead.ts',
     ]);
+  });
+});
+
+describe('runVerify: the dupes analyzer', () => {
+  it('is off unless the repo opts in, so fallow is never spawned', async () => {
+    // The default-off contract from analyzer-policy's DEFAULT_MODES, asserted
+    // where it actually costs something: an `auto` default would run fallow on
+    // every existing consumer's commit.
+    const { exec, calls } = fakeExec();
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      profile: 'commit',
+      readFile: () => Promise.resolve(emptyStrykerReport),
+      removeFile: () => Promise.resolve(),
+    });
+
+    expect(calls.some((call) => call.command === 'fallow')).toBe(false);
+    expect(violations.map((violation) => violation.ruleId)).not.toContain(
+      'fallow/code-duplication',
+    );
+  });
+
+  it('runs a config-agnostic, layout-generic invocation once enabled', async () => {
+    // No --config, no --mode, no --min-tokens and no path argument: the
+    // adopter's own .fallowrc owns every tuning knob, and a flag here would
+    // silently override the file they were told to edit.
+    const { exec, calls } = fakeExec();
+    await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      profile: 'commit',
+      analyzers: { dupes: 'required' },
+      readFile: () => Promise.resolve(emptyStrykerReport),
+      removeFile: () => Promise.resolve(),
+    });
+
+    const call = calls.find((entry) => entry.command === 'fallow');
+    expect(call?.args).toEqual(['dupes', '--format', 'json', '--quiet']);
+    expect(call?.options?.cwd).toBe('/repo');
+  });
+
+  it('reports every instance of a clone group touching the diff', async () => {
+    const { exec } = fakeExec();
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      profile: 'commit',
+      analyzers: { dupes: 'required' },
+      readFile: () => Promise.resolve(emptyStrykerReport),
+      removeFile: () => Promise.resolve(),
+    });
+
+    const clones = violations.filter(
+      (violation) => violation.ruleId === 'fallow/code-duplication',
+    );
+    // Both sides, including src/other.ts, which the diff never touched.
+    expect(clones.map((violation) => violation.file)).toEqual([
+      'src/new.ts',
+      'src/other.ts',
+    ]);
+    expect(clones[0]?.tool).toBe('dupes');
+  });
+
+  it('does NOT run at the stop profile', async () => {
+    // Whole-tree discovery, so it sits at the commit rung beside knip,
+    // dependency-cruiser and stryker rather than on the per-turn gate.
+    const { exec, calls } = fakeExec();
+    await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      analyzers: { dupes: 'required' },
+    });
+
+    expect(calls.some((call) => call.command === 'fallow')).toBe(false);
+  });
+
+  it('reports a missing fallow rather than a clean duplication check', async () => {
+    const missing = fakeExec({
+      'fallow dupes --format json --quiet': {
+        stdout: '',
+        stderr: '',
+        code: 1,
+        spawnFailed: true as const,
+      },
+    });
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec: missing.exec,
+      profile: 'commit',
+      analyzers: { dupes: 'required' },
+      readFile: () => Promise.resolve(emptyStrykerReport),
+      removeFile: () => Promise.resolve(),
+    });
+
+    const missingViolation = violations.find(
+      (violation) => violation.ruleId === 'guardrails/analyzer-missing',
+    );
+    expect(missingViolation?.message).toContain('fallow');
+  });
+
+  it('lists dupes among the known analyzer tools', () => {
+    expect(ANALYZER_TOOLS).toContain('dupes');
   });
 });

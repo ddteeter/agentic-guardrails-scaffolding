@@ -72,6 +72,7 @@ const SEED_ONCE_PATHS: ReadonlySet<string> = new Set([
   '.dependency-cruiser.cjs',
   'stryker.conf.json',
   'knip.json',
+  '.fallowrc.jsonc',
 ]);
 
 /**

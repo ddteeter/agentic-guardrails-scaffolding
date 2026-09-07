@@ -17,6 +17,13 @@ describe('isBuiltinLoose', () => {
     expect(isBuiltinLoose('knip/unused-export')).toBe(true);
   });
 
+  it('classifies duplication as loose (a green dedupe is easily not a good one)', () => {
+    // "Delete one copy" and "extract into the wrong shape" are both green and
+    // both wrong; the right answer depends on whether the two sites should
+    // evolve together, which is exactly the judgment the fast tier skips.
+    expect(isBuiltinLoose('fallow/code-duplication')).toBe(true);
+  });
+
   it('leaves tight, well-pinned rules to the fast tier', () => {
     expect(isBuiltinLoose('no-console')).toBe(false);
     expect(isBuiltinLoose('@typescript-eslint/no-unused-vars')).toBe(false);

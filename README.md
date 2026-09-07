@@ -28,8 +28,8 @@ analyzer costs, and the clean-baseline prerequisite.
 npm i -D https://github.com/ddteeter/agentic-guardrails-scaffolding/releases/download/v0.1.0/guardrails-core-0.1.0.tgz
 ```
 
-No `v0.1.0` release exists yet — this resolves once the tag is pushed and
-`.github/workflows/release.yml` runs.
+`v0.1.0` is released and that URL is live — verified by installing it into a
+fresh repo and running the CLI out of it.
 
 **What a URL dependency costs you, stated plainly:** no semver range, no dedupe,
 and Dependabot will not track it. Upgrading means editing the URL by hand. This
@@ -140,6 +140,14 @@ An analyzer set to `"off"` in `guardrails.config.json`'s `analyzers` block never
 runs and never reports, so a repo can adopt eslint/tsc first and add the
 whole-graph analyzers (knip, dependency-cruiser, stryker) once its baseline is
 clean.
+
+`dupes` starts `off` rather than installed-means-enabled. It runs `fallow dupes`
+to find **cross-file copy-paste** — the gap `eslint-plugin-sonarjs` reads as
+covering and structurally cannot, since ESLint sees one file's AST at a time.
+Its false positives are repo-specific (generated code, ORM schema DSLs,
+framework boilerplate), so it is opt-in: set `"dupes": "required"` and tune the
+`.fallowrc.jsonc` that `init` seeds. It discovers over the whole tree and
+reports only clone groups touching your diff.
 
 ## Verifying the live agent loop
 

@@ -106,6 +106,31 @@ describe('detect', () => {
     expect(result.hasKnipConfig).toBe(false);
   });
 
+  it.each(['.fallowrc.json', '.fallowrc.jsonc', 'fallow.toml', '.fallow.toml'])(
+    'reports an existing fallow config named %s',
+    async (name) => {
+      // Every filename fallow itself reads. The seed writes `.fallowrc.jsonc`
+      // only, so gating on that ONE name would hand a repo already configured
+      // through any of the others a second config fallow silently ignores.
+      const result = await facts({ [`/repo/${name}`]: {} });
+      expect(result.hasFallowConfig).toBe(true);
+    },
+  );
+
+  it('reports no fallow config when the repo has none', async () => {
+    // The negative case is what makes the seed fire at all.
+    const result = await facts({ '/repo/package.json': { name: 'probe' } });
+    expect(result.hasFallowConfig).toBe(false);
+  });
+
+  it('does not mistake an unrelated file for a fallow config', async () => {
+    const result = await facts({
+      '/repo/fallow.json': {},
+      '/repo/config/.fallowrc.json': {},
+    });
+    expect(result.hasFallowConfig).toBe(false);
+  });
+
   it('does not mistake an unrelated file for a knip config', async () => {
     // Kills a widened filename list: `knip-report.json` and a nested
     // `config/knip.json` are not places knip reads from.

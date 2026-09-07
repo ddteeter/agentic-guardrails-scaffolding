@@ -9,6 +9,7 @@
  * judgment, never a silent autofix. Paths are emitted repo-relative already.
  */
 
+import { parseJsonText } from '../json-file.js';
 import type { Severity, Violation } from '../violation.js';
 
 interface DepcruiseRule {
@@ -122,23 +123,7 @@ export function parseDepcruiseJson(
   stdout: string,
   _repoRoot: string,
 ): Violation[] {
-  let parsed: unknown;
-  // prettier-ignore
-  try {
-    parsed = JSON.parse(stdout);
-  }
-  // Equivalent mutant: emptying the catch body leaves `parsed` undefined
-  // (the try body's assignment never lands on a throw), which
-  // isDepcruiseReport rejects below — the function still returns []. `catch`
-  // is forced onto its own line (prettier-ignore keeps it there) so this
-  // directive's line matches only the catch block, not the try block above
-  // it: the try block's own BlockStatement mutant is real (measured) — it
-  // silently drops every value on ANY input, valid or not, which the
-  // happy-path tests catch — so it must stay mutated.
-  // Stryker disable next-line BlockStatement
-  catch {
-    return [];
-  }
+  const { parsed } = parseJsonText(stdout);
   if (!isDepcruiseReport(parsed)) {
     return [];
   }
