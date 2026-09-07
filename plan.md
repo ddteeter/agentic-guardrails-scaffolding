@@ -2555,6 +2555,34 @@ positive (nothing was weakened). Recorded under **"Auditor soundness: text lexer
 its first measured instance, and it argues for that item being about block-scope
 tracking, not only string spans.
 
+**Correction, from issue #43.** This finding named the block-comment lexer as
+the cause, and for the instance in hand that was right — but it was the smaller
+of two defects sharing one symptom, and the diagnosis stopped at the first
+mechanism that explained what was in front of it. An independent adoption report
+(#43, a repo using `sharp`, whose resize option is literally named `fit`) found
+the other half: the `skipped-test` pattern matched `fit` as a **bare word**, with
+no requirement that it be a call. Probed against the shipped auditor:
+
+| added line                                              | flagged | fixed by                     |
+| ------------------------------------------------------- | ------- | ---------------------------- |
+| `.resize({ width: 200, fit: 'inside' })` — real CODE    | yes     | the pattern only             |
+| `// would not fit the resized base`                     | no      | already handled by the lexer |
+| `* would not fit the resized base` (block continuation) | yes     | either                       |
+| `fit(`, `xit(`, `fit.each(`                             | yes     | must stay flagged            |
+
+The distinction matters because **no amount of comment-lexing fixes the first
+row** — `fit: 'inside'` is genuine code, and the reporter's workaround was to
+stop using a library's documented API. That is the more serious defect, and it
+was reported by someone adopting the tool rather than found by us running it on
+ourselves. Fixed in #43 by requiring call syntax for the bare-identifier forms;
+the block-comment limitation stays where it was, roadmapped and now documented in
+`LineLex` with the over-match direction spelled out.
+
+The lesson worth keeping: a plausible mechanism that fully explains the observed
+instance is still not proof it is the only one. The `//`-comment case being
+clean was the evidence that should have prompted a second look — the lexer
+handles line comments correctly, so the pattern was never under suspicion.
+
 ### Also landed with it
 
 - **`audit.ts` learned `fallow-ignore`** (a new `analyzer-ignore` kind). This is

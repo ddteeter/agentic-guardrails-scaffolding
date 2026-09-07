@@ -78,11 +78,45 @@ const SIGNATURES: readonly Signature[] = [
   },
   { kind: 'suppress-warnings', class: 'code', pattern: /@SuppressWarnings\b/ },
   { kind: 'disabled-test', class: 'code', pattern: /@Disabled\b/ },
+  // Focused/skipped tests, split across TWO entries of the same kind. The two
+  // halves need genuinely different rules, and combining them tripped this
+  // repo's own `sonarjs/regex-complexity` ceiling -- so the split is the honest
+  // fix rather than raising the limit.
+  //
+  // `matchSignature` returns on the first match, so a line satisfying both
+  // still produces exactly one `skipped-test` finding.
+  //
+  // HALF 1 -- the bare identifiers, which REQUIRE call syntax. This is the fix
+  // for issue #43: `fit` was matched as a bare word, and `fit` is unusually
+  // exposed -- it is `sharp`'s resize option (`{ fit: 'inside' }`), a CSS value
+  // (`object-fit`), a common identifier, and an ordinary English verb. Each of
+  // those read as a focused test and blocked a commit with no obvious cause and
+  // no way past it but renaming an identifier the author does not own.
+  // Reported from a real adoption, not hypothesised.
+  //
+  // Requiring a call costs no real detection: a focused test is always invoked.
+  //
+  // `.each` qualifies WITHOUT a following paren, and that is a lexer
+  // constraint rather than laziness. `.each` has two calling conventions -- an
+  // argument list (`fit.each([...])( ... )`) and a tagged template
+  // (`xit.each\`table\`( ... )`) -- and in the second, the next character is a
+  // backtick, which `lexLine` has already stripped with the rest of the
+  // template span before any signature is tested. Demanding a paren would
+  // therefore silently stop detecting the tagged-template form. `.each` on one
+  // of these identifiers is unambiguous anyway: nothing else is spelled
+  // `fit.each`.
   {
     kind: 'skipped-test',
     class: 'code',
-    pattern:
-      /\b(?:x(?:it|describe|test)|f(?:it|describe)|(?:it|test|describe|context|suite)\.(?:skip|only))\b/,
+    pattern: /\b(?:x(?:it|describe|test)|f(?:it|describe))\s*(?:\(|\.each\b)/,
+  },
+  // HALF 2 -- the dotted forms, which do NOT require a call: `.skip` and
+  // `.only` are distinctive enough on their own, and neither is an ordinary
+  // English word or a library option name the way `fit` is.
+  {
+    kind: 'skipped-test',
+    class: 'code',
+    pattern: /\b(?:it|test|describe|context|suite)\.(?:skip|only)\b/,
   },
   // stryker's mutation-suppression directives. `directive` class, so a mention
   // in prose ("we removed the Stryker disable comment") doesn't flag — only a
