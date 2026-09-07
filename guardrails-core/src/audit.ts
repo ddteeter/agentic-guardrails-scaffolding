@@ -105,6 +105,23 @@ const SIGNATURES: readonly Signature[] = [
   // therefore silently stop detecting the tagged-template form. `.each` on one
   // of these identifiers is unambiguous anyway: nothing else is spelled
   // `fit.each`.
+  //
+  // ACCEPTED COST, measured rather than assumed: requiring the call on the
+  // SAME line trades the old over-match for a narrower under-match --
+  // `fit\n  ('x', ...)` split across two lines no longer matches, where the
+  // bare word did. Three things make that the right trade:
+  //   1. It is not a new evasion class. Every multi-token code-class signature
+  //      already behaves this way under the single-line lexer -- `it.skip`,
+  //      `as any` and `as unknown as` all evade an identical split (verified).
+  //      This moves `fit` from the single-token set into that existing set.
+  //   2. Closing it would reintroduce #43. The only same-line rule that catches
+  //      the split form is "identifier at end of code", and a prettier-
+  //      formatted multi-line destructure puts a bare `fit,` on its own line --
+  //      so the fix for the evasion is the bug it replaced.
+  //   3. The over-match blocked ordinary code with no way past it; the
+  //      under-match needs a line break normal formatting does not produce.
+  // The real fix for both is the roadmapped cross-line lexer, which is the same
+  // fix `LineLex`'s block-comment limitation is waiting on.
   {
     kind: 'skipped-test',
     class: 'code',

@@ -2578,6 +2578,27 @@ ourselves. Fixed in #43 by requiring call syntax for the bare-identifier forms;
 the block-comment limitation stays where it was, roadmapped and now documented in
 `LineLex` with the over-match direction spelled out.
 
+**The trade the fix makes, stated.** Requiring the call on the same line swaps a
+broad over-match for a narrow under-match: `fit` split from its `(` across two
+lines no longer matches. Raised in review of #45, then measured rather than
+argued:
+
+- It is **not a new evasion class**. Every multi-token `code`-class signature
+  already behaves this way under the single-line lexer — `it.skip`, `as any` and
+  `as unknown as` all evade an identical split (verified against the built
+  auditor). The change moves `fit` from the single-token set, where it was
+  unsplittable, into the set everything else already lives in.
+- **Closing it would reintroduce #43.** The only same-line rule that catches the
+  split form is "identifier at end of code" — and a prettier-formatted
+  multi-line destructure puts a bare `fit,` on its own line. The fix for the
+  evasion is the bug it replaced.
+- The over-match blocked ordinary code with no way past it. The under-match
+  needs a line break normal formatting does not produce.
+
+Both this and the block-comment limitation want the same thing: a lexer that
+tracks state across lines. That is the roadmap item, and this is now its second
+concrete argument.
+
 The lesson worth keeping: a plausible mechanism that fully explains the observed
 instance is still not proof it is the only one. The `//`-comment case being
 clean was the evidence that should have prompted a second look — the lexer
