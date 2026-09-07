@@ -54,12 +54,24 @@ the repo bans it. Let the agent try to end its turn.
 **Expected:** the turn does **not** end. The Stop hook blocks and the agent
 receives a terse pointer like:
 
-> `N guardrail violation(s) written to .claude/state/guardrails/<sid>.last.json.
+> `N guardrail violation(s) written to .guardrails/state/<sid>.last.json.
 Do NOT read it. Spawn the guardrail-fixer subagent and give it that path to
 fix. Then try to stop again.`
 
 Confirm the manifest exists on disk and the main agent's context did **not**
 accumulate the full error text — only the pointer.
+
+**Then check the retry message.** The fixer runs in the background, so trying
+to stop again before it reports is the natural next move — and it re-fires the
+gate. When nothing has changed yet, the block reads differently:
+
+> `N guardrail violation(s) in .guardrails/state/<sid>.last.json — UNCHANGED
+since the last block. Do NOT read it, and do NOT spawn another fixer yet …`
+
+That difference is the point: an identical message would be an instruction to
+spawn a second fixer against the same manifest, racing edits on the same files.
+If you see the first message twice in a row with an unchanged manifest, that is
+a regression, not a quirk.
 
 ## 3. Fixer subagent resolves it
 
