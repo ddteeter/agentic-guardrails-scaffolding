@@ -12,6 +12,8 @@
  * repo-relative paths already, so no `path.relative` is applied.
  */
 
+import { parseJsonText } from '../json-file.js';
+import { isArrayOfRecords, isRecord } from './report-shape.js';
 import type { Violation } from '../violation.js';
 
 /**
@@ -41,45 +43,16 @@ interface KnipIssue {
 
 function isKnipReport(value: unknown): value is { issues: KnipIssue[] } {
   return (
-    // `value !== null` leads (not `typeof value === 'object'`) so the
-    // equivalent mutant below sits on its own line: Stryker's disable
-    // comments match by mutator + line, and the leftmost clause of a chain
-    // always shares its start line with every combined-clause mutant on that
-    // chain, so a directive there would silence real coverage too (measured;
-    // see guardrails.config.json).
-    value !== null &&
-    // Equivalent mutant: no value JSON.parse can produce is both non-object
-    // and carries an array `issues` property, so this clause can never be
-    // false while the one below it is true.
-    // Stryker disable next-line ConditionalExpression
-    typeof value === 'object' &&
-    Array.isArray((value as { issues?: unknown }).issues) &&
-    (value as { issues: unknown[] }).issues.every(
-      (issue) =>
-        // Same reordering, same reason as above, one level down.
-        issue !== null &&
-        // Equivalent mutant: no value JSON.parse can produce is both
-        // non-object and carries a string `file` property.
-        // Stryker disable next-line ConditionalExpression
-        typeof issue === 'object' &&
-        typeof (issue as KnipIssue).file === 'string',
-    )
+    isRecord(value) &&
+    isArrayOfRecords(value.issues) &&
+    value.issues.every((issue) => typeof issue.file === 'string')
   );
 }
 
 function isEntryArray(value: unknown): value is KnipEntry[] {
   return (
-    Array.isArray(value) &&
-    value.every(
-      (entry) =>
-        // Same reordering, same reason as isKnipReport above.
-        entry !== null &&
-        // Equivalent mutant: no value JSON.parse can produce is both
-        // non-object and carries a string `name` property.
-        // Stryker disable next-line ConditionalExpression
-        typeof entry === 'object' &&
-        typeof (entry as KnipEntry).name === 'string',
-    )
+    isArrayOfRecords(value) &&
+    value.every((entry) => typeof entry.name === 'string')
   );
 }
 
@@ -123,23 +96,7 @@ function violationsForIssue(issue: KnipIssue): Violation[] {
 }
 
 export function parseKnipJson(stdout: string, _repoRoot: string): Violation[] {
-  let parsed: unknown;
-  // prettier-ignore
-  try {
-    parsed = JSON.parse(stdout);
-  }
-  // Equivalent mutant: emptying the catch body leaves `parsed` undefined
-  // (the try body's assignment never lands on a throw), which isKnipReport
-  // rejects below — the function still returns []. `catch` is forced onto
-  // its own line (prettier-ignore keeps it there) so this directive's line
-  // matches only the catch block, not the try block above it: the try
-  // block's own BlockStatement mutant is real (measured) — it silently
-  // drops every value on ANY input, valid or not, which the happy-path
-  // tests catch — so it must stay mutated.
-  // Stryker disable next-line BlockStatement
-  catch {
-    return [];
-  }
+  const { parsed } = parseJsonText(stdout);
   if (!isKnipReport(parsed)) {
     return [];
   }

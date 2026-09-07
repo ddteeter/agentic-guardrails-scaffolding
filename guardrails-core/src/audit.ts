@@ -13,7 +13,8 @@
  *
  * This is a single **cross-language** auditor, not a per-language one: because
  * it scans raw added diff lines for textual escape signatures, one signature
- * table covers both stacks — `eslint-disable`/`@ts-*`/`as any`/`.skip` (TS) and
+ * table covers both stacks — `eslint-disable`/`@ts-*`/`as any`/`.skip`/
+ * `fallow-ignore` (TS) and
  * `@SuppressWarnings`/`@Disabled`/casts (Java). New stacks add signatures here;
  * they never need a separate auditor.
  */
@@ -25,7 +26,8 @@ export type AuditKind =
   | 'suppress-warnings' // Java: @SuppressWarnings
   | 'disabled-test' // Java: @Disabled
   | 'skipped-test' // TS/JS: .skip / .only / xit / fit
-  | 'mutation-suppress'; // TS/JS: // Stryker disable | restore
+  | 'mutation-suppress' // TS/JS: // Stryker disable | restore
+  | 'analyzer-ignore'; // TS/JS: // fallow-ignore[-next-line|-file]
 
 export interface AuditFinding {
   file: string;
@@ -91,6 +93,19 @@ const SIGNATURES: readonly Signature[] = [
     kind: 'mutation-suppress',
     class: 'directive',
     pattern: /^Stryker\s+(?:disable|restore)\b/,
+  },
+  // fallow's per-issue ignore directives, which silence a
+  // `fallow/code-duplication` finding rather than removing the duplication --
+  // the same weakening class as the two directives above. Added with the
+  // `dupes` analyzer: CLAUDE.md's "upgrading leveraged tools" review says an
+  // analyzer's suppression syntax must be known HERE, or a fixer can quiet a
+  // violation with a comment the auditor never sees. `directive` class, so a
+  // mention in prose or a string is not a finding. The bare `fallow-ignore`
+  // form is covered by the optional suffix group.
+  {
+    kind: 'analyzer-ignore',
+    class: 'directive',
+    pattern: /^fallow-ignore(?:-next-line|-line|-file)?\b/,
   },
 ];
 

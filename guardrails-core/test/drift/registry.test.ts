@@ -201,6 +201,35 @@ async function strykerStatuses(): Promise<Set<string>> {
   return found;
 }
 
+/**
+ * fallow probe: the rule ids the fallow adapter emits. fallow publishes an
+ * `issue-registry.json` in its own package -- a machine-readable catalogue of
+ * every issue type it can report, with the `rule_id` string verbatim -- so the
+ * probe reads upstream's own declaration rather than parsing a report. No
+ * fixture and no internal-file bypass, like the stryker schema probe above.
+ *
+ * `license` is read alongside the id on purpose: fallow gates some issue types
+ * behind a paid licence, and a rule that still EXISTS but has moved behind one
+ * would fail silently in an adopter's repo (fallow reports nothing, the gate
+ * reads clean). Only ids fallow still ships as `free` count as present.
+ */
+async function fallowRuleIds(): Promise<Set<string>> {
+  const registryPath = createRequire(import.meta.url).resolve(
+    'fallow/issue-registry.json',
+  );
+  const registry = JSON.parse(await readFile(registryPath, 'utf8')) as {
+    issue_types?: { rule_id?: unknown; license?: unknown }[];
+  };
+  const ids = new Set<string>();
+  const issueTypes = registry.issue_types ?? [];
+  for (const issue of issueTypes) {
+    if (typeof issue.rule_id === 'string' && issue.license === 'free') {
+      ids.add(issue.rule_id);
+    }
+  }
+  return ids;
+}
+
 const entries: DriftEntry[] = [
   {
     tool: 'knip',
@@ -251,6 +280,15 @@ const entries: DriftEntry[] = [
     ],
     probe: depcruiseVocabulary,
     hint: 'dependency-cruiser renamed/removed a rule-condition keyword or severity (its config validator now rejects the probe config) — reconcile .dependency-cruiser.cjs and guardrails-core/src/verify/depcruise-adapter.ts',
+  },
+  {
+    tool: 'fallow',
+    // The rule id the fallow adapter emits (RULE_ID in
+    // guardrails-core/src/verify/fallow-adapter.ts) and the loose-rule prefix
+    // it is classified under (LOOSE_PREFIXES in loose-rules.ts).
+    knownIds: ['fallow/code-duplication'],
+    probe: fallowRuleIds,
+    hint: 'fallow renamed, removed, or moved behind its paid licence a rule id the dupes analyzer depends on — reconcile RULE_ID in guardrails-core/src/verify/fallow-adapter.ts and the fallow/ prefix in loose-rules.ts',
   },
   {
     tool: 'stryker',

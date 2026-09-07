@@ -32,6 +32,7 @@ import type { SharedPath } from './merge.js';
 import type { ScaffoldDecisions } from './plan.js';
 import {
   DEPENDENCY_CRUISER_SEED,
+  FALLOW_SEED,
   KNIP_SEED,
   guardrailsConfigSeed,
   STRYKER_SEED,
@@ -181,6 +182,17 @@ export const SEED_ONCE_ANALYZERS: readonly SeedOnceAnalyzer[] = [
     path: 'knip.json',
     seed: KNIP_SEED,
     hasConfig: (facts) => facts.hasKnipConfig,
+  },
+  {
+    // `dupes` defaults to `off`, so `isAnalyzerAsked` is false for a repo that
+    // never enabled it -- which is what keeps this seed out of the adopters
+    // who did not ask for duplication checking. See analyzer-policy's
+    // DEFAULT_MODES.
+    tool: 'dupes',
+    provider: 'fallow',
+    path: '.fallowrc.jsonc',
+    seed: FALLOW_SEED,
+    hasConfig: (facts) => facts.hasFallowConfig,
   },
 ];
 

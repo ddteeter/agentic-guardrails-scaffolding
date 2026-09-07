@@ -14,8 +14,8 @@ this doc is wrong until it is updated to match, not the other way around.
 npm i -D https://github.com/ddteeter/agentic-guardrails-scaffolding/releases/download/v0.1.0/guardrails-core-0.1.0.tgz
 ```
 
-**No `v0.1.0` release exists until the tag is pushed.** The URL above 404s
-until `.github/workflows/release.yml` runs against a pushed `v0.1.0` tag.
+`v0.1.0` is published and that URL resolves. A later version is a new tag, a
+new release asset, and a hand-edited URL — see the cost note below.
 
 **What a URL dependency costs you:** no semver range (you get exactly the
 tarball at that URL, forever, until you edit the line), no dedupe (npm cannot
@@ -71,7 +71,7 @@ edit one of them by hand.
 | ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **OWNED**     | Absent → created. Unmodified since scaffolding (checksum in `.guardrails/scaffold.json` still matches) → silently rewritten on the next `init --apply`, so upgrades land automatically. Edited by you → left alone and reported as `drift` in the plan; `--force` overwrites it anyway.               | `.claude/agents/guardrail-fixer*.md`, `.codex/agents/guardrail-fixer*.toml`, `.github/agents/guardrail-fixer*.agent.md`, `.github/hooks/guardrails.json`, `.githooks/pre-commit`, `.github/workflows/guardrails.yml`, `docs/guardrails/*.md`, `.claude/skills/*/SKILL.md` |
 | **SHARED**    | Absent → the whole file is created. Present → always `merge`: guardrails splices in only its own entries (a hooks block, a gitignore stanza, the `prepare` script line, a marked doc section) and leaves everything else in your file untouched. Never reports `drift`, never sensitive to `--force`. | `.claude/settings.json`, `.codex/hooks.json`, `AGENTS.md`, `.gitignore`, `package.json`, `.github/copilot-instructions.md`                                                                                                                                                |
-| **SEED-ONCE** | Absent → created once. Present → left alone, forever — `--force` included.                                                                                                                                                                                                                            | `guardrails.config.json`, `.dependency-cruiser.cjs` (only if dependency-cruiser is enabled and no config exists yet), `stryker.conf.json` (same, for stryker), `knip.json` (same, for knip)                                                                               |
+| **SEED-ONCE** | Absent → created once. Present → left alone, forever — `--force` included.                                                                                                                                                                                                                            | `guardrails.config.json`, `.dependency-cruiser.cjs` (only if dependency-cruiser is enabled and no config exists yet), `stryker.conf.json` (same, for stryker), `knip.json` (same, for knip), `.fallowrc.jsonc` (same, for dupes)                                          |
 
 `guardrails.config.json` is the one file `--force` can never touch: it holds
 your policy and your `sanctionedSuppressions`, and losing it is the worst
@@ -141,9 +141,26 @@ Not every analyzer runs on every turn. `guardrails-core/src/verify/index.ts`'s
 | npm-peers          | commit, push and CI only                 | whole-project — asks `npm ls` which installed versions violate a peer range            |
 | dependency-cruiser | commit, push and CI only                 | whole-project                                                                          |
 | stryker            | commit, push and CI only                 | diff-scoped to changed production files                                                |
+| dupes              | commit, push and CI only (opt-in)        | whole-tree discovery, diff-scoped reporting: clone groups touching a changed file      |
+
+`dupes` is the one analyzer that is **`off` by default** rather than
+installed-means-enabled. It runs `fallow dupes`, which finds copy-paste across
+files — the gap `eslint-plugin-sonarjs` looks like it covers and structurally
+cannot, because ESLint receives one file's AST at a time and holds no cross-file
+state. Its precision depends on an ignore list only you can write (generated
+files, ORM schema DSLs, framework boilerplate), so an unconfigured run reports
+rhyming code rather than duplication worth fixing. Turn it on with
+`"dupes": "required"` in the `analyzers` block, then tune the `.fallowrc.jsonc`
+that `init` seeds once and never rewrites.
+
+It needs the whole tree to find a clone PAIR, but reports only groups with at
+least one side in your diff — so a pre-existing clone does not re-report on
+every commit; it surfaces the first time you touch a file involved in it. When
+it does report, it names **every** site in the group, including sides your diff
+never touched, because a fixer shown half a clone pair cannot deduplicate it.
 
 The practical read: eslint and tsc are cheap enough to run after every agent
-turn. knip, dependency-cruiser, and stryker are whole-graph or mutation
+turn. knip, dependency-cruiser, stryker and dupes are whole-graph or mutation
 analysis — too slow for a per-turn gate — so they only fire at `git commit`
 (via `.githooks/pre-commit`), at `git push` (via `.githooks/pre-push`), and in
 CI.

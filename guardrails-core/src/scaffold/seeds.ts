@@ -101,6 +101,59 @@ export const STRYKER_SEED = `${JSON.stringify(
 )}\n`;
 
 /**
+ * A starter fallow configuration, for the `dupes` analyzer.
+ *
+ * `.jsonc` rather than `.json` because fallow accepts comments there and this
+ * seed is mostly commentary: the values a clone detector needs are exactly the
+ * ones no default can get right, so the file's job is to say what to tune and
+ * why. Same reasoning as the commented `.dependency-cruiser.cjs` above.
+ *
+ * `mode: "semantic"` rather than fallow's own `mild` default. Semantic is the
+ * near-duplicate mode -- it matches blocks that differ only in identifier
+ * names, which is the class the analyzer exists for: an agent that copies a
+ * helper into a second module renames its parameters on the way.
+ *
+ * No `threshold`. fallow's own `--threshold` gate reads
+ * `stats.duplication_percentage`, and under guardrails' diff-scoped reporting
+ * that number is computed over the scoped file set rather than the project
+ * (measured at 71.4% on a two-file fixture). guardrails raises one violation
+ * per clone instance instead, so a project-wide percentage would be a number
+ * that means nothing here.
+ *
+ * `ignore` starts EMPTY and is the field an adopter is expected to fill: a
+ * clone detector's false positives are generated files, ORM schema DSLs and
+ * framework boilerplate, and which of those a repo has is not knowable from
+ * here. This is SEED-ONCE, so guardrails never touches it again.
+ */
+export const FALLOW_SEED = `{
+  // Starter fallow configuration, seeded once by \`guardrails init\`.
+  // guardrails never rewrites this file -- tune it freely.
+  //
+  // \`guardrails verify\` runs \`fallow dupes --format json --quiet\` from the
+  // repository root with no --config and no tuning flags, so everything below
+  // is what actually governs clone detection.
+  "duplicates": {
+    // "semantic" matches blocks that differ only in identifier names -- the
+    // copy-then-rename an agent produces. "strict" is exact-token only;
+    // "mild"/"weak" sit between.
+    "mode": "semantic",
+    // The floor for what counts as a clone. Lower finds more and rhymes more;
+    // 50 is fallow's default and a reasonable place to start tuning.
+    "minTokens": 50,
+    "minLines": 5,
+    // Raise to 3+ to report only widespread copy-paste and skip pair-only
+    // clones.
+    "minOccurrences": 2,
+    // THE FIELD TO EDIT. A clone detector's false positives are repo-specific:
+    // generated code, ORM/schema DSLs that legitimately repeat, and framework
+    // boilerplate. Add globs here as you meet them -- for example:
+    //   "**/*.gen.ts", "src/db/schema*.ts"
+    "ignore": []
+  }
+}
+`;
+
+/**
  * Starter knip configuration.
  *
  * knip was the one analyzer `adopting-guardrails` recommends that had no seed,

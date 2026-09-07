@@ -33,7 +33,22 @@
     "@stryker-mutator/vitest-runner",
     "mutation-testing-report-schema",
   ],
-  "duplicates": { "threshold": 5, "minTokens": 75, "minLines": 5 },
+  // Clone detection, consumed by the `dupes` analyzer
+  // (`fallow dupes --format json --quiet`, run at the commit rung) as well as
+  // by `check:graph`. These are the values `guardrails init` seeds for an
+  // adopter -- we run what we ship. "semantic" is the near-duplicate mode: it
+  // matches blocks differing only in identifier names, which is the copy-then-
+  // rename an agent produces.
+  //
+  // `threshold` stays for `check:graph`'s whole-project view. The `dupes`
+  // analyzer deliberately ignores it: under diff-scoped reporting the
+  // percentage is computed over the scoped file set, not the project.
+  "duplicates": {
+    "mode": "semantic",
+    "minTokens": 50,
+    "minLines": 5,
+    "threshold": 5,
+  },
   // Dev-only tooling (one-shot CLI scripts) is untested by design; gating
   // change-risk (CRAP) on never-tested code isn't meaningful. Production src/
   // IS gated.

@@ -42,6 +42,7 @@ function facts(manifest?: ScaffoldManifest): RepoFacts {
     hasDependencyCruiserConfig: false,
     hasStrykerConfig: false,
     hasKnipConfig: false,
+    hasFallowConfig: false,
     manifest,
     hooksPath: undefined,
     existingAnalyzers: undefined,

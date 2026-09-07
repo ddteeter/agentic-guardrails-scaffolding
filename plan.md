@@ -2313,3 +2313,312 @@ the analyzer set at the versions the corrected guidance now pins:
 - `git -c core.hooksPath=/dev/null commit` is denied on a dirty tree; an
   unrelated shell command still passes silently; and
   `reports/stryker-incremental.json` is ignored.
+
+### Findings: a fifth adoption, on a real Vite react-ts app
+
+Run on 2026-09-05 against `main` at `2579091`, from the packed tarball, into a
+`npm create vite@latest -- --template react-ts` scaffold. Adoptions one through
+four all ran against bare `npm init -y` repos; this is the first against a
+framework scaffold, which matters because the stated first consumer is a
+greenfield web application. The difference is the whole finding: everything the
+pack does, it did — and the on-ramp still assumes the adopter's code is a
+`.ts` module, not a component tree.
+
+**What worked, stated first.** The solution-style tsconfig is genuinely checked:
+Vite's root `tsconfig.json` is `files: []` plus two references, and neither
+referenced project sets `composite`, yet a `TS2322` injected into `src/App.tsx`
+came back as three violations rather than a clean run. `init --plan` →
+`--apply` → install the analyzers → `--apply` again seeded all three analyzer
+configs, with the skipped-analyzer warning naming `guardrails init --apply` as
+the second half of the fix at every rung. `enforcement: "block"` seeded;
+`install-hooks` set `core.hooksPath` through `prepare`; the first commit on the
+unborn branch blocked on real violations and passed once they were cleared. The
+Stop gate emitted the terse pointer against a session-keyed manifest carrying
+six violations — eslint and tsc only, with the commit-rung analyzers correctly
+absent from it. `verify` took ~8s on a three-file app.
+
+**And knip's seed is clean on a Vite layout, for a reason worth recording.** The
+seeded `entry` guesses `src/index.ts`/`src/main.ts`, and this template has
+neither — its entry is `index.html` → `src/main.tsx`. It reports nothing anyway,
+because knip's own Vite plugin resolves the HTML entry. The seed's guesses being
+wrong cost nothing here; that is luck holding rather than design working, and it
+will not hold for a framework knip has no plugin for.
+
+**1. `stryker.conf.json`'s `mutate` is silently overridden.** `runStryker` passes
+`--mutate <changed production files>` on the command line, and a CLI `--mutate`
+takes precedence over the config file's. Measured: set
+`"mutate": ["src/**/*.ts", "!src/main.tsx", "!src/App.tsx"]`, re-ran `verify`,
+and all five `stryker/no-coverage` violations came back unchanged. This is
+documented nowhere, and both `adopting-guardrails` step 5 and `docs/adoption.md`
+discuss `stryker.conf.json` as a file the adopter owns and tunes — which is true
+of every key in it except the one that decides what gets mutated.
+
+**2. A React app has no way to defer mutation coverage, because all three exits
+are closed.** The template's own `App.tsx` and `main.tsx` produce five
+`stryker/no-coverage` violations on the first `verify` with the recommended
+analyzer set. The exits an agent can reach:
+
+| exit                       | status                                                          |
+| -------------------------- | --------------------------------------------------------------- |
+| a `mutate` exclusion       | ignored — finding 1                                             |
+| `// Stryker disable`       | a diff-auditor `mutation-suppress` signature → needs a sanction |
+| `analyzers.stryker: "off"` | forbidden by the scaffolded `AGENTS.md`'s never-weaken block    |
+
+So adoption on a React repo requires jsdom, `@testing-library/react`, and
+component tests **before the first commit**. That is reachable — this run got
+there — but it is named nowhere, and the guidance's worked example is verified
+against the Vite template's dependency graph rather than its code.
+
+**3. The React entry point is the file that most resembles the shebang case.**
+`src/main.tsx` calls `createRoot(...).render(...)` at module top level, so it is
+run by the bundler and never imported by a test. Killing its mutants took `act()`
+from `@testing-library/react`, a dynamic `import()` inside it, `vi.resetModules()`
+in an `afterEach`, and a second test asserting the missing-`#root` throw — three
+iterations to get right. That is exactly the argument `excludeExecutableEntries`
+already makes for `#!` files and `isConfigFile` makes for `*.config.ts`. Worth
+deciding deliberately: either a framework entry point joins that set, or the
+answer is the exclusion knob finding 1 shows does not currently exist.
+
+**4. Two guardrails pushed opposite directions on one line.**
+`@typescript-eslint/no-non-null-assertion` rejects the template's
+`document.getElementById('root')!`. Fixing it the way the rule intends — a null
+guard and a throw — took `src/main.tsx` from **one** unkillable mutant to
+**six** (`BooleanLiteral`, two `ConditionalExpression`, `StringLiteral`,
+`CallExpression`). The lint fix is correct; it simply manufactures mutation debt
+in the file least able to pay it. Recorded as a shape rather than a bug: any
+eslint rule whose remedy adds a branch will do this in an untested file, and the
+mutation rung will always charge for it.
+
+**5. `eslint/parse-error` on `vitest.config.ts` is structurally unfixable by the
+fixer.** The template's `tsconfig.node.json` includes only `vite.config.ts`, so a
+hand-written `vitest.config.ts` falls outside the project service and
+typescript-eslint's typed rules refuse the file. The fix lives in
+`tsconfig.node.json` — a file not in the manifest — so the scope-lock denies it.
+This is the roadmap's "Fixer edit-scope: cross-file fixes" item firing on the
+**default** Vite layout rather than on an edge case, which raises its priority.
+The violation also carries no `line`, the same contract gap as two findings on
+one line, in its other direction.
+
+**6. The recommended lint stack fights React's conventions.**
+`unicorn/filename-case` demands `App.tsx` → `app.tsx` — a case-only rename, which
+the fixer cannot perform at all (its tools are `Read`/`Edit`/`Write`, with no
+rename) and which is awkward on a case-insensitive APFS volume — and
+`unicorn/default-export-style` fights the component idiom. Step 5 already says to
+match the repo's actual code "(React vs. Node)"; it should name these two
+specifically, because the worked-example table recommends unicorn and the
+template trips both on the first run.
+
+**The exit criterion is reachable, and that is the headline.** `verify` went
+green and the first commit landed under `enforcement: "block"`. It took six
+interventions, of which the guidance names two:
+
+| #   | intervention                                                     | named?         |
+| --- | ---------------------------------------------------------------- | -------------- |
+| 1   | author `eslint.config.js`                                        | yes, step 5    |
+| 2   | swap the stryker runner for `vitest`, pin `vitest` to `^4`       | yes, step 5    |
+| 3   | relax `unicorn/filename-case` + `default-export-style` for React | no — finding 6 |
+| 4   | add `vitest.config.ts` to `tsconfig.node.json`'s `include`       | no — finding 5 |
+| 5   | fix the template's own `App.tsx`/`main.tsx` lint findings        | no — finding 4 |
+| 6   | install jsdom + testing-library and cover every `.tsx`           | no — finding 2 |
+
+**Left for the roadmap.**
+
+- **A mutation exclusion knob, or entry-point detection.** Findings 1, 2 and 3
+  are one decision. The cheapest honest version is documenting that `mutate` is
+  overridden; the useful version is a `mutationExclude` in
+  `guardrails.config.json` that feeds the `--mutate` computation, so the adopter
+  has the lever the config file appears to give them and does not.
+- **A React/`.tsx` section in `adopting-guardrails`.** Findings 2, 3 and 6, plus
+  the `main.tsx` entry-point test pattern, which took three attempts to write and
+  will take every adopter the same three.
+- **Cross-file fixes move up.** Finding 5 makes the scope-lock's known limit a
+  default-layout problem rather than a hypothetical one.
+
+**Released.** `v0.1.0` was tagged from `2579091` and the workflow published
+`guardrails-core-0.1.0.tgz` (226,509 bytes, byte-identical to the audited local
+pack). The documented install URL was then exercised for real — installed into a
+throwaway repo and `init --plan` run out of it. **The "no release exists" line
+carried across all four previous adoptions is closed.**
+
+**One release-path wart, found cutting it.** `release.yml` lists
+`workflow_dispatch` alongside the tag trigger, but the version guard compares
+`GITHUB_REF_NAME` against the packaged version — so a dispatch from a branch
+fails with `tag main does not match guardrails-core version 0.1.0`, which reads
+like a version mismatch rather than "this trigger cannot work here". Either drop
+`workflow_dispatch` or have the guard say which trigger it needs.
+
+## Duplication: the `dupes` analyzer (issue #40), and what it found on us
+
+Shipped. `eslint-plugin-sonarjs` ships `sonarjs/no-identical-functions`, which
+reads as copy-paste coverage and structurally is not — **ESLint is per-file**, so
+a rule holds no cross-file state and two identical functions in two files are
+invisible to it. Nothing else in the pack covered duplication.
+
+**Tool: `fallow dupes`, not jscpd.** Issue #40 opened on jscpd and its own
+research moved off it; measurement against this repo made the case stronger than
+the issue argued. `fallow` was already a devDependency here (driving
+`check:graph`); it is MIT; `fallow/code-duplication` is `"license": "free"` in
+its published `issue-registry.json`; the JSON envelope is versioned
+(`schema_version: 7`); analysis runs in ~20 ms; and `--changed-since` already
+implements the exact diff-scoping the issue asks for. jscpd would have added a
+dependency plus the v4/v5 tokenizer trap #40 documents. Design in
+`docs/superpowers/specs/2026-09-07-dupes-analyzer-design.md`.
+
+Two decisions worth restating here, both made from a measurement:
+
+- **Diff scoping happens in the adapter, not via `--changed-since`.** The flag
+  was verified to do the right thing (whole-tree discovery, report only groups
+  touching the diff, both sides reported when one side changed). It is still not
+  what we call, because `verify` has TWO change sets — `staged` at the commit
+  rung, `branch` elsewhere — and the flag can only express the branch one.
+- **No duplication threshold.** `stats.duplication_percentage` is computed over
+  the SCOPED file set under a diff-scoped run — measured at 71.4% on a two-file
+  fixture. It is not a project metric there, so it cannot gate one. One
+  violation per clone instance instead.
+
+`dupes` is also the first analyzer with a non-`auto` default (`DEFAULT_MODES` in
+`analyzer-policy.ts`). A clone detector's noise sources are repo-specific, so an
+unconfigured run reports rhyming code; and an `auto` default would have put every
+existing consumer into `silentlySkippedAnalyzers`, nagging them to install a tool
+they never asked for.
+
+### Finding 1: it flagged its own author, and we fixed what it found
+
+Run against this repository at the values we seed (`semantic`, `minTokens: 50`),
+the analyzer reported **12 clone groups on its first run** — two of them in code
+this very change was adding. The substantive class was the analyzer boilerplate
+itself, invisible to review because each copy sits under its own long docstring:
+
+| group                                      | what                                                                                      |
+| ------------------------------------------ | ----------------------------------------------------------------------------------------- |
+| `eslint-adapter:44 ↔ fallow-adapter:148`   | the new adapter was the **5th copy** of the `try/JSON.parse/catch` + shape-guard preamble |
+| `depcruise-adapter:121 ↔ knip-adapter:125` | the same preamble, pre-existing                                                           |
+| `eslint-adapter:26 ↔ knip-adapter:70`      | `isResultArray` against `isEntryArray` — the same array-of-records guard                  |
+| `index.ts:433 ↔ index.ts:472`              | `runDepcruise` against the new `runDupes`                                                 |
+
+Fixed rather than tuned away, and the fixes **deleted five sanctioned
+suppressions without adding one**:
+
+- `parseJsonText` in `json-file.ts` — the repo had already solved this exact
+  mutation problem once: return a WRAPPER so the catch block's mutant is
+  observable instead of equivalent. Three `BlockStatement` grants (eslint, knip,
+  dependency-cruiser) deleted, none added.
+- `verify/report-shape.ts` (`isRecord`, `isArrayOfRecords`) — the same trick one
+  level up. Inline behind a field check, `typeof x === 'object'` is a provably
+  equivalent mutant, which is why three adapters each carried a grant for it.
+  Called from a test, `isRecord(5)` is a plain assertion that KILLS it. Two more
+  grants deleted (`eslint-adapter` ×1, `knip-adapter` ×3 occurrences).
+- `runJsonAnalyzer` in `verify/index.ts` — for the three runners that fit with
+  no flag. `runTsc`, `runStryker`, `runNpmPeers` and `runDupes` each differ in a
+  way a parameter would paper over, so they stayed as they are: the point was to
+  remove duplication, not to reach zero groups.
+
+12 groups → 7, none of them in a file this change touches, so the analyzer is
+enabled here (`"dupes": "required"`) at the values we ship rather than at a
+threshold tuned to see nothing. The remaining seven are pre-existing and will
+surface the first time someone touches the files they live in — which is the
+designed behaviour, not a deferral.
+
+**The lesson, stated plainly:** a five-fold duplication of the parse preamble
+had survived every review of every adapter, and each new copy imported a
+mutation suppression along with it. Nothing else in the pack could see it. That
+is the argument for the analyzer, produced by the analyzer, on the day it landed.
+
+### Finding 2: the diff-auditor lexes block-comment continuation lines as code
+
+Surfaced while writing the docstring for `runJsonAnalyzer`. The Bash commit gate
+blocked on:
+
+```
+guardrails-core/src/verify/index.ts:373 added skipped-test:
+  * because each copy sits under its own long docstring. Only the three that fit
+```
+
+The English word **"fit"** matched the `skipped-test` signature's `f(?:it|describe)`
+alternative. Isolated with a direct probe:
+
+| added line                                            | flagged |
+| ----------------------------------------------------- | ------- |
+| `/* only the three that fit */`                       | no      |
+| `// only the three that fit`                          | no      |
+| `* only the three that fit` (inside a `/** */` block) | **yes** |
+
+So the lexer is per-line: it handles `//` and single-line `/* */` correctly, and
+treats the `*`-prefixed **continuation** lines of a block comment as code. Every
+`code`-class signature is affected, not only this one — `as any` or
+`@SuppressWarnings` written in prose inside a doc comment would flag the same
+way.
+
+Worked around by rewording the sentence, which is the honest fix for a false
+positive (nothing was weakened). Recorded under **"Auditor soundness: text lexer
+→ AST"** above, which is the roadmap item that already owns this class — this is
+its first measured instance, and it argues for that item being about block-scope
+tracking, not only string spans.
+
+### Also landed with it
+
+- **`audit.ts` learned `fallow-ignore`** (a new `analyzer-ignore` kind). This is
+  CLAUDE.md's "upgrading leveraged tools" review being done rather than skipped:
+  an analyzer whose suppression syntax the auditor does not recognise is an
+  analyzer a fixer can silence with a comment nobody reviews.
+- **Two drift guards**, per CLAUDE.md's rule about analyzers whose value depends
+  on a tool integration: an id-existence probe against fallow's own
+  `issue-registry.json` (which also checks the rule has not moved behind fallow's
+  paid licence — a rule that still exists but reports nothing would read as a
+  clean gate), and a live runner guard that puts a renamed cross-file clone
+  through real fallow **using the seeded config**, so an upgrade that makes the
+  values we ship stop finding an obvious clone fails here rather than in an
+  adopter's repo. Both were negative-controlled.
+
+### Deliberately not in scope: semantic duplication (issue #41)
+
+`fallow dupes` finds SYNTACTIC clones. The other half of #40's evidence was one
+fact re-expressed in a different shape — a category list written as a zod union,
+an array, and three `switch` statements — which shares no token sequence and is
+invisible to any clone detector. #41 carries the mechanism (a TypeScript
+compiler-API walk over canonicalised member sets, with a drift mode that flags
+"you updated one of eight places that state this fact"), the measurements, the
+cost, and three unresolved questions: benchmark overfit, a known unactionable
+false positive (a shared array against an exhaustive switch over the same union,
+where `tsc` already enforces the link), and the single-checkout scope limit.
+
+It is a separate issue because every analyzer here is _spawn a binary, parse its
+JSON_. That one has no binary, and under a `required` Stryker gate it would be
+the largest analyzer in the pack while owning detection rather than parsing.
+
+### Finding 3: the detector's token floor hides the most-duplicated function we have
+
+Raised in review of the PR: `verify/analyzer-policy.ts` still carried its own
+`isRecord`, byte-identical to the one just extracted. Checking rather than
+taking the one instance at face value, the repository holds **nine** definitions
+of that same one-line predicate:
+
+`config.ts` (exported, and carrying a Stryker suppression), `state-store.ts`,
+`hook-io.ts`, `workspaces.ts`, `package-root.ts`, `scaffold/record.ts`
+(exported), `verify/analyzer-policy.ts`, `verify/npm-peers-adapter.ts`, and the
+new `verify/report-shape.ts`.
+
+**The `dupes` analyzer reported none of them**, and correctly so: each copy is
+one statement, far under `minTokens: 50`. That floor exists to keep rhyming code
+out of the report, and the cost of it is exactly this — the single most-repeated
+function in the codebase is invisible. Worth stating because it bounds what the
+analyzer is for: it finds duplicated _blocks_, not duplicated _ideas_, and a
+short predicate copied nine times is the latter.
+
+Only the reviewer's instance was fixed here (`analyzer-policy.ts` now imports
+from `report-shape.ts`), because it is in a file this change already touches.
+The remaining seven are roadmapped rather than folded in: consolidating them
+crosses the `src/` ↔ `src/verify/` ↔ `src/scaffold/` layering (`report-shape.ts`
+sits under `verify/`, and `scaffold/record.ts` already exports a second copy for
+its own layer), it would collapse a Stryker suppression in `config.ts`, and it
+needs a mutation re-measurement across eight modules. That is its own change,
+and it should start by deciding where a shared JSON-shape guard actually lives.
+
+### Known limit, stated
+
+The changed-file set is TypeScript-only (`changedTypeScriptFiles` filters on
+`isTypeScriptFile`), so a clone living entirely in `.js`/`.mjs` is found by
+fallow and dropped by the scoping filter. Two of this repo's seven remaining
+groups are in `scripts/sync-agents.mjs` and are invisible to the gate for that
+reason. Widening the shared change set would also pull `.mjs` into stryker's
+mutation target, which is a different decision.

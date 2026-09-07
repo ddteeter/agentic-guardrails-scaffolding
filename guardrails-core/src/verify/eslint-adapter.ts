@@ -8,6 +8,8 @@
 
 import path from 'node:path';
 
+import { parseJsonText } from '../json-file.js';
+import { isArrayOfRecords } from './report-shape.js';
 import type { Violation } from '../violation.js';
 
 interface RawEslintMessage {
@@ -25,37 +27,16 @@ interface RawEslintResult {
 
 function isResultArray(value: unknown): value is RawEslintResult[] {
   return (
-    Array.isArray(value) &&
+    isArrayOfRecords(value) &&
     value.every(
-      (r) =>
-        // `r !== null` leads (not `typeof r === 'object'`) so the equivalent
-        // mutant below sits on its own line: Stryker's disable comments match
-        // by mutator + line, and the leftmost clause of a chain always shares
-        // its start line with every combined-clause mutant on that chain, so
-        // a directive there would silence real coverage too (measured; see
-        // guardrails.config.json).
-        r !== null &&
-        // Equivalent mutant: no value JSON.parse can produce is both
-        // non-object and carries a string `filePath` / array `messages`, so
-        // this clause can never be false while the two below it are true.
-        // Stryker disable next-line ConditionalExpression
-        typeof r === 'object' &&
-        typeof (r as RawEslintResult).filePath === 'string' &&
-        Array.isArray((r as RawEslintResult).messages),
+      (result) =>
+        typeof result.filePath === 'string' && Array.isArray(result.messages),
     )
   );
 }
 
 export function parseEslintJson(stdout: string, repoRoot: string): Violation[] {
-  let parsed: unknown;
-  // prettier-ignore
-  try {
-    parsed = JSON.parse(stdout);
-  }
-  // Stryker disable next-line BlockStatement
-  catch {
-    return [];
-  }
+  const { parsed } = parseJsonText(stdout);
   if (!isResultArray(parsed)) {
     return [];
   }

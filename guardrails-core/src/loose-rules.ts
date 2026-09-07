@@ -32,6 +32,11 @@ const LOOSE_PREFIXES = [
   'stryker/',
   'knip/',
   'dependency-cruiser/',
+  // Duplication. "Delete one copy" and "extract into the wrong shape" are both
+  // green and both wrong; whether two sites should be unified depends on
+  // whether their behaviour must evolve together, which is judgment the fast
+  // tier does not spend.
+  'fallow/',
 ];
 
 /**

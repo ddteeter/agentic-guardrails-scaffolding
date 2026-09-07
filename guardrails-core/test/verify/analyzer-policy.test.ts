@@ -49,6 +49,21 @@ describe('analyzerMode', () => {
   it('returns the configured mode for a listed analyzer', () => {
     expect(analyzerMode({ knip: 'off' }, 'knip')).toBe('off');
   });
+
+  it('defaults dupes to off rather than auto', () => {
+    // Unlike the other five, this analyzer's precision depends on an ignore
+    // list that is inherently repo-specific (generated files, ORM schema DSLs,
+    // framework boilerplate), so an unconfigured run is noise. Opting in is the
+    // adopter's decision -- and defaulting it to `auto` would additionally put
+    // every existing consumer into `silentlySkippedAnalyzers`, nagging them to
+    // install a tool they never asked for.
+    expect(analyzerMode({}, 'dupes')).toBe('off');
+  });
+
+  it('lets an explicit setting override a non-auto default', () => {
+    expect(analyzerMode({ dupes: 'required' }, 'dupes')).toBe('required');
+    expect(analyzerMode({ dupes: 'auto' }, 'dupes')).toBe('auto');
+  });
 });
 
 describe('declaredProviders', () => {

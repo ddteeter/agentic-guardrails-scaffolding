@@ -15,6 +15,8 @@
  * worth proving, and proving it should not require spawning anything.
  */
 
+import { isRecord } from './report-shape.js';
+
 /**
 How a repo has opted into one analyzer. Absent from config means `auto`.
 */
@@ -53,13 +55,39 @@ export function decideAnalyzer(
 }
 
 /**
-The configured mode for `tool`, defaulting to `auto` when unlisted.
-*/
+ * Analyzers whose UNLISTED default is not `auto`, and why each one is here.
+ *
+ * `auto` — run it if its binary resolves — is right for a tool that is useful
+ * the moment it is installed. It is wrong for one whose precision depends on
+ * an ignore list only the adopting repo can write.
+ *
+ * - **`dupes`** (`fallow dupes`): a clone detector's noise sources are
+ *   inherently repo-specific — generated files, ORM schema DSLs, framework
+ *   boilerplate — so an unconfigured run reports rhyming code rather than
+ *   duplication worth fixing. Defaulting it to `auto` would also put it in
+ *   `silentlySkippedAnalyzers` for every existing consumer, nagging them to
+ *   install a tool they never asked for. Opting in is the adopter's decision.
+ *
+ * A table rather than a field on verify's `ANALYZERS` entries, deliberately:
+ * the mode is consulted from three places (`selectAnalyzers`,
+ * `silentlySkippedAnalyzers`, and the scaffolder's `isAnalyzerAsked`), and a
+ * field would have had to be mirrored into `SeedOnceAnalyzer` and kept in sync
+ * by hand. Here, every caller inherits it with no signature change.
+ */
+const DEFAULT_MODES: Readonly<Record<string, AnalyzerMode>> = {
+  dupes: 'off',
+};
+
+/**
+ * The configured mode for `tool`. An unlisted analyzer falls back to its entry
+ * in `DEFAULT_MODES`, and to `auto` when it has none. An explicit setting
+ * always wins, so a repo can still say `"dupes": "required"`.
+ */
 export function analyzerMode(
   analyzers: Readonly<Record<string, AnalyzerMode>>,
   tool: string,
 ): AnalyzerMode {
-  return analyzers[tool] ?? 'auto';
+  return analyzers[tool] ?? DEFAULT_MODES[tool] ?? 'auto';
 }
 
 const DEPENDENCY_FIELDS = [
@@ -68,10 +96,6 @@ const DEPENDENCY_FIELDS = [
   'optionalDependencies',
   'peerDependencies',
 ] as const;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
 
 /**
  * Every package name a `package.json` declares, across all four dependency
