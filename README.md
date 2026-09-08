@@ -9,11 +9,11 @@ tracks recurring mistakes.
 
 This repository is the **development home** for three artifacts:
 
-| Artifact                                    | What it is                                     | Status                         |
-| ------------------------------------------- | ---------------------------------------------- | ------------------------------ |
-| [`guardrails-core/`](./guardrails-core)     | npm package — all machinery, CLI `guardrails`  | **v0.1 release candidate**     |
-| [`guardrails-plugin/`](./guardrails-plugin) | thin Claude Code plugin (hooks + fixer agents) | **v0.1 release candidate**     |
-| per-repo footprint                          | policy + state a target repo checks in         | **`guardrails init` ships it** |
+| Artifact                                    | What it is                                     | Status                            |
+| ------------------------------------------- | ---------------------------------------------- | --------------------------------- |
+| [`guardrails-core/`](./guardrails-core)     | npm package — all machinery, CLI `guardrails`  | **released** — install URL below  |
+| [`guardrails-plugin/`](./guardrails-plugin) | thin Claude Code plugin (hooks + fixer agents) | **ships inside the core tarball** |
+| per-repo footprint                          | policy + state a target repo checks in         | **`guardrails init` ships it**    |
 
 See [`plan.md`](./plan.md) for the full design and phase breakdown, and
 [`docs/adoption.md`](./docs/adoption.md) for how to adopt guardrails in
@@ -25,11 +25,12 @@ analyzer costs, and the clean-baseline prerequisite.
 `guardrails-core` is delivered as a GitHub Release asset, not from npm:
 
 ```bash
-npm i -D https://github.com/ddteeter/agentic-guardrails-scaffolding/releases/download/v0.1.0/guardrails-core-0.1.0.tgz
+npm i -D https://github.com/ddteeter/agentic-guardrails-scaffolding/releases/download/v0.2.0/guardrails-core-0.2.0.tgz
 ```
 
-`v0.1.0` is released and that URL is live — verified by installing it into a
-fresh repo and running the CLI out of it.
+Each release is a pushed `v*` tag: `.github/workflows/release.yml` verifies the
+tag matches `guardrails-core`'s version, runs the tarball smoke test, and
+attaches the `.tgz`. The URL above resolves once `v0.2.0` has been through that.
 
 **What a URL dependency costs you, stated plainly:** no semver range, no dedupe,
 and Dependabot will not track it. Upgrading means editing the URL by hand. This
