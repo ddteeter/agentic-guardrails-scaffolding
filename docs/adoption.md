@@ -11,11 +11,12 @@ this doc is wrong until it is updated to match, not the other way around.
 `guardrails-core` ships as a GitHub Release tarball, not from npm:
 
 ```bash
-npm i -D https://github.com/ddteeter/agentic-guardrails-scaffolding/releases/download/v0.1.0/guardrails-core-0.1.0.tgz
+npm i -D https://github.com/ddteeter/agentic-guardrails-scaffolding/releases/download/v0.2.0/guardrails-core-0.2.0.tgz
 ```
 
-`v0.1.0` is published and that URL resolves. A later version is a new tag, a
-new release asset, and a hand-edited URL — see the cost note below.
+That URL resolves once `v0.2.0`'s release workflow has run — a release is a
+pushed `v*` tag, which packs the tarball and attaches it. A later version is a
+new tag, a new release asset, and a hand-edited URL — see the cost note below.
 
 **What a URL dependency costs you:** no semver range (you get exactly the
 tarball at that URL, forever, until you edit the line), no dedupe (npm cannot
