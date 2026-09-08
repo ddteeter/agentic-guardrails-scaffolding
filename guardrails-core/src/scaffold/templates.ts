@@ -378,7 +378,11 @@ function copilotInstructionsBlock(directory: string): string {
  * it never reads. `crushing-mutants` carried the sanction protocol, and only
  * for Stryker directives.
  *
- * The sanction paragraph is the load-bearing one. `scope.ts`'s
+ * The sanction paragraph is the load-bearing one, and it must name EVERY
+ * escape hatch the config has — a hatch the contract does not mention is one
+ * the agent was never told to ask about. (Missed once already: `sanctionedFiles`
+ * shipped while this text still said `sanctionedSuppressions` was the only one;
+ * `templates.test.ts` now pins both.) `scope.ts`'s
  * `DENIED_FILE_NAMES` stops the FIXER from reaching `guardrails.config.json`;
  * nothing stops the main agent, and `sanctions-check` reports a new grant and
  * exits 0 by design (the pull request is the review). In a `solo` repo there
@@ -407,17 +411,25 @@ const GATE_CONTRACT: readonly string[] = [
   '',
   '### Never grant yourself an exemption',
   '',
-  "`guardrails.config.json`'s `sanctionedSuppressions` is the only escape",
-  'hatch from the diff-auditor. **You do not add an entry to it.** Nothing',
-  'downstream will catch it for you — the CI sanctions check reports a new',
-  'grant and exits 0, because a human reviewing the change is the control.',
+  '`guardrails.config.json` has two escape hatches from the diff-auditor —',
+  '`sanctionedSuppressions` (one exact suppression, with a `count` that is',
+  're-derived and verified every run) and `sanctionedFiles` (a whole `path` +',
+  '`kind`, for GENERATED code, with no count and nothing re-deriving it).',
+  '**You do not add an entry to either.** Nothing downstream will catch it for',
+  'you — the CI sanctions check reports a new grant and exits 0, because a',
+  'human reviewing the change is the control.',
   '',
   'Ask the developer directly, and give them what they need to decide:',
   '',
-  '- **What** the exemption covers — the exact `file|kind|text` key.',
+  '- **What** the exemption covers — the exact `file|kind|text` key, or the',
+  '  `path` + `kind` pair.',
   '- **Why** it is unavoidable — for an equivalent mutant, the argument that',
   '  no test can kill it; for anything else, what you tried first.',
   '- **What it costs** — what stops being checked once it is granted.',
+  '',
+  'Weigh `sanctionedFiles` harder, not less: it exempts EVERY occurrence of',
+  'that kind in that file, for good, and review is its only safeguard. It is',
+  'for suppressions a generator emitted, never for ones a person wrote.',
   '',
   'If they approve, put the argument they accepted into `reason`: that text is',
   'what a reviewer reads later. If they do not, fix the code instead.',
