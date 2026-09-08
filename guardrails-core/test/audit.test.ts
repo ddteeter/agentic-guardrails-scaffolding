@@ -159,6 +159,53 @@ describe('auditDiff', () => {
     }
   });
 
+  it('flags a focus/skip API reached through a modifier chain', () => {
+    // Issue #46. The dotted half required one of its identifiers IMMEDIATELY
+    // before `.skip`/`.only`, so a runner that puts a grouping modifier in
+    // between slipped through -- an UNDER-match, failing in the unsafe
+    // direction: a genuinely focused test lands unflagged. Playwright's
+    // `test.describe.serial.only` is the case that surfaced it; vitest and
+    // jest have the same shape.
+    for (const line of [
+      "+  test.describe.serial.only('x', () => {});",
+      "+  test.describe.parallel.only('x', () => {});",
+      "+  it.concurrent.skip('x', () => {});",
+      "+  describe.sequential.only('x', () => {});",
+      "+  it.failing.only('x', () => {});",
+    ]) {
+      expect(auditDiff(diff('a.test.ts', line))[0]?.kind, line).toBe(
+        'skipped-test',
+      );
+    }
+  });
+
+  it('still flags the unmodified dotted forms', () => {
+    // The positive control: widening the pattern must not cost the plain case.
+    for (const line of [
+      "+  test.describe.only('x', () => {});",
+      "+  it.skip('x', () => {});",
+      "+  describe.only('x', () => {});",
+      "+  suite.skip('x', () => {});",
+    ]) {
+      expect(auditDiff(diff('a.test.ts', line))[0]?.kind, line).toBe(
+        'skipped-test',
+      );
+    }
+  });
+
+  it('does not flag an unrelated chain that merely ends in a known word', () => {
+    // The modifier list is closed on purpose. Without that, any `x.y.only(`
+    // would match, and `only` is an ordinary enough identifier that #43's
+    // whole failure mode would come back one level up.
+    for (const line of [
+      '+  const v = config.retry.only;',
+      '+  await queue.batch.skip(3);',
+      '+  return grid.column.only;',
+    ]) {
+      expect(auditDiff(diff('a.ts', line)), line).toEqual([]);
+    }
+  });
+
   it('does not flag a method named fit on a receiver', () => {
     // Raised in review of #45. `\b` is satisfied by any non-word character,
     // including `.`, so a member call still matched -- which is #43's exact
