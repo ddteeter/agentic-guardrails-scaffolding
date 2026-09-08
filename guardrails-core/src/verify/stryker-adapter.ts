@@ -34,6 +34,49 @@ interface StrykerMutant {
   /** How many tests actually EXECUTED during this mutant's run. The field that
    *  separates "the tests ran and none failed" from "no test ran at all". */
   testsCompleted?: number;
+  /** What the mutant substituted for the original code. Optional in the
+   *  schema — a runner may omit it. See `mutationDetail`. */
+  replacement?: unknown;
+}
+
+/** How much of a mutant's replacement reaches the message. A BlockStatement
+ *  mutant's replacement can be a whole function body, and the manifest is the
+ *  fixer's context budget — one mutant must not consume it. */
+const REPLACEMENT_CHARS = 80;
+
+/**
+ * The mutation itself, rendered for the message — or `''` when the report does
+ * not say.
+ *
+ * Reported from a real adoption (#49): the fixer that resolves a surviving
+ * mutant has Read/Edit/Write and cannot run stryker, so it writes assertions
+ * BLIND. In that session it reported eight mutants addressed and several were
+ * still alive on the re-run.
+ *
+ * Stryker's report already carries what each mutant replaced the code with,
+ * and this adapter parsed the field and threw it away. Carrying it through
+ * turns "assert something about this line" into "assert the thing that
+ * distinguishes it from this value" — at no cost to the scope-lock, which is
+ * the alternative that was considered and rejected: letting the fixer execute
+ * things would weaken the one property that makes "never trust the fixer"
+ * enforceable.
+ *
+ * Validated as a string rather than trusted: this is JSON off disk, like every
+ * other field here. Newlines are collapsed because violations render one per
+ * line in both the manifest and the gate's dump.
+ */
+function mutationDetail(replacement: unknown): string {
+  if (typeof replacement !== 'string' || replacement.trim() === '') {
+    return '';
+  }
+  const flattened = replacement.replaceAll(/\s+/g, ' ').trim();
+  const shown =
+    flattened.length > REPLACEMENT_CHARS
+      ? `${flattened.slice(0, REPLACEMENT_CHARS)}…`
+      : flattened;
+  // Leading `. ` because neither `FAILURES` reason ends in punctuation: without
+  // it the message reads "...does not assert its behavior It replaced...".
+  return `. It replaced the code with \`${shown}\`.`;
 }
 
 interface StrykerFile {
@@ -111,7 +154,9 @@ function failureViolation(
     ruleId: failure.ruleId,
     file,
     line: mutant.location.start.line,
-    message: `${mutant.mutatorName} mutant ${failure.reason}`,
+    message:
+      `${mutant.mutatorName} mutant ${failure.reason}` +
+      mutationDetail(mutant.replacement),
     severity: 'error',
     fixable: false,
     tool: 'stryker',

@@ -421,3 +421,127 @@ describe('unrunSurvivedMutants', () => {
     expect(unrunSurvivedMutants(json, ['src/a.ts'])).toBe(2);
   });
 });
+
+/**
+ * The message a surviving mutant carrying `replacement` renders to. Built on
+ * the module's existing `reportWith` rather than a second report builder --
+ * `dupes` would rightly flag a near-copy, and the two want the same thing.
+ */
+function messageFor(replacement: unknown): string {
+  const [violation] = parseStrykerJson(
+    reportWith([{ ...validMutant, status: 'Survived', replacement }]),
+    changed,
+  );
+  return violation?.message ?? '';
+}
+
+describe('parseStrykerJson: what the mutation actually did', () => {
+  /**
+   * The fixer that resolves a surviving mutant has Read/Edit/Write and no way
+   * to run stryker, so it writes assertions blind — reported from a real
+   * adoption (#49), where it claimed eight mutants addressed and several were
+   * still alive on the re-run.
+   *
+   * Stryker's report already says what each mutant replaced the code WITH; the
+   * adapter parsed that field and discarded it. Carrying it into the message
+   * turns "assert something about this line" into "assert the thing that
+   * distinguishes it from this value" — without giving the fixer the ability
+   * to execute anything, which would weaken the scope-lock the design rests on.
+   */
+  it('names the replacement the mutant substituted', () => {
+    const message = messageFor('false');
+
+    expect(message).toContain('false');
+  });
+
+  it('reads as two sentences, not a run-on', () => {
+    // Neither FAILURES reason ends in punctuation, so the detail has to supply
+    // the break. Caught by rendering 387 real mutants from this repo's own
+    // report rather than by the fixtures above.
+    const message = messageFor('false');
+
+    expect(message).toContain('behavior. It replaced');
+  });
+
+  it('keeps the mutator name and the reason alongside it', () => {
+    // The replacement ADDS to the diagnosis; it does not replace it. The
+    // mutator name is what the fixer routes on, and the reason is what
+    // separates a survivor from an uncovered line.
+    const message = messageFor('false');
+
+    expect(message).toContain('ConditionalExpression');
+    expect(message).toContain('survived');
+  });
+
+  it('reads normally when the report carries no replacement', () => {
+    // `replacement` is optional in the schema, and a runner that omits it must
+    // still produce a sensible message rather than an "undefined".
+    const message = messageFor(undefined);
+
+    expect(message).toBe(
+      'ConditionalExpression mutant survived — a test executes this line but does not assert its behavior',
+    );
+    expect(message).not.toContain('undefined');
+  });
+
+  it('ignores a replacement that is not a string', () => {
+    // Boundary data: the report is JSON off disk, so the field is validated
+    // rather than trusted, like every other field this adapter reads.
+    const message = messageFor(42);
+
+    expect(message).not.toContain('42');
+  });
+
+  it('truncates a runaway replacement rather than pasting a whole block', () => {
+    // A BlockStatement mutant's replacement can be an entire function body.
+    // The manifest is the fixer's context budget; one mutant must not consume
+    // it.
+    const message = messageFor('x'.repeat(500));
+
+    expect(message.length).toBeLessThan(300);
+    expect(message).toContain('…');
+  });
+
+  it('says nothing for a replacement that is only whitespace', () => {
+    // `.trim()` is load-bearing: a blank replacement carries no information,
+    // and rendering it would append an empty pair of backticks.
+    expect(messageFor(' '.repeat(4))).not.toContain('It replaced');
+  });
+
+  it('collapses every run of whitespace to a single space', () => {
+    // Not just newlines: a replacement can carry indentation, and one run of
+    // whitespace must become exactly one space rather than merely losing its
+    // newlines.
+    expect(messageFor('if (a)   {\n\t return b;  }')).toContain(
+      '`if (a) { return b; }`',
+    );
+  });
+
+  it('strips whitespace at the edges of the replacement', () => {
+    // Collapsing runs to single spaces is not enough on its own: a replacement
+    // that starts or ends with whitespace would render as `` ` false ` ``,
+    // which reads as though the space were part of the code.
+    expect(messageFor('  false  ')).toContain('`false`');
+  });
+
+  it('keeps a replacement of exactly the budget intact', () => {
+    // The boundary. `>` not `>=`: a replacement that exactly fills the budget
+    // is shown whole, and only one longer is cut.
+    const exact = 'y'.repeat(80);
+
+    expect(messageFor(exact)).toContain(`\`${exact}\``);
+    expect(messageFor(exact)).not.toContain('…');
+  });
+
+  it('truncates one character over the budget', () => {
+    expect(messageFor('y'.repeat(81))).toContain('…');
+  });
+
+  it('keeps a multi-line replacement on one line', () => {
+    // Violations are rendered one per line in the manifest and in the gate's
+    // dump; an embedded newline would break both.
+    const message = messageFor('if (a) {\n  return b;\n}');
+
+    expect(message).not.toContain('\n');
+  });
+});
