@@ -259,13 +259,39 @@ async function gateStopCommand(
  * scope, which is what catches the one thing staged scope cannot see: a commit
  * that removes the test killing a mutant in a file it does not itself touch.
  */
+/**
+ * The commit rung's delegation pointer, mirroring the stop gate's.
+ *
+ * #49: the terse-pointer → fixer loop existed only at `stop`, so commit-rung
+ * violations arrived with no delegation path — and the surface that actually
+ * consumes agent context, the PreToolUse deny, said "run `guardrails verify`",
+ * which dumps every violation into the transcript. On the reported adoption
+ * that was 214 mutants worked through inline.
+ *
+ * Falls back to the old counts-and-verify wording when no fixer is known, so
+ * a caller without a config still gets something actionable.
+ */
+function commitPointer(
+  violationCount: number,
+  findingCount: number,
+  delegation: { manifestPath: string; fixerAgent: string },
+): string {
+  return (
+    `guardrails: ${violationCount} violation(s), ` +
+    `${findingCount} added suppression(s). ` +
+    `Written to ${delegation.manifestPath}. Do NOT read it. Spawn the ` +
+    `${delegation.fixerAgent} subagent and give it that path to fix, then ` +
+    `commit again.`
+  );
+}
+
 async function gateCommitCommand(
   dependencies: CliDependencies,
   changedScope: 'branch' | 'staged',
 ): Promise<number> {
   const repoRoot = await commandRepoRoot(dependencies);
   const config = loadConfig(repoRoot);
-  const { violations, findings, blocked, skippedAnalyzers } =
+  const { violations, findings, blocked, skippedAnalyzers, delegation } =
     await runCommitGate({
       repoRoot,
       baseBranch: config.baseBranch,
@@ -274,6 +300,7 @@ async function gateCommitCommand(
       sanctionedSuppressions: config.sanctionedSuppressions,
       sanctionedFiles: config.sanctionedFiles,
       analyzers: config.analyzers,
+      config: toGateConfig(config),
       changedScope,
     });
   printGateDetail(dependencies, violations, findings);
@@ -283,6 +310,17 @@ async function gateCommitCommand(
   if (!blocked) {
     return 0;
   }
+  // The dump above STAYS on this surface, unlike the PreToolUse deny. Two
+  // different readers: `.husky/pre-commit` prints into a developer's terminal,
+  // where hiding the violations behind a file path would be a regression, and
+  // an agent committing through Bash has already been stopped at the
+  // PreToolUse gate before reaching here. So this surface gains the pointer
+  // rather than trading the detail for it (#49).
+  dependencies.stderr(
+    `guardrails: the above is also written to ${delegation.manifestPath} — ` +
+      `an agent can spawn the ${delegation.fixerAgent} subagent against that ` +
+      `path instead of working through it inline.\n`,
+  );
   // `enforcement` governs the commit and preToolUse gates only; the Claude Code
   // Stop loop is deliberately never softened (see RepoConfig.enforcement). Under
   // `warn` the findings are still printed in full above — a zero exit must never
@@ -401,7 +439,7 @@ async function gatePreToolUseCommand(
   }
   const repoRoot = await commandRepoRoot(dependencies, input.cwd);
   const config = loadConfig(repoRoot);
-  const { violations, findings, blocked } = await runCommitGate({
+  const { violations, findings, blocked, delegation } = await runCommitGate({
     repoRoot,
     baseBranch: config.baseBranch,
     exec: dependencies.exec,
@@ -409,14 +447,17 @@ async function gatePreToolUseCommand(
     sanctionedSuppressions: config.sanctionedSuppressions,
     sanctionedFiles: config.sanctionedFiles,
     analyzers: config.analyzers,
+    config: toGateConfig(config),
+    sessionId: input.sessionId,
   });
   if (!blocked) {
     return; // allow (silent)
   }
-  const reason =
-    `guardrails: ${violations.length} violation(s), ` +
-    `${findings.length} added suppression(s). ` +
-    `Resolve them before committing (run 'guardrails verify').`;
+  // No `delegation === undefined` branch: `blocked` narrows the result union,
+  // so the compiler already knows a block carries one. That is the point of the
+  // union -- the guard it replaces was unreachable code the tests could never
+  // reach and a mutant could therefore never be killed on.
+  const reason = commitPointer(violations.length, findings.length, delegation);
   // Under `warn` the gate reports and allows. stderr rather than a deny payload,
   // because both hook dialects treat a deny payload as the block itself — there
   // is no "allow, but say this" channel — and stderr still surfaces in the

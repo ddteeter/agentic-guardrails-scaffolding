@@ -372,6 +372,56 @@ function gitExec(map: Record<string, string>): Exec {
   };
 }
 
+/**
+ * This is the surface that actually consumes agent context. It already
+ * emitted counts only, and told the agent to `run 'guardrails verify'` --
+ * which dumps every violation into the transcript. On the reported adoption
+ * that was 214 mutants worked through inline.
+ *
+ * Pointing at a manifest instead is the same trade the stop rung already
+ * makes: the agent gets an instruction, not the dump.
+ */
+function denyReason(printed: unknown): string {
+  const payload = printed as {
+    permissionDecisionReason?: string;
+    reason?: string;
+  };
+  return payload.permissionDecisionReason ?? payload.reason ?? '';
+}
+
+/** Explicit 'block': the default 'warn' routes the deny to stderr rather
+ *  than the stdout payload these tests read. */
+function enforceBlock(): void {
+  writeFileSync(
+    path.join(root, 'guardrails.config.json'),
+    JSON.stringify({ enforcement: 'block' }),
+  );
+}
+
+async function denyFor(): Promise<string> {
+  enforceBlock();
+  const stdin = JSON.stringify({
+    toolName: 'bash',
+    toolArgs: { command: 'git commit -m wip' },
+    cwd: root,
+    sessionId: 'sid',
+  });
+  const exec = gitExec({
+    'merge-base': 'BASESHA\n',
+    'diff BASESHA': [
+      '+++ b/src/a.ts',
+      '@@ -1,0 +1,1 @@',
+      '+// eslint-disable-next-line',
+    ].join('\n'),
+  });
+  await runCommand(
+    'gate',
+    ['--mode=pretooluse', '--dialect=copilot'],
+    dependencies({ exec, readStdin: () => Promise.resolve(stdin) }),
+  );
+  return denyReason(JSON.parse(out.join('')));
+}
+
 describe('runCommand — gate pretooluse (copilot commit/push gate)', () => {
   it('denies a git commit when the tree is dirty (copilot dialect)', async () => {
     // Explicit 'block': this test is about the deny payload shape, not
@@ -401,6 +451,107 @@ describe('runCommand — gate pretooluse (copilot commit/push gate)', () => {
     expect(code).toBe(0);
     const printed: unknown = JSON.parse(out.join(''));
     expect(printed).toMatchObject({ permissionDecision: 'deny' });
+  });
+
+  describe('runCommand — gate --mode=pretooluse: the delegation pointer (#49)', () => {
+    it('names the manifest and the fixer instead of sending the agent to verify', async () => {
+      const reason = await denyFor();
+
+      expect(reason).toContain('.guardrails/state/');
+      expect(reason).toMatch(/guardrail-fixer/);
+    });
+
+    it('no longer tells the agent to run verify, which is what dumps', async () => {
+      const reason = await denyFor();
+
+      expect(reason).not.toContain("run 'guardrails verify'");
+    });
+
+    it('tells the agent not to read the manifest itself', async () => {
+      // The whole point is that the violations do NOT enter the main agent's
+      // context; a pointer it reads is a dump with extra steps.
+      const reason = await denyFor();
+
+      expect(reason).toContain('Do NOT read it');
+    });
+
+    it('still denies — the pointer changes the message, not the verdict', async () => {
+      enforceBlock();
+      const stdin = JSON.stringify({
+        toolName: 'bash',
+        toolArgs: { command: 'git commit -m wip' },
+        cwd: root,
+        sessionId: 'sid',
+      });
+      const exec = gitExec({
+        'merge-base': 'BASESHA\n',
+        'diff BASESHA': [
+          '+++ b/src/a.ts',
+          '@@ -1,0 +1,1 @@',
+          '+// eslint-disable-next-line',
+        ].join('\n'),
+      });
+      await runCommand(
+        'gate',
+        ['--mode=pretooluse', '--dialect=copilot'],
+        dependencies({ exec, readStdin: () => Promise.resolve(stdin) }),
+      );
+
+      expect(JSON.parse(out.join(''))).toMatchObject({
+        permissionDecision: 'deny',
+      });
+    });
+  });
+
+  it('keys the manifest on the session when the payload carries one', async () => {
+    enforceBlock();
+    const stdin = JSON.stringify({
+      toolName: 'bash',
+      toolArgs: { command: 'git commit -m wip' },
+      cwd: root,
+      sessionId: 'abc',
+    });
+    const exec = gitExec({
+      'merge-base': 'BASESHA\n',
+      'diff BASESHA': [
+        '+++ b/src/a.ts',
+        '@@ -1,0 +1,1 @@',
+        '+// eslint-disable-next-line',
+      ].join('\n'),
+    });
+    await runCommand(
+      'gate',
+      ['--mode=pretooluse', '--dialect=copilot'],
+      dependencies({ exec, readStdin: () => Promise.resolve(stdin) }),
+    );
+
+    expect(denyReason(JSON.parse(out.join('')))).toContain('abc-commit');
+  });
+
+  it('falls back to a fixed manifest id when there is no session', async () => {
+    // `.husky/pre-commit` has no hook payload, and a Copilot shell call need
+    // not carry a session either. The pointer still has to name a real path.
+    enforceBlock();
+    const stdin = JSON.stringify({
+      toolName: 'bash',
+      toolArgs: { command: 'git commit -m wip' },
+      cwd: root,
+    });
+    const exec = gitExec({
+      'merge-base': 'BASESHA\n',
+      'diff BASESHA': [
+        '+++ b/src/a.ts',
+        '@@ -1,0 +1,1 @@',
+        '+// eslint-disable-next-line',
+      ].join('\n'),
+    });
+    await runCommand(
+      'gate',
+      ['--mode=pretooluse', '--dialect=copilot'],
+      dependencies({ exec, readStdin: () => Promise.resolve(stdin) }),
+    );
+
+    expect(denyReason(JSON.parse(out.join('')))).toContain('commit-commit');
   });
 
   it('stays silent for a non-git shell command', async () => {
@@ -1425,6 +1576,48 @@ describe('cli-core residual hardening', () => {
       ).toBe(1);
     },
   );
+
+  it('points at the manifest without hiding the detail from a human', async () => {
+    // The husky surface keeps the dump, unlike the PreToolUse deny (#49). Two
+    // readers: `.husky/pre-commit` prints into a developer's terminal, and an
+    // agent committing through Bash was already stopped at PreToolUse before
+    // reaching here. So this one GAINS the pointer rather than trading the
+    // detail for it.
+    writeFileSync(
+      path.join(root, 'guardrails.config.json'),
+      JSON.stringify({ enforcement: 'block' }),
+    );
+    const exec = gitExec({
+      'merge-base': 'BASESHA\n',
+      'diff BASESHA': [
+        '+++ b/src/a.ts',
+        '@@ -1,0 +1,1 @@',
+        '+// eslint-disable-next-line',
+      ].join('\n'),
+    });
+
+    expect(
+      await runCommand('gate', ['--mode=commit'], dependencies({ exec })),
+    ).toBe(1);
+    const printed = errors.join('');
+    // The detail is still there...
+    expect(printed).toContain('eslint-disable');
+    // ...and so is the delegation route out of reading it inline.
+    expect(printed).toContain('.guardrails/state/');
+    expect(printed).toMatch(/guardrail-fixer/);
+  });
+
+  it('says nothing about a manifest when the commit gate passes', async () => {
+    const exec = gitExec({
+      'merge-base': 'BASESHA\n',
+      'diff BASESHA': '+const x = 1;\n',
+    });
+
+    expect(
+      await runCommand('gate', ['--mode=commit'], dependencies({ exec })),
+    ).toBe(0);
+    expect(errors.join('')).not.toContain('.guardrails/state/');
+  });
 
   it('scopes --mode=commit to the staged files', async () => {
     // The mutation tax: under branch scope the analyzers re-check everything
