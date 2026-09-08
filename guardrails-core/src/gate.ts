@@ -80,6 +80,24 @@ export interface StopGateResult {
 
 export interface CommitGateOptions {
   repoRoot: string;
+  /**
+   * Session to key the manifest on, when the caller has one. The PreToolUse
+   * hook does; `.husky/pre-commit` does not, so this is optional and falls
+   * back to a fixed id. See `commitManifestId`.
+   *
+   * `| undefined` rather than a bare optional, so a caller can forward a
+   * possibly-absent id directly. The conditional spread it replaces
+   * (`...(id !== undefined && { sessionId: id })`) produced a provably
+   * equivalent mutant: forcing it true passes `undefined`, which is exactly
+   * what the fallback already means. Same idiom as `StopGateOptions.isRetry`.
+   */
+  sessionId?: string | undefined;
+  /**
+   * Fixer names and the loose-class rule, for the delegation pointer. Required
+   * so a block always has somebody to name: an optional config would put the
+   * "manifest but no fixer" state back into the result type.
+   */
+  config: GateConfig;
   baseBranch: string;
   exec: Exec;
   resolveBin?: (tool: string) => string;
@@ -113,10 +131,36 @@ export interface CommitGateOptions {
   changedScope?: 'branch' | 'staged';
 }
 
-export interface CommitGateResult {
+/**
+ * A commit-rung verdict. A DISCRIMINATED UNION on `blocked`, so
+ * "blocked, therefore delegated" is a fact the compiler carries rather than a
+ * guard every caller repeats — and the impossible state (a manifest with
+ * nobody named to fix it, or a block with nowhere to delegate) cannot be
+ * expressed at all.
+ */
+export type CommitGateResult = CommitGateCommon &
+  (
+    | { blocked: false; delegation?: undefined }
+    | { blocked: true; delegation: CommitDelegation }
+  );
+
+/**
+ * Where a block's violations were written and who to spawn against them.
+ *
+ * The terse-pointer → fixer loop used to exist only at the stop rung (#49), so
+ * the commit rung blocked with no delegation path at all — and the asymmetry
+ * ran backwards to effort: eslint and tsc are mechanical and often
+ * auto-fixable, while surviving mutants are the most labour-intensive class in
+ * the pack and were the one class with no fixer.
+ */
+interface CommitDelegation {
+  manifestPath: string;
+  fixerAgent: string;
+}
+
+interface CommitGateCommon {
   violations: Violation[];
   findings: AuditFinding[];
-  blocked: boolean;
   /** Passed straight through from `runVerify` — see `VerifyResult`. The rung
    *  that enforces has the same duty as the one that reports: a gate that
    *  passes while three analyzers never ran is a pass the adopter reads as a
@@ -383,6 +427,22 @@ async function branchDiff(options: CommitGateOptions): Promise<string> {
  * against the merge-base with the base branch, so suppressions already on
  * the branch (inherited from the base) don't flag on every commit — only
  * ones introduced on the branch do. Also used by the `preToolUse` gate. */
+/**
+ * The manifest id for a commit-rung block.
+ *
+ * Suffixed rather than reusing the caller's session id directly: both rungs
+ * write `<id>.last.json`, so sharing an id would have the commit gate clobber
+ * a manifest an in-flight stop loop is still working from. The suffix keeps
+ * the `.last.json` shape, so `sweepStale` collects it with everything else and
+ * needs no teaching.
+ *
+ * `.husky/pre-commit` runs with no hook payload and therefore no session, so
+ * the fallback is fixed.
+ */
+function commitManifestId(sessionId: string | undefined): string {
+  return `${sessionId ?? 'commit'}-commit`;
+}
+
 export async function runCommitGate(
   options: CommitGateOptions,
 ): Promise<CommitGateResult> {
@@ -414,11 +474,48 @@ export async function runCommitGate(
     options.sanctionedFiles,
   );
   const guided = withGuidance(violations);
+  const isBlocked = hasErrors(guided) || findings.length > 0;
+  if (!isBlocked) {
+    // Nothing written on a pass, deliberately: a stale manifest left behind is
+    // one the NEXT block could be read against.
+    return { violations: guided, findings, blocked: false, skippedAnalyzers };
+  }
+
+  // Delegation for the commit rung (#49). The manifest carries the same shape
+  // the stop rung writes -- violations plus the audit findings, guidance
+  // attached -- so `guardrail-fixer` needs no second format to understand.
+  const directory = stateDirectory(options.repoRoot);
+  const manifestId = commitManifestId(options.sessionId);
+  const combined = withGuidance(
+    withPackages(
+      [...guided, ...findings.map((finding) => toViolation(finding))],
+      loadWorkspaceResolver(options.repoRoot),
+    ),
+  );
+  writeViolations(directory, manifestId, combined);
+
+  // Routed by the SAME loose-class rule the stop gate uses, rather than a
+  // second policy: the commit-rung analyzers (knip, dependency-cruiser,
+  // stryker) are loose by construction, so this resolves to the thorough fixer
+  // where it matters and stays honest if that classification ever changes.
+  const fixerAgent = combined.some(
+    (violation) => options.config.isLoose?.(violation) === true,
+  )
+    ? options.config.thoroughFixer
+    : options.config.fastFixer;
+
   return {
     violations: guided,
     findings,
-    blocked: hasErrors(guided) || findings.length > 0,
+    blocked: true,
     skippedAnalyzers,
+    delegation: {
+      manifestPath: path.relative(
+        options.repoRoot,
+        manifestFile(directory, manifestId),
+      ),
+      fixerAgent,
+    },
   };
 }
 

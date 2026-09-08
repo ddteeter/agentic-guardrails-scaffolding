@@ -1,7 +1,38 @@
-import { describe, expect, it } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import type { Exec, ExecResult } from '../src/exec.js';
 import { runCommitGate } from '../src/gate.js';
+import type { GateConfig } from '../src/gate-decision.js';
+
+/** Fixer names for the delegation pointer; these tests are about the auditor
+ *  and the sanction budget, so the routing itself is exercised elsewhere. */
+const config: GateConfig = {
+  maxAttempts: 3,
+  recurThreshold: 3,
+  graduationThreshold: 3,
+  fastFixer: 'guardrail-fixer',
+  thoroughFixer: 'guardrail-fixer-thorough',
+};
+
+/**
+ * A real directory, because a blocking `runCommitGate` now writes the
+ * violations manifest the commit-rung fixer is pointed at (#49) -- the same
+ * side effect `runStopGate` has always had. These tests predate that and used
+ * a `/repo` path that never existed on disk.
+ */
+let root: string;
+
+beforeEach(() => {
+  root = mkdtempSync(path.join(tmpdir(), 'guardrails-commit-gate-'));
+});
+
+afterEach(() => {
+  rmSync(root, { recursive: true, force: true });
+});
 
 function execResult(stdout: string): ExecResult {
   return { stdout, stderr: '', code: 0 };
@@ -46,7 +77,8 @@ const TWO_IDENTICAL_DISABLES = [
 describe('runCommitGate', () => {
   it('flags a suppression introduced on the branch (merge-base diff)', async () => {
     const result = await runCommitGate({
-      repoRoot: '/repo',
+      repoRoot: root,
+      config,
       baseBranch: 'main',
       exec: fakeExec(ADDED_DISABLE),
     });
@@ -59,7 +91,8 @@ describe('runCommitGate', () => {
     // Without the allowlist this re-flags on EVERY later commit (the commit
     // gate has no per-loop snapshot baseline), wedging the branch.
     const result = await runCommitGate({
-      repoRoot: '/repo',
+      repoRoot: root,
+      config,
       baseBranch: 'main',
       exec: fakeExec(SANCTIONED_DISABLE),
       sanctionedSuppressions: [
@@ -76,7 +109,8 @@ describe('runCommitGate', () => {
   it('still flags the same directive in a file the allowlist does not cover', async () => {
     // The key is file-scoped, so a sanction on src/a.ts grants nothing to b.ts.
     const result = await runCommitGate({
-      repoRoot: '/repo',
+      repoRoot: root,
+      config,
       baseBranch: 'main',
       exec: fakeExec(SANCTIONED_DISABLE.replaceAll('src/a.ts', 'src/b.ts')),
       sanctionedSuppressions: [
@@ -96,7 +130,8 @@ describe('runCommitGate', () => {
     // same directive in the file, however many an agent added. A count-1
     // grant must now exempt exactly one occurrence and block the second.
     const result = await runCommitGate({
-      repoRoot: '/repo',
+      repoRoot: root,
+      config,
       baseBranch: 'main',
       exec: fakeExec(TWO_IDENTICAL_DISABLES),
       sanctionedSuppressions: [
@@ -113,7 +148,8 @@ describe('runCommitGate', () => {
 
   it('exempts exactly as many occurrences as the granted count', async () => {
     const result = await runCommitGate({
-      repoRoot: '/repo',
+      repoRoot: root,
+      config,
       baseBranch: 'main',
       exec: fakeExec(TWO_IDENTICAL_DISABLES),
       sanctionedSuppressions: [
@@ -130,7 +166,8 @@ describe('runCommitGate', () => {
 
   it('sums counts across several entries sharing a key into one budget', async () => {
     const result = await runCommitGate({
-      repoRoot: '/repo',
+      repoRoot: root,
+      config,
       baseBranch: 'main',
       exec: fakeExec(TWO_IDENTICAL_DISABLES),
       sanctionedSuppressions: [
@@ -152,7 +189,8 @@ describe('runCommitGate', () => {
 
   it('is clean when the branch diff has no suppressions', async () => {
     const result = await runCommitGate({
-      repoRoot: '/repo',
+      repoRoot: root,
+      config,
       baseBranch: 'main',
       exec: fakeExec('+const x = 1;\n'),
     });
@@ -169,7 +207,8 @@ describe('runCommitGate', () => {
       return Promise.resolve({ stdout: '', stderr: '', code: 0 });
     };
     await runCommitGate({
-      repoRoot: '/repo',
+      repoRoot: root,
+      config,
       baseBranch: 'main',
       exec,
       analyzers: { knip: 'off' },
@@ -206,7 +245,7 @@ function recordingExec(resolvable: readonly string[]): {
 describe('commit gate base branch resolution', () => {
   it('takes the merge-base against origin/<branch> when only that resolves', async () => {
     const { exec, calls } = recordingExec(['origin/main']);
-    await runCommitGate({ repoRoot: '/repo', baseBranch: 'main', exec });
+    await runCommitGate({ repoRoot: root, config, baseBranch: 'main', exec });
     expect(calls.find((call) => call[1] === 'merge-base')).toContain(
       'origin/main',
     );
@@ -216,7 +255,7 @@ describe('commit gate base branch resolution', () => {
     // Paired with the case above: a fallback yielding `undefined` instead of
     // the branch name fails here rather than passing silently.
     const { exec, calls } = recordingExec([]);
-    await runCommitGate({ repoRoot: '/repo', baseBranch: 'main', exec });
+    await runCommitGate({ repoRoot: root, config, baseBranch: 'main', exec });
     expect(calls.find((call) => call[1] === 'merge-base')).toEqual([
       'git',
       'merge-base',

@@ -610,6 +610,7 @@ describe('runCommitGate mutation-hardening', () => {
     const failed = await runCommitGate({
       repoRoot: root,
       baseBranch: 'main',
+      config,
       exec: failing.exec,
     });
     expect(failed.findings).toHaveLength(1);
@@ -629,6 +630,7 @@ describe('runCommitGate mutation-hardening', () => {
     const noised = await runCommitGate({
       repoRoot: root,
       baseBranch: 'main',
+      config,
       exec: noisy.exec,
     });
     expect(noised.findings).toHaveLength(1);
@@ -648,6 +650,7 @@ describe('runCommitGate mutation-hardening', () => {
     const emptied = await runCommitGate({
       repoRoot: root,
       baseBranch: 'main',
+      config,
       exec: empty.exec,
     });
     expect(emptied.findings).toHaveLength(1);
@@ -657,7 +660,7 @@ describe('runCommitGate mutation-hardening', () => {
     const { exec, calls } = recordingExec((line) =>
       ok(line.startsWith('git merge-base') ? 'BASESHA\n' : ''),
     );
-    await runCommitGate({ repoRoot: root, baseBranch: 'main', exec });
+    await runCommitGate({ repoRoot: root, baseBranch: 'main', config, exec });
     const gitCalls = calls.filter((call) => call.line.startsWith('git '));
     expect(gitCalls.length).toBeGreaterThan(0);
     expect(gitCalls.every((call) => call.cwd === root)).toBe(true);
@@ -673,6 +676,7 @@ describe('runCommitGate mutation-hardening', () => {
     await runCommitGate({
       repoRoot: root,
       baseBranch: 'main',
+      config,
       exec,
       resolveBin: (tool) => `/bin/resolved-${tool}`,
     });
@@ -874,5 +878,152 @@ describe('runCommitGate: path-scoped sanctions for generated files', () => {
     const result = await runCommitGate(commitOptions(generatedDiffExec()));
 
     expect(result.findings).toHaveLength(4);
+  });
+});
+
+/**
+ * The laborious classes (#49) reach the commit rung with no delegation path:
+ * the terse-pointer → fixer loop exists only at `stop`, so knip,
+ * dependency-cruiser and stryker violations blocked with no manifest and no
+ * pointer. Surviving mutants are the most labour-intensive class in the pack
+ * and were the one class with no fixer — on the reported adoption the main
+ * agent worked through 214 of them inline.
+ */
+function blockingExec(): Exec {
+  return makeExec((line) => {
+    if (line.includes('--name-only')) return ok('src/foo.ts');
+    if (line.includes('--others')) return ok('');
+    if (line.includes('diff')) return ok('');
+    if (line.includes('eslint')) return ok(eslintError());
+    if (line.includes('--showConfig'))
+      return ok(JSON.stringify({ files: ['src/foo.ts'] }));
+    return ok('');
+  });
+}
+
+function blockedOptions() {
+  return {
+    repoRoot: root,
+    baseBranch: 'main',
+    exec: blockingExec(),
+    config,
+    sessionId: 'sid',
+  };
+}
+
+describe('runCommitGate: delegation for the laborious classes', () => {
+  it('writes the violations to a manifest the fixer can be pointed at', async () => {
+    const result = await runCommitGate(blockedOptions());
+
+    expect(result.blocked).toBe(true);
+    expect(result.delegation?.manifestPath).toBeDefined();
+    expect(readViolations(stateDirectory(root), 'sid-commit')).toHaveLength(
+      result.violations.length,
+    );
+  });
+
+  it('names a fixer agent to spawn', async () => {
+    const result = await runCommitGate(blockedOptions());
+
+    expect(result.delegation?.fixerAgent).toBeDefined();
+  });
+
+  it('keeps the commit-rung manifest clear of the stop-rung one', async () => {
+    // Both rungs write `<id>.last.json`. Sharing an id would have the commit
+    // gate clobber a manifest an in-flight stop loop is still working from.
+    await runCommitGate(blockedOptions());
+
+    expect(readViolations(stateDirectory(root), 'sid')).toEqual([]);
+    expect(
+      readViolations(stateDirectory(root), 'sid-commit').length,
+    ).toBeGreaterThan(0);
+  });
+
+  it('writes nothing and names nobody when the gate passes', async () => {
+    // A clean commit must not leave a stale manifest behind for the next
+    // block to be read against.
+    const clean = makeExec((line) => {
+      if (line.includes('--name-only')) return ok('');
+      if (line.includes('--others')) return ok('');
+      return ok('');
+    });
+    const result = await runCommitGate({ ...blockedOptions(), exec: clean });
+
+    expect(result.blocked).toBe(false);
+    expect(result.delegation?.manifestPath).toBeUndefined();
+    expect(result.delegation?.fixerAgent).toBeUndefined();
+  });
+
+  it('routes a loose violation to the thorough fixer', async () => {
+    // Reusing the stop gate's loose-class rule rather than inventing a second
+    // policy. The commit-rung analyzers -- knip, dependency-cruiser, stryker --
+    // are loose by construction, which is why this is the branch that matters.
+    const result = await runCommitGate({
+      ...blockedOptions(),
+      config: { ...config, isLoose: () => true },
+    });
+
+    expect(result.delegation?.fixerAgent).toBe('guardrail-fixer-thorough');
+  });
+
+  it('routes to the thorough fixer when only SOME violations are loose', async () => {
+    // `.some`, not `.every`: a batch mixing a mechanical eslint finding with a
+    // surviving mutant is the normal commit-rung shape, and the loose one is
+    // what decides. `.every` would quietly demote exactly that batch.
+    let call = 0;
+    const result = await runCommitGate({
+      ...blockedOptions(),
+      config: {
+        ...config,
+        isLoose: () => {
+          call += 1;
+          return call === 1;
+        },
+      },
+    });
+
+    expect(result.delegation?.fixerAgent).toBe('guardrail-fixer-thorough');
+  });
+
+  it('routes a tight violation to the fast fixer', async () => {
+    const result = await runCommitGate({
+      ...blockedOptions(),
+      config: { ...config, isLoose: () => false },
+    });
+
+    expect(result.delegation?.fixerAgent).toBe('guardrail-fixer');
+  });
+
+  it('delivers the manifest and the fixer together or not at all', async () => {
+    // The pair is one optional object rather than two optional fields, so
+    // "a manifest with nobody named to fix it" is not a state the result can
+    // express. Asserted rather than left to the type, since the type is what a
+    // future edit would loosen first.
+    const result = await runCommitGate(blockedOptions());
+
+    expect(result.delegation).toMatchObject({
+      manifestPath: expect.any(String),
+      fixerAgent: expect.any(String),
+    });
+  });
+
+  it('still blocks — delegation changes the message, never the verdict', async () => {
+    // The load-bearing assertion. The stop gate's ladder ends in `escalate`,
+    // which RELEASES the turn; at the commit rung that would mean letting a
+    // bad commit through. Whatever the pointer says, `blocked` stays true.
+    const result = await runCommitGate(blockedOptions());
+
+    expect(result.blocked).toBe(true);
+    expect(result.violations.length).toBeGreaterThan(0);
+  });
+
+  it('works without a session id, as a git hook has none', async () => {
+    // `.husky/pre-commit` runs `gate --mode=commit` with no hook payload, so
+    // there is no session to key on.
+    const { sessionId: _omitted, ...noSession } = blockedOptions();
+    const result = await runCommitGate(noSession);
+
+    expect(result.blocked).toBe(true);
+    expect(result.delegation?.manifestPath).toBeDefined();
   });
 });
