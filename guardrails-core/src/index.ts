@@ -40,6 +40,7 @@ export {
   loadConfig,
   toGateConfig,
   type RepoConfig,
+  type SanctionedFile,
   type SanctionedSuppression,
 } from './config.js';
 export { spawnExec, type Exec, type ExecResult } from './exec.js';

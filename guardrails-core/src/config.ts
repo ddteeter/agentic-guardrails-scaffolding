@@ -8,6 +8,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
+import { auditKinds, type AuditKind } from './audit.js';
 import type { GateConfig } from './gate-decision.js';
 import { makeIsLoose } from './loose-rules.js';
 import type { AnalyzerMode } from './verify/analyzer-policy.js';
@@ -31,6 +32,37 @@ export interface SanctionedSuppression {
 }
 
 /**
+ * One reviewed exemption covering a whole FILE and one suppression kind, for
+ * generated code (#39). Deliberately narrower in config surface than
+ * `SanctionedSuppression` and broader in effect:
+ *
+ * - no `count`, because a generated file's occurrence count changes on every
+ *   regeneration and `sanctionCountDrift` would fail the build each time. That
+ *   churn is the defect this exists to remove.
+ * - no suppression TEXT, because a generator that changes its cast shape
+ *   across versions would silently invalidate a text-pinned grant.
+ * - an exact `path`, never a glob: a glob can start covering a hand-written
+ *   file added later, widening the grant with nobody re-reviewing it.
+ *
+ * Its only safeguard is review, which is why `reason` matters more here than on
+ * a keyed grant, not less.
+ */
+export interface SanctionedFile {
+  /**
+  Exact repo-relative, POSIX-separated path, as `AuditFinding.file` carries it.
+  */
+  path: string;
+  /**
+  The single suppression kind this file is exempt from.
+  */
+  kind: AuditKind;
+  /**
+  Why the file's suppressions are unavoidable; blank or missing drops the entry.
+  */
+  reason: string;
+}
+
+/**
  * Outcome of parsing a `sanctionedSuppressions` array: the entries that
  * validated, and a human-readable reason for each that did not. Splitting the
  * result (rather than silently dropping malformed entries, as the gate's
@@ -39,6 +71,10 @@ export interface SanctionedSuppression {
  */
 export interface SanctionParseResult {
   valid: SanctionedSuppression[];
+  /**
+  Path-scoped grants (`sanctionedFiles`), kept apart from the keyed ones.
+  */
+  files: SanctionedFile[];
   malformed: string[];
 }
 
@@ -83,6 +119,14 @@ export interface RepoConfig {
    * self-granted.
    */
   sanctionedSuppressions: SanctionedSuppression[];
+  /**
+   * Path-scoped exemptions for generated files (#39). Unlike
+   * `sanctionedSuppressions` these carry no occurrence budget — a generated
+   * file's count changes on every regeneration, and making the adopter track it
+   * was the defect. Broader in effect and narrower in config surface; see
+   * `SanctionedFile`. Empty by default.
+   */
+  sanctionedFiles: SanctionedFile[];
   distribution: 'solo' | 'team';
   /**
    * Consumed by exactly two commands in `cli-core.ts`: `gateCommitCommand`
@@ -137,6 +181,7 @@ export function defaultConfig(): RepoConfig {
     looseRules: [],
     analyzers: {},
     sanctionedSuppressions: [],
+    sanctionedFiles: [],
     distribution: 'solo',
     enforcement: 'warn',
   };
@@ -154,11 +199,20 @@ export function parseSanctionsJson(text: string): SanctionParseResult {
   try {
     raw = JSON.parse(text);
   } catch {
-    return { valid: [], malformed: ['config is not valid JSON'] };
+    return { valid: [], files: [], malformed: ['config is not valid JSON'] };
   }
-  return isRecord(raw)
-    ? pickSanctions(raw.sanctionedSuppressions)
-    : { valid: [], malformed: [] };
+  if (!isRecord(raw)) {
+    return { valid: [], files: [], malformed: [] };
+  }
+  const keyed = pickSanctions(raw.sanctionedSuppressions);
+  const paths = pickSanctionedFiles(raw.sanctionedFiles);
+  return {
+    valid: keyed.valid,
+    files: paths.files,
+    // Both lists of complaints reach the CI check together: a malformed path
+    // grant is as invisible-but-broken as a malformed keyed one.
+    malformed: [...keyed.malformed, ...paths.malformed],
+  };
 }
 
 /**
@@ -184,7 +238,7 @@ function isMalformedCount(value: unknown): boolean {
 function parseSanctionEntry(
   entry: unknown,
   position: number,
-): { sanction: SanctionedSuppression } | { malformed: string } {
+): ParsedEntry<SanctionedSuppression> {
   if (!isRecord(entry)) {
     return { malformed: `entry ${position}: not an object` };
   }
@@ -201,26 +255,108 @@ function parseSanctionEntry(
     };
   }
   return {
-    sanction:
-      typeof count === 'number' ? { key, reason, count } : { key, reason },
+    value: typeof count === 'number' ? { key, reason, count } : { key, reason },
   };
 }
 
-function pickSanctions(value: unknown): SanctionParseResult {
+/**
+ * A string carrying something. Written as a type guard rather than inline
+ * `typeof x !== 'string' || !x.trim()` checks so the `typeof` half stays
+ * KILLABLE: forcing it true makes `.trim()` run on a non-string and throw,
+ * which a test observes. Inline behind an `||`, the same clause is a provably
+ * equivalent mutant, because a non-string fails the check that follows anyway
+ * — the shape this repo has had to sanction repeatedly elsewhere.
+ */
+function isNonBlankString(value: unknown): value is string {
+  return typeof value === 'string' && value.trim() !== '';
+}
+
+/**
+ * One parsed entry: the value, or a human-readable reason it was rejected.
+ */
+type ParsedEntry<T> = { value: T } | { malformed: string };
+
+/**
+ * Walk a config array, splitting entries into the ones that validated and the
+ * reasons the rest did not.
+ *
+ * Shared by both sanction forms. The two used to carry a copy each of this
+ * loop, which the `dupes` analyzer reported as 17 duplicated lines the moment
+ * the second one was written — the duplication was introduced and removed in
+ * the same change, which is the analyzer working exactly as intended.
+ *
+ * Positions are 1-based, because the message is read by a human counting
+ * entries in a JSON array.
+ */
+function parseEntryList<T>(
+  value: unknown,
+  parseEntry: (entry: unknown, position: number) => ParsedEntry<T>,
+): { values: T[]; malformed: string[] } {
   if (!Array.isArray(value)) {
-    return { valid: [], malformed: [] };
+    return { values: [], malformed: [] };
   }
-  const valid: SanctionedSuppression[] = [];
+  const values: T[] = [];
   const malformed: string[] = [];
   for (const [index, entry] of value.entries()) {
-    const parsed = parseSanctionEntry(entry, index + 1);
+    const parsed = parseEntry(entry, index + 1);
     if ('malformed' in parsed) {
       malformed.push(parsed.malformed);
     } else {
-      valid.push(parsed.sanction);
+      values.push(parsed.value);
     }
   }
-  return { valid, malformed };
+  return { values, malformed };
+}
+
+/**
+ * Parse one `sanctionedFiles` entry. A `count` is REJECTED rather than ignored:
+ * removing the count churn is the whole reason this grant exists (#39), and
+ * silently dropping one would leave an adopter believing they had bounded a
+ * grant that is in fact unbounded.
+ */
+function parseSanctionedFile(
+  entry: unknown,
+  position: number,
+): ParsedEntry<SanctionedFile> {
+  if (!isRecord(entry)) {
+    return { malformed: `sanctionedFiles ${position}: not an object` };
+  }
+  const { path: filePath, kind, reason, count } = entry;
+  if (!isNonBlankString(filePath)) {
+    return { malformed: `sanctionedFiles ${position}: missing path` };
+  }
+  // No `typeof kind === 'string'` guard: the Set rejects every non-string on
+  // its own, so the clause would be a provably equivalent mutant rather than a
+  // check.
+  if (!auditKinds().has(kind as AuditKind)) {
+    return {
+      malformed: `sanctionedFiles ${position}: unknown kind ${String(kind)}`,
+    };
+  }
+  if (!isNonBlankString(reason)) {
+    return { malformed: `sanctionedFiles ${position}: missing reason` };
+  }
+  if (count !== undefined) {
+    return {
+      malformed:
+        `sanctionedFiles ${position}: count is not supported — a path grant ` +
+        `covers every occurrence, which is what removes the churn`,
+    };
+  }
+  return { value: { path: filePath, kind: kind as AuditKind, reason } };
+}
+
+function pickSanctionedFiles(value: unknown): {
+  files: SanctionedFile[];
+  malformed: string[];
+} {
+  const { values, malformed } = parseEntryList(value, parseSanctionedFile);
+  return { files: values, malformed };
+}
+
+function pickSanctions(value: unknown): Omit<SanctionParseResult, 'files'> {
+  const { values, malformed } = parseEntryList(value, parseSanctionEntry);
+  return { valid: values, malformed };
 }
 
 function pickStringArray(value: unknown): string[] {
@@ -362,6 +498,7 @@ export function loadConfig(repoRoot: string): RepoConfig {
     looseRules: pickStringArray(raw.looseRules),
     analyzers: pickAnalyzers(raw.analyzers),
     sanctionedSuppressions: pickSanctions(raw.sanctionedSuppressions).valid,
+    sanctionedFiles: pickSanctionedFiles(raw.sanctionedFiles).files,
     distribution: pickString(raw.distribution, defaults.distribution, [
       'solo',
       'team',
