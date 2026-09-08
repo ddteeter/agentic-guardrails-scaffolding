@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { decideGate, type GateConfig } from '../src/gate-decision.js';
+import {
+  decideGate,
+  type GateConfig,
+  type GateDecision,
+} from '../src/gate-decision.js';
 import { createSession } from '../src/state.js';
 import { recurrenceKey, type Violation } from '../src/violation.js';
 
@@ -23,7 +27,10 @@ const config: GateConfig = {
   thoroughFixer: 'guardrail-fixer-thorough',
 };
 
-const manifestPath = '.claude/state/guardrails/sid.last.json';
+// The path `state-store.ts` actually writes. The old fixture used
+// `.claude/state/guardrails/...`, the same stale location #39 found in
+// docs/live-loop-verification.md -- a fixture is documentation too.
+const manifestPath = '.guardrails/state/sid.last.json';
 
 function input(overrides: Partial<Parameters<typeof decideGate>[0]> = {}) {
   return {
@@ -251,5 +258,78 @@ describe('per-package recurrence', () => {
 
   it('keys on the bare ruleId when there is no package', () => {
     expect(recurrenceKey(base)).toBe('no-console');
+  });
+});
+
+describe('decideGate: a retry that changed nothing', () => {
+  const blocked = v({ ruleId: 'eslint/no-console', file: 'src/a.ts', line: 3 });
+  const stuck: Violation[] = [blocked];
+
+  /** Drive the loop the way a host actually does: block, then retry with the
+   *  session the previous decision produced. */
+  function retryWith(violations: Violation[]): GateDecision {
+    const first = decideGate({
+      violations: stuck,
+      session: createSession(),
+      recurrence: {},
+      manifestPath,
+      config,
+    });
+    return decideGate({
+      violations,
+      session: first.nextSession,
+      recurrence: {},
+      manifestPath,
+      config,
+      isRetry: true,
+    });
+  }
+
+  it('says the manifest is unchanged instead of repeating the spawn order', () => {
+    // Reported from a live adoption (#39): the fixer subagent runs in the
+    // background, so the natural next move -- try to stop again -- re-fires the
+    // gate while it is still working. The old message was byte-identical to the
+    // first block, so an agent following it literally spawned a SECOND fixer
+    // against the same manifest, racing edits on the same files.
+    const message = retryWith(stuck).message;
+
+    expect(message).toMatch(/unchanged/i);
+    expect(message).not.toMatch(/Spawn the \S+ subagent/);
+  });
+
+  it('still names the manifest and the fixer, so the turn can proceed', () => {
+    // "Wait" must not mean "and now you have no information": if the fixer
+    // really did finish and no-op, the agent still needs to know what to spawn.
+    const decision = retryWith(stuck);
+
+    expect(decision.message).toContain(manifestPath);
+    expect(decision.fixerAgent).toBe('guardrail-fixer');
+    expect(decision.outcome).toBe('delegate');
+    expect(decision.block).toBe(true);
+  });
+
+  it('gives the normal spawn instruction when the fixer DID change something', () => {
+    // The counterweight: a retry whose manifest differs means the fixer ran and
+    // made progress, and the loop must keep going without hesitation.
+    const progressed: Violation[] = [
+      { ...blocked, ruleId: 'eslint/prefer-const', line: 12 },
+    ];
+    const message = retryWith(progressed).message;
+
+    expect(message).toMatch(/Spawn the \S+ subagent/);
+    expect(message).not.toMatch(/unchanged/i);
+  });
+
+  it('does not warn on the FIRST block, which no fixer has seen yet', () => {
+    const first = decideGate({
+      violations: stuck,
+      session: createSession(),
+      recurrence: {},
+      manifestPath,
+      config,
+    });
+
+    expect(first.message).toMatch(/Spawn the \S+ subagent/);
+    expect(first.message).not.toMatch(/unchanged/i);
   });
 });

@@ -743,6 +743,53 @@ describe('stopHookReason', () => {
   });
 });
 
+/** A repo stuck on the same eslint finding: every run reports it, so nothing
+ *  the fixer could have done shows up between attempts. */
+function stuckExec(): Exec {
+  return makeExec((line) => {
+    if (line.includes('--name-only')) return ok('src/foo.ts');
+    if (line.includes('--others')) return ok('');
+    if (line.includes('diff') && line.includes('HEAD')) return ok('');
+    if (line.includes('eslint')) return ok(eslintError());
+    if (line.includes('--showConfig'))
+      return ok(JSON.stringify({ files: ['src/foo.ts'] }));
+    return ok('');
+  });
+}
+
+describe('runStopGate: the unchanged-retry message, across processes', () => {
+  /**
+   * The regression guard for the defect review found in #47. The
+   * unchanged-retry check compares against a digest of the PREVIOUS block, and
+   * every Stop-hook fire is a fresh CLI process — so the whole mechanism runs
+   * through `saveSession`/`loadSession` on disk. `gate-decision.test.ts` drives
+   * the decision twice in memory and cannot see a field that fails to survive
+   * that round-trip; this exercises the real store, which is where the bug was.
+   */
+  it('tells the second block to WAIT rather than spawn another fixer', async () => {
+    const exec = stuckExec();
+
+    const first = await runStopGate(options(exec));
+    const second = await runStopGate({ ...options(exec), isRetry: true });
+
+    expect(first.decision.message).toMatch(/Spawn the \S+ subagent/);
+    expect(second.decision.message).toMatch(/unchanged/i);
+    expect(second.decision.message).not.toMatch(/Spawn the \S+ subagent/);
+  });
+
+  it('keeps saying WAIT while nothing changes', async () => {
+    // A fixer taking a while must not fall back into inviting duplicates on the
+    // third or fourth attempt either.
+    const exec = stuckExec();
+
+    await runStopGate(options(exec));
+    await runStopGate({ ...options(exec), isRetry: true });
+    const third = await runStopGate({ ...options(exec), isRetry: true });
+
+    expect(third.decision.message).toMatch(/unchanged/i);
+  });
+});
+
 /** A diff over a generated file: three generator-emitted casts, plus one
  *  finding of a DIFFERENT kind that no `cast-any` grant may cover. */
 const generatedDiff = [

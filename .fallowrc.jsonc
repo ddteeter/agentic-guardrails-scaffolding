@@ -48,6 +48,19 @@
     "minTokens": 50,
     "minLines": 5,
     "threshold": 5,
+    // Repo-specific false positives. Each entry is a judgement that the
+    // similarity is real but NOT worth removing -- record why, so a later
+    // reader can disagree with the reasoning rather than guess at it.
+    //
+    // state-store.ts: its six public functions are pairs of three-line
+    // wrappers over `readJson`/`writeJson` that differ only in which `*File`
+    // resolver they call and what type they carry (SessionState vs
+    // RecurrenceCounts vs Violation[]). The only extraction available takes a
+    // resolver callback and an `unknown` value: same line count, an extra
+    // indirection, and it loses the type safety that makes the current shape
+    // worth having. Deduplicating would make the module worse, so this is the
+    // "shapes rhyme" class rather than copy-paste.
+    "ignore": ["guardrails-core/src/state-store.ts"],
   },
   // Dev-only tooling (one-shot CLI scripts) is untested by design; gating
   // change-risk (CRAP) on never-tested code isn't meaningful. Production src/

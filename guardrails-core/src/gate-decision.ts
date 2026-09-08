@@ -20,6 +20,7 @@ import {
   resetAttempts,
   type RecurrenceCounts,
   type SessionState,
+  violationDigest,
 } from './state.js';
 import { hasErrors, type Violation } from './violation.js';
 
@@ -73,6 +74,37 @@ function tersePointer(
     `${count} guardrail violation(s) written to ${manifestPath}. ` +
     `Do NOT read it. Spawn the ${fixerAgent} subagent and give it that path ` +
     `to fix. Then try to stop again.`
+  );
+}
+
+/**
+ * The message for a retry whose manifest is IDENTICAL to the one the previous
+ * block reported — reported from a live adoption (#39).
+ *
+ * The fixer subagent runs in the background, so the move `tersePointer` asks
+ * for next ("then try to stop again") naturally re-fires the gate while the
+ * fixer is still working. Repeating the spawn instruction verbatim there is an
+ * instruction to spawn a SECOND fixer against the same manifest, and an agent
+ * following it literally does exactly that — two fixers racing edits on the
+ * same files.
+ *
+ * So this says the one thing the identical manifest actually proves: nothing
+ * has changed yet. It still names the manifest and the fixer, because the other
+ * reading is live too — the fixer may have finished having achieved nothing, in
+ * which case the agent needs to know what to spawn once it has confirmed that.
+ * What it deliberately does NOT do is repeat an unconditional order to spawn.
+ */
+function unchangedPointer(
+  count: number,
+  manifestPath: string,
+  fixerAgent: string,
+): string {
+  return (
+    `${count} guardrail violation(s) in ${manifestPath} — UNCHANGED since the ` +
+    `last block. Do NOT read it, and do NOT spawn another fixer yet: a ` +
+    `${fixerAgent} you already spawned is most likely still running. Wait for ` +
+    `it to report, then try to stop again. Only if it has already finished and ` +
+    `changed nothing should you spawn a fresh ${fixerAgent} against that path.`
   );
 }
 
@@ -200,12 +232,19 @@ export function decideGate(input: GateInput): GateDecision {
       ? config.thoroughFixer
       : config.fastFixer;
 
+  // Identical manifest on a retry means no fixer edit has landed yet. See
+  // `unchangedPointer`.
+  const digest = violationDigest(violations);
+  const isStalled = isRetry && session.lastViolationDigest === digest;
+
   return withOptional(
     {
       outcome: 'delegate',
       block: true,
-      message: tersePointer(violations.length, manifestPath, fixerAgent),
-      nextSession: corrected,
+      message: isStalled
+        ? unchangedPointer(violations.length, manifestPath, fixerAgent)
+        : tersePointer(violations.length, manifestPath, fixerAgent),
+      nextSession: { ...corrected, lastViolationDigest: digest },
       nextRecurrence,
     },
     { additionalContext, fixerAgent },
