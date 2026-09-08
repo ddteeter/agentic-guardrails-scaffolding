@@ -12,6 +12,7 @@ import { auditDiff, type AuditFinding } from './audit.js';
 import { runAutofix } from './autofix.js';
 import {
   loadConfig,
+  type SanctionedFile,
   parseSanctionsJson,
   readConfigText,
   toGateConfig,
@@ -23,6 +24,7 @@ import {
   formatGrantReport,
   newlySanctioned,
   newlySanctionedFiles,
+  type SanctionGrant,
   sanctionCountDrift,
   toMalformedViolations,
 } from './sanctions.js';
@@ -455,6 +457,56 @@ function repoSourceReader(
   };
 }
 
+/**
+ * Print the exemptions this branch introduces, for the reviewer whose merge IS
+ * the approval.
+ *
+ * The two forms get SEPARATE headings on purpose. A path grant covers every
+ * occurrence of one kind in one file, with no count bounding it and nothing
+ * re-deriving it afterwards; a keyed grant is exact and verified every run.
+ * Someone skimming this output should never have to work out which kind they
+ * are being asked to approve.
+ *
+ * Extracted from `sanctionsCheckCommand` because adding the second form pushed
+ * that function to cyclomatic 15, which `fallow health` caught at the pre-push
+ * gate.
+ */
+function reportNewGrants(
+  dependencies: CliDependencies,
+  grants: readonly SanctionGrant[],
+  fileGrants: readonly SanctionedFile[],
+): void {
+  if (grants.length === 0 && fileGrants.length === 0) {
+    dependencies.stderr(
+      'guardrails: no new diff-auditor exemptions granted.\n',
+    );
+    return;
+  }
+  if (grants.length > 0) {
+    dependencies.stderr(
+      `guardrails: ${grants.length} new diff-auditor exemption(s) granted on ` +
+        `this branch (reviewed by merging this pull request):\n`,
+    );
+    for (const line of formatGrantReport(grants)) {
+      dependencies.stderr(`${line}\n`);
+    }
+  }
+  // Reported separately and labelled, because a path grant is the broader of
+  // the two: it covers every occurrence of one kind in one file, with no count
+  // bounding it, and review is its only safeguard. A reviewer skimming this
+  // output should not have to work out which kind of grant they are approving.
+  if (fileGrants.length > 0) {
+    dependencies.stderr(
+      `guardrails: ${fileGrants.length} new WHOLE-FILE exemption(s) granted ` +
+        `on this branch. These cover every occurrence of a kind in a file, ` +
+        `with no count to bound them:\n`,
+    );
+    for (const file of fileGrants) {
+      dependencies.stderr(`  - ${file.path} [${file.kind}]: ${file.reason}\n`);
+    }
+  }
+}
+
 async function sanctionsCheckCommand(
   dependencies: CliDependencies,
 ): Promise<number> {
@@ -541,35 +593,7 @@ async function sanctionsCheckCommand(
   const knownFiles = baseParsed.files;
   const grants = newlySanctioned(known, headSanctions);
   const fileGrants = newlySanctionedFiles(knownFiles, headFiles);
-  if (grants.length === 0 && fileGrants.length === 0) {
-    dependencies.stderr(
-      'guardrails: no new diff-auditor exemptions granted.\n',
-    );
-    return 0;
-  }
-  if (grants.length > 0) {
-    dependencies.stderr(
-      `guardrails: ${grants.length} new diff-auditor exemption(s) granted on ` +
-        `this branch (reviewed by merging this pull request):\n`,
-    );
-    for (const line of formatGrantReport(grants)) {
-      dependencies.stderr(`${line}\n`);
-    }
-  }
-  // Reported separately and labelled, because a path grant is the broader of
-  // the two: it covers every occurrence of one kind in one file, with no count
-  // bounding it, and review is its only safeguard. A reviewer skimming this
-  // output should not have to work out which kind of grant they are approving.
-  if (fileGrants.length > 0) {
-    dependencies.stderr(
-      `guardrails: ${fileGrants.length} new WHOLE-FILE exemption(s) granted ` +
-        `on this branch. These cover every occurrence of a kind in a file, ` +
-        `with no count to bound them:\n`,
-    );
-    for (const file of fileGrants) {
-      dependencies.stderr(`  - ${file.path} [${file.kind}]: ${file.reason}\n`);
-    }
-  }
+  reportNewGrants(dependencies, grants, fileGrants);
   return 0;
 }
 
