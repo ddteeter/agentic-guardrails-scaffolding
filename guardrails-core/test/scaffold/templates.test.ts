@@ -371,6 +371,26 @@ describe.each([
     expect(content()).toContain('file|kind|text');
   });
 
+  it('names BOTH escape hatches, so neither can be self-granted', () => {
+    // Caught in review of #48: `sanctionedFiles` was added and this shipped
+    // contract still said `sanctionedSuppressions` was the only hatch. An
+    // adopter's agent would have been told something factually wrong AND never
+    // told to ask before adding the broader grant -- which matters more here,
+    // not less, since a path grant is unbounded and review is its only
+    // safeguard. This assertion is what stops the two drifting again.
+    expect(content()).toContain('sanctionedFiles');
+    expect(content()).not.toMatch(
+      /`sanctionedSuppressions` is the only escape/,
+    );
+  });
+
+  it('tells the agent what a whole-file grant covers, not just its name', () => {
+    // Naming the field is not enough to make the ask meaningful: the developer
+    // being asked needs to know the grant has no count and is never re-derived.
+    expect(content()).toContain('path');
+    expect(content()).toContain('kind');
+  });
+
   it('does not promise a downstream check that will catch a self-grant', () => {
     // `sanctions-check` PRINTS a new grant and exits 0 by design -- there is
     // no automated backstop, which is precisely why the ask is mandatory.

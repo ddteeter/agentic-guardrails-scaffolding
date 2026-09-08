@@ -174,6 +174,26 @@ const SIGNATURES: readonly Signature[] = [
 ];
 
 /**
+ * Every kind the signature table can actually produce, as a runtime witness of
+ * the `AuditKind` union.
+ *
+ * Derived from `SIGNATURES` rather than restated, and that is the point: a kind
+ * declared in the union but backed by no signature can never appear in a
+ * finding, so a config granting an exemption for it would be granting nothing
+ * while looking like a grant. Deriving here makes that impossible to express.
+ *
+ * A function rather than a module-level constant, following
+ * `installableAnalyzerProviders` in verify/index.ts: top-level code runs at
+ * import, before any mutant is switched on, so a mutation in the expression
+ * below would be unkillable by construction and would read as a survivor no
+ * test could address. The table is a handful of entries; there is nothing here
+ * worth memoising.
+ */
+export function auditKinds(): ReadonlySet<AuditKind> {
+  return new Set(SIGNATURES.map((signature) => signature.kind));
+}
+
+/**
  * Source extensions that can meaningfully contain a real suppression.
  * Extensible: add a new extension here as new stacks are onboarded.
  */

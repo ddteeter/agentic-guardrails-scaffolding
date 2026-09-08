@@ -39,9 +39,9 @@ import { isViolation, type Violation } from './violation.js';
  * Deleting a provider from `devDependencies`
  * flips its analyzer from `auto`+declared to `auto`+undeclared, so the missing
  * error vanishes and `verify` reads green with the guard silently not running;
- * `guardrails.config.json` holds `sanctionedSuppressions`, `maxAttempts`,
- * `analyzers` and `enforcement`, so a fixer could grant itself an exemption or
- * switch a gate off.
+ * `guardrails.config.json` holds `sanctionedSuppressions`, `sanctionedFiles`,
+ * `maxAttempts`, `analyzers` and `enforcement`, so a fixer could grant itself
+ * an exemption of either kind, or switch a gate off.
  *
  * Nothing legitimate is lost: the fixer's job is to fix code, and no honest fix
  * to either violation is an edit to these files — installing a dependency is

@@ -32,7 +32,7 @@ import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 import { auditDiff, findingKey, type AuditFinding } from './audit.js';
-import type { SanctionedSuppression } from './config.js';
+import type { SanctionedFile, SanctionedSuppression } from './config.js';
 import type { Exec } from './exec.js';
 import { withGuidance } from './guidance.js';
 import {
@@ -91,6 +91,13 @@ export interface CommitGateOptions {
    */
   sanctionedSuppressions?: readonly SanctionedSuppression[];
   /**
+   * Path-scoped exemptions (`RepoConfig.sanctionedFiles`), for generated code.
+   * Unlike the keyed grants above these spend no budget: every occurrence of
+   * the named kind in the named file is exempt, because a generated file's
+   * occurrence count changes on every regeneration. See `SanctionedFile`.
+   */
+  sanctionedFiles?: readonly SanctionedFile[];
+  /**
   Per-analyzer opt-in (`RepoConfig.analyzers`), forwarded to `runVerify`.
   */
   analyzers?: Readonly<Record<string, AnalyzerMode>>;
@@ -136,16 +143,39 @@ function sanctionBudget(
 }
 
 /**
- * Filter findings against a spendable budget: a finding whose key still has
- * budget remaining is exempted and decrements that budget by one; once the
- * budget for a key is exhausted, every further occurrence of that same key is
- * reported. `budget` is mutated in place — private to one `runCommitGate` call.
+ * Filter findings against a spendable budget and the path-scoped exemptions.
+ *
+ * A path grant is checked FIRST and consumes nothing: it covers every
+ * occurrence of one kind in one file, which is what lets a generated file be
+ * exempted without anyone maintaining a count that changes on every
+ * regeneration (#39). A finding it covers must also not decrement a keyed
+ * budget — spending budget on an already-exempt finding would silently exhaust
+ * a grant meant for elsewhere in the same file.
+ *
+ * Otherwise the keyed budget applies as before: a finding whose key still has
+ * budget remaining is exempted and decrements that budget by one; once
+ * exhausted, every further occurrence of that key is reported. `budget` is
+ * mutated in place — private to one `runCommitGate` call.
  */
 function spendBudget(
   findings: readonly AuditFinding[],
   budget: Map<string, number>,
+  exempt: readonly SanctionedFile[] | undefined,
 ): AuditFinding[] {
   return findings.filter((finding) => {
+    // A linear scan rather than a prebuilt Set, deliberately. The list is a
+    // handful of generated files, and taking the optional array directly means
+    // no `?? []` default — whose ArrayDeclaration mutant would be provably
+    // equivalent (a placeholder entry matches no real finding) and would have
+    // needed a sanctioned suppression to silence. Removing the default is a
+    // better answer than exempting the mutant it creates.
+    if (
+      exempt?.some(
+        (file) => file.path === finding.file && file.kind === finding.kind,
+      ) === true
+    ) {
+      return false;
+    }
     const key = findingKey(finding);
     const remaining = budget.get(key) ?? 0;
     if (remaining <= 0) {
@@ -378,7 +408,11 @@ export async function runCommitGate(
   // `undefined` (not a string), so it can never match and grants no budget.
   // Stryker disable next-line ArrayDeclaration
   const budget = sanctionBudget(options.sanctionedSuppressions ?? []);
-  const findings = spendBudget(auditDiff(await branchDiff(options)), budget);
+  const findings = spendBudget(
+    auditDiff(await branchDiff(options)),
+    budget,
+    options.sanctionedFiles,
+  );
   const guided = withGuidance(violations);
   return {
     violations: guided,

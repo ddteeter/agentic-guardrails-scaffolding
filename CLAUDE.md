@@ -107,12 +107,14 @@ loose id or knip issue type no longer exists upstream. You must still review the
 
 ## Asking before you sanction a suppression
 
-`guardrails.config.json`'s `sanctionedSuppressions` is the **only** escape hatch
-from the diff-auditor. Never add an entry on your own initiative. Ask the
-developer first — using your interactive question ability, not a note buried in
-a summary — and give them what they need to decide:
+`guardrails.config.json` has exactly two escape hatches from the diff-auditor —
+`sanctionedSuppressions` (a keyed, counted grant) and `sanctionedFiles` (a whole
+file + one kind, for generated code). Never add an entry to either on your own
+initiative. Ask the developer first — using your interactive question ability,
+not a note buried in a summary — and give them what they need to decide:
 
-- **What** the exemption covers (the exact `file|kind|text` key).
+- **What** the exemption covers (the exact `file|kind|text` key, or the
+  `path` + `kind` pair).
 - **Why** it is unavoidable: for an equivalent mutant, the argument for why no
   test can kill it; for anything else, what you tried first.
 - **What it costs**: what stops being checked once it is granted.
@@ -120,11 +122,23 @@ a summary — and give them what they need to decide:
 If they approve, put the argument they accepted into `reason` — that text is what
 a PR reviewer reads later, so write it for them, not for yourself.
 
-`count` must equal how many times that exact suppression appears in that file.
-`sanctions-check` re-derives the real number with the auditor's own lexer and
-**fails** on any mismatch, so a stale entry left behind by a refactor is a build
-failure rather than a silently over-provisioned budget. When you delete a
-suppressed line, update or remove its entry in the same change.
+For a `sanctionedSuppressions` entry, `count` must equal how many times that
+exact suppression appears in that file. `sanctions-check` re-derives the real
+number with the auditor's own lexer and **fails** on any mismatch, so a stale
+entry left behind by a refactor is a build failure rather than a silently
+over-provisioned budget. When you delete a suppressed line, update or remove its
+entry in the same change.
+
+**`sanctionedFiles` is for GENERATED code only, and is the broader grant.** It
+covers every occurrence of one kind in one file, forever, with no count and
+therefore nothing verifying it afterwards — which is the point, since a
+generated file's count changes on every regeneration and pinning the
+suppression's exact text breaks when the generator's output shape changes. Use
+it only where a generator, not a person, wrote the suppression; reach for
+`sanctionedSuppressions` for anything hand-written. Because review is its only
+safeguard, `sanctions-check` prints new path grants under their own
+**WHOLE-FILE exemption** heading, and the `reason` has to justify the whole file
+rather than one line.
 
 Do **not** record who approved it. An `approvedBy` field was tried and removed:
 local git identity is writable by whatever is running, and is often a bot or a

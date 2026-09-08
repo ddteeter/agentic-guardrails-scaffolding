@@ -12,6 +12,7 @@ import { auditDiff, type AuditFinding } from './audit.js';
 import { runAutofix } from './autofix.js';
 import {
   loadConfig,
+  type SanctionedFile,
   parseSanctionsJson,
   readConfigText,
   toGateConfig,
@@ -22,6 +23,8 @@ import { findGitRoot, resolveRepoRoot } from './repo-root.js';
 import {
   formatGrantReport,
   newlySanctioned,
+  newlySanctionedFiles,
+  type SanctionGrant,
   sanctionCountDrift,
   toMalformedViolations,
 } from './sanctions.js';
@@ -160,6 +163,21 @@ async function verifyCommand(dependencies: CliDependencies): Promise<number> {
 }
 
 /**
+ * The preamble every stdin-driven hook command shares: read the host's payload,
+ * then resolve the repository root FROM the cwd that payload reports.
+ *
+ * The two lines always travel together — the root is derived from the parsed
+ * input, so neither is useful without the other — and three commands carried a
+ * copy each until the `dupes` analyzer reported it.
+ */
+async function hookContext(
+  dependencies: CliDependencies,
+): Promise<{ input: HookInput; repoRoot: string }> {
+  const input = parseHookInput(await dependencies.readStdin());
+  return { input, repoRoot: await commandRepoRoot(dependencies, input.cwd) };
+}
+
+/**
  * Print `init`'s silent-skip warning at a rung that actually checks something.
  *
  * `adopting-guardrails` names a green `verify` as the exit criterion of an
@@ -184,8 +202,7 @@ function warnAboutSilentSkips(
 }
 
 async function autofixCommand(dependencies: CliDependencies): Promise<number> {
-  const input = parseHookInput(await dependencies.readStdin());
-  const repoRoot = await commandRepoRoot(dependencies, input.cwd);
+  const { input, repoRoot } = await hookContext(dependencies);
   // No empty-list guard here: runAutofix filters to TypeScript files and returns
   // before spawning eslint when nothing is left, so a guard would only add a
   // branch whose two sides are indistinguishable through this function's one
@@ -203,8 +220,7 @@ async function gateStopCommand(
   dependencies: CliDependencies,
   dialect: Dialect,
 ): Promise<number> {
-  const input = parseHookInput(await dependencies.readStdin());
-  const repoRoot = await commandRepoRoot(dependencies, input.cwd);
+  const { input, repoRoot } = await hookContext(dependencies);
   const sessionId = input.sessionId ?? 'default';
   const config = loadConfig(repoRoot);
   const { decision } = await runStopGate({
@@ -256,6 +272,7 @@ async function gateCommitCommand(
       exec: dependencies.exec,
       resolveBin: binResolver(repoRoot),
       sanctionedSuppressions: config.sanctionedSuppressions,
+      sanctionedFiles: config.sanctionedFiles,
       analyzers: config.analyzers,
       changedScope,
     });
@@ -390,6 +407,7 @@ async function gatePreToolUseCommand(
     exec: dependencies.exec,
     resolveBin: binResolver(repoRoot),
     sanctionedSuppressions: config.sanctionedSuppressions,
+    sanctionedFiles: config.sanctionedFiles,
     analyzers: config.analyzers,
   });
   if (!blocked) {
@@ -439,19 +457,73 @@ function repoSourceReader(
   };
 }
 
+/**
+ * Print the exemptions this branch introduces, for the reviewer whose merge IS
+ * the approval.
+ *
+ * The two forms get SEPARATE headings on purpose. A path grant covers every
+ * occurrence of one kind in one file, with no count bounding it and nothing
+ * re-deriving it afterwards; a keyed grant is exact and verified every run.
+ * Someone skimming this output should never have to work out which kind they
+ * are being asked to approve.
+ *
+ * Extracted from `sanctionsCheckCommand` because adding the second form pushed
+ * that function to cyclomatic 15, which `fallow health` caught at the pre-push
+ * gate.
+ */
+function reportNewGrants(
+  dependencies: CliDependencies,
+  grants: readonly SanctionGrant[],
+  fileGrants: readonly SanctionedFile[],
+): void {
+  if (grants.length === 0 && fileGrants.length === 0) {
+    dependencies.stderr(
+      'guardrails: no new diff-auditor exemptions granted.\n',
+    );
+    return;
+  }
+  if (grants.length > 0) {
+    dependencies.stderr(
+      `guardrails: ${grants.length} new diff-auditor exemption(s) granted on ` +
+        `this branch (reviewed by merging this pull request):\n`,
+    );
+    for (const line of formatGrantReport(grants)) {
+      dependencies.stderr(`${line}\n`);
+    }
+  }
+  // Reported separately and labelled, because a path grant is the broader of
+  // the two: it covers every occurrence of one kind in one file, with no count
+  // bounding it, and review is its only safeguard. A reviewer skimming this
+  // output should not have to work out which kind of grant they are approving.
+  if (fileGrants.length > 0) {
+    dependencies.stderr(
+      `guardrails: ${fileGrants.length} new WHOLE-FILE exemption(s) granted ` +
+        `on this branch. These cover every occurrence of a kind in a file, ` +
+        `with no count to bound them:\n`,
+    );
+    for (const file of fileGrants) {
+      dependencies.stderr(`  - ${file.path} [${file.kind}]: ${file.reason}\n`);
+    }
+  }
+}
+
 async function sanctionsCheckCommand(
   dependencies: CliDependencies,
 ): Promise<number> {
   const headText = readConfigText(dependencies.cwd) ?? '';
-  const { valid: headSanctions, malformed } = parseSanctionsJson(headText);
+  const {
+    valid: headSanctions,
+    files: headFiles,
+    malformed,
+  } = parseSanctionsJson(headText);
   if (malformed.length > 0) {
     printViolations(
       dependencies,
       toMalformedViolations(malformed, CONFIG_FILE),
     );
     dependencies.stderr(
-      `guardrails: ${malformed.length} malformed sanctionedSuppressions ` +
-        `entry(ies) in ${CONFIG_FILE} — fix before merging.\n`,
+      `guardrails: ${malformed.length} malformed sanction entry(ies) in ` +
+        `${CONFIG_FILE} — fix before merging.\n`,
     );
     return 1;
   }
@@ -460,6 +532,9 @@ async function sanctionsCheckCommand(
   // FACTUAL error rather than a judgment about whether an exemption is
   // deserved, so it blocks -- an over-provisioned budget silently shrinks how
   // much the auditor is watching.
+  // `headFiles` is deliberately NOT passed: path grants carry no count, so
+  // there is nothing for this check to verify, and that absence is what
+  // removes the regeneration churn (#39).
   const drift = sanctionCountDrift(
     headSanctions,
     repoSourceReader(dependencies.cwd),
@@ -507,26 +582,18 @@ async function sanctionsCheckCommand(
     },
   );
   // A missing base file (first adoption of guardrails) means nothing is known
-  // yet, so every entry on the branch reads as newly granted.
-  // Equivalent mutant on the `[]` default: `newlySanctioned` compares by key, so
-  // a placeholder entry maps to an undefined key that no real entry can match —
-  // every head entry still reads as newly granted, exactly as with [].
-  // Stryker disable next-line ArrayDeclaration
-  const known = base.code === 0 ? parseSanctionsJson(base.stdout).valid : [];
+  // yet, so every entry on the branch reads as newly granted. Expressed as
+  // parsing an EMPTY config rather than defaulting two arrays: `{}` is exactly
+  // what "no base policy" means, and it leaves no `?? []` whose
+  // ArrayDeclaration mutant would be provably equivalent and need a sanctioned
+  // suppression. (StringLiteral is globally excluded in stryker.conf.json, so
+  // the literal introduces no mutant of its own.)
+  const baseParsed = parseSanctionsJson(base.code === 0 ? base.stdout : '{}');
+  const known = baseParsed.valid;
+  const knownFiles = baseParsed.files;
   const grants = newlySanctioned(known, headSanctions);
-  if (grants.length === 0) {
-    dependencies.stderr(
-      'guardrails: no new diff-auditor exemptions granted.\n',
-    );
-    return 0;
-  }
-  dependencies.stderr(
-    `guardrails: ${grants.length} new diff-auditor exemption(s) granted on ` +
-      `this branch (reviewed by merging this pull request):\n`,
-  );
-  for (const line of formatGrantReport(grants)) {
-    dependencies.stderr(`${line}\n`);
-  }
+  const fileGrants = newlySanctionedFiles(knownFiles, headFiles);
+  reportNewGrants(dependencies, grants, fileGrants);
   return 0;
 }
 
@@ -639,8 +706,7 @@ async function scopeCheckCommand(
   dependencies: CliDependencies,
   dialect: Dialect,
 ): Promise<void> {
-  const input = parseHookInput(await dependencies.readStdin());
-  const repoRoot = await commandRepoRoot(dependencies, input.cwd);
+  const { input, repoRoot } = await hookContext(dependencies);
   const scope = collectManifestScope(stateDirectory(repoRoot), input.sessionId);
   // Every branch below is a FIXER lock, so a caller the host tells us is not
   // the fixer is left alone entirely.

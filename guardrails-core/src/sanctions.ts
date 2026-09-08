@@ -28,7 +28,7 @@
  */
 
 import { auditSource, findingKey } from './audit.js';
-import type { SanctionedSuppression } from './config.js';
+import type { SanctionedFile, SanctionedSuppression } from './config.js';
 import type { Violation } from './violation.js';
 
 /**
@@ -100,6 +100,49 @@ export function newlySanctioned(
   return grants;
 }
 
+/**
+ * Identity of a path grant for the new-grant diff: the `(path, kind)` pair.
+ *
+ * Held in its own namespace rather than synthesised into a `path|kind|*` key
+ * spliced into `totalsByKey`. A real finding's trimmed text could in principle
+ * be `*`, and two grant namespaces that can collide is exactly the kind of
+ * quiet aliasing an escape hatch must not have.
+ */
+function fileGrantKey(file: SanctionedFile): string {
+  return `${file.path}|${file.kind}`;
+}
+
+/**
+ * Path grants this branch introduces — a `(path, kind)` pair absent from the
+ * base config.
+ *
+ * Reported for the same reason keyed grants are, and with more force: a path
+ * grant covers every occurrence of its kind in its file, forever, with no count
+ * bounding it. Review is its only safeguard (#39), so it must never land
+ * silently.
+ *
+ * Rewording a `reason` is NOT a new grant — the same rule the keyed check
+ * applies by comparing totals rather than text. Removing one is not either:
+ * narrowing an exemption never needs approval.
+ */
+export function newlySanctionedFiles(
+  base: readonly SanctionedFile[],
+  head: readonly SanctionedFile[],
+): SanctionedFile[] {
+  const known = new Set(base.map((file) => fileGrantKey(file)));
+  const seen = new Set<string>();
+  const grants: SanctionedFile[] = [];
+  for (const file of head) {
+    const key = fileGrantKey(file);
+    if (known.has(key) || seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    grants.push(file);
+  }
+  return grants;
+}
+
 /** Render newly-granted exemptions as report lines for the CI sanctions-check
  * to print — informational, never a blocking `Violation`: the human review
  * that approves a grant IS the pull-request merge, not this check. */
@@ -157,22 +200,6 @@ export interface SanctionCountDrift {
  * file case and should be reported, not skipped.
  */
 /**
-Sum each key's declared budget (default 1) across every entry granting it.
-*/
-function declaredTotals(
-  sanctions: readonly SanctionedSuppression[],
-): Map<string, number> {
-  const totals = new Map<string, number>();
-  for (const sanction of sanctions) {
-    totals.set(
-      sanction.key,
-      (totals.get(sanction.key) ?? 0) + (sanction.count ?? 1),
-    );
-  }
-  return totals;
-}
-
-/**
 Group keys by the file they name, so each file is read and audited once.
 */
 function groupKeysByFile(keys: Iterable<string>): Map<string, string[]> {
@@ -210,11 +237,24 @@ function actualCounts(
   return counts;
 }
 
+/**
+ * `sanctionedFiles` grants are deliberately absent from this check.
+ *
+ * A path grant carries no count, so there is no number to drift — and that
+ * absence IS the feature (#39): making an adopter re-derive a generated file's
+ * occurrence count on every regeneration was the churn this whole grant form
+ * exists to remove. Keyed grants in the same file keep their exact-count
+ * discipline. Path grants are simply never passed in — an unread parameter
+ * taken only to look explicit would carry an unkillable mutant on its default,
+ * which is a worse way to document a decision than this sentence.
+ */
 export function sanctionCountDrift(
   sanctions: readonly SanctionedSuppression[],
   readSource: (file: string) => string | undefined,
 ): SanctionCountDrift[] {
-  const declared = declaredTotals(sanctions);
+  // `totalsByKey` is the same sum the new-grant diff uses; the drift check
+  // and the approval report must agree on what a key is worth.
+  const declared = totalsByKey(sanctions);
   const drift: SanctionCountDrift[] = [];
   for (const [file, keys] of groupKeysByFile(declared.keys())) {
     const actual = actualCounts(file, readSource(file));
