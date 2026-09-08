@@ -9,11 +9,11 @@ tracks recurring mistakes.
 
 This repository is the **development home** for three artifacts:
 
-| Artifact                                    | What it is                                     | Status                         |
-| ------------------------------------------- | ---------------------------------------------- | ------------------------------ |
-| [`guardrails-core/`](./guardrails-core)     | npm package — all machinery, CLI `guardrails`  | **v0.1 release candidate**     |
-| [`guardrails-plugin/`](./guardrails-plugin) | thin Claude Code plugin (hooks + fixer agents) | **v0.1 release candidate**     |
-| per-repo footprint                          | policy + state a target repo checks in         | **`guardrails init` ships it** |
+| Artifact                                    | What it is                                     | Status                            |
+| ------------------------------------------- | ---------------------------------------------- | --------------------------------- |
+| [`guardrails-core/`](./guardrails-core)     | npm package — all machinery, CLI `guardrails`  | **released** — install URL below  |
+| [`guardrails-plugin/`](./guardrails-plugin) | thin Claude Code plugin (hooks + fixer agents) | **ships inside the core tarball** |
+| per-repo footprint                          | policy + state a target repo checks in         | **`guardrails init` ships it**    |
 
 See [`plan.md`](./plan.md) for the full design and phase breakdown, and
 [`docs/adoption.md`](./docs/adoption.md) for how to adopt guardrails in
