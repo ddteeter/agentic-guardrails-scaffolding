@@ -357,6 +357,43 @@ the Copilot channel built on it (the CLI's or the cloud agent's `agentStop`/
 `verify` step still run underneath, since neither depends on the disabled
 surface.
 
+## Fixing the seeded `knip.json` before you trust the first verify
+
+`init` seeds a deliberately conventional `knip.json` — `src/index.ts`,
+`src/main.ts`, `src/**`. It is a guess, and on a framework repo it is usually
+the wrong one. This is SEED-ONCE, so you edit it once and guardrails never
+touches it again.
+
+**Do this before reading the first `verify` output**, because a wrong `entry`
+set does not fail loudly — it reports your real code as dead and your real
+dependencies as unused, and both look like genuine findings.
+
+- **Point `entry` at your framework's actual entries.** TanStack Start is
+  `src/router.tsx` + `src/routes/**`; Next.js is `app/**`/`pages/**`; a Workers
+  service is whatever `wrangler.toml` names. Measured on a real adoption: with
+  the seeded guesses, `tailwindcss` was reported as an unused dependency because
+  it is referenced only from CSS via `@import`/`@plugin`, which no module graph
+  can see.
+- **Non-npm protocol imports need ignoring.** knip reads `cloudflare:workers` /
+  `cloudflare:test` as a package named `cloudflare`; a Workers repo wants
+  `"ignoreDependencies": ["cloudflare"]`. Any `<scheme>:<module>` import that is
+  not a real package has the same shape.
+
+### Contracts-first repos and knip
+
+A repo that writes contracts before their consumers exist fights knip on every
+commit: deliberately-unconsumed exports are `knip/exports`, and a dependency
+installed ahead of the code using it is `knip/dependencies`. Both findings are
+correct — the code really is unreferenced _right now_ — so the answer is
+sequencing, not suppression. Two patterns that work:
+
+- **Land a dependency in the same commit as its first use.** Installing ahead of
+  time is what creates the window where knip is right and you disagree.
+- **List genuinely public API files as knip `entry`**, with a note to tighten it
+  once consumers land. An `entry` is "this is a root of the graph", which is
+  exactly what a public contract is — unlike an `ignore`, which says "do not
+  look", and would keep the file unchecked forever.
+
 ## Known limits
 
 Things worth knowing before you hit them, rather than after:

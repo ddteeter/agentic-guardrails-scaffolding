@@ -9,6 +9,7 @@ import {
   newlyCrossed,
   recordViolations,
   resetAttempts,
+  violationDigest,
 } from '../src/state.js';
 import type { Violation } from '../src/violation.js';
 
@@ -133,5 +134,72 @@ describe('recurrence counter', () => {
     expect(
       graduationCandidates(counts, 3).toSorted((a, b) => a.localeCompare(b)),
     ).toEqual(['ts/any-cast', 'ts/no-stub']);
+  });
+});
+
+describe('violationDigest', () => {
+  it('is stable regardless of the order violations arrive in', () => {
+    // The digest answers one question -- "is this the same set of problems as
+    // last time?" -- and analyzer order is not part of that. eslint and tsc
+    // run serially, but a changed-file set can reorder their findings between
+    // attempts without anything actually being fixed.
+    const a = v({ ruleId: 'a/one', file: 'a.ts', line: 1 });
+    const b = v({ ruleId: 'a/one', file: 'b.ts', line: 9 });
+
+    expect(violationDigest([a, b])).toBe(violationDigest([b, a]));
+  });
+
+  it('changes when a violation is resolved', () => {
+    const a = v({ ruleId: 'a/one', file: 'a.ts', line: 1 });
+    const b = v({ ruleId: 'a/one', file: 'b.ts', line: 9 });
+
+    expect(violationDigest([a, b])).not.toBe(violationDigest([a]));
+  });
+
+  it('changes when a violation moves to another line', () => {
+    // A fixer that edits above a violation shifts its line. That IS progress
+    // worth distinguishing from "nothing happened".
+    expect(violationDigest([v({ ruleId: 'a/one', line: 1 })])).not.toBe(
+      violationDigest([v({ ruleId: 'a/one', line: 2 })]),
+    );
+  });
+
+  it('changes when the rule changes at the same location', () => {
+    expect(violationDigest([v({ ruleId: 'a/one' })])).not.toBe(
+      violationDigest([v({ ruleId: 'a/two' })]),
+    );
+  });
+
+  it('distinguishes two findings of one rule from one', () => {
+    // Duplicates must not collapse: fixing one of three identical findings is
+    // progress, and a set-based digest would report it as no change.
+    const one = v({ ruleId: 'a/one', file: 'a.ts', line: 3 });
+    expect(violationDigest([one, one])).not.toBe(violationDigest([one]));
+  });
+
+  it('is empty for no violations', () => {
+    expect(violationDigest([])).toBe('');
+  });
+});
+
+describe('violationDigest: separator safety', () => {
+  it('does not confuse two violations whose fields contain the separators', () => {
+    // Raised in review of #47. A hand-rolled `file:line:ruleId` joined on `|`
+    // collides the moment a field carries one of those characters. No adapter
+    // emits such a path or rule-id today, but "unambiguous by construction" is
+    // a stronger property than "not currently exploitable", and JSON quoting
+    // costs nothing for a value only ever compared with itself.
+    const colonInFile = v({ ruleId: 'a/one', file: 'weird:1:a/two', line: 3 });
+    const plainFile = v({ ruleId: 'a/one', file: 'weird', line: 1 });
+
+    expect(violationDigest([colonInFile])).not.toBe(
+      violationDigest([plainFile]),
+    );
+  });
+
+  it('distinguishes a missing line from a line that is present', () => {
+    expect(violationDigest([v({ ruleId: 'a/one', file: 'a.ts' })])).not.toBe(
+      violationDigest([v({ ruleId: 'a/one', file: 'a.ts', line: 1 })]),
+    );
   });
 });
