@@ -143,10 +143,25 @@ const SIGNATURES: readonly Signature[] = [
   // NO lookbehind here, deliberately, and it is not an oversight: Playwright's
   // focused test IS a member expression (`test.describe.only(...)`). The same
   // guard that makes HALF 1 safe would stop detecting it.
+  //
+  // One optional GROUPING MODIFIER may sit between the identifier and the
+  // `.skip`/`.only` (issue #46). Playwright spells a focused serial group
+  // `test.describe.serial.only(...)`; vitest has `it.concurrent.skip` and
+  // `describe.sequential.only`; `it.failing.only` exists too. Requiring the
+  // identifier IMMEDIATELY before `.skip`/`.only` missed every one of them --
+  // an UNDER-match, which fails in the unsafe direction: a genuinely focused
+  // test landed unflagged.
+  //
+  // The modifier list is CLOSED rather than `\w+`, and that is the whole
+  // safety of this widening. `only` is an ordinary identifier, so an open
+  // segment would match `config.retry.only` and reintroduce #43's failure mode
+  // one level up. Adding a runner's modifier here is a deliberate act with a
+  // test, not something the pattern does on its own.
   {
     kind: 'skipped-test',
     class: 'code',
-    pattern: /\b(?:it|test|describe|context|suite)\.(?:skip|only)\b/,
+    pattern:
+      /\b(?:it|test|describe|context|suite)(?:\.(?:serial|parallel|concurrent|sequential|failing))?\.(?:skip|only)\b/,
   },
   // stryker's mutation-suppression directives. `directive` class, so a mention
   // in prose ("we removed the Stryker disable comment") doesn't flag — only a
