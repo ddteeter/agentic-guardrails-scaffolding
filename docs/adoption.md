@@ -527,7 +527,12 @@ Things worth knowing before you hit them, rather than after:
   `stryker.conf.mjs` or under a `package.json` key gets no negations passed
   through. Pair the exclusion with an architecture test that keeps those files
   trivial — imports, wiring and delegation only — or the exclusion becomes a
-  place for logic to hide.
+  place for logic to hide. One shape will not carry: a negation with a comma
+  inside a brace expansion (`"!src/**/{foo,bar}.ts"`). Stryker's own CLI splits
+  `--mutate` on commas with no brace awareness, so that pattern cannot survive
+  the hand-off however it is encoded; write the two negations out separately.
+  Guardrails drops the fragment rather than passing its unnegated half through,
+  so the cost is a negation that does not apply, never a widened mutation set.
 - **`.claude/settings.json` is reformatted on every merge**, unconditionally
   (see the SHARED-file note above). If your formatter disagrees with the
   merger's output, expect a reformat/re-reformat cycle on every `init --apply`.

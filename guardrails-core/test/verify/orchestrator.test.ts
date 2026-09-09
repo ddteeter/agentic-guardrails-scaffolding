@@ -963,6 +963,21 @@ describe('strykerMutateNegations', () => {
     ).toEqual([]);
   });
 
+  it('never lets a brace-expansion fragment escape as a positive pattern', () => {
+    // Stryker's own CLI splits `--mutate` with `createSplitter(',')`, so a
+    // comma inside a brace expansion is fragmented by stryker whether or not
+    // it is split here — no encoding on this side survives. What must not
+    // happen is the trailing fragment reaching the CLI without its `!`, where
+    // it would read as a POSITIVE pattern and widen the mutation set on the
+    // strength of a glob nobody wrote. The negated half (matching nothing) is
+    // kept; the bare half is dropped.
+    expect(
+      strykerMutateNegations(
+        JSON.stringify({ mutate: ['src/**', '!src/**/{foo,bar}.ts'] }),
+      ),
+    ).toEqual(['!src/**/{foo']);
+  });
+
   it('answers empty for a payload that is not a JSON object', () => {
     expect(strykerMutateNegations('["!src/a.ts"]')).toEqual([]);
     expect(strykerMutateNegations('null')).toEqual([]);

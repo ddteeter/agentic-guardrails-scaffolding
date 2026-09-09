@@ -839,6 +839,18 @@ const STRYKER_CONFIG_FILES = ['stryker.conf.json', '.stryker.conf.json'];
  * accepts both, so each entry is split on `,` before the negations are picked
  * out. Anything unparseable, or of the wrong shape, answers `[]`: a config
  * this cannot read must degrade to the previous behaviour, never fail the gate.
+ *
+ * A glob with a comma INSIDE a brace expansion (`"!src/**\/{foo,bar}.ts"`) is
+ * the one shape this cannot carry through, and deliberately so. Stryker's own
+ * CLI splits `--mutate` with `createSplitter(',')` — no brace awareness — so
+ * such a pattern is fragmented by stryker whether or not it is split here, and
+ * no encoding on this side survives. What matters is which fragment escapes:
+ * the `!` filter below keeps only the negated half (`!src/**\/{foo`, matching
+ * nothing), and DROPS the trailing `bar}.ts` half, which carries no `!` and
+ * would otherwise reach the CLI as a POSITIVE pattern — widening the mutation
+ * set on the strength of a glob nobody wrote. The failure mode is therefore a
+ * negation that silently does not apply (today's behaviour for that file), and
+ * never a scope this process invented. Pinned by a test.
  */
 export function strykerMutateNegations(configJson: string): string[] {
   const { parsed } = parseJsonText(configJson);
