@@ -46,7 +46,7 @@ import { readFile as fsReadFile, rm as fsRm } from 'node:fs/promises';
 import path from 'node:path';
 
 import type { Exec, ExecResult } from '../exec.js';
-import { readJsonFile } from '../json-file.js';
+import { parseJsonText, readJsonFile } from '../json-file.js';
 import type { Violation } from '../violation.js';
 import { loadWorkspaceResolver, withPackages } from '../workspaces.js';
 import {
@@ -70,6 +70,7 @@ import {
 } from './git.js';
 import { parseKnipJson } from './knip-adapter.js';
 import { parseNpmLsJson } from './npm-peers-adapter.js';
+import { isRecord } from './report-shape.js';
 import {
   isStrykerReportJson,
   parseStrykerJson,
@@ -726,7 +727,9 @@ function strykerReportMissingViolation(reportPath: string): Violation {
 /** stryker is diff-scoped (changed production files) and CI/commit-only
  *  (mutation testing reruns the suite per mutant). Consumer-generic: no
  *  `--configFile` (stryker auto-detects the consumer's stryker.conf.json), and
- *  the `--mutate` list is the consumer's own changed files. The report is read
+ *  the `--mutate` list is the consumer's own changed files, plus whatever `!`
+ *  negations that same config declares (see `strykerMutateNegations` — the
+ *  override would otherwise discard them). The report is read
  *  from stryker's own default, gitignored, cross-run-persistent location
  *  (`STRYKER_REPORT_PATH`) — there is no flag to relocate it per run (see that
  *  constant's comment) — so stale output from a PRIOR run could otherwise be
@@ -800,6 +803,87 @@ async function excludeExecutableEntries(
   return files.filter((_, index) => verdicts[index] === true);
 }
 
+/**
+ * Stryker's JSON config filenames, in the order stryker itself resolves them.
+ *
+ * Only the JSON forms. Stryker also accepts `stryker.conf.mjs`/`.js`/`.cjs`
+ * and a `stryker` key in `package.json`, and reading those would mean either
+ * importing a consumer's module at gate time or guessing at its exports —
+ * neither of which this process should do. A repo whose config is in one of
+ * those forms simply gets today's behaviour, which is the degradation this
+ * whole path is built to fall back to.
+ */
+const STRYKER_CONFIG_FILES = ['stryker.conf.json', '.stryker.conf.json'];
+
+/**
+ * The `!` exclusions a project declared in its own stryker config.
+ *
+ * `--mutate` REPLACES the config's `mutate` array rather than intersecting
+ * with it — stryker's documented behaviour, and the right one for a scope
+ * override, but it means the analyzer's changed-file list silently discards
+ * every exclusion the project made. Reported from a real adoption (#56): a
+ * TanStack Start route file cannot be imported by ANY test (its server entry
+ * resolves only inside the framework's own runtime), so it is negated in
+ * `stryker.conf.json` — and the commit gate mutated it anyway and raised 40
+ * `stryker/no-coverage` violations that no test could fix and no grant in
+ * `guardrails.config.json` could name. The only escape was turning the
+ * analyzer off everywhere.
+ *
+ * Stryker honours `!` entries mixed in with explicit paths, so carrying these
+ * through onto the CLI restores the project's single source of truth without
+ * adding a configuration surface of our own: the file the project excluded
+ * from the ratchet is the file the gate excludes, for the same reason.
+ *
+ * Entries may be a bare glob (`"src/lib/**"`) or a comma-joined
+ * glob-plus-negations string (`"src/a/**,!src/a/functions.ts"`) — stryker
+ * accepts both, so each entry is split on `,` before the negations are picked
+ * out. Anything unparseable, or of the wrong shape, answers `[]`: a config
+ * this cannot read must degrade to the previous behaviour, never fail the gate.
+ */
+export function strykerMutateNegations(configJson: string): string[] {
+  const { parsed } = parseJsonText(configJson);
+  if (!isRecord(parsed)) {
+    return [];
+  }
+  const mutate = parsed.mutate;
+  if (!Array.isArray(mutate)) {
+    return [];
+  }
+  return mutate
+    .filter((entry): entry is string => typeof entry === 'string')
+    .flatMap((entry) => entry.split(','))
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.startsWith('!'));
+}
+
+/**
+ * `strykerMutateNegations` against whichever JSON config the repo actually has.
+ *
+ * The candidates are tried in stryker's own resolution order and the FIRST that
+ * exists wins — the same file stryker will read, so the two never disagree
+ * about which config is in force. A read that fails is not distinguished from a
+ * config without negations: both mean "nothing to exclude".
+ */
+async function configuredMutateNegations(
+  repoRoot: string,
+  readFile: (filePath: string) => Promise<string>,
+): Promise<string[]> {
+  for (const fileName of STRYKER_CONFIG_FILES) {
+    let contents: string;
+    try {
+      // Sequential on purpose: the FIRST config that exists is the one stryker
+      // itself will read, and reading both concurrently would mean deciding
+      // between two present files after the fact. Two candidates, one of which
+      // normally hits on the first try.
+      contents = await readFile(path.join(repoRoot, fileName));
+    } catch {
+      continue;
+    }
+    return strykerMutateNegations(contents);
+  }
+  return [];
+}
+
 async function runStryker(
   options: VerifyOptions,
   resolveBin: (tool: string) => string,
@@ -820,6 +904,7 @@ async function runStryker(
   if (production.length === 0) {
     return [];
   }
+  const negations = await configuredMutateNegations(repoRoot, readFile);
   const removeFile =
     options.removeFile ?? ((filePath) => fsRm(filePath, { force: true }));
   const reportPath = STRYKER_REPORT_PATH;
@@ -835,7 +920,7 @@ async function runStryker(
       '--reporters',
       'json',
       '--mutate',
-      production.join(','),
+      [...production, ...negations].join(','),
     ],
     { cwd: repoRoot },
   );
