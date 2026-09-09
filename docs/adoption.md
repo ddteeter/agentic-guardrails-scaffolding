@@ -513,6 +513,26 @@ Things worth knowing before you hit them, rather than after:
   is read by a tool at startup, never by a test — so including them handed the
   fixer violations no honest fix could clear. eslint and tsc still check these
   files; only mutation skips them.
+- **A file class no test can import belongs in `stryker.conf.json`'s `mutate`,
+  negated.** Some frameworks own files outright: a TanStack Start route or
+  server function resolves only inside the framework's own runtime, so no unit
+  test can import it and every mutant in it comes back `NoCoverage` — work no
+  fixer can honestly do. Exclude it once, with a `!` entry in your config's
+  `mutate` array (`"src/routes/**,!src/routes/api/**"`, or a separate
+  `"!src/modules/*/functions.ts"` entry — both shapes work). Guardrails reads
+  those negations and passes them through on every run, so the file is out of
+  scope for the commit gate for the same reason it is out of scope for your
+  ratchet, and you keep the analyzer everywhere else. Only the JSON config
+  forms (`stryker.conf.json`, `.stryker.conf.json`) are read; a config in
+  `stryker.conf.mjs` or under a `package.json` key gets no negations passed
+  through. Pair the exclusion with an architecture test that keeps those files
+  trivial — imports, wiring and delegation only — or the exclusion becomes a
+  place for logic to hide. One shape will not carry: a negation with a comma
+  inside a brace expansion (`"!src/**/{foo,bar}.ts"`). Stryker's own CLI splits
+  `--mutate` on commas with no brace awareness, so that pattern cannot survive
+  the hand-off however it is encoded; write the two negations out separately.
+  Guardrails drops the fragment rather than passing its unnegated half through,
+  so the cost is a negation that does not apply, never a widened mutation set.
 - **`.claude/settings.json` is reformatted on every merge**, unconditionally
   (see the SHARED-file note above). If your formatter disagrees with the
   merger's output, expect a reformat/re-reformat cycle on every `init --apply`.

@@ -7,7 +7,11 @@ import { describe, expect, it } from 'vitest';
 
 import type { Exec, ExecResult } from '../../src/exec.js';
 import type { Violation } from '../../src/violation.js';
-import { ANALYZER_TOOLS, runVerify } from '../../src/verify/index.js';
+import {
+  ANALYZER_TOOLS,
+  runVerify,
+  strykerMutateNegations,
+} from '../../src/verify/index.js';
 
 const eslintJson = JSON.stringify([
   {
@@ -795,6 +799,189 @@ describe('runStryker', () => {
       readFile: () => Promise.resolve(emptyStrykerReport),
     });
     expect(calls.some((call) => call.command === 'stryker')).toBe(false);
+  });
+});
+
+/**
+ * The project's own mutation exclusions, honoured by the commit gate.
+ *
+ * `--mutate` REPLACES `stryker.conf.json`'s `mutate` array rather than
+ * intersecting with it — stryker's documented behaviour, and the right one for
+ * a scope override. The consequence, reported from a real adoption (#56), is
+ * that a file the project has deliberately excluded from mutation testing
+ * still gets mutated the moment it appears in a diff, producing
+ * `stryker/no-coverage` violations no test can fix and no grant can name. A
+ * TanStack Start route that cannot be imported by any test at all is the
+ * concrete case; any framework with virtual server entries guarantees one.
+ *
+ * The fix carries the project's `!` negations through onto the CLI, which
+ * stryker honours when they are mixed with explicit paths. No new
+ * configuration surface: the exclusion the project already declared, in the
+ * one place it declares it, is the exclusion the gate applies.
+ */
+/**
+ * Runs the commit rung with one stryker config on disk, and hands back what
+ * stryker was actually invoked with.
+ *
+ * `config: undefined` is "no config file at all" — the readFile seam rejects,
+ * exactly as `fs.readFile` does for ENOENT.
+ */
+async function strykerMutateArgument(
+  config: string | undefined,
+  changed: string,
+  configFileName = 'stryker.conf.json',
+): Promise<string> {
+  const { exec, calls } = fakeExec({
+    'git diff --name-only --diff-filter=ACM main': {
+      stdout: changed,
+      stderr: '',
+      code: 0,
+    },
+    'git ls-files --others --exclude-standard': {
+      stdout: '',
+      stderr: '',
+      code: 0,
+    },
+  });
+  await runVerify({
+    repoRoot: '/repo',
+    baseBranch: 'main',
+    exec,
+    profile: 'commit',
+    resolveBin: (tool) => tool,
+    readFile: (filePath: string) => {
+      const name = path.basename(filePath);
+      if (!name.endsWith('stryker.conf.json')) {
+        return Promise.resolve(emptyStrykerReport);
+      }
+      return config !== undefined && name === configFileName
+        ? Promise.resolve(config)
+        : Promise.reject(new Error('ENOENT'));
+    },
+  });
+  const args = calls.find((call) => call.command === 'stryker')?.args ?? [];
+  return args[args.indexOf('--mutate') + 1] ?? '';
+}
+
+describe('stryker honours the project’s own mutate negations', () => {
+  it('passes the config’s negations through alongside the changed files', async () => {
+    const mutate = await strykerMutateArgument(
+      JSON.stringify({
+        mutate: ['src/**/*.ts', '!src/routes/new.tsx'],
+      }),
+      'src/routes/new.tsx\nsrc/lib/keep.ts\n',
+    );
+    expect(mutate.split(',')).toEqual([
+      'src/routes/new.tsx',
+      'src/lib/keep.ts',
+      '!src/routes/new.tsx',
+    ]);
+  });
+
+  it('splits a comma-joined mutate entry, which is the shape stryker allows', async () => {
+    const mutate = await strykerMutateArgument(
+      JSON.stringify({
+        mutate: ['src/**/*.ts,!src/functions.ts,!src/index.ts'],
+      }),
+      'src/functions.ts\n',
+    );
+    expect(mutate.split(',')).toEqual([
+      'src/functions.ts',
+      '!src/functions.ts',
+      '!src/index.ts',
+    ]);
+  });
+
+  it('reads .stryker.conf.json too, which stryker also resolves', async () => {
+    const mutate = await strykerMutateArgument(
+      JSON.stringify({ mutate: ['src/**/*.ts', '!src/functions.ts'] }),
+      'src/functions.ts\n',
+      '.stryker.conf.json',
+    );
+    expect(mutate).toContain('!src/functions.ts');
+  });
+
+  it('mutates a changed file the config does not negate', async () => {
+    const mutate = await strykerMutateArgument(
+      JSON.stringify({ mutate: ['src/**/*.ts', '!src/routes/new.tsx'] }),
+      'src/lib/keep.ts\n',
+    );
+    expect(mutate.split(',')).toEqual([
+      'src/lib/keep.ts',
+      '!src/routes/new.tsx',
+    ]);
+  });
+
+  it('degrades to today’s behaviour when there is no stryker config', async () => {
+    const mutate = await strykerMutateArgument(undefined, 'src/lib/keep.ts\n');
+    expect(mutate).toBe('src/lib/keep.ts');
+  });
+
+  it('degrades to today’s behaviour when the config does not parse', async () => {
+    const mutate = await strykerMutateArgument(
+      '{ not json',
+      'src/lib/keep.ts\n',
+    );
+    expect(mutate).toBe('src/lib/keep.ts');
+  });
+});
+
+/**
+ * The negation reader, exercised directly.
+ *
+ * Called as a function rather than only through `runVerify`, so each rejection
+ * clause is separately observable — the same reason `report-shape.ts` exists.
+ */
+describe('strykerMutateNegations', () => {
+  it('keeps only the negated entries, trimmed', () => {
+    expect(
+      strykerMutateNegations(
+        JSON.stringify({
+          mutate: ['src/**/*.ts', ' !src/a.ts ', 'src/b.ts,!src/c.ts'],
+        }),
+      ),
+    ).toEqual(['!src/a.ts', '!src/c.ts']);
+  });
+
+  it('ignores a non-array mutate', () => {
+    expect(
+      strykerMutateNegations(JSON.stringify({ mutate: '!src/a.ts' })),
+    ).toEqual([]);
+  });
+
+  it('ignores non-string entries in mutate', () => {
+    expect(
+      strykerMutateNegations(
+        JSON.stringify({ mutate: [42, null, '!src/a.ts'] }),
+      ),
+    ).toEqual(['!src/a.ts']);
+  });
+
+  it('answers empty for a config with no mutate key', () => {
+    expect(
+      strykerMutateNegations(JSON.stringify({ testRunner: 'vitest' })),
+    ).toEqual([]);
+  });
+
+  it('never lets a brace-expansion fragment escape as a positive pattern', () => {
+    // Stryker's own CLI splits `--mutate` with `createSplitter(',')`, so a
+    // comma inside a brace expansion is fragmented by stryker whether or not
+    // it is split here — no encoding on this side survives. What must not
+    // happen is the trailing fragment reaching the CLI without its `!`, where
+    // it would read as a POSITIVE pattern and widen the mutation set on the
+    // strength of a glob nobody wrote. The negated half (matching nothing) is
+    // kept; the bare half is dropped.
+    expect(
+      strykerMutateNegations(
+        JSON.stringify({ mutate: ['src/**', '!src/**/{foo,bar}.ts'] }),
+      ),
+    ).toEqual(['!src/**/{foo']);
+  });
+
+  it('answers empty for a payload that is not a JSON object', () => {
+    expect(strykerMutateNegations('["!src/a.ts"]')).toEqual([]);
+    expect(strykerMutateNegations('null')).toEqual([]);
+    expect(strykerMutateNegations('{ not json')).toEqual([]);
   });
 });
 
