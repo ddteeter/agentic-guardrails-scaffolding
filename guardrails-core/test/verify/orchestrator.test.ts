@@ -10,6 +10,8 @@ import type { Violation } from '../../src/violation.js';
 import {
   ANALYZER_TOOLS,
   runVerify,
+  applyMutateNegations,
+  canReportPerTestCoverage,
   strykerMutateNegations,
 } from '../../src/verify/index.js';
 
@@ -893,12 +895,23 @@ describe('stryker honours the project’s own mutate negations', () => {
   });
 
   it('reads .stryker.conf.json too, which stryker also resolves', async () => {
+    // The negated path is deliberately DIFFERENT from the changed file
+    // (`src/functions.ts`), so the mutate argument's only possible source of
+    // a `!` entry is the config actually being read — an assertion against
+    // the SAME name would still pass if the negation were silently dropped,
+    // since the changed file's own bare entry survives either way. This also
+    // pins the exact resulting `--mutate` argument (not merely a substring),
+    // which is the only way to fail when the SECOND candidate's config is
+    // never reached: an empty `catch` after the first candidate's read
+    // rejects returns `undefined` immediately (never trying `.stryker.conf.
+    // json` at all), so `strykerConfig` degrades to `''`, negations become
+    // `[]`, and the argument would be `src/functions.ts` alone.
     const mutate = await strykerMutateArgument(
-      JSON.stringify({ mutate: ['src/**/*.ts', '!src/functions.ts'] }),
+      JSON.stringify({ mutate: ['src/**/*.ts', '!src/other.ts'] }),
       'src/functions.ts\n',
       '.stryker.conf.json',
     );
-    expect(mutate).toContain('!src/functions.ts');
+    expect(mutate.split(',')).toEqual(['src/functions.ts', '!src/other.ts']);
   });
 
   it('mutates a changed file the config does not negate', async () => {
@@ -932,6 +945,170 @@ describe('stryker honours the project’s own mutate negations', () => {
  * Called as a function rather than only through `runVerify`, so each rejection
  * clause is separately observable — the same reason `report-shape.ts` exists.
  */
+/**
+ * The negation filter that decides which changed files an incremental cache is
+ * allowed to hold.
+ *
+ * Its ONE safe failure direction is over-matching: a pattern read as excluding
+ * more than it does shrinks the allowed set, which rejects the cache and takes
+ * a cold run. Under-matching would let a cache holding a file the project
+ * negated survive, and stryker folds such a cache's verdicts into the report —
+ * raising violations on a file no test can fix and no grant can name (#56).
+ * Every case below pins one of those two directions.
+ */
+/**
+ * Whether the run ABOUT TO START will be able to tell a stale verdict from a
+ * live one.
+ *
+ * `canReuseIncrementalCache` reads the cache and answers "could this file be
+ * reused soundly". That is the wrong side of the question on its own:
+ * `mutantCanBeReused` reads `testCoverage.hasCoverage`, and `testCoverage` is
+ * built from THIS run's dry run, not from the cache. A repo that switches from
+ * the vitest runner to `command` therefore keeps a coverage-rich cache and then
+ * reuses every stored verdict unconditionally, survivors included — one bad
+ * gate run, landing exactly when someone is changing test infrastructure.
+ *
+ * The runner is the whole discriminator, measured rather than read off
+ * stryker's source: with the vitest runner the survivor is re-run whatever
+ * `coverageAnalysis` says, and only `command` blanket-reuses. The live proof of
+ * both ends is in `test/drift/stryker-incremental.test.ts`.
+ */
+describe('canReportPerTestCoverage', () => {
+  it('accepts a real runner', () => {
+    expect(
+      canReportPerTestCoverage(JSON.stringify({ testRunner: 'vitest' })),
+    ).toBe(true);
+  });
+
+  it('accepts a real runner whatever coverageAnalysis says', () => {
+    // Measured: the vitest runner writes `coveredBy` under `off` and `all`
+    // alike, and the strengthened test still overturns the cached survivor.
+    // Refusing these would cost reuse for a hazard that does not occur.
+    for (const coverageAnalysis of ['perTest', 'all', 'off']) {
+      expect(
+        canReportPerTestCoverage(
+          JSON.stringify({ testRunner: 'vitest', coverageAnalysis }),
+        ),
+        coverageAnalysis,
+      ).toBe(true);
+    }
+  });
+
+  it('rejects the command runner, the one measured to blanket-reuse', () => {
+    // 14 of 14 mutants reused, survivor intact through a test that kills it.
+    // The runner `STRYKER_SEED` ships.
+    expect(
+      canReportPerTestCoverage(JSON.stringify({ testRunner: 'command' })),
+    ).toBe(false);
+  });
+
+  it('rejects a config that names no runner, since stryker defaults to command', () => {
+    expect(
+      canReportPerTestCoverage(JSON.stringify({ reporters: ['json'] })),
+    ).toBe(false);
+  });
+
+  it('rejects a wrongly-typed runner', () => {
+    expect(canReportPerTestCoverage(JSON.stringify({ testRunner: 5 }))).toBe(
+      false,
+    );
+    expect(canReportPerTestCoverage(JSON.stringify({ testRunner: null }))).toBe(
+      false,
+    );
+  });
+
+  it('rejects a config it cannot parse, including the absent one', () => {
+    // A repo whose config is `stryker.conf.mjs` reads as absent here, and takes
+    // a cold run rather than a reuse this cannot justify.
+    expect(canReportPerTestCoverage('')).toBe(false);
+    expect(canReportPerTestCoverage('not json')).toBe(false);
+    expect(canReportPerTestCoverage('"a string"')).toBe(false);
+  });
+});
+
+describe('applyMutateNegations', () => {
+  it('keeps every file when the config negates nothing', () => {
+    expect(applyMutateNegations(['src/a.ts', 'src/b.ts'], [])).toEqual([
+      'src/a.ts',
+      'src/b.ts',
+    ]);
+  });
+
+  it('drops a file a literal negation names', () => {
+    expect(
+      applyMutateNegations(['src/a.ts', 'src/b.ts'], ['!src/a.ts']),
+    ).toEqual(['src/b.ts']);
+  });
+
+  it('matches `*` within one path segment only', () => {
+    expect(
+      applyMutateNegations(['src/a.ts', 'src/nested/b.ts'], ['!src/*.ts']),
+    ).toEqual(['src/nested/b.ts']);
+  });
+
+  it('matches `**` across segments, including none at all', () => {
+    // minimatch's `src/**/*.ts` covers `src/a.ts` as well as `src/deep/a.ts`.
+    // Reading `**` as "at least one segment" would leave `src/a.ts` in the
+    // allowed set and let a cache holding it through.
+    expect(
+      applyMutateNegations(
+        ['src/a.ts', 'src/deep/a.ts', 'other/a.ts'],
+        ['!src/**/*.ts'],
+      ),
+    ).toEqual(['other/a.ts']);
+  });
+
+  it('matches a trailing `**` against everything beneath it', () => {
+    expect(
+      applyMutateNegations(['src/lib/a.ts', 'src/app.ts'], ['!src/lib/**']),
+    ).toEqual(['src/app.ts']);
+  });
+
+  it('drops every file when a negation uses syntax it cannot read', () => {
+    // Braces, character classes and extglobs are stryker's to resolve, not
+    // ours. Answering "excludes everything" costs a cold mutation run;
+    // answering "excludes nothing" costs a violation no fixer can resolve.
+    expect(
+      applyMutateNegations(['src/a.ts', 'src/b.ts'], ['!src/{a,b}.ts']),
+    ).toEqual([]);
+    expect(applyMutateNegations(['src/a.ts'], ['!src/?.ts'])).toEqual([]);
+  });
+
+  it('drops every file when a negation strips to an empty body (a bare "!")', () => {
+    // Pins the LEFT half of `body.length === 0 || UNMODELLED_GLOB_SYNTAX
+    // .test(body)`, which the unmodelled-syntax cases above never exercise —
+    // "!" alone has no brace, bracket, or other unmodelled character, so it
+    // reaches the guard through `body.length === 0` and nothing else. Without
+    // this, a mutant that forces the whole `if` to `false` survives: with the
+    // guard skipped, an empty body still builds a regex (`^$`), which matches
+    // no real path, so every file is wrongly kept instead of excluded.
+    expect(applyMutateNegations(['src/a.ts', 'src/b.ts'], ['!'])).toEqual([]);
+  });
+
+  it('drops every file when a negation carries a mutation range', () => {
+    // `!src/a.ts:1-10` negates LINES, so the file is still mutated and a
+    // cached verdict for it may be partial. Refusing the cache is the honest
+    // answer to a scope this cannot model.
+    expect(applyMutateNegations(['src/a.ts'], ['!src/a.ts:1-10'])).toEqual([]);
+  });
+
+  it('applies every negation, not just the first', () => {
+    expect(
+      applyMutateNegations(
+        ['src/a.ts', 'src/b.ts', 'src/c.ts'],
+        ['!src/a.ts', '!src/c.ts'],
+      ),
+    ).toEqual(['src/b.ts']);
+  });
+
+  it('treats a dot in a pattern as a literal, not as any character', () => {
+    // `src/a.ts` must not be excluded by a negation for `src/axts`.
+    expect(applyMutateNegations(['src/a.ts'], ['!src/axts'])).toEqual([
+      'src/a.ts',
+    ]);
+  });
+});
+
 describe('strykerMutateNegations', () => {
   it('keeps only the negated entries, trimmed', () => {
     expect(
@@ -2370,12 +2547,16 @@ describe('stryker fails open twice (defect 3)', () => {
       baseBranch: 'main',
       exec,
       profile: 'commit',
-      readFile: (filePath) =>
-        Promise.resolve(
+      readFile: (filePath) => {
+        if (filePath.includes('stryker.conf.json')) {
+          return Promise.resolve(JSON.stringify({ testRunner: 'vitest' }));
+        }
+        return Promise.resolve(
           filePath.includes('stryker-incremental')
             ? reusableCache
             : JSON.stringify({ files: {} }),
-        ),
+        );
+      },
       removeFile: (filePath) => {
         removed.push(filePath);
         return Promise.resolve();
@@ -2439,6 +2620,77 @@ describe('stryker fails open twice (defect 3)', () => {
         return Promise.resolve();
       },
     });
+    expect(removed.some((file) => file.includes('stryker-incremental'))).toBe(
+      true,
+    );
+  });
+
+  it('deletes a reusable-looking cache when this run cannot report per-test coverage', async () => {
+    // The cache is rich in `coveredBy` — it was written by a run that HAD
+    // coverage. What decides reuse is whether THIS run will have it, and a
+    // config that names the `command` runner says it will not.
+    const removed: string[] = [];
+    const { exec } = execWithStryker({ stdout: '', stderr: '', code: 0 });
+    await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      profile: 'commit',
+      readFile: (filePath) => {
+        if (filePath.includes('stryker.conf.json')) {
+          return Promise.resolve(JSON.stringify({ testRunner: 'command' }));
+        }
+        return Promise.resolve(
+          filePath.includes('stryker-incremental')
+            ? reusableCache
+            : JSON.stringify({ files: {} }),
+        );
+      },
+      removeFile: (filePath) => {
+        removed.push(filePath);
+        return Promise.resolve();
+      },
+    });
+    expect(removed.some((file) => file.includes('stryker-incremental'))).toBe(
+      true,
+    );
+  });
+
+  it('deletes an incremental cache holding a file the project negates', async () => {
+    // The gate never mutates a negated file, but a hand-run
+    // `npx stryker run --mutate <that file>` overrides the config and writes a
+    // cache for it. Scoping the check to the raw changed set would let that
+    // cache through, and stryker folds its verdicts into the report — #56's
+    // failure exactly: violations on a file no test can fix.
+    const removed: string[] = [];
+    const { exec } = execWithStryker({ stdout: '', stderr: '', code: 0 });
+    await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      profile: 'commit',
+      readFile: (filePath) => {
+        if (filePath.includes('stryker.conf.json')) {
+          return Promise.resolve(
+            JSON.stringify({
+              testRunner: 'vitest',
+              mutate: ['guardrails-core/src/**', '!guardrails-core/src/foo.ts'],
+            }),
+          );
+        }
+        return Promise.resolve(
+          filePath.includes('stryker-incremental')
+            ? reusableCache
+            : JSON.stringify({ files: {} }),
+        );
+      },
+      removeFile: (filePath) => {
+        removed.push(filePath);
+        return Promise.resolve();
+      },
+    });
+    // `reusableCache` holds guardrails-core/src/foo.ts, which is the changed
+    // file AND the negated one, so nothing is left for the cache to be about.
     expect(removed.some((file) => file.includes('stryker-incremental'))).toBe(
       true,
     );

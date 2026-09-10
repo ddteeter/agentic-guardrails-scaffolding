@@ -313,12 +313,25 @@ export function unrunSurvivedMutants(
  *    equality: a run whose scope has GROWN reuses what it can and mutates the
  *    rest cold, which is the whole point.
  * 2. **Per-test coverage.** At least one mutant must name a covering test.
- *    When the runner reports no coverage, stryker's `mutantCanBeReused` returns
- *    `true` unconditionally — a `Survived` verdict is then reused no matter how
- *    the tests changed, which would make the fixer's new test unable to ever
- *    clear the mutant and the loop unable to go green. That is not a corner
- *    case: stryker's own initializer writes `coverageAnalysis: 'off'` for the
- *    `command` runner, which is the runner `STRYKER_SEED` ships.
+ *    A cache with no `coveredBy` anywhere was written by a runner that reports
+ *    no per-test data, and stryker's `mutantCanBeReused` then returns `true`
+ *    before examining anything — a `Survived` verdict is reused however the
+ *    tests changed, so the fixer's new test can never clear the mutant and the
+ *    loop can never go green. Measured against stryker 10: under the `command`
+ *    runner (the one `STRYKER_SEED` ships) a strengthened test left the
+ *    survivor standing, 14 of 14 mutants reused.
+ *
+ * Rule 2 is only HALF of the coverage question, and both halves are needed.
+ * It looks at the cache, so it establishes only that the run which WROTE the
+ * file had per-test data; `hasCoverage` is read from the run about to consume
+ * it. The other half — will THIS run be able to tell — is
+ * `canReportPerTestCoverage`, which decides from the config this run will use
+ * and which the caller checks first. A repo that switches runners fails only
+ * the second; a repo that has always been coverage-blind fails only the first.
+ *
+ * Neither rule keys on `coverageAnalysis`, which was measured not to
+ * discriminate: the vitest runner writes `coveredBy` and re-runs the survivor
+ * under `off` and `all` just as under `perTest`.
  *
  * A cache that is missing, unparseable, or not a report reads as `''` and is
  * rejected by the same path — fail toward the cold run, as everywhere else in

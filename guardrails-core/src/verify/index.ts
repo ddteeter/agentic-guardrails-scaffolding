@@ -873,17 +873,158 @@ export function strykerMutateNegations(configJson: string): string[] {
 }
 
 /**
- * `strykerMutateNegations` against whichever JSON config the repo actually has.
+ * Glob syntax this cannot model, so a negation containing any of it is read as
+ * excluding EVERYTHING. Braces, character classes, extglobs, `?`, and the `:`
+ * of a mutation range (`src/a.ts:1-10`, which negates lines rather than the
+ * file) are stryker's to resolve.
+ */
+const UNMODELLED_GLOB_SYNTAX = /[{}[\]()?+:!@]/;
+
+/**
+ * Escapes everything regex-special except `*`, which the caller expands.
+ */
+function escapeGlobLiteral(text: string): string {
+  return text.replaceAll(/[.+?^${}()|[\]\\]/g, String.raw`\$&`);
+}
+
+/** `*` spans one path segment. `**` is handled by the caller, which alone
+ *  knows whether it is the last segment. */
+function globSegmentToPattern(segment: string): string {
+  return segment
+    .split('*')
+    .map((part) => escapeGlobLiteral(part))
+    .join('[^/]*');
+}
+
+/**
+ * A negation entry as a predicate over repo-relative file paths.
+ *
+ * Deliberately not a glob library, and deliberately biased: the ONE direction
+ * this may err in is matching too much. See `applyMutateNegations`.
+ */
+function negationMatcher(negation: string): (file: string) => boolean {
+  const body = negation.startsWith('!') ? negation.slice(1) : negation;
+  if (body.length === 0 || UNMODELLED_GLOB_SYNTAX.test(body)) {
+    return () => true;
+  }
+  const segments = body.split('/');
+  const source = segments
+    .map((segment, index) => {
+      const isLast = index === segments.length - 1;
+      if (segment === '**') {
+        // Zero-or-more whole segments when more follow, so `src/**/*.ts`
+        // covers `src/a.ts` the way minimatch does; anything at all when last.
+        return isLast ? '.*' : '(?:[^/]+/)*';
+      }
+      return globSegmentToPattern(segment) + (isLast ? '' : '/');
+    })
+    .join('');
+  const pattern = new RegExp(`^${source}$`);
+  return (file) => pattern.test(file);
+}
+
+/**
+ * The changed files an incremental cache is allowed to hold: those this run
+ * will actually mutate, with the project's own `!` exclusions applied.
+ *
+ * `--mutate` still receives the full changed set plus the negations — stryker
+ * resolves them itself, and it is the authority. This is a SEPARATE, more
+ * conservative reading used for one decision only: whether a cache from a
+ * previous run may be kept (`canReuseIncrementalCache`).
+ *
+ * That narrow use is what licenses the bias. Over-matching a pattern shrinks
+ * the allowed set, rejects the cache, and costs a cold mutation run.
+ * Under-matching would let a cache holding a negated file survive, and stryker
+ * folds such a cache's verdicts into the report it writes — reproducing #56,
+ * where a file the project excluded raised violations no test could fix and no
+ * grant in `guardrails.config.json` could name. So anything unreadable
+ * excludes everything.
+ *
+ * Deliberately NOT used to filter the report (`parseStrykerJson` still scopes
+ * by the full changed set). There the fail-safe direction inverts: an
+ * over-matching pattern would silently drop real violations, and a mutation
+ * gate that under-reports is the one failure this pack exists to prevent.
+ */
+export function applyMutateNegations(
+  files: readonly string[],
+  negations: readonly string[],
+): string[] {
+  const matchers = negations.map((negation) => negationMatcher(negation));
+  return files.filter((file) => matchers.every((matches) => !matches(file)));
+}
+
+/**
+ * Stryker's DEFAULT `testRunner`, and the only one measured not to report
+ * per-test data. It is also the runner `STRYKER_SEED` ships, so this is the
+ * seeded config's shape rather than a corner case.
+ */
+const COVERAGE_BLIND_TEST_RUNNER = 'command';
+
+/**
+ * Will the run about to start be able to tell a stale cached verdict from a
+ * live one?
+ *
+ * `canReuseIncrementalCache` inspects the cache and answers whether that FILE
+ * could be reused soundly. On its own that is the wrong side of the question:
+ * `IncrementalDiffer.mutantCanBeReused` reads `testCoverage.hasCoverage`, and
+ * `testCoverage` is built from THIS run's dry run, not from the cache. A repo
+ * that switches from the vitest runner to `command` therefore keeps a
+ * coverage-rich cache and then reuses every stored verdict unconditionally,
+ * survivors included. It self-heals on the following run — a coverage-less run
+ * writes a coverage-less cache the other predicate rejects — so it is one bad
+ * gate run rather than a permanent stall, but it lands exactly when someone is
+ * changing test infrastructure and least expects the gate to lie.
+ *
+ * **The runner alone decides this, and that is a measurement rather than a
+ * reading of stryker's source.** Run against stryker 10 over a fixture with one
+ * known survivor whose covering test is then strengthened
+ * (`test/drift/stryker-incremental.test.ts` pins the two ends of it):
+ *
+ * | config | `coveredBy` written | survivor on the re-run |
+ * | --- | --- | --- |
+ * | vitest + `coverageAnalysis: perTest` | populated | killed |
+ * | vitest + `coverageAnalysis: all` | populated | killed |
+ * | vitest + `coverageAnalysis: off` | populated | killed |
+ * | `command` | absent | **survives — 14 of 14 reused** |
+ *
+ * So `coverageAnalysis` is deliberately NOT consulted: the vitest runner
+ * reports per-test data whatever it is set to, and refusing `off`/`all` would
+ * cost a consumer their reuse for a hazard that does not occur. Reading
+ * stryker's source suggested otherwise on both counts, which is why the rule is
+ * pinned to a live run instead.
+ *
+ * `testRunner` is refused when ABSENT as well as when it names `command`,
+ * because absent IS `command` — stryker's schema default, pinned by the same
+ * drift guard.
+ *
+ * A config this cannot parse — including a repo whose config is
+ * `stryker.conf.mjs`, which `STRYKER_CONFIG_FILES` deliberately does not read —
+ * answers `false`. Such a repo takes a cold mutation run every time, which is
+ * the behaviour before #59 and the only honest answer to a config we cannot see.
+ */
+export function canReportPerTestCoverage(configJson: string): boolean {
+  const { parsed } = parseJsonText(configJson);
+  if (!isRecord(parsed)) {
+    return false;
+  }
+  const testRunner = parsed.testRunner;
+  return (
+    typeof testRunner === 'string' && testRunner !== COVERAGE_BLIND_TEST_RUNNER
+  );
+}
+
+/**
+ * Whichever JSON config stryker itself will read, or `undefined` when there is
+ * none this can parse.
  *
  * The candidates are tried in stryker's own resolution order and the FIRST that
  * exists wins — the same file stryker will read, so the two never disagree
- * about which config is in force. A read that fails is not distinguished from a
- * config without negations: both mean "nothing to exclude".
+ * about which config is in force.
  */
-async function configuredMutateNegations(
+async function readStrykerConfig(
   repoRoot: string,
   readFile: (filePath: string) => Promise<string>,
-): Promise<string[]> {
+): Promise<string | undefined> {
   for (const fileName of STRYKER_CONFIG_FILES) {
     let contents: string;
     try {
@@ -895,9 +1036,16 @@ async function configuredMutateNegations(
     } catch {
       continue;
     }
-    return strykerMutateNegations(contents);
+    // Returned out here rather than from inside the `try`, which is not a
+    // stylistic choice: with the return inside, `continue` becomes the last
+    // statement of the loop body and an empty catch behaves identically to it,
+    // making the catch a provably equivalent mutant that could only be
+    // sanctioned, never killed. Out here, an empty catch falls through to this
+    // return with `contents` unassigned and answers `undefined` for a repo
+    // whose config is the SECOND candidate — which a test pins.
+    return contents;
   }
-  return [];
+  return undefined;
 }
 
 /**
@@ -924,8 +1072,15 @@ async function discardUnusableIncrementalCache(
     repoRoot: string;
   },
   mutateFiles: readonly string[],
+  canThisRunReportCoverage: boolean,
 ): Promise<void> {
   const cachePath = path.join(seams.repoRoot, STRYKER_INCREMENTAL_PATH);
+  if (!canThisRunReportCoverage) {
+    // Checked before the cache is even read: the question this answers is
+    // about the run about to start, and no cache content can settle it.
+    await seams.removeFile(cachePath);
+    return;
+  }
   let cache = '';
   try {
     cache = await seams.readFile(cachePath);
@@ -959,7 +1114,13 @@ async function runStryker(
   if (production.length === 0) {
     return [];
   }
-  const negations = await configuredMutateNegations(repoRoot, readFile);
+  // One read, two decisions: the `!` exclusions the project declared, and
+  // whether this run will be able to spot a stale cached verdict. A read that
+  // fails is not distinguished from a config without negations — both mean
+  // "nothing to exclude" — but it IS distinguished for coverage, where an
+  // unreadable config must refuse reuse rather than assume it.
+  const strykerConfig = (await readStrykerConfig(repoRoot, readFile)) ?? '';
+  const negations = strykerMutateNegations(strykerConfig);
   const removeFile =
     options.removeFile ?? ((filePath) => fsRm(filePath, { force: true }));
   const reportPath = STRYKER_REPORT_PATH;
@@ -967,7 +1128,10 @@ async function runStryker(
   await removeFile(path.join(repoRoot, reportPath));
   await discardUnusableIncrementalCache(
     { readFile, removeFile, repoRoot },
-    production,
+    // The project's own `!` exclusions applied, so a cache holding a file this
+    // run will not mutate cannot survive — see `applyMutateNegations`.
+    applyMutateNegations(production, negations),
+    canReportPerTestCoverage(strykerConfig),
   );
 
   const result = await exec(

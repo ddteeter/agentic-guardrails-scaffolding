@@ -26,6 +26,7 @@
  * repo's own mutation pass, for the reasons `stryker-runner.test.ts` gives.
  */
 
+import { readFileSync } from 'node:fs';
 import { mkdtemp, mkdir, readFile, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -34,6 +35,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import { spawnExec } from '../../src/exec.js';
+import { canReportPerTestCoverage } from '../../src/verify/index.js';
 import {
   canReuseIncrementalCache,
   parseStrykerJson,
@@ -116,7 +118,9 @@ describe('label', () => {
  *  reuse this feature depends on can no longer be observed. */
 const REUSE_SUMMARY = /(\d{1,9}) of \d{1,9} mutant result\(s\) are reused/;
 
-async function buildFixture(): Promise<string> {
+async function buildFixture(
+  testRunner: 'vitest' | 'command' = 'vitest',
+): Promise<string> {
   const directory = await mkdtemp(
     path.join(tmpdir(), 'guardrails-stryker-incremental-'),
   );
@@ -127,7 +131,18 @@ async function buildFixture(): Promise<string> {
   await writeFile(path.join(directory, 'label.test.ts'), LABEL_TEST);
   await writeFile(
     path.join(directory, 'package.json'),
-    `${JSON.stringify({ name: 'stryker-incremental-fixture', private: true, type: 'module' }, undefined, 2)}\n`,
+    `${JSON.stringify(
+      {
+        name: 'stryker-incremental-fixture',
+        private: true,
+        type: 'module',
+        // The `command` runner shells out to `npm test` and bases its verdict
+        // on the exit code; the vitest runner ignores this.
+        scripts: { test: 'vitest run' },
+      },
+      undefined,
+      2,
+    )}\n`,
   );
   await writeFile(
     path.join(directory, 'vitest.config.ts'),
@@ -136,15 +151,22 @@ async function buildFixture(): Promise<string> {
   await writeFile(
     path.join(directory, 'stryker.conf.json'),
     `${JSON.stringify(
-      {
-        testRunner: 'vitest',
-        plugins: ['@stryker-mutator/vitest-runner'],
-        reporters: ['json'],
-        vitest: { configFile: 'vitest.config.ts' },
-        mutate: MUTATED,
-        coverageAnalysis: 'perTest',
-        incremental: true,
-      },
+      testRunner === 'command'
+        ? {
+            testRunner,
+            reporters: ['json'],
+            mutate: MUTATED,
+            incremental: true,
+          }
+        : {
+            testRunner,
+            plugins: ['@stryker-mutator/vitest-runner'],
+            reporters: ['json'],
+            vitest: { configFile: 'vitest.config.ts' },
+            mutate: MUTATED,
+            coverageAnalysis: 'perTest',
+            incremental: true,
+          },
       undefined,
       2,
     )}\n`,
@@ -157,16 +179,54 @@ async function buildFixture(): Promise<string> {
   return directory;
 }
 
+/**
+ * A default declared by stryker's own JSON schema, which ships in the package.
+ *
+ * Read from disk rather than restated here: the point of the assertions below
+ * is that OUR reading of an absent key still matches stryker's, and a copy of
+ * the value in this file could not tell us that.
+ */
+function schemaDefault(key: string): unknown {
+  const schemaPath = path.join(
+    repoRoot,
+    'node_modules',
+    '@stryker-mutator',
+    'core',
+    'schema',
+    'stryker-schema.json',
+  );
+  const schema: unknown = JSON.parse(readFileSync(schemaPath, 'utf8'));
+  if (!isRecord(schema)) {
+    return undefined;
+  }
+  const properties = schema.properties;
+  if (!isRecord(properties)) {
+    return undefined;
+  }
+  const property = properties[key];
+  return isRecord(property) ? property.default : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * The report stryker wrote for the run that just finished in `directory`.
+ */
+async function readMutationReport(directory: string): Promise<string> {
+  return readFile(
+    path.join(directory, 'reports', 'mutation', 'mutation.json'),
+    'utf8',
+  );
+}
+
 describe.skipIf(isUnderMutationRun(here))(
   'drift-guard: stryker incremental reuse',
   () => {
     it('re-runs a cached survivor once its covering test is strengthened', async () => {
       const directory = await buildFixture();
-      const readReport = () =>
-        readFile(
-          path.join(directory, 'reports', 'mutation', 'mutation.json'),
-          'utf8',
-        );
+      const readReport = () => readMutationReport(directory);
 
       const first = await spawnExec(strykerBin, ['run'], { cwd: directory });
       const firstDiagnostic = `stryker exit ${first.code}\n${first.stdout}\n${first.stderr}`;
@@ -221,5 +281,74 @@ describe.skipIf(isUnderMutationRun(here))(
       );
       expect(reused, secondDiagnostic).toBeGreaterThan(0);
     }, 600_000);
+
+    it('blanket-reuses under the command runner — the case the config gate refuses', async () => {
+      // The hazard, reproduced rather than argued from stryker's source. The
+      // `command` runner reports no per-test data, so `hasCoverage` is false
+      // and `mutantCanBeReused` returns true before examining anything: the
+      // cached `Survived` verdict outlives the test written to kill it, and
+      // the fixer loop can never go green.
+      //
+      // `canReuseIncrementalCache` cannot catch this on its own — on the very
+      // first run under a real runner the cache is coverage-rich — which is
+      // why `canReportPerTestCoverage` decides from the config instead.
+      const directory = await buildFixture('command');
+      const readReport = () => readMutationReport(directory);
+
+      const first = await spawnExec(strykerBin, ['run'], { cwd: directory });
+      expect(
+        first.code,
+        `stryker exit ${first.code}\n${first.stdout}\n${first.stderr}`,
+      ).toBe(0);
+      expect(parseStrykerJson(await readReport(), MUTATED)).toEqual([
+        expect.objectContaining({
+          ruleId: 'stryker/survived',
+          file: 'src/tier.ts',
+        }),
+      ]);
+
+      await writeFile(path.join(directory, 'tier.test.ts'), STRONG_TIER_TEST);
+      const second = await spawnExec(strykerBin, ['run'], { cwd: directory });
+      const diagnostic =
+        'stryker no longer blanket-reuses cached verdicts under the command ' +
+        'runner. That is a WELCOME change upstream, but ' +
+        '`canReportPerTestCoverage` still refuses reuse for a hazard that no ' +
+        'longer exists — re-derive the rule against this version rather than ' +
+        'leaving a cold run nobody can justify.\n' +
+        `stryker exit ${second.code}\n${second.stdout}\n${second.stderr}`;
+      expect(second.code, diagnostic).toBe(0);
+      // The strengthened test genuinely kills this mutant — the first test in
+      // this file proves exactly that on the same fixture under vitest — and
+      // it is STILL reported, because nothing re-ran it.
+      expect(parseStrykerJson(await readReport(), MUTATED), diagnostic).toEqual(
+        [
+          expect.objectContaining({
+            ruleId: 'stryker/survived',
+            file: 'src/tier.ts',
+          }),
+        ],
+      );
+      // Which is a run guardrails never takes: the gate reads this config and
+      // deletes the cache first.
+      expect(
+        canReportPerTestCoverage(
+          await readFile(path.join(directory, 'stryker.conf.json'), 'utf8'),
+        ),
+        diagnostic,
+      ).toBe(false);
+    }, 600_000);
+
+    it('still defaults testRunner to command', () => {
+      // `canReportPerTestCoverage` refuses a config that names no runner, and
+      // that is only correct while stryker's own default is the coverage-blind
+      // `command` runner. If this flips upstream, the gate starts refusing
+      // reuse for repos that would in fact be safe.
+      expect(
+        schemaDefault('testRunner'),
+        'stryker changed its default testRunner; canReportPerTestCoverage ' +
+          'refuses a config that names none precisely because the default is ' +
+          'the coverage-blind `command` runner.',
+      ).toBe('command');
+    });
   },
 );

@@ -309,6 +309,15 @@ config; and external-tool output). Two tracks:
 
 ## Roadmap: fixer-loop hardening (from the dogfooding live proof)
 
+- **A mutation-survivor fixer has no way to FIND the test file.** Observed twice
+  in the #59 work: `guardrail-fixer-thorough` has `Read`/`Edit`/`Write` and no
+  `Grep`/`Glob`/`Bash`, so locating the test that covers a mutant in
+  `guardrails-core/src/verify/index.ts` meant brute-forcing dozens of path
+  guesses and finally reading `.git/index` directly for a file listing. The
+  scope-lock is right — the fixer must not execute anything — but read-only
+  SEARCH is not execution, and withholding it converts a one-step task into a
+  long guessing game. Reproducible over-cost, not a one-off.
+
 The first live run (assertionless test → escalation → correct fix) validated the
 escalation ladder but surfaced improvements. Two are implemented on the
 dogfooding branch (built-in loose-rule routing so test-integrity rules go to the
@@ -2724,8 +2733,8 @@ decidable from the cache file itself:
    `true` unconditionally when the runner reports no coverage, so a `Survived`
    verdict is reused however the tests changed — the fixer's new test could
    never clear the mutant and the loop could never go green. Not a corner case:
-   stryker's own initializer writes `coverageAnalysis: 'off'` for the `command`
-   runner, which is the runner `STRYKER_SEED` ships.
+   it is the `command` runner `STRYKER_SEED` ships, measured at 14 of 14
+   mutants reused with the survivor intact through a test that kills it.
 
 **Shipped:** `--incremental` is now passed on every run, so a cache is always
 written for the next one, and the DELETION became conditional
@@ -2734,6 +2743,25 @@ kept only when every file in it is one this run mutates and at least one mutant
 in it names a covering test; anything unreadable, unparseable or unproven is
 deleted, as before. No new configuration surface, no new paths, and the default
 `incrementalFile` location stays the one already gitignored.
+
+**Second review finding (from the same consumer): the coverage rule checked the
+wrong side.** `hasCoverage` is a property of the run about to READ the cache,
+not the run that wrote it, so a repo switching from the vitest runner to
+`command` would keep a coverage-rich cache and then blanket-reuse every verdict
+in it — one bad gate run, landing exactly when someone is changing test
+infrastructure. Fixed by deciding from the config this run will use
+(`canReportPerTestCoverage`) as well as from the cache; the two answer different
+questions and a repo can fail either alone.
+
+Worth recording HOW that rule was settled, because reading stryker's source got
+it wrong twice. The source suggested `coverageAnalysis: "off"` and `"all"` were
+both unsafe (`TestCoverage` fills `testsByMutantId` only from
+`mutantCoverage.perTest`). Measured against stryker 10, neither is: the vitest
+runner writes `coveredBy` and re-runs the survivor under `off` and `all` alike.
+The runner is the entire discriminator — only `command` blanket-reuses (14 of 14
+mutants, survivor intact through a test that kills it). Gating on
+`coverageAnalysis` would have cost consumers their reuse for a hazard that does
+not occur. The rule is pinned to a live run rather than to a reading.
 
 The optimisation's failure mode is a false survivor that no test can clear, so
 it is guarded live rather than by hand-written reports:
