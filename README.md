@@ -25,12 +25,12 @@ analyzer costs, and the clean-baseline prerequisite.
 `guardrails-core` is delivered as a GitHub Release asset, not from npm:
 
 ```bash
-npm i -D https://github.com/ddteeter/agentic-guardrails-scaffolding/releases/download/v0.2.1/guardrails-core-0.2.1.tgz
+npm i -D https://github.com/ddteeter/agentic-guardrails-scaffolding/releases/download/v0.3.0/guardrails-core-0.3.0.tgz
 ```
 
 Each release is a pushed `v*` tag: `.github/workflows/release.yml` verifies the
 tag matches `guardrails-core`'s version, runs the tarball smoke test, and
-attaches the `.tgz`. The URL above resolves once `v0.2.1` has been through that.
+attaches the `.tgz`. The URL above resolves once `v0.3.0` has been through that.
 
 **What a URL dependency costs you, stated plainly:** no semver range, no dedupe,
 and Dependabot will not track it. Upgrading means editing the URL by hand. This
