@@ -22,6 +22,50 @@ How a repo has opted into one analyzer. Absent from config means `auto`.
 */
 export type AnalyzerMode = 'off' | 'auto' | 'required';
 
+/**
+ * The cadence rungs, cheapest first. An analyzer declares the LOWEST rung it
+ * runs at, and every rung above it runs it too — a floor, never an equality
+ * test, so `verify` (ci) can never check less than a local gate does.
+ *
+ * `push` sits between `commit` and `ci` and was added for #61. Before it,
+ * `runCommitGate` hardcoded the `commit` profile and `gate --mode=push`
+ * differed from `--mode=commit` only in diff scope, so "run this at push but
+ * not at commit" could not be said at all. Nothing in the built-in table sits
+ * above `commit`; the rung exists for consumers to move an analyzer ONTO.
+ *
+ * Declared here rather than in `verify/index.ts` so `config.ts` can parse a
+ * rung without importing the orchestrator — the module graph has a no-circular
+ * rule, and `verify/index.ts` already depends on this file.
+ */
+export type Rung = 'stop' | 'commit' | 'push' | 'ci';
+
+export const RUNG_ORDER: Record<Rung, number> = {
+  stop: 0,
+  commit: 1,
+  push: 2,
+  ci: 3,
+};
+
+export function isRung(value: unknown): value is Rung {
+  return RUNG_NAMES.has(value);
+}
+
+/**
+ * Typed `ReadonlySet<unknown>` rather than `ReadonlySet<string>`, so `isRung`
+ * can hand it an `unknown` directly.
+ *
+ * That is what removes the `typeof value === 'string' &&` half `isRung` would
+ * otherwise need to satisfy the compiler — a half that is redundant at RUNTIME,
+ * because `Set.prototype.has` compares with SameValueZero and never coerces, so
+ * a non-string can never match a string member. A redundant guard is a provably
+ * equivalent mutant: nothing can distinguish it from `true &&`. Widening the
+ * set's type deletes the mutant instead of suppressing it, which costs a
+ * sanction nobody has to justify later.
+ */
+const RUNG_NAMES: ReadonlySet<unknown> = new Set<unknown>(
+  Object.keys(RUNG_ORDER),
+);
+
 export interface AnalyzerDecision {
   /**
   Spawn the analyzer at all.

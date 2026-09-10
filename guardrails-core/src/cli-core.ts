@@ -12,13 +12,14 @@ import { auditDiff, type AuditFinding } from './audit.js';
 import { runAutofix } from './autofix.js';
 import {
   loadConfig,
+  type RepoConfig,
   type SanctionedFile,
   parseSanctionsJson,
   readConfigText,
   toGateConfig,
 } from './config.js';
 import type { Exec } from './exec.js';
-import { runCommitGate, runStopGate } from './gate.js';
+import { runCommitGate, runStopGate, type CommitGateOptions } from './gate.js';
 import { findGitRoot, resolveRepoRoot } from './repo-root.js';
 import {
   formatGrantReport,
@@ -54,6 +55,7 @@ import {
   sweepStale,
 } from './state-store.js';
 import { hasErrors, type Violation } from './violation.js';
+import type { Rung } from './verify/analyzer-policy.js';
 import { runVerify, silentSkipWarning } from './verify/index.js';
 import { resolveBaseReference } from './verify/git.js';
 
@@ -80,6 +82,45 @@ const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 function binResolver(repoRoot: string): (tool: string) => string {
   return (tool) => resolveLocalBin(repoRoot, tool);
+}
+
+/**
+ * The `CommitGateOptions` fields both commit-rung callers derive the same way
+ * from `config` and `repoRoot` — `gateCommitCommand` (`.husky/pre-commit`) and
+ * `gatePreToolUseCommand` (the Copilot commit/push gate). Extracted once the
+ * `dupes` analyzer flagged the two call sites as a 12-line clone: this mapping
+ * is the one thing they must evolve together — a config field forwarded to
+ * `runCommitGate` at one call site and not the other is a real regression, not
+ * an accident of two similar-looking sites. Each caller still spreads its own
+ * extra fields (`sessionId`, `profile`, `changedScope`) on top.
+ */
+function commitGateOptionsFromConfig(
+  repoRoot: string,
+  config: RepoConfig,
+  exec: Exec,
+): Pick<
+  CommitGateOptions,
+  | 'repoRoot'
+  | 'baseBranch'
+  | 'exec'
+  | 'resolveBin'
+  | 'sanctionedSuppressions'
+  | 'sanctionedFiles'
+  | 'analyzers'
+  | 'analyzerRungs'
+  | 'config'
+> {
+  return {
+    repoRoot,
+    baseBranch: config.baseBranch,
+    exec,
+    resolveBin: binResolver(repoRoot),
+    sanctionedSuppressions: config.sanctionedSuppressions,
+    sanctionedFiles: config.sanctionedFiles,
+    analyzers: config.analyzers,
+    analyzerRungs: config.analyzerRungs,
+    config: toGateConfig(config),
+  };
 }
 
 function printViolations(
@@ -151,6 +192,7 @@ async function verifyCommand(dependencies: CliDependencies): Promise<number> {
     profile: 'ci',
     resolveBin: binResolver(repoRoot),
     analyzers: config.analyzers,
+    analyzerRungs: config.analyzerRungs,
   });
   printViolations(dependencies, violations);
   dependencies.stderr(
@@ -231,6 +273,7 @@ async function gateStopCommand(
     config: toGateConfig(config),
     resolveBin: binResolver(repoRoot),
     analyzers: config.analyzers,
+    analyzerRungs: config.analyzerRungs,
     isRetry: input.stopHookActive,
   });
   const output =
@@ -288,20 +331,15 @@ function commitPointer(
 async function gateCommitCommand(
   dependencies: CliDependencies,
   changedScope: 'branch' | 'staged',
+  profile: Rung = 'commit',
 ): Promise<number> {
   const repoRoot = await commandRepoRoot(dependencies);
   const config = loadConfig(repoRoot);
   const { violations, findings, blocked, skippedAnalyzers, delegation } =
     await runCommitGate({
-      repoRoot,
-      baseBranch: config.baseBranch,
-      exec: dependencies.exec,
-      resolveBin: binResolver(repoRoot),
-      sanctionedSuppressions: config.sanctionedSuppressions,
-      sanctionedFiles: config.sanctionedFiles,
-      analyzers: config.analyzers,
-      config: toGateConfig(config),
+      ...commitGateOptionsFromConfig(repoRoot, config, dependencies.exec),
       changedScope,
+      profile,
     });
   printGateDetail(dependencies, violations, findings);
   // Before the pass/block decision, because it qualifies either one: a gate
@@ -440,14 +478,7 @@ async function gatePreToolUseCommand(
   const repoRoot = await commandRepoRoot(dependencies, input.cwd);
   const config = loadConfig(repoRoot);
   const { violations, findings, blocked, delegation } = await runCommitGate({
-    repoRoot,
-    baseBranch: config.baseBranch,
-    exec: dependencies.exec,
-    resolveBin: binResolver(repoRoot),
-    sanctionedSuppressions: config.sanctionedSuppressions,
-    sanctionedFiles: config.sanctionedFiles,
-    analyzers: config.analyzers,
-    config: toGateConfig(config),
+    ...commitGateOptionsFromConfig(repoRoot, config, dependencies.exec),
     sessionId: input.sessionId,
   });
   if (!blocked) {
@@ -942,8 +973,14 @@ export async function runCommand(
       }
       // Same checks, branch-wide scope: `push` is the local rung that catches
       // what a staged-scope commit cannot, and `ci` is its authoritative twin.
-      if (mode === 'push' || mode === 'ci') {
-        return gateCommitCommand(dependencies, 'branch');
+      // `push` and `ci` share the branch-wide scope but are DISTINCT rungs:
+      // an analyzer a consumer moved to `push` must run there, and `ci` sits
+      // above it so `verify`'s twin never checks less (#61).
+      if (mode === 'push') {
+        return gateCommitCommand(dependencies, 'branch', 'push');
+      }
+      if (mode === 'ci') {
+        return gateCommitCommand(dependencies, 'branch', 'ci');
       }
       if (mode === 'pretooluse') {
         await gatePreToolUseCommand(dependencies, resolveDialect(rest));

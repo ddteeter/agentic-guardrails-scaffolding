@@ -973,6 +973,123 @@ describe('stryker honours the project’s own mutate negations', () => {
  * `coverageAnalysis` says, and only `command` blanket-reuses. The live proof of
  * both ends is in `test/drift/stryker-incremental.test.ts`.
  */
+/**
+ * The cadence rung an analyzer runs at, and the consumer's ability to move it.
+ *
+ * Reported from an adoption (#61): stryker's cost is dominated by a fixed
+ * per-invocation overhead — a full dry run of the suite before a single mutant
+ * is tested — so a repo that commits often pays it on every checkpoint. On the
+ * reporting repo a one-file change still cost ~5 minutes, which is a floor the
+ * #59 cache work cannot get under, because that makes a REPEAT run cheap rather
+ * than making runs rarer.
+ *
+ * `push` did not exist as a rung before this: `runCommitGate` hardcoded
+ * `profile: 'commit'`, and `gate --mode=push` and `--mode=ci` differed from
+ * `--mode=commit` only in diff scope. So the ask was not expressible even
+ * internally.
+ *
+ * Which rung is right is a per-repo judgement — at commit you learn sooner on a
+ * smaller diff; at push you learn later but pay once — so this is a config
+ * choice rather than a moved default. Nothing changes for a repo that does not
+ * set it.
+ */
+/**
+ * Did `runVerify` at this profile spawn stryker?
+ */
+async function didRunStrykerAt(
+  profile: 'stop' | 'commit' | 'push' | 'ci',
+  analyzerRungs?: Record<string, 'stop' | 'commit' | 'push' | 'ci'>,
+): Promise<boolean> {
+  const { exec, calls } = fakeExec({
+    'git diff --name-only --diff-filter=ACM main': {
+      stdout: 'guardrails-core/src/foo.ts\n',
+      stderr: '',
+      code: 0,
+    },
+    'git ls-files --others --exclude-standard': {
+      stdout: '',
+      stderr: '',
+      code: 0,
+    },
+  });
+  await runVerify({
+    repoRoot: '/repo',
+    baseBranch: 'main',
+    exec,
+    profile,
+    resolveBin: (tool) => tool,
+    readFile: () => Promise.resolve(JSON.stringify({ files: {} })),
+    removeFile: () => Promise.resolve(),
+    ...(analyzerRungs && { analyzerRungs }),
+  });
+  return calls.some((call) => call.command === 'stryker');
+}
+
+describe('per-analyzer rung override', () => {
+  it('leaves stryker at the commit rung when nothing overrides it', async () => {
+    // The default is unchanged: a repo that never heard of #61 gets exactly
+    // today's cadence.
+    expect(await didRunStrykerAt('commit')).toBe(true);
+  });
+
+  it('moves stryker off the commit rung when the config says push', async () => {
+    expect(await didRunStrykerAt('commit', { stryker: 'push' })).toBe(false);
+  });
+
+  it('runs the moved analyzer at the rung it was moved to', async () => {
+    expect(await didRunStrykerAt('push', { stryker: 'push' })).toBe(true);
+  });
+
+  it('still runs a push-rung analyzer at ci, which is above it', async () => {
+    // Rungs are a floor, not an equality test — `verify` (ci) must never check
+    // LESS than the local gates do.
+    expect(await didRunStrykerAt('ci', { stryker: 'push' })).toBe(true);
+  });
+
+  it('does not run a push-rung analyzer at the stop gate', async () => {
+    expect(await didRunStrykerAt('stop', { stryker: 'push' })).toBe(false);
+  });
+
+  it('can lower an analyzer as well as raise it', async () => {
+    // The override REPLACES the table's floor rather than only raising it. A
+    // repo whose suite is fast enough may want mutation feedback per turn, and
+    // refusing that would be this table imposing its own economics.
+    expect(await didRunStrykerAt('stop', { stryker: 'stop' })).toBe(true);
+  });
+
+  it('ignores an override naming an analyzer that does not exist', async () => {
+    expect(await didRunStrykerAt('commit', { nosuchtool: 'push' })).toBe(true);
+  });
+
+  it('leaves other analyzers on their own rungs', async () => {
+    // Moving stryker must not move knip, which shares the commit rung.
+    const { exec, calls } = fakeExec({
+      'git diff --name-only --diff-filter=ACM main': {
+        stdout: 'guardrails-core/src/foo.ts\n',
+        stderr: '',
+        code: 0,
+      },
+      'git ls-files --others --exclude-standard': {
+        stdout: '',
+        stderr: '',
+        code: 0,
+      },
+    });
+    await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      profile: 'commit',
+      resolveBin: (tool) => tool,
+      readFile: () => Promise.resolve(JSON.stringify({ files: {} })),
+      removeFile: () => Promise.resolve(),
+      analyzerRungs: { stryker: 'push' },
+    });
+    expect(calls.some((call) => call.command === 'stryker')).toBe(false);
+    expect(calls.some((call) => call.command === 'knip')).toBe(true);
+  });
+});
+
 describe('canReportPerTestCoverage', () => {
   it('accepts a real runner', () => {
     expect(

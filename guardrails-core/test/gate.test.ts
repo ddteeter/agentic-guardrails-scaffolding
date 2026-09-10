@@ -581,6 +581,24 @@ describe('runStopGate mutation-hardening', () => {
     expect(calls.some((call) => call.line.includes('eslint'))).toBe(false);
   });
 
+  it('forwards analyzerRungs so an override can lower an analyzer onto this rung', async () => {
+    // Kills the `...(options.analyzerRungs && { analyzerRungs: ... })` -> `{}`
+    // (ObjectLiteral), `-> false` (ConditionalExpression) and `||`
+    // (LogicalOperator) mutants on runStopGate's verifyOptions: stryker's
+    // built-in floor is 'commit', so without the override reaching `runVerify`
+    // it would never spawn at the per-turn stop gate at all.
+    const { exec, calls } = recordingExec((line) => {
+      if (line.includes('--name-only')) return ok('src/foo.ts');
+      return ok('');
+    });
+    await runStopGate({
+      ...options(exec),
+      analyzers: { stryker: 'required' },
+      analyzerRungs: { stryker: 'stop' },
+    });
+    expect(calls.some((call) => call.line.includes('stryker'))).toBe(true);
+  });
+
   it('forwards retry state so one turn is tallied only once', async () => {
     const failing = makeExec((line) => {
       if (line.includes('--name-only')) return ok('src/foo.ts');

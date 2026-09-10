@@ -11,7 +11,11 @@ import path from 'node:path';
 import { auditKinds, type AuditKind } from './audit.js';
 import type { GateConfig } from './gate-decision.js';
 import { makeIsLoose } from './loose-rules.js';
-import type { AnalyzerMode } from './verify/analyzer-policy.js';
+import {
+  type AnalyzerMode,
+  type Rung,
+  isRung,
+} from './verify/analyzer-policy.js';
 
 /**
 One reviewed diff-auditor exemption: the finding key plus why it is allowed.
@@ -101,6 +105,18 @@ export interface RepoConfig {
    */
   analyzers: Record<string, AnalyzerMode>;
   /**
+   * Per-analyzer cadence overrides, from the object form of an `analyzers`
+   * entry: `{"stryker": {"mode": "required", "rung": "push"}}`.
+   *
+   * Separate from `analyzers` rather than folded into it because the mode is
+   * consumed by `decideAnalyzer` and the rung by `selectAnalyzers` — two
+   * decisions, in two places, that happen to share a config key. Empty by
+   * default, which leaves every analyzer on the rung the built-in table
+   * declares. See `VerifyOptions.analyzerRungs` for why this is a choice rather
+   * than a moved default (#61).
+   */
+  analyzerRungs: Record<string, Rung>;
+  /**
    * Reviewed, checked-in escape hatch for the diff-auditor: exact
    * `file|kind|text` keys of suppressions a human has deliberately sanctioned
    * (e.g. a mutation-exclusion around a hand-written lexer). ONLY the commit
@@ -180,6 +196,7 @@ export function defaultConfig(): RepoConfig {
     thoroughFixer: 'guardrail-fixer-thorough',
     looseRules: [],
     analyzers: {},
+    analyzerRungs: {},
     sanctionedSuppressions: [],
     sanctionedFiles: [],
     distribution: 'solo',
@@ -400,6 +417,32 @@ function isAnalyzerMode(value: unknown): value is AnalyzerMode {
 }
 
 /**
+ * Walk the `analyzers` block, resolving each tool's raw entry through `pick` —
+ * `undefined` drops the entry. Shared by `pickAnalyzers` and
+ * `pickAnalyzerRungs`, which read two different fields (the mode/boolean
+ * shorthand vs the cadence rung) out of the same per-tool shape; the `dupes`
+ * analyzer flagged the record-walking skeleton itself as a 7-line clone the
+ * moment the second one was written, in the same spirit `parseEntryList`
+ * already does for the sanction lists below.
+ */
+function pickAnalyzerField<T>(
+  value: unknown,
+  pick: (raw: unknown) => T | undefined,
+): Record<string, T> {
+  if (!isRecord(value)) {
+    return {};
+  }
+  const picked: Record<string, T> = {};
+  for (const [tool, raw] of Object.entries(value)) {
+    const resolved = pick(raw);
+    if (resolved !== undefined) {
+      picked[tool] = resolved;
+    }
+  }
+  return picked;
+}
+
+/**
  * Parse the `analyzers` block. `true`/`false` are accepted as the natural
  * shorthand for `required`/`off`. Anything else is DROPPED rather than
  * defaulted, so a typo'd value falls back to `auto` (the analyzer keeps
@@ -407,20 +450,36 @@ function isAnalyzerMode(value: unknown): value is AnalyzerMode {
  * checking, like every other defensive path in this file.
  */
 export function pickAnalyzers(value: unknown): Record<string, AnalyzerMode> {
-  if (!isRecord(value)) {
-    return {};
-  }
-  const modes: Record<string, AnalyzerMode> = {};
-  for (const [tool, raw] of Object.entries(value)) {
+  return pickAnalyzerField(value, (raw) => {
     if (raw === true) {
-      modes[tool] = 'required';
-    } else if (raw === false) {
-      modes[tool] = 'off';
-    } else if (isAnalyzerMode(raw)) {
-      modes[tool] = raw;
+      return 'required';
     }
-  }
-  return modes;
+    if (raw === false) {
+      return 'off';
+    }
+    if (isAnalyzerMode(raw)) {
+      return raw;
+    }
+    // The long form: `{"mode": "required", "rung": "push"}`. A `mode` this
+    // does not recognise is dropped exactly as a bad string form is, leaving
+    // the analyzer at `auto` — the more-checking answer.
+    return isRecord(raw) && isAnalyzerMode(raw.mode) ? raw.mode : undefined;
+  });
+}
+
+/**
+ * Parse the cadence rung out of the object form of each `analyzers` entry.
+ *
+ * A rung this does not recognise is DROPPED rather than defaulted, so a typo
+ * leaves the built-in table's floor in place. That is the more-checking
+ * direction here and it is worth being explicit about: the failure mode of
+ * guessing would be silently moving a guard to a rung that runs it LESS often,
+ * which is the one outcome an adopter would not notice.
+ */
+function pickAnalyzerRungs(value: unknown): Record<string, Rung> {
+  return pickAnalyzerField(value, (raw) =>
+    isRecord(raw) && isRung(raw.rung) ? raw.rung : undefined,
+  );
 }
 
 /**
@@ -497,6 +556,7 @@ export function loadConfig(repoRoot: string): RepoConfig {
     thoroughFixer: pickString(raw.thoroughFixer, defaults.thoroughFixer),
     looseRules: pickStringArray(raw.looseRules),
     analyzers: pickAnalyzers(raw.analyzers),
+    analyzerRungs: pickAnalyzerRungs(raw.analyzers),
     sanctionedSuppressions: pickSanctions(raw.sanctionedSuppressions).valid,
     sanctionedFiles: pickSanctionedFiles(raw.sanctionedFiles).files,
     distribution: pickString(raw.distribution, defaults.distribution, [

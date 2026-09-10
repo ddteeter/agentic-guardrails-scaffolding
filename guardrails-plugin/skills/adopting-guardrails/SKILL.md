@@ -81,6 +81,29 @@ they can override, not an open questionnaire:
   `stryker` needs a test suite worth mutating; recommending it for a repo with
   thin coverage just produces noise, and mutation testing is genuinely slow —
   say so.
+  **Moving an analyzer's rung.** An entry may be an object instead of a string,
+  carrying a `rung` alongside the `mode`:
+
+```json
+{ "analyzers": { "stryker": { "mode": "required", "rung": "push" } } }
+```
+
+This is worth recommending for `stryker` specifically, and only once you know
+how often the repo commits. Stryker's cost is dominated by a fixed
+per-invocation overhead — a full dry run of the suite before a single mutant is
+tested — so at the `commit` rung a repo that checkpoints often pays it on every
+commit, and a one-file change costs as much as a large one. At `push` the union
+of the branch's changed files is mutated once instead. Reported from an
+adoption (#61) where a one-file commit still cost ~5 minutes.
+
+State the trade rather than presenting it as free: at `commit` a mutation
+regression is caught sooner, on a smaller diff, so localizing it is easier; at
+`push` you learn later and the failing scope is wider. What does NOT change is
+what escapes the machine — nothing is pushed between commits either way. `rung`
+accepts `stop`, `commit`, `push` or `ci`, and it REPLACES the built-in floor, so
+it can lower an analyzer as well as raise it. Omit it and the analyzer keeps the
+rung the built-in table gives it.
+
 - `enforcement: block` is the seeded default, and it is the right one for a
   greenfield repo or an existing repo that already passes `guardrails verify`
   clean. There is no backlog to calibrate in a greenfield project, and `warn`

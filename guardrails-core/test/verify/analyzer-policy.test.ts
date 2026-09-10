@@ -4,6 +4,7 @@ import {
   analyzerMode,
   decideAnalyzer,
   declaredProviders,
+  isRung,
 } from '../../src/verify/analyzer-policy.js';
 
 describe('decideAnalyzer', () => {
@@ -63,6 +64,33 @@ describe('analyzerMode', () => {
   it('lets an explicit setting override a non-auto default', () => {
     expect(analyzerMode({ dupes: 'required' }, 'dupes')).toBe('required');
     expect(analyzerMode({ dupes: 'auto' }, 'dupes')).toBe('auto');
+  });
+});
+
+describe('isRung', () => {
+  it('accepts each of the four rung names', () => {
+    for (const rung of ['stop', 'commit', 'push', 'ci']) {
+      expect(isRung(rung)).toBe(true);
+    }
+  });
+
+  it('rejects a string that names no rung', () => {
+    // The membership check itself: a rung-shaped string that is not one of the
+    // four must not pass, or a typo in `guardrails.config.json` would move an
+    // analyzer to a rung that does not exist.
+    expect(isRung('weekly')).toBe(false);
+  });
+
+  it('rejects a non-string value outright, not only an unrecognised string', () => {
+    // `isRung` is a bare `RUNG_NAMES.has(value)` — there is no `typeof` guard
+    // in front of it, deliberately (see the comment on `RUNG_NAMES`). These
+    // cases are what make that safe to rely on: `Set.prototype.has` compares
+    // with SameValueZero and never coerces, so a non-string can never match a
+    // string member. If the set were ever rebuilt from something other than
+    // string keys, this is what would notice.
+    expect(isRung(42)).toBe(false);
+    expect(isRung(undefined)).toBe(false);
+    expect(isRung({ rung: 'push' })).toBe(false);
   });
 });
 

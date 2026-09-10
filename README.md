@@ -137,6 +137,12 @@ is whole-graph, so — like tsc — it assumes a **knip-clean baseline**. Run
 `npx knip` clean before relying on the commit gate; pre-existing dead code will
 otherwise block every commit until removed.
 
+An `analyzers` entry may also be an object carrying a cadence `rung`
+(`{"stryker": {"mode": "required", "rung": "push"}}`), which replaces the rung
+the built-in table gives that analyzer. Mutation testing is the case this exists
+for: its cost is a fixed per-invocation overhead rather than a function of the
+diff, so moving it to `push` charges once per push instead of once per commit.
+
 An analyzer set to `"off"` in `guardrails.config.json`'s `analyzers` block never
 runs and never reports, so a repo can adopt eslint/tsc first and add the
 whole-graph analyzers (knip, dependency-cruiser, stryker) once its baseline is
