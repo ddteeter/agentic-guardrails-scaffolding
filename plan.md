@@ -309,6 +309,15 @@ config; and external-tool output). Two tracks:
 
 ## Roadmap: fixer-loop hardening (from the dogfooding live proof)
 
+- **A mutation-survivor fixer has no way to FIND the test file.** Observed twice
+  in the #59 work: `guardrail-fixer-thorough` has `Read`/`Edit`/`Write` and no
+  `Grep`/`Glob`/`Bash`, so locating the test that covers a mutant in
+  `guardrails-core/src/verify/index.ts` meant brute-forcing dozens of path
+  guesses and finally reading `.git/index` directly for a file listing. The
+  scope-lock is right — the fixer must not execute anything — but read-only
+  SEARCH is not execution, and withholding it converts a one-step task into a
+  long guessing game. Reproducible over-cost, not a one-off.
+
 The first live run (assertionless test → escalation → correct fix) validated the
 escalation ladder but surfaced improvements. Two are implemented on the
 dogfooding branch (built-in loose-rule routing so test-integrity rules go to the
@@ -1237,7 +1246,12 @@ commit gate will report. Two distinct problems:
   equivalent or (worse) asks for a suppression.
 - **Cache poisoning.** The run writes `reports/stryker-incremental.json`, and a
   later run over a different file set reads that state back. Delete that file
-  before re-verifying, or the false survivor persists across runs.
+  before re-verifying, or the false survivor persists across runs. _(Update,
+  issue #59: the GATE now decides this for itself —
+  `canReuseIncrementalCache` refuses a cache holding any file outside the run's
+  own `--mutate` set, so a single-file cache can no longer poison a wider gate
+  run. A hand-run preview at the SAME scope still reuses, and still
+  over-reports for the reason above, so the practice below is unchanged.)_
 
 **Practice:** treat a single-file run as a cheap early filter. Before acting on
 any survivor it reports — and always before proposing a `sanctionedSuppressions`
@@ -2695,3 +2709,65 @@ fallow and dropped by the scoping filter. Two of this repo's seven remaining
 groups are in `scripts/sync-agents.mjs` and are invisible to the gate for that
 reason. Widening the shared change set would also pull `.mjs` into stryker's
 mutation target, which is a different decision.
+
+### Finding (issue #59, reported from an adoption): `--incremental` was a no-op
+
+`runStryker` deleted `reports/stryker-incremental.json` on the line immediately
+before it passed `--incremental`. The flag only does anything when the file it
+reads survives from the previous run, so every gate run was a cold full run of
+the changed files and the flag's only effect was writing a file the next run
+deleted. Reported by a consumer whose commit and push gates take 5–15 minutes
+each (`@cloudflare/vitest-pool-workers`, ~4,500 mutants across 11 ratcheted
+scopes).
+
+The deletion was not a stray line, and the issue said so: it was the answer to
+the cache-poisoning finding above. What made the pair wrong was that each half
+was unconditional. Two things make an inherited cache unsafe here, and both are
+decidable from the cache file itself:
+
+1. **Foreign scope.** `--mutate` is a different set of files on every run, and
+   stryker folds cached verdicts for out-of-scope files back into the report it
+   writes (`incremental-differ`'s "old mutants that didn't run this time around
+   aren't forgotten" branch).
+2. **No per-test coverage.** `IncrementalDiffer.mutantCanBeReused` returns
+   `true` unconditionally when the runner reports no coverage, so a `Survived`
+   verdict is reused however the tests changed — the fixer's new test could
+   never clear the mutant and the loop could never go green. Not a corner case:
+   it is the `command` runner `STRYKER_SEED` ships, measured at 14 of 14
+   mutants reused with the survivor intact through a test that kills it.
+
+**Shipped:** `--incremental` is now passed on every run, so a cache is always
+written for the next one, and the DELETION became conditional
+(`discardUnusableIncrementalCache` → `canReuseIncrementalCache`). The cache is
+kept only when every file in it is one this run mutates and at least one mutant
+in it names a covering test; anything unreadable, unparseable or unproven is
+deleted, as before. No new configuration surface, no new paths, and the default
+`incrementalFile` location stays the one already gitignored.
+
+**Second review finding (from the same consumer): the coverage rule checked the
+wrong side.** `hasCoverage` is a property of the run about to READ the cache,
+not the run that wrote it, so a repo switching from the vitest runner to
+`command` would keep a coverage-rich cache and then blanket-reuse every verdict
+in it — one bad gate run, landing exactly when someone is changing test
+infrastructure. Fixed by deciding from the config this run will use
+(`canReportPerTestCoverage`) as well as from the cache; the two answer different
+questions and a repo can fail either alone.
+
+Worth recording HOW that rule was settled, because reading stryker's source got
+it wrong twice. The source suggested `coverageAnalysis: "off"` and `"all"` were
+both unsafe (`TestCoverage` fills `testsByMutantId` only from
+`mutantCoverage.perTest`). Measured against stryker 10, neither is: the vitest
+runner writes `coveredBy` and re-runs the survivor under `off` and `all` alike.
+The runner is the entire discriminator — only `command` blanket-reuses (14 of 14
+mutants, survivor intact through a test that kills it). Gating on
+`coverageAnalysis` would have cost consumers their reuse for a hazard that does
+not occur. The rule is pinned to a live run rather than to a reading.
+
+The optimisation's failure mode is a false survivor that no test can clear, so
+it is guarded live rather than by hand-written reports:
+`test/drift/stryker-incremental.test.ts` runs real stryker twice over a fixture
+with one known survivor, keeps the cache between runs, and asserts that (a) a
+real vitest-runner cache still satisfies the predicate — if it stops, reuse
+silently switches off for everyone — and (b) the cached survivor comes back
+KILLED once its covering test is strengthened. Same shape, and the same reason,
+as `stryker-runner.test.ts`.
