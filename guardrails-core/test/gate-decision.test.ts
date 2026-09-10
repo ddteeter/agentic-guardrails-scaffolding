@@ -5,7 +5,7 @@ import {
   type GateConfig,
   type GateDecision,
 } from '../src/gate-decision.js';
-import { createSession } from '../src/state.js';
+import { createSession, violationDigest } from '../src/state.js';
 import { recurrenceKey, type Violation } from '../src/violation.js';
 
 function v(partial: Partial<Violation> & Pick<Violation, 'ruleId'>): Violation {
@@ -119,6 +119,91 @@ describe('decideGate — escalate', () => {
     // The full dump arms a terminal release instead of restarting forever.
     expect(decision.nextSession.attempts).toBe(0);
     expect(decision.nextSession.escalated).toBe(true);
+    // No fixer is in flight on this path, so the caveat block must be entirely
+    // absent -- not just missing its "may still be running" phrase. Pins the
+    // exact rendering so an empty-array regression (e.g. a stray placeholder
+    // line) is caught even though it wouldn't match that phrase.
+    expect(decision.message).toBe(
+      '1 violation(s) survived the fix loop. Resolve them directly:\n' +
+        '- src/a.ts:9 [no-console] boom (eslint)',
+    );
+  });
+
+  /**
+   * Escalation hands the violations to the MAIN agent to edit directly. When it
+   * fires on a retry whose manifest is unchanged, the fixer from the previous
+   * attempt has not reported yet — so the agent is being told to edit files a
+   * subagent is still editing.
+   *
+   * Observed live: the main agent followed the instruction, its edit raced the
+   * fixer's, and it survived only because the stale text no longer matched.
+   * The `delegate` path already guards this case (`unchangedPointer`); this is
+   * the same signal, on the exit that lacked it.
+   *
+   * The escalation itself is NOT withheld. An unchanged digest cannot
+   * distinguish "fixer still running" from "fixer finished and achieved
+   * nothing", so waiting for a change that may never come would trade a race
+   * for a hang. The budget is spent either way; what changes is that the agent
+   * is told to let the in-flight fixer land first.
+   */
+  it('warns that a fixer may still be running when the manifest is unchanged', () => {
+    const violations = [v({ ruleId: 'no-console', file: 'src/a.ts', line: 9 })];
+    const decision = decideGate(
+      input({
+        violations,
+        isRetry: true,
+        session: {
+          attempts: 3,
+          ruleCounts: {},
+          corrected: [],
+          lastViolationDigest: violationDigest(violations),
+        },
+      }),
+    );
+    expect(decision.outcome).toBe('escalate');
+    // The dump is still there — the agent still needs to know what to fix.
+    expect(decision.message).toContain('no-console');
+    expect(decision.message).toContain('src/a.ts');
+    // ...but it is told to let the in-flight fixer land first.
+    expect(decision.message).toContain('may still be running');
+    expect(decision.message).toContain('guardrail-fixer-thorough');
+  });
+
+  it('does not warn when the manifest changed, so no fixer is in flight', () => {
+    // A different digest proves the previous fixer's edit landed. Warning here
+    // would train the agent to ignore the warning in the case that matters.
+    const decision = decideGate(
+      input({
+        violations: [v({ ruleId: 'no-console', file: 'src/a.ts', line: 9 })],
+        isRetry: true,
+        session: {
+          attempts: 3,
+          ruleCounts: {},
+          corrected: [],
+          lastViolationDigest: 'something-else',
+        },
+      }),
+    );
+    expect(decision.outcome).toBe('escalate');
+    expect(decision.message).toContain('no-console');
+    expect(decision.message).not.toContain('may still be running');
+  });
+
+  it('does not warn on a first Stop, which has no fixer in flight', () => {
+    const violations = [v({ ruleId: 'no-console', file: 'src/a.ts', line: 9 })];
+    const decision = decideGate(
+      input({
+        violations,
+        session: {
+          attempts: 3,
+          ruleCounts: {},
+          corrected: [],
+          lastViolationDigest: violationDigest(violations),
+        },
+      }),
+    );
+    expect(decision.outcome).toBe('escalate');
+    expect(decision.message).not.toContain('may still be running');
   });
 
   it('renders an unknown line explicitly in the terminal dump', () => {
