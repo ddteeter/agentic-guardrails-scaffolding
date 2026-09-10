@@ -264,3 +264,71 @@ describe('commit gate base branch resolution', () => {
     ]);
   });
 });
+
+/**
+ * Every tool this gate might spawn, recorded.
+ */
+function spawnRecorder(): { exec: Exec; commands: string[] } {
+  const commands: string[] = [];
+  const exec: Exec = (command, args) => {
+    commands.push(path.basename(command));
+    if (args[0] === 'merge-base') {
+      return Promise.resolve(execResult('BASESHA\n'));
+    }
+    if (args[0] === 'diff' && args[1] === 'BASESHA') {
+      return Promise.resolve(execResult(''));
+    }
+    if (args[0] === 'diff' || args[0] === 'ls-files') {
+      return Promise.resolve(execResult('src/a.ts\n'));
+    }
+    return Promise.resolve(execResult(''));
+  };
+  return { exec, commands };
+}
+
+async function gateSpawns(
+  profile: 'commit' | 'push' | 'ci' | undefined,
+): Promise<string[]> {
+  const { exec, commands } = spawnRecorder();
+  await runCommitGate({
+    repoRoot: root,
+    baseBranch: 'main',
+    exec,
+    config,
+    resolveBin: (tool) => tool,
+    analyzers: { stryker: 'required' },
+    analyzerRungs: { stryker: 'push' },
+    ...(profile && { profile }),
+  });
+  return commands;
+}
+
+/**
+ * The rung a gate invocation IS, which `gate --mode=push` and `--mode=ci` now
+ * pass through (#61).
+ *
+ * Before this, `runCommitGate` hardcoded `profile: 'commit'` for all three
+ * modes — they differed only in diff scope — so an analyzer a consumer moved
+ * to `push` would have run at commit anyway, which is the whole thing the
+ * config change is meant to prevent. The wiring is the part that regresses
+ * silently: the override would parse, be forwarded, and never take effect.
+ */
+describe('the gate rung', () => {
+  it('does not run a push-rung analyzer at the commit gate', async () => {
+    expect(await gateSpawns('commit')).not.toContain('stryker');
+  });
+
+  it('runs it at the push gate', async () => {
+    expect(await gateSpawns('push')).toContain('stryker');
+  });
+
+  it('runs it at the ci gate, which sits above push', async () => {
+    expect(await gateSpawns('ci')).toContain('stryker');
+  });
+
+  it('defaults to the commit rung when no profile is given', async () => {
+    // `.husky/pre-commit` calls `gate --mode=commit`, and every existing caller
+    // that passes no profile must keep the cadence it had.
+    expect(await gateSpawns(undefined)).not.toContain('stryker');
+  });
+});

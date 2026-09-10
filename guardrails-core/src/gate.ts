@@ -40,7 +40,7 @@ import {
   type GateConfig,
   type GateDecision,
 } from './gate-decision.js';
-import type { AnalyzerMode } from './verify/analyzer-policy.js';
+import type { AnalyzerMode, Rung } from './verify/analyzer-policy.js';
 import {
   loadRecurrence,
   loadSession,
@@ -67,6 +67,11 @@ export interface StopGateOptions {
   Per-analyzer opt-in (`RepoConfig.analyzers`), forwarded to `runVerify`.
   */
   analyzers?: Readonly<Record<string, AnalyzerMode>>;
+  /**
+   * Per-analyzer cadence overrides — see `VerifyOptions.analyzerRungs`.
+   */
+  analyzerRungs?: Readonly<Record<string, Rung>> | undefined;
+
   /**
   Claude/Copilot says this Stop is a retry caused by an earlier block.
   */
@@ -119,6 +124,20 @@ export interface CommitGateOptions {
   Per-analyzer opt-in (`RepoConfig.analyzers`), forwarded to `runVerify`.
   */
   analyzers?: Readonly<Record<string, AnalyzerMode>>;
+  /**
+   * Per-analyzer cadence overrides — see `VerifyOptions.analyzerRungs`.
+   */
+  analyzerRungs?: Readonly<Record<string, Rung>> | undefined;
+  /**
+   * Which rung this gate is. `commit` by default; `gate --mode=push` and
+   * `--mode=ci` pass their own.
+   *
+   * Before #61 this was hardcoded to `commit` for all three, so `push` and
+   * `ci` differed from `commit` only in diff scope and an analyzer could not
+   * be placed above the commit rung at all. Behaviour is unchanged for every
+   * built-in analyzer, none of which declares a floor above `commit`.
+   */
+  profile?: Rung;
   /**
    * Which change set the diff-scoped analyzers see. `'staged'` at the
    * pre-commit rung, `'branch'` (the default) at pre-push and CI.
@@ -347,6 +366,18 @@ export async function runStopGate(
     profile: 'stop' as const,
     ...(options.resolveBin && { resolveBin: options.resolveBin }),
     ...(options.analyzers && { analyzers: options.analyzers }),
+    // Forwarded here too: an override can LOWER an analyzer onto this rung,
+    // not only raise one off the commit rung.
+    //
+    // Passed straight through rather than conditionally spread, and typed
+    // `| undefined` to allow it. A conditional spread here is a provably
+    // equivalent mutant: forcing the guard true still evaluates the literal, so
+    // an absent override yields `{ analyzerRungs: undefined }` rather than no
+    // key, and `runVerify` reads this only via `options.analyzerRungs ?? {}`,
+    // which cannot tell the two apart. Same reasoning, and the same fix, as
+    // `CommitGateOptions.sessionId` — a mutant avoided costs nothing, where a
+    // mutant suppressed costs a sanction that has to be justified forever.
+    analyzerRungs: options.analyzerRungs,
   };
   const { violations } = await runVerify(verifyOptions);
   // Guidance rides on the violation so it reaches the fixer through the
@@ -450,9 +481,11 @@ export async function runCommitGate(
     repoRoot: options.repoRoot,
     baseBranch: options.baseBranch,
     exec: options.exec,
-    profile: 'commit',
+    profile: options.profile ?? 'commit',
     ...(options.resolveBin && { resolveBin: options.resolveBin }),
     ...(options.analyzers && { analyzers: options.analyzers }),
+    // Straight through, not conditionally spread — see the stop gate's note.
+    analyzerRungs: options.analyzerRungs,
     ...(options.changedScope && { changedScope: options.changedScope }),
   });
   // The commit gate audits the branch's CUMULATIVE diff and has no per-loop

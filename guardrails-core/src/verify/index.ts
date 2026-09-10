@@ -51,6 +51,8 @@ import type { Violation } from '../violation.js';
 import { loadWorkspaceResolver, withPackages } from '../workspaces.js';
 import {
   type AnalyzerMode,
+  RUNG_ORDER,
+  type Rung,
   analyzerMode,
   decideAnalyzer,
   declaredProviders,
@@ -87,7 +89,7 @@ export interface VerifyOptions {
   resolveBin?: (tool: string) => string;
   /** Cadence rung. Heavy whole-graph analyzers (knip, dependency-cruiser) run
    *  only at commit/ci; the per-turn stop gate stays fast. Defaults to 'stop'. */
-  profile?: 'stop' | 'commit' | 'ci';
+  profile?: Rung;
   /**
    * Which change set the diff-scoped analyzers see.
    *
@@ -116,6 +118,25 @@ export interface VerifyOptions {
    * `auto`. See `analyzer-policy.ts` for the truth table.
    */
   analyzers?: Readonly<Record<string, AnalyzerMode>>;
+  /**
+   * Per-analyzer cadence overrides (`RepoConfig.analyzerRungs`), replacing the
+   * table's `minRung` for the analyzers named.
+   *
+   * Reported from an adoption (#61): stryker's cost is dominated by a fixed
+   * per-invocation overhead — a full dry run before any mutant is tested — so a
+   * repo that commits often pays it at every checkpoint, and a one-file change
+   * still cost ~5 minutes. Moving it to `push` charges once per push over the
+   * union of the changed files instead.
+   *
+   * A config choice rather than a moved default, because the trade is genuinely
+   * per-repo: at `commit` you learn sooner on a smaller diff, at `push` you
+   * learn later but pay once. Nothing changes for a repo that sets nothing.
+   *
+   * The override REPLACES the table's floor rather than only raising it — a
+   * repo with a fast suite may want mutation feedback per turn, and refusing
+   * that would be this table imposing its own economics on everyone.
+   */
+  analyzerRungs?: Readonly<Record<string, Rung>> | undefined;
   /**
    * Package names the repo's own `package.json` declares. A provider named
    * there whose binary does not resolve is a broken install, not an opt-out.
@@ -1190,8 +1211,8 @@ async function runStryker(
   return [strykerReportMissingViolation(reportPath)];
 }
 
-type Rung = NonNullable<VerifyOptions['profile']>;
-const RUNG_ORDER: Record<Rung, number> = { stop: 0, commit: 1, ci: 2 };
+// `Rung` and `RUNG_ORDER` moved to `analyzer-policy.ts`, so `config.ts` can
+// parse a rung override without importing this module.
 
 type Scope = 'whole-project' | 'changed-files';
 
@@ -1504,6 +1525,7 @@ interface SelectedAnalyzer {
  */
 function selectAnalyzers(
   analyzers: Readonly<Record<string, AnalyzerMode>>,
+  analyzerRungs: Readonly<Record<string, Rung>>,
   declared: ReadonlySet<string>,
   profile: Rung,
   hasChangedFiles: boolean,
@@ -1517,7 +1539,10 @@ function selectAnalyzers(
     if (!decision.run) {
       continue;
     }
-    if (RUNG_ORDER[profile] < RUNG_ORDER[analyzer.minRung]) {
+    // The consumer's override REPLACES the table's floor when present — see
+    // `VerifyOptions.analyzerRungs`.
+    const rung = analyzerRungs[analyzer.tool] ?? analyzer.minRung;
+    if (RUNG_ORDER[profile] < RUNG_ORDER[rung]) {
       continue;
     }
     if (!hasChangedFiles && analyzer.scope === 'changed-files') {
@@ -1567,6 +1592,7 @@ export async function runVerify(options: VerifyOptions): Promise<VerifyResult> {
 
   const selected = selectAnalyzers(
     analyzers,
+    options.analyzerRungs ?? {},
     declared,
     profile,
     files.length > 0,

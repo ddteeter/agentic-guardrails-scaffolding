@@ -332,8 +332,12 @@ describe('analyzers', () => {
       JSON.stringify({ analyzers: { knip: 'sometimes', eslint: 3 } }),
     );
     // Dropped, not defaulted to off: a malformed entry must never be the thing
-    // that silently disables a guard.
-    expect(loadConfig(directory).analyzers).toEqual({});
+    // that silently disables a guard. toStrictEqual (not toEqual) is load-
+    // bearing here: it kills the `resolved !== undefined` -> `true` mutant in
+    // pickAnalyzerField, which would set `picked[tool] = undefined` instead of
+    // omitting the key entirely -- toEqual ignores undefined-valued
+    // properties and would pass against that mutant too.
+    expect(loadConfig(directory).analyzers).toStrictEqual({});
   });
 
   it('ignores an analyzers value that is not an object', () => {
@@ -343,6 +347,87 @@ describe('analyzers', () => {
       JSON.stringify({ analyzers: ['knip'] }),
     );
     expect(loadConfig(directory).analyzers).toEqual({});
+  });
+});
+
+/**
+ * The object form of an `analyzers` entry, which carries a cadence rung
+ * alongside the mode (#61).
+ *
+ * The string and boolean forms stay exactly as they were: an adopter who never
+ * heard of this keeps the config they wrote, and gets the rungs the built-in
+ * table declares.
+ */
+/**
+ * `loadConfig` over a throwaway repo whose config declares just this
+ * `analyzers` block.
+ */
+function configured(analyzers: unknown): ReturnType<typeof loadConfig> {
+  const directory = mkdtempSync(path.join(tmpdir(), 'guardrails-config-'));
+  writeFileSync(
+    path.join(directory, 'guardrails.config.json'),
+    JSON.stringify({ analyzers }),
+  );
+  return loadConfig(directory);
+}
+
+describe('analyzer rung overrides', () => {
+  it('defaults to no overrides, so the table decides every rung', () => {
+    const directory = mkdtempSync(path.join(tmpdir(), 'guardrails-config-'));
+    expect(loadConfig(directory).analyzerRungs).toEqual({});
+  });
+
+  it('reads a rung and a mode from the object form', () => {
+    const config = configured({ stryker: { mode: 'required', rung: 'push' } });
+    expect(config.analyzers).toEqual({ stryker: 'required' });
+    expect(config.analyzerRungs).toEqual({ stryker: 'push' });
+  });
+
+  it('accepts a rung with no mode, leaving the mode at auto', () => {
+    // Moving an analyzer's cadence and opting into it are separate decisions;
+    // requiring both would make the common case ("just run it later") wordier
+    // than it needs to be.
+    const config = configured({ stryker: { rung: 'push' } });
+    expect(config.analyzers).toEqual({});
+    expect(config.analyzerRungs).toEqual({ stryker: 'push' });
+  });
+
+  it('accepts a mode with no rung, which is the string form spelled long', () => {
+    const config = configured({ stryker: { mode: 'off' } });
+    expect(config.analyzers).toEqual({ stryker: 'off' });
+    expect(config.analyzerRungs).toEqual({});
+  });
+
+  it('leaves the string and boolean forms untouched', () => {
+    const config = configured({ eslint: 'required', knip: true, tsc: false });
+    expect(config.analyzers).toEqual({
+      eslint: 'required',
+      knip: 'required',
+      tsc: 'off',
+    });
+    expect(config.analyzerRungs).toEqual({});
+  });
+
+  it('drops an unrecognised rung rather than defaulting it', () => {
+    // Same direction as every other defensive path here: a typo must not
+    // silently move a guard to a rung that runs it LESS often. Dropping leaves
+    // the table's floor, which is the more-checking answer.
+    const config = configured({
+      stryker: { mode: 'required', rung: 'weekly' },
+    });
+    expect(config.analyzers).toEqual({ stryker: 'required' });
+    expect(config.analyzerRungs).toEqual({});
+  });
+
+  it('drops an unrecognised mode while keeping a valid rung', () => {
+    const config = configured({ stryker: { mode: 'sometimes', rung: 'push' } });
+    expect(config.analyzers).toEqual({});
+    expect(config.analyzerRungs).toEqual({ stryker: 'push' });
+  });
+
+  it('ignores an entry that is an array or null rather than an object', () => {
+    expect(configured({ stryker: ['push'] }).analyzerRungs).toEqual({});
+    expect(configured({ stryker: null }).analyzerRungs).toEqual({});
   });
 });
 

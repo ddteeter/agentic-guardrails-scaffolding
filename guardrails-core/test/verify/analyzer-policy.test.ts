@@ -4,6 +4,7 @@ import {
   analyzerMode,
   decideAnalyzer,
   declaredProviders,
+  isRung,
 } from '../../src/verify/analyzer-policy.js';
 
 describe('decideAnalyzer', () => {
@@ -63,6 +64,29 @@ describe('analyzerMode', () => {
   it('lets an explicit setting override a non-auto default', () => {
     expect(analyzerMode({ dupes: 'required' }, 'dupes')).toBe('required');
     expect(analyzerMode({ dupes: 'auto' }, 'dupes')).toBe('auto');
+  });
+});
+
+describe('isRung', () => {
+  it('accepts each of the four rung names', () => {
+    for (const rung of ['stop', 'commit', 'push', 'ci']) {
+      expect(isRung(rung)).toBe(true);
+    }
+  });
+
+  it('rejects a string that names no rung', () => {
+    // Kills the LogicalOperator `&&` -> `||` mutant: under `||` a string alone
+    // would satisfy the check regardless of membership in RUNG_NAMES.
+    expect(isRung('weekly')).toBe(false);
+  });
+
+  it('rejects a non-string value outright, not only an unrecognised string', () => {
+    // Kills the ConditionalExpression -> true mutant: a bypassed typeof guard
+    // would accept ANY value at all, including one no config could ever
+    // legitimately produce as a rung.
+    expect(isRung(42)).toBe(false);
+    expect(isRung(undefined)).toBe(false);
+    expect(isRung({ rung: 'push' })).toBe(false);
   });
 });
 
