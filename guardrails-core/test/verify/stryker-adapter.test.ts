@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  canReuseIncrementalCache,
   isStrykerReportJson,
   parseStrykerJson,
   unrunSurvivedMutants,
@@ -543,5 +544,177 @@ describe('parseStrykerJson: what the mutation actually did', () => {
     const message = messageFor('if (a) {\n  return b;\n}');
 
     expect(message).not.toContain('\n');
+  });
+});
+
+/**
+ * A cache stryker would have written for a run over `files`, with per-test
+ * coverage recorded whenever `coveredBy` is given — the shape reuse is allowed
+ * for. An absent `coveredBy` is dropped by `JSON.stringify`, which is exactly
+ * how a runner that reports no coverage leaves the field out.
+ */
+function cache(
+  files: Record<string, { coveredBy?: string[]; status?: string }>,
+): string {
+  return JSON.stringify({
+    schemaVersion: '1.0',
+    thresholds: { high: 80, low: 60 },
+    files: Object.fromEntries(
+      Object.entries(files).map(([name, mutant]) => [
+        name,
+        {
+          language: 'typescript',
+          source: '',
+          mutants: [
+            {
+              id: '1',
+              mutatorName: 'ConditionalExpression',
+              status: mutant.status ?? 'Survived',
+              location: {
+                start: { line: 1, column: 1 },
+                end: { line: 1, column: 9 },
+              },
+              coveredBy: mutant.coveredBy,
+            },
+          ],
+        },
+      ]),
+    ),
+  });
+}
+
+/**
+ * The predicate that decides whether stryker's incremental cache from a
+ * previous run may be kept.
+ *
+ * Every case here is a way the cache can be WRONG for this run, and the answer
+ * to all of them is the same: `false`, which makes `runStryker` delete the file
+ * and take a cold run. Reuse has to earn itself.
+ */
+describe('canReuseIncrementalCache', () => {
+  it('reuses a cache whose files are all in this run and which recorded coverage', () => {
+    expect(
+      canReuseIncrementalCache(cache({ 'src/a.ts': { coveredBy: ['t1'] } }), [
+        'src/a.ts',
+        'src/b.ts',
+      ]),
+    ).toBe(true);
+  });
+
+  it('rejects a cache holding a file this run does not mutate', () => {
+    // Stryker folds cached results for out-of-scope files back into the report
+    // it writes (`incremental-differ`'s "didn't run this time around" branch),
+    // so a cache from some other scope carries verdicts this run never checked.
+    expect(
+      canReuseIncrementalCache(
+        cache({
+          'src/a.ts': { coveredBy: ['t1'] },
+          'src/foreign.ts': { coveredBy: ['t2'] },
+        }),
+        ['src/a.ts'],
+      ),
+    ).toBe(false);
+  });
+
+  it('rejects a cache in which no mutant records a covering test', () => {
+    // Without per-test coverage `IncrementalDiffer.mutantCanBeReused` returns
+    // true unconditionally: a `Survived` verdict would be reused however the
+    // tests changed, so the fixer's new test could never clear it. This is the
+    // seeded config's shape — stryker's own initializer writes
+    // `coverageAnalysis: 'off'` for the `command` runner.
+    expect(
+      canReuseIncrementalCache(cache({ 'src/a.ts': {} }), ['src/a.ts']),
+    ).toBe(false);
+  });
+
+  it('rejects a cache whose only coverage entry is empty', () => {
+    expect(
+      canReuseIncrementalCache(cache({ 'src/a.ts': { coveredBy: [] } }), [
+        'src/a.ts',
+      ]),
+    ).toBe(false);
+  });
+
+  it('accepts a cache where coverage is recorded on any one mutant', () => {
+    // A `NoCoverage` mutant legitimately has no covering test; one attributed
+    // mutant anywhere in the cache is enough to prove the runner reports them.
+    expect(
+      canReuseIncrementalCache(
+        cache({
+          'src/a.ts': { status: 'NoCoverage' },
+          'src/b.ts': { coveredBy: ['t1'] },
+        }),
+        ['src/a.ts', 'src/b.ts'],
+      ),
+    ).toBe(true);
+  });
+
+  it('accepts a file whose mutants are only partly covered', () => {
+    // Kills `.every` -> `.some` on the INNER check: `cache()` above only ever
+    // gives a file one mutant, so `.some` and `.every` agree on it and the
+    // mutant survives. A real file mixes an attributed mutant with a
+    // `NoCoverage` one (empty `coveredBy`) on the SAME file entry — reuse
+    // must still be allowed, because one attributed mutant anywhere proves
+    // the runner reports per-test coverage at all. `.every` would reject this
+    // file for its unattributed mutant and, being the only file, the whole
+    // cache.
+    const mixedFile = JSON.stringify({
+      schemaVersion: '1.0',
+      files: {
+        'src/a.ts': {
+          language: 'typescript',
+          source: '',
+          mutants: [
+            {
+              id: '1',
+              mutatorName: 'ConditionalExpression',
+              status: 'Survived',
+              location: {
+                start: { line: 1, column: 1 },
+                end: { line: 1, column: 9 },
+              },
+              coveredBy: ['t1'],
+            },
+            {
+              id: '2',
+              mutatorName: 'EqualityOperator',
+              status: 'NoCoverage',
+              location: {
+                start: { line: 2, column: 1 },
+                end: { line: 2, column: 9 },
+              },
+              coveredBy: [],
+            },
+          ],
+        },
+      },
+    });
+    expect(canReuseIncrementalCache(mixedFile, ['src/a.ts'])).toBe(true);
+  });
+
+  it('rejects an empty cache, which proves no coverage either way', () => {
+    expect(
+      canReuseIncrementalCache(JSON.stringify({ files: {} }), ['src/a.ts']),
+    ).toBe(false);
+  });
+
+  it('rejects a payload that is not a stryker report', () => {
+    expect(canReuseIncrementalCache('not json', ['src/a.ts'])).toBe(false);
+    expect(canReuseIncrementalCache('{"files":"nope"}', ['src/a.ts'])).toBe(
+      false,
+    );
+  });
+
+  it('rejects the empty string a missing cache file reads as', () => {
+    expect(canReuseIncrementalCache('', ['src/a.ts'])).toBe(false);
+  });
+
+  it('rejects every cache when this run mutates nothing', () => {
+    expect(
+      canReuseIncrementalCache(
+        cache({ 'src/a.ts': { coveredBy: ['t1'] } }),
+        [],
+      ),
+    ).toBe(false);
   });
 });

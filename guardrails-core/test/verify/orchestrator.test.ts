@@ -2025,6 +2025,91 @@ describe('stryker fails open twice (defect 3)', () => {
       },
     },
   });
+  /** A cache stryker would have written for a previous run over exactly this
+   *  run's changed file, with per-test coverage recorded. */
+  const reusableCache = JSON.stringify({
+    schemaVersion: '1.0',
+    files: {
+      'guardrails-core/src/foo.ts': {
+        language: 'typescript',
+        source: '',
+        mutants: [
+          {
+            id: '1',
+            mutatorName: 'ConditionalExpression',
+            status: 'Killed',
+            coveredBy: ['test-1'],
+            location: {
+              start: { line: 7, column: 1 },
+              end: { line: 7, column: 4 },
+            },
+          },
+        ],
+      },
+    },
+  });
+  /**
+   * The same cache, plus a file this run does not mutate.
+   */
+  const foreignScopeCache = JSON.stringify({
+    schemaVersion: '1.0',
+    files: {
+      'guardrails-core/src/foo.ts': {
+        language: 'typescript',
+        source: '',
+        mutants: [
+          {
+            id: '1',
+            mutatorName: 'ConditionalExpression',
+            status: 'Killed',
+            coveredBy: ['test-1'],
+            location: {
+              start: { line: 7, column: 1 },
+              end: { line: 7, column: 4 },
+            },
+          },
+        ],
+      },
+      'guardrails-core/src/elsewhere.ts': {
+        language: 'typescript',
+        source: '',
+        mutants: [
+          {
+            id: '2',
+            mutatorName: 'BlockStatement',
+            status: 'Survived',
+            coveredBy: ['test-2'],
+            location: {
+              start: { line: 1, column: 1 },
+              end: { line: 1, column: 4 },
+            },
+          },
+        ],
+      },
+    },
+  });
+  /** In scope, but no mutant names a covering test — the shape a runner with
+   *  `coverageAnalysis: "off"` leaves behind. */
+  const uncoveredCache = JSON.stringify({
+    schemaVersion: '1.0',
+    files: {
+      'guardrails-core/src/foo.ts': {
+        language: 'typescript',
+        source: '',
+        mutants: [
+          {
+            id: '1',
+            mutatorName: 'ConditionalExpression',
+            status: 'Survived',
+            location: {
+              start: { line: 7, column: 1 },
+              end: { line: 7, column: 4 },
+            },
+          },
+        ],
+      },
+    },
+  });
   const changedFilesOverrides: Record<string, ExecResult> = {
     'git diff --name-only --diff-filter=ACM main': {
       stdout: 'guardrails-core/src/foo.ts\n',
@@ -2232,11 +2317,15 @@ describe('stryker fails open twice (defect 3)', () => {
     expect(violations.some((v) => v.ruleId === 'stryker/survived')).toBe(false);
   });
 
-  it('deletes the report and incremental cache before running stryker', async () => {
+  it('deletes the report and an unusable incremental cache before running stryker', async () => {
     // The redesign: `--jsonReporter.fileName` is a config-file-only key, never
     // registered as a CLI flag, so the report path cannot be relocated per run.
     // Staleness is closed by DELETING the default path first instead — nothing
     // there afterwards means nothing else could have written it in between.
+    //
+    // The cache served here is an empty report: no mutant in it names a
+    // covering test, so `canReuseIncrementalCache` rejects it and the cold
+    // run is taken.
     const order: string[] = [];
     const { exec } = execWithStryker({ stdout: '', stderr: '', code: 0 });
     const { violations } = await runVerify({
@@ -2263,6 +2352,118 @@ describe('stryker fails open twice (defect 3)', () => {
     ]);
     expect(order[2]).toBe('run');
     expect(violations.filter((v) => v.tool === 'stryker')).toEqual([]);
+  });
+
+  it('keeps an incremental cache scoped to this run that recorded coverage', async () => {
+    // #59: `--incremental` was passed immediately after the cache it reads was
+    // deleted, so the flag was a no-op and every gate run was cold. The cache
+    // is kept when the cache itself shows reuse is safe — see
+    // `canReuseIncrementalCache`.
+    const removed: string[] = [];
+    const { exec, calls } = execWithStryker({
+      stdout: '',
+      stderr: '',
+      code: 0,
+    });
+    await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      profile: 'commit',
+      readFile: (filePath) =>
+        Promise.resolve(
+          filePath.includes('stryker-incremental')
+            ? reusableCache
+            : JSON.stringify({ files: {} }),
+        ),
+      removeFile: (filePath) => {
+        removed.push(filePath);
+        return Promise.resolve();
+      },
+    });
+    expect(removed.some((file) => file.includes('stryker-incremental'))).toBe(
+      false,
+    );
+    // The report is still deleted unconditionally: it is this run's only output
+    // channel, and a stale one must never be read as this run's result.
+    expect(removed).toEqual([expect.stringContaining('mutation.json')]);
+    // And the flag that makes the kept cache mean anything is still passed.
+    const args = calls.find((call) => call.command === 'stryker')?.args ?? [];
+    expect(args).toContain('--incremental');
+  });
+
+  it('deletes an incremental cache holding a file this run does not mutate', async () => {
+    // Stryker folds cached out-of-scope verdicts back into the report it
+    // writes, so a cache from another `--mutate` set is not this run's answer.
+    const removed: string[] = [];
+    const { exec } = execWithStryker({ stdout: '', stderr: '', code: 0 });
+    await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      profile: 'commit',
+      readFile: (filePath) =>
+        Promise.resolve(
+          filePath.includes('stryker-incremental')
+            ? foreignScopeCache
+            : JSON.stringify({ files: {} }),
+        ),
+      removeFile: (filePath) => {
+        removed.push(filePath);
+        return Promise.resolve();
+      },
+    });
+    expect(removed.some((file) => file.includes('stryker-incremental'))).toBe(
+      true,
+    );
+  });
+
+  it('deletes an incremental cache from a runner that reports no coverage', async () => {
+    // Without per-test coverage stryker reuses a `Survived` verdict however the
+    // tests changed, so the fixer's new test could never clear the mutant.
+    const removed: string[] = [];
+    const { exec } = execWithStryker({ stdout: '', stderr: '', code: 0 });
+    await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      profile: 'commit',
+      readFile: (filePath) =>
+        Promise.resolve(
+          filePath.includes('stryker-incremental')
+            ? uncoveredCache
+            : JSON.stringify({ files: {} }),
+        ),
+      removeFile: (filePath) => {
+        removed.push(filePath);
+        return Promise.resolve();
+      },
+    });
+    expect(removed.some((file) => file.includes('stryker-incremental'))).toBe(
+      true,
+    );
+  });
+
+  it('deletes an incremental cache it cannot read', async () => {
+    const removed: string[] = [];
+    const { exec } = execWithStryker({ stdout: '', stderr: '', code: 0 });
+    await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      profile: 'commit',
+      readFile: (filePath) =>
+        filePath.includes('stryker-incremental')
+          ? Promise.reject(new Error('ENOENT: no such file'))
+          : Promise.resolve(JSON.stringify({ files: {} })),
+      removeFile: (filePath) => {
+        removed.push(filePath);
+        return Promise.resolve();
+      },
+    });
+    expect(removed.some((file) => file.includes('stryker-incremental'))).toBe(
+      true,
+    );
   });
 
   it('carries no report-path flag and no repo-specific path in its argv', async () => {

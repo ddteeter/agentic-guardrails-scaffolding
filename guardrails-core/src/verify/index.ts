@@ -72,6 +72,7 @@ import { parseKnipJson } from './knip-adapter.js';
 import { parseNpmLsJson } from './npm-peers-adapter.js';
 import { isRecord } from './report-shape.js';
 import {
+  canReuseIncrementalCache,
   isStrykerReportJson,
   parseStrykerJson,
   unrunSurvivedMutants,
@@ -106,7 +107,8 @@ export interface VerifyOptions {
   readFile?: (filePath: string) => Promise<string>;
   /** File removal seam: `runStryker` deletes stryker's report path before
    *  every run, so a stale report from a prior run can never be mistaken for
-   *  this one's. Defaults to node:fs/promises `rm` with `{ force: true }`
+   *  this one's, and its incremental cache whenever that cache may not be
+   *  reused. Defaults to node:fs/promises `rm` with `{ force: true }`
    *  (a missing file is not an error); injected in tests. */
   removeFile?: (filePath: string) => Promise<void>;
   /**
@@ -733,10 +735,12 @@ function strykerReportMissingViolation(reportPath: string): Violation {
  *  from stryker's own default, gitignored, cross-run-persistent location
  *  (`STRYKER_REPORT_PATH`) — there is no flag to relocate it per run (see that
  *  constant's comment) — so stale output from a PRIOR run could otherwise be
- *  misread as this run's. `removeFile` deletes both the JSON report and
- *  Stryker's incremental cache BEFORE stryker runs. The latter is essential:
- *  Stryker can reuse survivor results when tests change but production does
- *  not, exactly the fixer-loop case where a new test is meant to kill a mutant.
+ *  misread as this run's. `removeFile` deletes the JSON report BEFORE stryker
+ *  runs. Stryker's incremental cache is deleted before the run too, but
+ *  conditionally — see `discardUnusableIncrementalCache`. Keeping it when it is
+ *  safe to keep is what makes `--incremental` mean anything (#59); deleting it
+ *  whenever the cache cannot prove itself is what stops stryker reusing a
+ *  survivor verdict the fixer's new test was meant to overturn.
  *
  *  A report still missing after a zero exit is a failure (`analyzer-failed`,
  *  not clean): whether because stryker crashed internally without a non-zero
@@ -896,6 +900,45 @@ async function configuredMutateNegations(
   return [];
 }
 
+/**
+ * Deletes stryker's incremental cache unless this run may reuse it.
+ *
+ * `--incremental` is passed on every run, so stryker always WRITES a cache for
+ * the next one; whether the next one reads it is decided here, by what is
+ * actually in the file (`canReuseIncrementalCache`). Previously the file was
+ * deleted unconditionally on the line before the flag was passed, which made
+ * the flag a no-op — every gate run was a cold full run of the changed files
+ * (#59).
+ *
+ * Deleting is the fail-closed direction and every uncertainty takes it: a cache
+ * that cannot be read at all is treated exactly like one that must not be
+ * reused. It has to be deleted rather than merely left unread, because a
+ * consumer's own `stryker.conf.json` may set `incremental: true` — `STRYKER_SEED`
+ * does — and stryker then reads the file whatever this process puts on the CLI.
+ * An absent file is the only thing that reliably means "cold run".
+ */
+async function discardUnusableIncrementalCache(
+  seams: {
+    readFile: (filePath: string) => Promise<string>;
+    removeFile: (filePath: string) => Promise<void>;
+    repoRoot: string;
+  },
+  mutateFiles: readonly string[],
+): Promise<void> {
+  const cachePath = path.join(seams.repoRoot, STRYKER_INCREMENTAL_PATH);
+  let cache = '';
+  try {
+    cache = await seams.readFile(cachePath);
+  } catch {
+    // Deliberately empty: a cache that cannot be read is not a reusable one,
+    // and `''` reaches the predicate below as exactly that.
+  }
+  if (canReuseIncrementalCache(cache, mutateFiles)) {
+    return;
+  }
+  await seams.removeFile(cachePath);
+}
+
 async function runStryker(
   options: VerifyOptions,
   resolveBin: (tool: string) => string,
@@ -922,7 +965,10 @@ async function runStryker(
   const reportPath = STRYKER_REPORT_PATH;
 
   await removeFile(path.join(repoRoot, reportPath));
-  await removeFile(path.join(repoRoot, STRYKER_INCREMENTAL_PATH));
+  await discardUnusableIncrementalCache(
+    { readFile, removeFile, repoRoot },
+    production,
+  );
 
   const result = await exec(
     resolveBin('stryker'),

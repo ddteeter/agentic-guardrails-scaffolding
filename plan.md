@@ -1237,7 +1237,12 @@ commit gate will report. Two distinct problems:
   equivalent or (worse) asks for a suppression.
 - **Cache poisoning.** The run writes `reports/stryker-incremental.json`, and a
   later run over a different file set reads that state back. Delete that file
-  before re-verifying, or the false survivor persists across runs.
+  before re-verifying, or the false survivor persists across runs. _(Update,
+  issue #59: the GATE now decides this for itself —
+  `canReuseIncrementalCache` refuses a cache holding any file outside the run's
+  own `--mutate` set, so a single-file cache can no longer poison a wider gate
+  run. A hand-run preview at the SAME scope still reuses, and still
+  over-reports for the reason above, so the practice below is unchanged.)_
 
 **Practice:** treat a single-file run as a cheap early filter. Before acting on
 any survivor it reports — and always before proposing a `sanctionedSuppressions`
@@ -2695,3 +2700,46 @@ fallow and dropped by the scoping filter. Two of this repo's seven remaining
 groups are in `scripts/sync-agents.mjs` and are invisible to the gate for that
 reason. Widening the shared change set would also pull `.mjs` into stryker's
 mutation target, which is a different decision.
+
+### Finding (issue #59, reported from an adoption): `--incremental` was a no-op
+
+`runStryker` deleted `reports/stryker-incremental.json` on the line immediately
+before it passed `--incremental`. The flag only does anything when the file it
+reads survives from the previous run, so every gate run was a cold full run of
+the changed files and the flag's only effect was writing a file the next run
+deleted. Reported by a consumer whose commit and push gates take 5–15 minutes
+each (`@cloudflare/vitest-pool-workers`, ~4,500 mutants across 11 ratcheted
+scopes).
+
+The deletion was not a stray line, and the issue said so: it was the answer to
+the cache-poisoning finding above. What made the pair wrong was that each half
+was unconditional. Two things make an inherited cache unsafe here, and both are
+decidable from the cache file itself:
+
+1. **Foreign scope.** `--mutate` is a different set of files on every run, and
+   stryker folds cached verdicts for out-of-scope files back into the report it
+   writes (`incremental-differ`'s "old mutants that didn't run this time around
+   aren't forgotten" branch).
+2. **No per-test coverage.** `IncrementalDiffer.mutantCanBeReused` returns
+   `true` unconditionally when the runner reports no coverage, so a `Survived`
+   verdict is reused however the tests changed — the fixer's new test could
+   never clear the mutant and the loop could never go green. Not a corner case:
+   stryker's own initializer writes `coverageAnalysis: 'off'` for the `command`
+   runner, which is the runner `STRYKER_SEED` ships.
+
+**Shipped:** `--incremental` is now passed on every run, so a cache is always
+written for the next one, and the DELETION became conditional
+(`discardUnusableIncrementalCache` → `canReuseIncrementalCache`). The cache is
+kept only when every file in it is one this run mutates and at least one mutant
+in it names a covering test; anything unreadable, unparseable or unproven is
+deleted, as before. No new configuration surface, no new paths, and the default
+`incrementalFile` location stays the one already gitignored.
+
+The optimisation's failure mode is a false survivor that no test can clear, so
+it is guarded live rather than by hand-written reports:
+`test/drift/stryker-incremental.test.ts` runs real stryker twice over a fixture
+with one known survivor, keeps the cache between runs, and asserts that (a) a
+real vitest-runner cache still satisfies the predicate — if it stops, reuse
+silently switches off for everyone — and (b) the cached survivor comes back
+KILLED once its covering test is strengthened. Same shape, and the same reason,
+as `stryker-runner.test.ts`.

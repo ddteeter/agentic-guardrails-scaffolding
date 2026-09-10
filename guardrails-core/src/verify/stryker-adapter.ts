@@ -290,3 +290,62 @@ export function unrunSurvivedMutants(
   }
   return count;
 }
+
+/**
+ * May stryker's incremental cache from a previous run be kept for this one?
+ *
+ * `--incremental` is only worth anything if the cache it reads survives from
+ * the previous run, and `runStryker` used to delete that file immediately
+ * before passing the flag — so every gate run was a cold one and the flag's
+ * only effect was writing a file the next run deleted (#59). Deleting was not a
+ * stray line: an unconditionally kept cache is genuinely unsafe here, in two
+ * ways this predicate is the guard against. The fix is to make the deletion
+ * conditional rather than to drop either half.
+ *
+ * Reuse is granted only on evidence in the cache itself, never on what the
+ * consumer's config claims:
+ *
+ * 1. **Scope.** Every file in the cache must be one this run mutates. Stryker
+ *    folds cached verdicts for out-of-scope files back into the report it
+ *    writes (`incremental-differ`'s "old mutants that didn't run this time
+ *    around aren't forgotten" branch), so a cache written for some other
+ *    `--mutate` set carries results this run never checked. Subset, not
+ *    equality: a run whose scope has GROWN reuses what it can and mutates the
+ *    rest cold, which is the whole point.
+ * 2. **Per-test coverage.** At least one mutant must name a covering test.
+ *    When the runner reports no coverage, stryker's `mutantCanBeReused` returns
+ *    `true` unconditionally — a `Survived` verdict is then reused no matter how
+ *    the tests changed, which would make the fixer's new test unable to ever
+ *    clear the mutant and the loop unable to go green. That is not a corner
+ *    case: stryker's own initializer writes `coverageAnalysis: 'off'` for the
+ *    `command` runner, which is the runner `STRYKER_SEED` ships.
+ *
+ * A cache that is missing, unparseable, or not a report reads as `''` and is
+ * rejected by the same path — fail toward the cold run, as everywhere else in
+ * this module.
+ *
+ * What this does NOT promise is that a reused verdict is more trustworthy than
+ * the cold run it replaces: a cache written by a hand-run
+ * `npx stryker run --mutate <one file>` can satisfy both rules, and the vitest
+ * runner's `related` test selection makes such a run over-report survivors
+ * (plan.md, "Cache poisoning"). It answers only what it can: this cache is
+ * about this run's files, and stryker's own invalidation rules have the
+ * coverage data they need to run.
+ */
+export function canReuseIncrementalCache(
+  cacheJson: string,
+  mutateFiles: readonly string[],
+): boolean {
+  const parsed = parseReport(cacheJson);
+  if (parsed === undefined) {
+    return false;
+  }
+  const mutated = new Set(mutateFiles);
+  const entries = Object.entries(parsed.files);
+  if (entries.some(([file]) => !mutated.has(file))) {
+    return false;
+  }
+  return entries.some(([, fileResult]) =>
+    fileResult.mutants.some((mutant) => (mutant.coveredBy?.length ?? 0) > 0),
+  );
+}
