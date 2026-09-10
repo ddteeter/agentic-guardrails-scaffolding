@@ -309,17 +309,24 @@ config; and external-tool output). Two tracks:
 
 ## Roadmap: fixer-loop hardening (from the dogfooding live proof)
 
-- **The gate can hand work to the main agent while its own fixer is still
-  editing.** Observed in the #61 session. When the manifest is UNCHANGED the
-  Stop gate says "a fixer you already spawned is most likely still running —
-  wait for it to report", which is the right guard. When the attempt budget is
-  EXHAUSTED it says "survived the fix loop, resolve them directly" with no such
+- **The gate could hand work to the main agent while its own fixer was still
+  editing (fixed).** Observed in the #61 session. When the manifest is UNCHANGED
+  the Stop gate says "a fixer you already spawned is most likely still running —
+  wait for it to report", which is the right guard. When the attempt budget was
+  EXHAUSTED it said "survived the fix loop, resolve them directly" with no such
   check — so it told the main agent to edit a file the fixer it had named one
-  turn earlier was still working in. The main agent's edit raced the fixer's
-  and failed on a stale match; had it matched, it would have clobbered the
-  fixer's write. Same class of bug the unchanged-manifest guard exists to
-  prevent, missing from the other exit. The liveness check belongs on both
-  paths, not one.
+  turn earlier was still working in. The main agent's edit raced the fixer's and
+  failed on a stale match; had it matched, it would have clobbered the fixer's
+  write. Same class of bug the unchanged-manifest guard exists to prevent,
+  missing from the other exit.
+
+  `fullDump` now takes the in-flight fixer's name and appends a wait-first
+  caveat, on exactly the `isStalled` signal `unchangedPointer` already reads.
+  The escalation itself is deliberately NOT withheld: an unchanged digest cannot
+  distinguish "still running" from "finished and achieved nothing", so blocking
+  on a change that may never arrive would trade a race for a hang, and the
+  attempt budget is spent either way. What changed is that the agent is told to
+  let the in-flight fixer land before editing.
 
 - **A fixer proposing a sanction is often a restructuring signal, not an
   exemption request.** Three times in the #59/#61 sessions a fixer correctly
@@ -333,9 +340,10 @@ config; and external-tool output). Two tracks:
   A mutant avoided costs nothing; a mutant suppressed costs a sanction someone
   justifies for as long as the line lives. The fixers cannot do this — the
   restructure is outside their scope-lock and sometimes outside the manifest's
-  file — but `crushing-mutants` should tell the MAIN agent to attempt it before
-  taking an equivalence claim to the developer, and the guidance should name
-  these three shapes.
+  file — so `crushing-mutants` now opens with "First: can the equivalence be
+  removed instead of suppressed?", addressed to the MAIN agent, naming all three
+  shapes and telling it to try them before taking an equivalence claim to the
+  developer.
 
 - **A mutation-survivor fixer has no way to FIND the test file.** Observed twice
   in the #59 work: `guardrail-fixer-thorough` has `Read`/`Edit`/`Write` and no

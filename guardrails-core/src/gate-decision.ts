@@ -108,15 +108,46 @@ function unchangedPointer(
   );
 }
 
-function fullDump(violations: readonly Violation[]): string {
+/**
+ * The terminal hand-back: the fixer ladder is spent, so the MAIN agent gets the
+ * violations to resolve itself.
+ *
+ * `inFlightFixer` names a fixer that has not reported yet, and is present only
+ * when this escalation fires on a retry whose manifest is unchanged. That is
+ * the same signal `unchangedPointer` reads on the delegate path, and it matters
+ * here for the same reason: "resolve them directly" sends the main agent into
+ * files a subagent may still be editing, and two writers on one file lose each
+ * other's work. Observed live — the main agent's edit raced a running fixer's
+ * and survived only because the stale text no longer matched.
+ *
+ * The escalation is NOT withheld while a fixer is in flight. An unchanged
+ * digest cannot distinguish "still running" from "finished and achieved
+ * nothing", so waiting for a change that may never arrive would trade a race
+ * for a hang, and the attempt budget is spent either way. What changes is that
+ * the agent is told to let the in-flight fixer land before it starts editing.
+ */
+function fullDump(
+  violations: readonly Violation[],
+  inFlightFixer?: string,
+): string {
   const lines = violations.map(
     (violation) =>
       `- ${violation.file}:${violation.line ?? '?'} [${violation.ruleId}] ` +
       `${violation.message} (${violation.tool})`,
   );
+  const caveat =
+    inFlightFixer === undefined
+      ? []
+      : [
+          `NOTE: the ${inFlightFixer} from the last attempt may still be ` +
+            `running — the manifest has not changed since the previous block. ` +
+            `Wait for it to report before editing these files yourself; its ` +
+            `edits and yours would race.`,
+        ];
   return [
     `${violations.length} violation(s) survived the fix loop. Resolve them directly:`,
     ...lines,
+    ...caveat,
   ].join('\n');
 }
 
@@ -213,29 +244,31 @@ export function decideGate(input: GateInput): GateDecision {
   );
   const additionalContext = buildContext(crossed, corrected, graduation);
 
-  if (attempt > config.maxAttempts) {
-    return withOptional(
-      {
-        outcome: 'escalate',
-        block: true,
-        message: fullDump(violations),
-        nextSession: { ...resetAttempts(corrected), escalated: true },
-        nextRecurrence,
-      },
-      { additionalContext },
-    );
-  }
-
   const isLoose = violations.some((violation) => config.isLoose?.(violation));
   const fixerAgent =
     isLoose || attempt >= config.maxAttempts
       ? config.thoroughFixer
       : config.fastFixer;
 
-  // Identical manifest on a retry means no fixer edit has landed yet. See
-  // `unchangedPointer`.
+  // Identical manifest on a retry means no fixer edit has landed yet. Read by
+  // BOTH exits below: `unchangedPointer` on the delegate path, and the
+  // in-flight caveat on the escalate path. See `unchangedPointer` and
+  // `fullDump`.
   const digest = violationDigest(violations);
   const isStalled = isRetry && session.lastViolationDigest === digest;
+
+  if (attempt > config.maxAttempts) {
+    return withOptional(
+      {
+        outcome: 'escalate',
+        block: true,
+        message: fullDump(violations, isStalled ? fixerAgent : undefined),
+        nextSession: { ...resetAttempts(corrected), escalated: true },
+        nextRecurrence,
+      },
+      { additionalContext },
+    );
+  }
 
   return withOptional(
     {

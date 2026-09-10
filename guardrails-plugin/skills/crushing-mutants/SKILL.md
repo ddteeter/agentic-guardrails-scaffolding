@@ -110,6 +110,42 @@ Read the mutant's `replacement` — it tells you exactly what to defeat.
 - **A `return []` replaced with junk** → assert the elements' shape, not just
   emptiness.
 
+## First: can the equivalence be removed instead of suppressed?
+
+**Before proving a mutant equivalent, try to delete it.** An equivalent mutant
+is usually not a fact about the logic — it is a fact about the code's SHAPE, and
+a shape can be changed. A mutant that no longer exists costs nothing; a mutant
+suppressed costs a directive, a `sanctionedSuppressions` entry, and a reviewer's
+attention for as long as the line lives.
+
+This is for the **main agent**. A fixer subagent cannot do it: the restructure is
+outside the scope-lock, and is often in a different file from the manifest's.
+When a fixer escalates an equivalence claim, this is the first thing to try —
+three such escalations in one milestone were all dissolved this way rather than
+granted.
+
+Three shapes that recur, all observed in this repo:
+
+- **A redundant guard the COMPILER wanted, not the runtime.**
+  `typeof value === 'string' && NAMES.has(value)` where `NAMES` is a
+  `ReadonlySet<string>`: `Set.prototype.has` compares with SameValueZero and
+  never coerces, so the `typeof` half can never change an answer, and nothing
+  distinguishes it from `true &&`. Widening the set to `ReadonlySet<unknown>`
+  lets the guard go, and the mutant with it.
+- **A conditional spread whose absent case is indistinguishable.**
+  `...(options.x && { x: options.x })` is equivalent whenever the reader treats
+  a missing key and an `undefined` value the same (`options.x ?? {}` does).
+  Declare the field `x?: T | undefined` and pass `x: options.x` straight
+  through.
+- **A control-flow statement that is already the default.** `continue` as the
+  last statement of a loop body, `return undefined` at the end of a function:
+  an emptied block behaves identically. Restructure so the statement does
+  something — move a `return` out of the `try` so `continue` skips a real
+  statement — and the mutant becomes killable by a test worth having.
+
+If none of these apply and the equivalence is genuinely in the logic, continue
+below.
+
 ## When it really is equivalent
 
 1. **Write the argument down at the site**, as a comment, in terms of what makes
