@@ -11,10 +11,10 @@ this doc is wrong until it is updated to match, not the other way around.
 `guardrails-core` ships as a GitHub Release tarball, not from npm:
 
 ```bash
-npm i -D https://github.com/ddteeter/agentic-guardrails-scaffolding/releases/download/v0.3.0/guardrails-core-0.3.0.tgz
+npm i -D https://github.com/ddteeter/agentic-guardrails-scaffolding/releases/download/v0.3.1/guardrails-core-0.3.1.tgz
 ```
 
-That URL resolves once `v0.3.0`'s release workflow has run — a release is a
+That URL resolves once `v0.3.1`'s release workflow has run — a release is a
 pushed `v*` tag, which packs the tarball and attaches it. A later version is a
 new tag, a new release asset, and a hand-edited URL — see the cost note below.
 
