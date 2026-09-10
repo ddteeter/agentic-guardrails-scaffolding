@@ -359,6 +359,43 @@ describe('runCommand — gate stop', () => {
 
 /** Canned exec for the pretooluse-gate tests: `merge-base` resolves to a sha,
  * `diff <sha>` returns the mapped diff text, everything else is empty. */
+/**
+ * Records every tool the gate spawns, and answers the git it needs.
+ */
+function recordingExec(): { exec: Exec; spawned: string[] } {
+  const spawned: string[] = [];
+  const exec: Exec = (command, args) => {
+    spawned.push(path.basename(command));
+    if (args[0] === 'merge-base') {
+      return Promise.resolve(ok('BASESHA\n'));
+    }
+    if (args.slice(0, 2).join(' ') === 'diff BASESHA') {
+      return Promise.resolve(ok(''));
+    }
+    if (args[0] === 'diff') {
+      return Promise.resolve(ok('src/a.ts\n'));
+    }
+    return Promise.resolve(ok(''));
+  };
+  return { exec, spawned };
+}
+
+/**
+ * Which tools `gate --mode=<mode>` spawns, in a repo whose config has moved
+ * stryker to the push rung.
+ */
+async function spawnedAt(mode: string): Promise<string[]> {
+  writeFileSync(
+    path.join(root, 'guardrails.config.json'),
+    JSON.stringify({
+      analyzers: { stryker: { mode: 'required', rung: 'push' } },
+    }),
+  );
+  const { exec, spawned } = recordingExec();
+  await runCommand('gate', [`--mode=${mode}`], dependencies({ exec }));
+  return spawned;
+}
+
 function gitExec(map: Record<string, string>): Exec {
   return (command, args) => {
     let key: string | undefined;
@@ -1576,6 +1613,35 @@ describe('cli-core residual hardening', () => {
       ).toBe(1);
     },
   );
+
+  /**
+   * The mode→rung dispatch itself, which nothing else pins (#61).
+   *
+   * `commit-gate.test.ts` proves `runCommitGate` honours the `profile` it is
+   * GIVEN, and the routing cases above prove each mode reaches the commit gate
+   * at all — but neither sees which rung `runCommand` hands over. Collapsing
+   * this back to the pre-#61 shape
+   * (`if (mode === 'push' || mode === 'ci') return gateCommitCommand(deps,
+   * 'branch')`) leaves every other test green while silently restoring the bug
+   * the whole change exists to fix: an analyzer the consumer moved to `push`
+   * runs at `commit` again.
+   *
+   * Asserting on the SPAWN, because that is the observable difference — the
+   * exit code is the same either way here.
+   */
+  describe('the rung each gate mode runs at', () => {
+    it('does not reach a push-rung analyzer through --mode=commit', async () => {
+      expect(await spawnedAt('commit')).not.toContain('stryker');
+    });
+
+    it('reaches it through --mode=push', async () => {
+      expect(await spawnedAt('push')).toContain('stryker');
+    });
+
+    it('reaches it through --mode=ci, which sits above push', async () => {
+      expect(await spawnedAt('ci')).toContain('stryker');
+    });
+  });
 
   it('points at the manifest without hiding the detail from a human', async () => {
     // The husky surface keeps the dump, unlike the PreToolUse deny (#49). Two

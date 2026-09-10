@@ -75,15 +75,19 @@ describe('isRung', () => {
   });
 
   it('rejects a string that names no rung', () => {
-    // Kills the LogicalOperator `&&` -> `||` mutant: under `||` a string alone
-    // would satisfy the check regardless of membership in RUNG_NAMES.
+    // The membership check itself: a rung-shaped string that is not one of the
+    // four must not pass, or a typo in `guardrails.config.json` would move an
+    // analyzer to a rung that does not exist.
     expect(isRung('weekly')).toBe(false);
   });
 
   it('rejects a non-string value outright, not only an unrecognised string', () => {
-    // Kills the ConditionalExpression -> true mutant: a bypassed typeof guard
-    // would accept ANY value at all, including one no config could ever
-    // legitimately produce as a rung.
+    // `isRung` is a bare `RUNG_NAMES.has(value)` — there is no `typeof` guard
+    // in front of it, deliberately (see the comment on `RUNG_NAMES`). These
+    // cases are what make that safe to rely on: `Set.prototype.has` compares
+    // with SameValueZero and never coerces, so a non-string can never match a
+    // string member. If the set were ever rebuilt from something other than
+    // string keys, this is what would notice.
     expect(isRung(42)).toBe(false);
     expect(isRung(undefined)).toBe(false);
     expect(isRung({ rung: 'push' })).toBe(false);
