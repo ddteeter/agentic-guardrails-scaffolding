@@ -2583,12 +2583,19 @@ describe('stryker fails open twice (defect 3)', () => {
       baseBranch: 'main',
       exec,
       profile: 'commit',
-      readFile: (filePath) =>
-        Promise.resolve(
+      readFile: (filePath) => {
+        if (filePath.includes('stryker.conf.json')) {
+          // A real runner, so the coverage gate PASSES and the cache's own
+          // shape is what has to reject it. Without this the run short-circuits
+          // on `canReportPerTestCoverage` and the fixture below is never read.
+          return Promise.resolve(JSON.stringify({ testRunner: 'vitest' }));
+        }
+        return Promise.resolve(
           filePath.includes('stryker-incremental')
             ? foreignScopeCache
             : JSON.stringify({ files: {} }),
-        ),
+        );
+      },
       removeFile: (filePath) => {
         removed.push(filePath);
         return Promise.resolve();
@@ -2609,12 +2616,19 @@ describe('stryker fails open twice (defect 3)', () => {
       baseBranch: 'main',
       exec,
       profile: 'commit',
-      readFile: (filePath) =>
-        Promise.resolve(
+      readFile: (filePath) => {
+        if (filePath.includes('stryker.conf.json')) {
+          // A real runner, so this pins rule 2 of `canReuseIncrementalCache`
+          // (no mutant names a covering test) rather than re-testing the
+          // coverage gate, which has its own case below.
+          return Promise.resolve(JSON.stringify({ testRunner: 'vitest' }));
+        }
+        return Promise.resolve(
           filePath.includes('stryker-incremental')
             ? uncoveredCache
             : JSON.stringify({ files: {} }),
-        ),
+        );
+      },
       removeFile: (filePath) => {
         removed.push(filePath);
         return Promise.resolve();
@@ -2704,10 +2718,17 @@ describe('stryker fails open twice (defect 3)', () => {
       baseBranch: 'main',
       exec,
       profile: 'commit',
-      readFile: (filePath) =>
-        filePath.includes('stryker-incremental')
+      readFile: (filePath) => {
+        if (filePath.includes('stryker.conf.json')) {
+          // A real runner, so the read below is actually attempted and its
+          // rejection is what the `catch` in `discardUnusableIncrementalCache`
+          // has to handle.
+          return Promise.resolve(JSON.stringify({ testRunner: 'vitest' }));
+        }
+        return filePath.includes('stryker-incremental')
           ? Promise.reject(new Error('ENOENT: no such file'))
-          : Promise.resolve(JSON.stringify({ files: {} })),
+          : Promise.resolve(JSON.stringify({ files: {} }));
+      },
       removeFile: (filePath) => {
         removed.push(filePath);
         return Promise.resolve();
