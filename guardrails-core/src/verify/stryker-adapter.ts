@@ -362,3 +362,64 @@ export function canReuseIncrementalCache(
     fileResult.mutants.some((mutant) => (mutant.coveredBy?.length ?? 0) > 0),
   );
 }
+
+/**
+ * A timestamp that could not be read, resolved in the direction that makes the
+ * cache unusable — a cache infinitely old, a test infinitely new. Sentinels
+ * rather than `undefined` so the predicate below is total over numbers: an
+ * absent value that both operands could produce made the two failure paths
+ * indistinguishable, which is an equivalent mutant no test can kill.
+ */
+export const UNREADABLE_CACHE_TIME = -Infinity;
+/**
+ * @see UNREADABLE_CACHE_TIME
+ */
+export const UNREADABLE_TEST_TIME = Infinity;
+
+/**
+ * Has the test suite moved on since stryker wrote this incremental cache?
+ *
+ * `canReuseIncrementalCache` asks only about the cache's PRODUCTION files, and
+ * that is the whole of #67: a cache whose file set is a subset of this run's
+ * `--mutate` set was kept however much the suite had changed underneath it. On
+ * a gate the loop is "add the test that kills the survivor, run again", and the
+ * second run's mutate set is usually the same one file — so the cache was
+ * judged reusable at exactly the moment its verdicts went stale, and the gate
+ * re-reported a survivor the suite demonstrably killed. Clearing the cache by
+ * hand made it go away with no other change, twice in one day, which is what a
+ * cached verdict rather than a measured one looks like from the outside.
+ *
+ * Stryker's own `IncrementalDiffer.mutantCanBeReused` is supposed to cover
+ * this — it refuses to reuse a non-killed mutant once any covering test reads
+ * as `added` — and a fixture run through real stryker under the vitest runner
+ * shows it doing so (`test/drift/stryker-incremental.test.ts`). But that guard
+ * rests on machinery this repo cannot see from the outside: a test's identity
+ * is its name plus file plus location, `added` is decided against the coverage
+ * THIS run measured, and the whole check is skipped when `hasCoverage` is
+ * false. A runner (or a multi-project vitest setup) that reports per-test
+ * coverage for some tests and not others therefore leaves a `Survived` mutant
+ * with no covering tests to diff, nothing reads as `added`, and the stale
+ * verdict stands. Rather than model stryker's internals, this predicate makes
+ * reuse depend on something observable here: the cache is stale the moment a
+ * test that changed is at least as new as it.
+ *
+ * Timestamps, not contents, and the cache's own mtime is the "written at" —
+ * stryker writes the file at the end of a run, so every test edit that follows
+ * is strictly newer. `>=` rather than `>` because a coarse filesystem clock can
+ * stamp both in the same millisecond, and the two errors are not symmetric:
+ * re-running costs one mutation run, reusing reports a violation nothing
+ * measured.
+ *
+ * An unreadable timestamp arrives as a sentinel (`UNREADABLE_CACHE_TIME` /
+ * `UNREADABLE_TEST_TIME`) and lands on the stale side, the same
+ * fail-toward-the-cold-run direction as the rest of this module. An EMPTY list
+ * is not unanswerable: a turn that touched only production code changed no
+ * test, so there is nothing to be stale against and the reuse #59 restored
+ * stands — whatever the cache's own timestamp turned out to be.
+ */
+export function haveTestsChangedSinceCache(
+  cacheModified: number,
+  testModified: readonly number[],
+): boolean {
+  return testModified.some((modified) => modified >= cacheModified);
+}

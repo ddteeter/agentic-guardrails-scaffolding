@@ -15,6 +15,10 @@
  *    changes. This is the load-bearing one: if it stopped, a cached survivor
  *    would outlive the very test written to kill it, the fixer loop could never
  *    go green, and the gate would report a violation that no longer exists.
+ *    Since #67 the gate no longer DEPENDS on this — it discards a cache older
+ *    than a changed test itself — but this is still where the behaviour is
+ *    observed, and a change here is the notice that the belt is doing all the
+ *    work.
  *
  * So this runs REAL stryker twice over a fixture whose expected verdicts are
  * known: once with an under-asserting test that leaves exactly one survivor,
@@ -76,13 +80,22 @@ describe('tier', () => {
 
 /** The fix a fixer would write: the boundary value itself, which kills the
  *  surviving mutant. Production code is untouched, so the cached verdict is
- *  overturned only if stryker re-runs the mutant on the strengthened test. */
+ *  overturned only if stryker re-runs the mutant on the strengthened test.
+ *
+ *  The `it` NAME is deliberately identical to the weak test's. Stryker
+ *  identifies a test by name + file + location, and the vitest runner reports
+ *  no location (measured: `location` is absent from every test in a real
+ *  incremental cache) — so a renamed test is a trivially `added` one, and a
+ *  guard written against a rename would pass without ever exercising the
+ *  source-diff that has to notice an edit made IN PLACE. Renaming is also not
+ *  what the reported loop does (#67): the fixer strengthens the test that is
+ *  already there. */
 const STRONG_TIER_TEST = `import { describe, expect, it } from 'vitest';
 
 import { tier } from './src/tier.js';
 
 describe('tier', () => {
-  it('names the tiers either side of the boundary, and the boundary', () => {
+  it('names the tiers either side of the boundary', () => {
     expect(tier(2000)).toBe('gold');
     expect(tier(1000)).toBe('gold');
     expect(tier(0)).toBe('bronze');
@@ -258,7 +271,12 @@ describe.skipIf(isUnderMutationRun(here))(
       ).toBe(true);
 
       // Strengthen the covering test, exactly as a fixer would. The cache is
-      // left in place, exactly as `discardUnusableIncrementalCache` leaves it.
+      // left in place — which is NOT what the gate does any more: since #67 a
+      // changed test file newer than the cache discards it
+      // (`haveTestsChangedSinceCache`). That guard exists precisely because this
+      // upstream behaviour is not observable from the gate, so the guard must
+      // not stand in for it here: leaving the cache is the only way to keep
+      // asking stryker the question.
       await writeFile(path.join(directory, 'tier.test.ts'), STRONG_TIER_TEST);
       const second = await spawnExec(strykerBin, ['run'], { cwd: directory });
       const secondDiagnostic = `stryker exit ${second.code}\n${second.stdout}\n${second.stderr}`;
