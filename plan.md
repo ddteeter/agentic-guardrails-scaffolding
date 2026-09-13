@@ -370,12 +370,35 @@ config; and external-tool output). Two tracks:
   to notice. So the cost here is not a wrong fix, it is a fixer that does not
   converge on a manifest small enough to fix directly.
 
-  Worth measuring before theorising: whether the read budget is going to the
-  manifest's own context (the file is large and the scope-lock forbids reading
-  anything else, so a violation at `index.ts:902` may cost a 1900-line read
-  each time), and whether the thorough tier's reasoning budget is being spent
-  on exploration a manifest line already answers. A fixer that cannot fix nine
-  eslint errors in two files is a loop that costs more than it saves.
+  **Measured from the two transcripts, and the cause is the tool list.** Both
+  agents are `tools: Read, Edit, Write` — no `Grep`, no `Glob`. Fixing a
+  violation means finding the code (the manifest gives file + line, so this
+  part works) and then finding _its test_, which nothing tells them. Without
+  search that question has no answer but guessing.
+
+  Run 1: 5m06s, 47 reads, **33 of them errors** — 23 `File does not exist`
+  against invented test paths (`mutate-scope.test.ts`,
+  `stryker-mutate-positives.test.ts`, `stryker-negations.test.ts`,
+  `run-stryker.test.ts`, `can-reuse-incremental-cache.test.ts`, a dozen more),
+  7 `EISDIR` from trying to Read directories as a substitute for listing, and 3
+  oversize refusals from reading `reports/mutation/mutation.json` (424k tokens).
+  It never found `orchestrator.test.ts`, because this repo names test files by
+  subject area, not by symbol — every guess was a plausible name for a file
+  that does not exist.
+
+  Run 2: 8m23s, 22 reads, almost no errors, and stuck for a different reason —
+  it paged `src/verify/index.ts` (1938 lines) and
+  `test/verify/orchestrator.test.ts` (4187 lines) in overlapping windows
+  (`offset=100000` to probe the length, then 3500+644, 2400+400, 2800+700,
+  1600+800, 1200+400), looking for a definition by eye. A grep would have been
+  one call.
+
+  Two candidate fixes, both small: give the fixers `Grep` and `Glob` (read-only,
+  and the existing `Read` scope-check matcher extends to them, so the
+  scope-lock is unchanged); and/or have the manifest name the test file that
+  covers each violated file, since the gate already knows the changed set.
+  The first is the general fix — "find the test for this function" is the
+  question both runs died on.
 
 - **A fixer proposing a sanction is often a restructuring signal, not an
   exemption request.** Three times in the #59/#61 sessions a fixer correctly
