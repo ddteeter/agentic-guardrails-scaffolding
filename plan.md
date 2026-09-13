@@ -354,6 +354,29 @@ config; and external-tool output). Two tracks:
   whichever rung fires second says "wait" on its first firing rather than its
   second.
 
+- **Two consecutive `guardrail-fixer-thorough` runs read for minutes and wrote
+  nothing (observed in the #69 session, unfixed).** First run: 13 mechanical
+  eslint violations in one source file and one test file, five minutes, zero
+  edits, still exploring when stopped ("Let me find the test for
+  `strykerMutateNegations`"). Second run, on a 13-violation manifest and with
+  an explicit "work the manifest directly, do not explore" instruction: eight
+  minutes, zero edits, stopped while still locating a function definition the
+  manifest had already named with a line number.
+
+  Both were killed and the main agent fixed the manifest by hand in a few
+  minutes — including the two findings a fixer would have been right to
+  escalate rather than patch (an unreachable `catch`, and an early return the
+  new code had made redundant), which a reading-only agent never got far enough
+  to notice. So the cost here is not a wrong fix, it is a fixer that does not
+  converge on a manifest small enough to fix directly.
+
+  Worth measuring before theorising: whether the read budget is going to the
+  manifest's own context (the file is large and the scope-lock forbids reading
+  anything else, so a violation at `index.ts:902` may cost a 1900-line read
+  each time), and whether the thorough tier's reasoning budget is being spent
+  on exploration a manifest line already answers. A fixer that cannot fix nine
+  eslint errors in two files is a loop that costs more than it saves.
+
 - **A fixer proposing a sanction is often a restructuring signal, not an
   exemption request.** Three times in the #59/#61 sessions a fixer correctly
   proved a mutant equivalent, correctly refused to self-grant, and escalated —
