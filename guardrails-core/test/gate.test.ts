@@ -734,6 +734,49 @@ describe('manifest guidance', () => {
     // eslint violations get no guidance key; the manifest stays terse.
     expect(written.every((v) => !Object.hasOwn(v, 'guidance'))).toBe(true);
   });
+
+  it('carries the covering test files into the manifest', async () => {
+    // End-to-end for the other half of the fixer-search fix: the fixer is told
+    // where the test for the violated file lives, through the one channel it
+    // reads. `coveringTests` proves the resolution; this proves the gate
+    // actually runs it and the result survives serialisation.
+    mkdirSync(path.join(root, 'src'), { recursive: true });
+    mkdirSync(path.join(root, 'test'), { recursive: true });
+    writeFileSync(path.join(root, 'src', 'foo.ts'), 'export const foo = 1;\n');
+    writeFileSync(
+      path.join(root, 'test', 'unrelated-name.test.ts'),
+      `import { foo } from '../src/foo.js';\n`,
+    );
+    const exec = makeExec((line) => {
+      if (line.includes('--name-only')) return ok('src/foo.ts');
+      if (line.includes('--others')) return ok('');
+      if (line.includes('eslint'))
+        return ok(
+          JSON.stringify([
+            {
+              filePath: path.join(root, 'src/foo.ts'),
+              messages: [
+                {
+                  ruleId: 'no-console',
+                  severity: 2,
+                  message: 'Unexpected console.',
+                  line: 2,
+                },
+              ],
+            },
+          ]),
+        );
+      return ok('');
+    });
+    await runStopGate(options(exec));
+    const written = readViolations(stateDirectory(root), 'sid');
+    expect(written).toContainEqual(
+      expect.objectContaining({
+        file: 'src/foo.ts',
+        relatedTests: ['test/unrelated-name.test.ts'],
+      }),
+    );
+  });
 });
 
 // Public API (exported from index.ts) with no internal caller — it is what a

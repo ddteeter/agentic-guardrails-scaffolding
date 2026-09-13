@@ -214,6 +214,85 @@ describe('runCommand — scope-check', () => {
     expect(out.join('')).toContain('deny');
   });
 
+  it('denies a fixer Grep outside the repo', async () => {
+    // Grep and Glob widened the fixer's tool list so it can FIND the test for
+    // a violated function (two runs died guessing filenames — plan.md,
+    // "fixer-loop hardening"). Search is a read, so it inherits the read-lock:
+    // a search rooted outside the repo would reach exactly what the Read lock
+    // exists to keep out, one `pattern` at a time.
+    writeActiveViolations('default', [violation('src/a.ts')]);
+    const stdin = JSON.stringify({
+      cwd: root,
+      tool_name: 'Grep',
+      tool_input: { pattern: 'apiKey', path: '/home/u/.claude/projects' },
+      agent_id: 'fixer',
+      agent_type: 'guardrail-fixer',
+    });
+    await runCommand(
+      'scope-check',
+      [],
+      dependencies({ readStdin: () => Promise.resolve(stdin) }),
+    );
+    expect(out.join('')).toContain('deny');
+  });
+
+  it('denies a fixer Glob outside the repo', async () => {
+    writeActiveViolations('default', [violation('src/a.ts')]);
+    const stdin = JSON.stringify({
+      cwd: root,
+      tool_name: 'Glob',
+      tool_input: { pattern: '**/*.md', path: '/home/u/.claude' },
+      agent_id: 'fixer',
+      agent_type: 'guardrail-fixer',
+    });
+    await runCommand(
+      'scope-check',
+      [],
+      dependencies({ readStdin: () => Promise.resolve(stdin) }),
+    );
+    expect(out.join('')).toContain('deny');
+  });
+
+  it('allows a fixer Grep inside the repo', async () => {
+    // The point of granting the tool: searching the repo is how the fixer
+    // finds the test file for the code it must fix.
+    writeActiveViolations('default', [violation('src/a.ts')]);
+    const stdin = JSON.stringify({
+      cwd: root,
+      tool_name: 'Grep',
+      tool_input: { pattern: 'strykerMutatePositives', path: root },
+      agent_id: 'fixer',
+      agent_type: 'guardrail-fixer',
+    });
+    await runCommand(
+      'scope-check',
+      [],
+      dependencies({ readStdin: () => Promise.resolve(stdin) }),
+    );
+    expect(out.join('')).toBe('');
+  });
+
+  it('allows a fixer Grep with no path, which defaults to the repo', async () => {
+    // `path` is optional on both tools; absent means "search from here", and
+    // `hookFilePaths` yields nothing, so there is no path to judge. Must not
+    // deny — an unconditional deny for the pathless form would take the tool
+    // away again in its most common shape.
+    writeActiveViolations('default', [violation('src/a.ts')]);
+    const stdin = JSON.stringify({
+      cwd: root,
+      tool_name: 'Grep',
+      tool_input: { pattern: 'strykerMutatePositives' },
+      agent_id: 'fixer',
+      agent_type: 'guardrail-fixer',
+    });
+    await runCommand(
+      'scope-check',
+      [],
+      dependencies({ readStdin: () => Promise.resolve(stdin) }),
+    );
+    expect(out.join('')).toBe('');
+  });
+
   it('allows a Read inside the repo (incl. node_modules)', async () => {
     const stdin = JSON.stringify({
       cwd: root,

@@ -113,7 +113,7 @@ Procedure, during a fixer run (reuse §1.1's or start a fresh one):
   checked-out worktree.
 
 **Expected:** `.claude/settings.json`'s `PreToolUse` hook (matcher
-`Read|Edit|Write`) runs `guardrails scope-check` and **denies** the read with a
+`...|view|grep|glob`) runs `guardrails scope-check` and **denies** the read with a
 scope-lock reason while the exact session's fix-loop marker is active:
 
 > `Fixer read-scope: <path> is outside the repository. The fixer may only read

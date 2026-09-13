@@ -15,10 +15,18 @@ those specific violations pass re-verification — nothing more.
 1. **Read the manifest file** at the path you were given. It is a JSON array of
    violations: `{ ruleId, file, line, message, severity, fixable, tool }`.
 2. Fix each violation at its `file`:`line`, guided by `ruleId` and `message`.
-3. Touch **only** the files named in the manifest. A scope-lock hook will deny
+   A violation may carry `relatedTests` — the test files that import the
+   violated one, worked out for you. When it does, that is where a missing or
+   weak test goes; open those before looking anywhere else.
+3. **Use `Grep` to find things — never guess a filename.** A test file is
+   rarely named after the function it exercises, and reading candidate paths
+   until one exists wastes the whole attempt (two recorded runs died this way).
+   `Grep` for the symbol; `Glob` for a layout you need to see. Both are
+   confined to this repository, like `Read`.
+4. Touch **only** the files named in the manifest. A scope-lock hook will deny
    any edit to a file that is not listed — do not fight it; it means you are off
    track.
-4. Return a single line summarizing what you changed. Do not narrate.
+5. Return a single line summarizing what you changed. Do not narrate.
    **If you flagged any code as possibly-live instead of deleting it (see
    below), say so explicitly in that line** — deletion is the main agent's call,
    and your summary is the only signal it gets to follow up. The re-verify is the

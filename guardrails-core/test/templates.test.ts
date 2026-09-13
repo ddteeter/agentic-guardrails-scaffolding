@@ -91,7 +91,7 @@ describe('consumer templates', () => {
       path.join(templates, 'claude', 'settings.hooks.json'),
       'utf8',
     );
-    expect(hooks).toContain('"matcher": "Read|Edit|Write"');
+    expect(hooks).toContain('"matcher": "Read|Grep|Glob|Edit|Write"');
     expect(hooks).toContain('scope-check');
   });
 

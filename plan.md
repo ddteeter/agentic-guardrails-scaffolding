@@ -393,12 +393,27 @@ config; and external-tool output). Two tracks:
   1600+800, 1200+400), looking for a definition by eye. A grep would have been
   one call.
 
-  Two candidate fixes, both small: give the fixers `Grep` and `Glob` (read-only,
-  and the existing `Read` scope-check matcher extends to them, so the
-  scope-lock is unchanged); and/or have the manifest name the test file that
-  covers each violated file, since the gate already knows the changed set.
-  The first is the general fix — "find the test for this function" is the
-  question both runs died on.
+  **Both fixes shipped together.** The fixers are now
+  `Read, Grep, Glob, Edit, Write`, and search takes the read rule rather than
+  an exemption: `READ_TOOLS` gained `grep|glob`, so a search rooted outside the
+  repo is denied exactly as an out-of-repo `Read` is. That classification is
+  load-bearing in the other direction too — `hookFilePaths` reads
+  `tool_input.path`, which on `Grep` is the directory to SEARCH, so before the
+  reclassification a fixer grepping its own repo was denied as an unlisted
+  write target and the tool would have been useless the moment it was granted.
+
+  Alongside it, `covering-tests.ts` resolves the test files that import a
+  violated file and attaches them as `relatedTests`, so the common case needs
+  no search at all. Matched on the import graph, not on a filename convention,
+  because convention is what failed: `test/verify/orchestrator.test.ts` is the
+  test for `src/verify/index.ts` and shares no name with it, while a substring
+  rule would hand `src/a.ts`'s tests to `src/ab.ts`. The corpus is read once
+  per manifest, lazily, capped at 800 files and 512KB each; a repo past the cap
+  gets no hint and greps instead, which is the pre-existing behaviour.
+
+  Grep is the general fix and `relatedTests` is the fast path — neither
+  replaces the other. A fixer still has to search when the test it needs does
+  not exist yet, which is the `no-coverage` case.
 
 - **A fixer proposing a sanction is often a restructuring signal, not an
   exemption request.** Three times in the #59/#61 sessions a fixer correctly

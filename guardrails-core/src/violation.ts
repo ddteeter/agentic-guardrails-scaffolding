@@ -40,6 +40,20 @@ export interface Violation {
   */
   package?: string;
   /**
+   * Repo-relative paths of the test files that import this violation's file,
+   * when any do.
+   *
+   * Carried ON the violation for the same reason `guidance` is: the manifest
+   * is the one channel every runtime shares, and a fixer that must strengthen
+   * a test has to find it first. Two recorded fixer runs failed at exactly
+   * that step — one guessing filenames that did not exist, one paging a
+   * 4000-line file by eye (plan.md, "fixer-loop hardening").
+   *
+   * Absent when nothing imports the file, and absent on a violation that is
+   * already in a test file.
+   */
+  relatedTests?: readonly string[];
+  /**
    * Repo-relative path to guidance for this violation class, when one exists.
    * Carried ON the violation so it survives into the manifest the fixer reads —
    * that is the only channel every runtime shares. Instruction files, skills and
@@ -81,7 +95,14 @@ function hasValidOptionalFields(v: Record<string, unknown>): boolean {
   return (
     (v.line === undefined || typeof v.line === 'number') &&
     (v.package === undefined || typeof v.package === 'string') &&
-    (v.guidance === undefined || typeof v.guidance === 'string')
+    (v.guidance === undefined || typeof v.guidance === 'string') &&
+    (v.relatedTests === undefined || isStringArray(v.relatedTests))
+  );
+}
+
+function isStringArray(value: unknown): boolean {
+  return (
+    Array.isArray(value) && value.every((entry) => typeof entry === 'string')
   );
 }
 
