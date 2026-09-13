@@ -328,6 +328,32 @@ config; and external-tool output). Two tracks:
   attempt budget is spent either way. What changed is that the agent is told to
   let the in-flight fixer land before editing.
 
+- **The commit gate and the Stop gate direct fixers independently, so the two
+  rungs can put two fixers in the same files (observed in the #69 session,
+  unfixed).** The commit gate blocked, wrote
+  `<session>-commit.last.json`, and named a fixer, which was spawned and began
+  editing. While it was still running, the turn ended, the Stop gate ran, found
+  the same nine violations, wrote them to `<session>.last.json` — a DIFFERENT
+  path — and issued its own "spawn the fixer" pointer with no mention of the
+  one in flight. The main agent declined and waited, so nothing raced this
+  time; had it complied, two fixers would have been editing one file.
+
+  The existing in-flight guard closes this one firing late. It reads an
+  UNCHANGED manifest digest, and on the Stop gate's FIRST firing there is no
+  prior digest at that path to compare against — the violations are new _to
+  that manifest_, however long a fixer has been working on the identical set at
+  the commit gate's path. The guard did fire correctly on the next Stop, saying
+  "a fixer you already spawned is most likely still running — wait for it",
+  which is exactly right; it just cannot say that the first time, which is the
+  firing that names a second fixer.
+
+  So the window is one turn wide, and only across rungs. The session-level fact
+  — "a fixer this session spawned has not reported yet" — is not part of either
+  gate's input, and it is what would close it: carry the in-flight fixer in
+  session state rather than inferring it from one manifest's digest, so
+  whichever rung fires second says "wait" on its first firing rather than its
+  second.
+
 - **A fixer proposing a sanction is often a restructuring signal, not an
   exemption request.** Three times in the #59/#61 sessions a fixer correctly
   proved a mutant equivalent, correctly refused to self-grant, and escalated —
@@ -2868,3 +2894,60 @@ fixture's test by RENAMING the `it`. With no location reported, a renamed test
 is a trivially `added` one, so half two of the guard passed without ever
 exercising the source-diff that has to notice an edit made in place — which is
 what a fixer actually does. The fixture now keeps the name and still passes.
+
+### Finding (issue #69, third from the same adoption): the analyzer read half the mutate array
+
+#56 made the stryker analyzer read the `!` negations in the consumer's
+`stryker.conf.json`. It never read the POSITIVE globs in the same array, so the
+half it honoured was the half saying what mutation testing is _not_ for. The
+analyzer's effective scope was "every changed `.ts`/`.tsx` that is not
+explicitly negated" — the whole repo minus exclusions, which is not the
+project's declared mutation scope.
+
+A file no positive glob had ever covered was therefore required to reach 100%
+purely because a diff touched it. Two cases from `dialed.run` on 0.3.1: a
+`/*#__PURE__*/` annotation added in front of 23 `sqliteTable()` calls pulled
+~200 mutants of drizzle column names into a push, on files a schema protocol
+forbids hand-editing; and `e2e/support/demo.ts` produced 27 `no-coverage`
+mutants for a body that executes inside the browser via Playwright's
+`addInitScript`, where stryker runs vitest and no test can reach it.
+
+**The workaround damaged the thing it borrowed from.** The only way to silence
+such a file was a negation in the `mutate` array — which also removes it from
+the ratchet, from `npm run mutate` and from the per-entry CI shards. After one
+such edit a reviewer reading that array can no longer tell "excluded because it
+cannot be tested" from "excluded because it was blocking a push". Those are
+different claims, and #56's fix is what made them look identical.
+
+**Fixed by intersecting with the declared scope**, not by adding a config
+surface. `strykerMutatePositives` reads the other half of the array;
+`applyMutateScope` intersects the changed set with it; the result feeds the
+`--mutate` argument, the cache-reuse set, and the report filter alike. A repo
+that declares no scope (no config, no `mutate` key, an unparseable config) gets
+the previous behaviour unchanged — the narrowing only ever happens on a config
+this could actually read.
+
+The property the old behaviour had — noticing a file that has joined no scope —
+is kept, as the non-blocking `guardrails/stryker-out-of-scope` warning rather
+than as a wall of `no-coverage` violations saying something false. It is named
+`guardrails/` rather than `stryker/` deliberately: `guidance.ts` and
+`loose-rules.ts` both match the bare `stryker/` prefix, so a `stryker/` name
+would class it loose and hand it the crushing-mutants guidance — wrong on both
+counts for a file nobody is being asked to mutate.
+
+**No glob dependency.** Stryker resolves `mutate` with `minimatch@~10.2.4`
+(`config/file-matcher.js`, `{ dot: false }`, on `path.resolve`d paths). Node's
+built-in `path.matchesGlob` — stable since 24.8.0, which is why `engines.node`
+moved — agreed with it on every one of 12 patterns × 11 files, including
+braces, extglobs, character classes, `?`, `**` spanning and stryker's own
+default pattern verbatim. A `minimatch` dependency would buy parity by
+construction rather than by measurement, at the cost of this package's
+zero-dependency property. `test/drift/stryker-scope.test.ts` covers what that
+trade leaves behind: a fixture resolved by real stryker (`--dryRunOnly
+--logLevel debug`, which names the files it resolved) compared against ours.
+
+**Noted upstream, not waited on:** stryker's `ProjectReader` already implements
+exactly these semantics via `targetMutatePatterns`, which intersects target
+patterns with the config's `mutate`. Only the mutation-server protocol passes
+it — `stryker.js` hardcodes `targetMutatePatterns: undefined` for the CLI path.
+Worth an upstream request for CLI access.

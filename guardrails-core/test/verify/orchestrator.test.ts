@@ -6,13 +6,15 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import type { Exec, ExecResult } from '../../src/exec.js';
-import type { Violation } from '../../src/violation.js';
+import { hasErrors, type Violation } from '../../src/violation.js';
 import {
   ANALYZER_TOOLS,
   runVerify,
   applyMutateNegations,
+  applyMutateScope,
   canReportPerTestCoverage,
   strykerMutateNegations,
+  strykerMutatePositives,
 } from '../../src/verify/index.js';
 
 const eslintJson = JSON.stringify([
@@ -867,9 +869,13 @@ async function strykerMutateArgument(
 
 describe('stryker honours the project’s own mutate negations', () => {
   it('passes the config’s negations through alongside the changed files', async () => {
+    // The positive glob covers `.tsx` deliberately. This test is about the
+    // negation reaching the CLI, and since #69 a file outside the declared
+    // scope never gets that far — with a `.ts`-only glob the route would be
+    // dropped as out-of-scope and the negation would have nothing to prove.
     const mutate = await strykerMutateArgument(
       JSON.stringify({
-        mutate: ['src/**/*.ts', '!src/routes/new.tsx'],
+        mutate: ['src/**/*.{ts,tsx}', '!src/routes/new.tsx'],
       }),
       'src/routes/new.tsx\nsrc/lib/keep.ts\n',
     );
@@ -1276,6 +1282,399 @@ describe('strykerMutateNegations', () => {
     expect(strykerMutateNegations('["!src/a.ts"]')).toEqual([]);
     expect(strykerMutateNegations('null')).toEqual([]);
     expect(strykerMutateNegations('{ not json')).toEqual([]);
+  });
+});
+
+/**
+ * The intersection, through `runVerify` (#69).
+ *
+ * `strykerMutateArgument` above already runs the commit rung with one config
+ * on disk; these reuse it, and a second helper collects the violations for the
+ * out-of-scope signal that replaces the block.
+ */
+async function strykerScopeViolations(
+  config: string | undefined,
+  changed: string,
+): Promise<Violation[]> {
+  const { exec } = fakeExec({
+    'git diff --name-only --diff-filter=ACM main': {
+      stdout: changed,
+      stderr: '',
+      code: 0,
+    },
+    'git ls-files --others --exclude-standard': {
+      stdout: '',
+      stderr: '',
+      code: 0,
+    },
+  });
+  const { violations } = await runVerify({
+    repoRoot: '/repo',
+    baseBranch: 'main',
+    exec,
+    profile: 'commit',
+    resolveBin: (tool) => tool,
+    readFile: (filePath: string) => {
+      const name = path.basename(filePath);
+      if (!name.endsWith('stryker.conf.json')) {
+        return Promise.resolve(emptyStrykerReport);
+      }
+      return config === undefined
+        ? Promise.reject(new Error('ENOENT'))
+        : Promise.resolve(config);
+    },
+  });
+  return violations.filter((violation) => violation.tool === 'guardrails');
+}
+
+describe('stryker honours the project’s declared mutation scope', () => {
+  it('does not mutate a changed file no positive glob covers', async () => {
+    // The #69 case: `e2e/support/demo.ts` runs inside a browser through
+    // Playwright's addInitScript, stryker runs vitest, and no `mutate` glob
+    // ever claimed it. Before this it was mutated anyway — 27 no-coverage
+    // violations no test could fix — purely because a diff touched it.
+    const mutate = await strykerMutateArgument(
+      JSON.stringify({ mutate: ['src/**/*.ts'] }),
+      'src/lib/keep.ts\ne2e/support/demo.ts\n',
+    );
+    expect(mutate.split(',')).toEqual(['src/lib/keep.ts']);
+  });
+
+  it('runs stryker at all only when something is left in scope', async () => {
+    const { exec, calls } = fakeExec({
+      'git diff --name-only --diff-filter=ACM main': {
+        stdout: 'e2e/support/demo.ts\n',
+        stderr: '',
+        code: 0,
+      },
+      'git ls-files --others --exclude-standard': {
+        stdout: '',
+        stderr: '',
+        code: 0,
+      },
+    });
+    await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      profile: 'commit',
+      resolveBin: (tool) => tool,
+      readFile: (filePath: string) =>
+        path.basename(filePath).endsWith('stryker.conf.json')
+          ? Promise.resolve(JSON.stringify({ mutate: ['src/**/*.ts'] }))
+          : Promise.resolve(emptyStrykerReport),
+    });
+    expect(calls.some((call) => call.command === 'stryker')).toBe(false);
+  });
+
+  it('keeps a changed file the declared scope does cover', async () => {
+    const mutate = await strykerMutateArgument(
+      JSON.stringify({ mutate: ['src/**/*.{ts,tsx}'] }),
+      'src/lib/keep.ts\nsrc/ui/widget.tsx\n',
+    );
+    expect(mutate.split(',')).toEqual(['src/lib/keep.ts', 'src/ui/widget.tsx']);
+  });
+
+  it('degrades to today’s behaviour when the project declares no scope', async () => {
+    // No `mutate` key at all: stryker falls back to its own built-in default
+    // patterns, which this deliberately does not model. Narrowing on a scope
+    // nobody declared would drop files from the gate on a guess.
+    const mutate = await strykerMutateArgument(
+      JSON.stringify({ testRunner: 'vitest' }),
+      'e2e/support/demo.ts\n',
+    );
+    expect(mutate).toBe('e2e/support/demo.ts');
+  });
+
+  it('reports an out-of-scope changed file as a non-blocking finding', async () => {
+    // The property the old behaviour had, kept: a brand-new file that has
+    // joined no scope is still worth saying out loud. As a warning, because
+    // "this is not mutation-tested" is true and actionable, where "every
+    // mutant in it survived" was neither.
+    const violations = await strykerScopeViolations(
+      JSON.stringify({ mutate: ['src/**/*.ts'] }),
+      'src/lib/keep.ts\ne2e/support/demo.ts\n',
+    );
+    expect(violations).toContainEqual(
+      expect.objectContaining({
+        ruleId: 'guardrails/stryker-out-of-scope',
+        file: 'e2e/support/demo.ts',
+        severity: 'warn',
+        fixable: false,
+      }),
+    );
+    // And nothing about the file that IS in scope.
+    expect(
+      violations.some((violation) => violation.file === 'src/lib/keep.ts'),
+    ).toBe(false);
+  });
+
+  it('says nothing about a file the project explicitly negated', async () => {
+    // A negation is a decision someone made and a reviewer can read. Warning
+    // about it every time the file is touched would be noise about a question
+    // already answered — the signal is for files nobody has classified.
+    const violations = await strykerScopeViolations(
+      JSON.stringify({ mutate: ['src/**/*.ts', '!src/routes/new.ts'] }),
+      'src/routes/new.ts\n',
+    );
+    expect(
+      violations.some(
+        (violation) => violation.ruleId === 'guardrails/stryker-out-of-scope',
+      ),
+    ).toBe(false);
+  });
+
+  it('warns without blocking', async () => {
+    const violations = await strykerScopeViolations(
+      JSON.stringify({ mutate: ['src/**/*.ts'] }),
+      'e2e/support/demo.ts\n',
+    );
+    const scope = violations.filter(
+      (violation) => violation.ruleId === 'guardrails/stryker-out-of-scope',
+    );
+    expect(scope).not.toEqual([]);
+    expect(hasErrors(scope)).toBe(false);
+  });
+});
+
+/**
+ * The positive-glob reader, exercised directly.
+ *
+ * The other half of the same `mutate` array (#69). `strykerMutateNegations`
+ * reads what the project excluded; this reads what it declared mutation
+ * testing is FOR. Without it the analyzer's effective scope is "every changed
+ * TypeScript file that is not explicitly negated" — the whole repo minus
+ * exclusions, which is not what a reader of `stryker.conf.json` assumes.
+ */
+/**
+ * The intersection with the project's declared mutation scope (#69).
+ *
+ * The mirror of `applyMutateNegations`, and its fail-safe direction is the
+ * opposite one. A negation read too broadly costs a cold mutation run; a
+ * POSITIVE glob read too narrowly drops a file the project declared in scope
+ * from the gate entirely, which is the under-reporting this pack exists to
+ * prevent. So every degradation here widens rather than narrows: no declared
+ * scope means every changed file stays in.
+ *
+ * Matching is `path.matchesGlob` over paths resolved against `repoRoot`, which
+ * is how stryker's own `FileMatcher` resolves them. `test/drift/
+ * stryker-scope.test.ts` is what notices the two drifting apart.
+ */
+describe('applyMutateScope', () => {
+  it('keeps every file when the project declares no scope', () => {
+    // The degradation that matters most: a repo with no stryker config, an
+    // unreadable one, or no `mutate` key must get exactly today's behaviour.
+    expect(applyMutateScope(['src/a.ts', 'other/b.ts'], [], '/repo')).toEqual([
+      'src/a.ts',
+      'other/b.ts',
+    ]);
+  });
+
+  it('drops a changed file no positive glob covers', () => {
+    expect(
+      applyMutateScope(
+        ['src/a.ts', 'e2e/support/demo.ts'],
+        ['src/**/*.ts'],
+        '/repo',
+      ),
+    ).toEqual(['src/a.ts']);
+  });
+
+  it('spans nested directories through **', () => {
+    expect(
+      applyMutateScope(
+        ['src/a.ts', 'src/nested/deep/b.ts'],
+        ['src/**/*.ts'],
+        '/repo',
+      ),
+    ).toEqual(['src/a.ts', 'src/nested/deep/b.ts']);
+  });
+
+  it('reads a brace expansion', () => {
+    expect(
+      applyMutateScope(
+        ['src/a.ts', 'src/b.tsx', 'src/c.js'],
+        ['src/**/*.{ts,tsx}'],
+        '/repo',
+      ),
+    ).toEqual(['src/a.ts', 'src/b.tsx']);
+  });
+
+  it('reads an extglob', () => {
+    expect(
+      applyMutateScope(
+        ['lib/keep.ts', 'lib/vendor.ts'],
+        ['lib/!(vendor).ts'],
+        '/repo',
+      ),
+    ).toEqual(['lib/keep.ts']);
+  });
+
+  it('keeps a file any one glob covers, not only the first', () => {
+    expect(
+      applyMutateScope(
+        ['src/a.ts', 'lib/b.ts'],
+        ['src/**/*.ts', 'lib/**/*.ts'],
+        '/repo',
+      ),
+    ).toEqual(['src/a.ts', 'lib/b.ts']);
+  });
+
+  it('matches a bare path entry', () => {
+    expect(
+      applyMutateScope(
+        ['tools/one.ts', 'tools/two.ts'],
+        ['tools/one.ts'],
+        '/repo',
+      ),
+    ).toEqual(['tools/one.ts']);
+  });
+
+  it('resolves both sides against repoRoot rather than the process cwd', () => {
+    // `path.matchesGlob` compares strings, so a relative file against an
+    // absolute-looking pattern silently matches nothing. Resolving both is
+    // what stryker's FileMatcher does, and dropping either resolve would drop
+    // every file from the mutation gate.
+    expect(
+      applyMutateScope(['src/a.ts'], ['src/**/*.ts'], '/somewhere/else'),
+    ).toEqual(['src/a.ts']);
+  });
+
+  it('excludes a hidden directory, as stryker does for mutate patterns', () => {
+    // Stryker passes `allowHiddenFiles: false` for mutate patterns, so
+    // minimatch runs with `dot: false`; `path.matchesGlob` defaults the same
+    // way. Pinned because a divergence here is silent.
+    expect(
+      applyMutateScope(['src/.generated/a.ts'], ['src/**/*.ts'], '/repo'),
+    ).toEqual([]);
+  });
+});
+
+describe('strykerMutatePositives', () => {
+  it('keeps only the entries that are not negations, trimmed', () => {
+    expect(
+      strykerMutatePositives(
+        JSON.stringify({
+          mutate: ['src/**/*.ts', ' !src/a.ts ', ' lib/**/*.ts '],
+        }),
+      ),
+    ).toEqual(['src/**/*.ts', 'lib/**/*.ts']);
+  });
+
+  it('splits a comma-joined entry, which is the shape stryker allows', () => {
+    expect(
+      strykerMutatePositives(
+        JSON.stringify({ mutate: ['src/**/*.ts,lib/**/*.ts,!src/a.ts'] }),
+      ),
+    ).toEqual(['src/**/*.ts', 'lib/**/*.ts']);
+  });
+
+  it('keeps a brace expansion whole rather than splitting inside it', () => {
+    // The one place this reader must NOT behave like `strykerMutateNegations`.
+    // A negation is handed to stryker's CLI, which splits on every comma with
+    // no brace awareness, so splitting to match is the honest thing there. A
+    // positive glob never reaches the CLI — it is resolved in this process —
+    // so fragmenting `{ts,tsx}` would invent two patterns that match nothing
+    // and silently narrow every repo whose config uses a brace expansion.
+    expect(
+      strykerMutatePositives(
+        JSON.stringify({ mutate: ['src/**/*.{ts,tsx},lib/**/*.ts'] }),
+      ),
+    ).toEqual(['src/**/*.{ts,tsx}', 'lib/**/*.ts']);
+  });
+
+  it('keeps splitting after an unbalanced closing brace', () => {
+    // A stray `}` must hold the depth at zero rather than drive it negative:
+    // a negative depth never returns to zero, so every comma AFTER the stray
+    // brace would stop splitting and one unreadable pattern would swallow the
+    // rest of the entry.
+    expect(
+      strykerMutatePositives(
+        JSON.stringify({ mutate: ['src/a}.ts,lib/b.ts'] }),
+      ),
+    ).toEqual(['src/a}.ts', 'lib/b.ts']);
+  });
+
+  it('tracks nested brace depth rather than a single level', () => {
+    // A comma inside ANY level of brace nesting belongs to the pattern. Both
+    // the increment and the floored decrement are load-bearing here: count the
+    // wrong way and the inner `}` reads as closing the outer group, so the
+    // comma after it splits a pattern in half.
+    expect(
+      strykerMutatePositives(
+        JSON.stringify({ mutate: ['src/**/*.{ts,{tsx,mts},cts},lib/b.ts'] }),
+      ),
+    ).toEqual(['src/**/*.{ts,{tsx,mts},cts}', 'lib/b.ts']);
+  });
+
+  it('strips a range whose line and column numbers are multi-digit', () => {
+    // `\d` where stryker writes `\d+` still matches `:1-2`, so a
+    // single-digit fixture cannot tell the two apart. Every number here is
+    // two digits, in every position the grammar allows one.
+    expect(
+      strykerMutatePositives(
+        JSON.stringify({
+          mutate: ['src/a.ts:12-34', 'src/b.ts:5:12-6:4', 'src/c.ts:5:4-6:45'],
+        }),
+      ),
+    ).toEqual(['src/a.ts', 'src/b.ts', 'src/c.ts']);
+  });
+
+  it('strips a range only at the end of the entry', () => {
+    // Unanchored, the range grammar matches anywhere, and a path with a
+    // colon-and-range shape in the MIDDLE would be truncated to its first
+    // segment — turning a real path into one that matches nothing.
+    expect(
+      strykerMutatePositives(JSON.stringify({ mutate: ['src/a:1-2/b.ts'] })),
+    ).toEqual(['src/a:1-2/b.ts']);
+  });
+
+  it('strips a mutation range, which scopes lines rather than files', () => {
+    // `src/a.ts:1-11` says "mutate lines 1 to 11 of this file" — the FILE is
+    // in scope. Reading the range as part of the path would match nothing and
+    // drop the file from its own declared scope.
+    expect(
+      strykerMutatePositives(
+        JSON.stringify({ mutate: ['src/a.ts:1-11', 'src/b.ts:5:4-6:4'] }),
+      ),
+    ).toEqual(['src/a.ts', 'src/b.ts']);
+  });
+
+  it('ignores a non-array mutate', () => {
+    expect(
+      strykerMutatePositives(JSON.stringify({ mutate: 'src/**/*.ts' })),
+    ).toEqual([]);
+  });
+
+  it('ignores non-string entries in mutate', () => {
+    expect(
+      strykerMutatePositives(
+        JSON.stringify({ mutate: [42, null, 'src/**/*.ts'] }),
+      ),
+    ).toEqual(['src/**/*.ts']);
+  });
+
+  it('drops an entry that is empty once trimmed', () => {
+    // A trailing comma (`"src/**/*.ts,"`) is the shape that produces one. An
+    // empty pattern reaching the matcher would be a positive glob nobody
+    // wrote, and `path.matchesGlob` answers false for every file against it —
+    // so it would silently contribute nothing while LOOKING like a declared
+    // scope.
+    expect(
+      strykerMutatePositives(JSON.stringify({ mutate: ['src/**/*.ts,', ' '] })),
+    ).toEqual(['src/**/*.ts']);
+  });
+
+  it('answers empty for a config with no mutate key', () => {
+    expect(
+      strykerMutatePositives(JSON.stringify({ testRunner: 'vitest' })),
+    ).toEqual([]);
+  });
+
+  it('answers empty for a payload that is not a JSON object', () => {
+    expect(strykerMutatePositives('["src/a.ts"]')).toEqual([]);
+    expect(strykerMutatePositives('null')).toEqual([]);
+    expect(strykerMutatePositives('{ not json')).toEqual([]);
   });
 });
 
