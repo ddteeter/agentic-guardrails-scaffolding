@@ -759,6 +759,38 @@ function strykerReportMissingViolation(reportPath: string): Violation {
   };
 }
 
+/**
+ * A changed file that falls outside every positive `mutate` glob the project
+ * declared.
+ *
+ * The replacement for what #69 used to do to such a file: mutate it and raise
+ * one unfixable `stryker/no-coverage` per mutant. This says the true thing
+ * instead, and says it without blocking — `warn`, so `hasErrors` leaves the
+ * gate open. The property worth keeping from the old behaviour is noticing a
+ * file that has joined no scope YET; the property worth losing is demanding
+ * 100% of a file the project never claimed.
+ *
+ * Named `guardrails/` rather than `stryker/` deliberately. Both `guidance.ts`
+ * and `loose-rules.ts` match on the bare `stryker/` prefix, so a `stryker/`
+ * name would route this to the thorough fixer and hand it the
+ * crushing-mutants guidance — a fix method for a file nobody is being asked to
+ * mutate. `guardrails/analyzer-unknown` is the precedent for this shape.
+ */
+function strykerOutOfScopeViolation(file: string): Violation {
+  return {
+    ruleId: 'guardrails/stryker-out-of-scope',
+    file,
+    message:
+      `changed, but outside every positive glob in the project's ` +
+      `"mutate" array, so mutation testing does not cover it. Add it to ` +
+      `"mutate" in stryker.conf.json if it should be covered, or leave it ` +
+      `— this does not block.`,
+    severity: 'warn',
+    fixable: false,
+    tool: 'guardrails',
+  };
+}
+
 /** stryker is diff-scoped (changed production files) and CI/commit-only
  *  (mutation testing reruns the suite per mutant). Consumer-generic: no
  *  `--configFile` (stryker auto-detects the consumer's stryker.conf.json), and
@@ -853,6 +885,82 @@ async function excludeExecutableEntries(
 const STRYKER_CONFIG_FILES = ['stryker.conf.json', '.stryker.conf.json'];
 
 /**
+ * Splits a `mutate` entry on the commas stryker's array shape allows, without
+ * breaking a brace expansion apart.
+ *
+ * An unbalanced `}` holds the depth at zero rather than driving it negative,
+ * so the commas after it still split. A pattern with a stray brace matches
+ * nothing in any matcher; letting it swallow every following comma would turn
+ * one unreadable pattern into an unreadable WHOLE ENTRY.
+ */
+function splitOutsideBraces(entry: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let current = '';
+  for (const character of entry) {
+    if (character === '{') {
+      depth += 1;
+    } else if (character === '}') {
+      depth = depth > 0 ? depth - 1 : 0;
+    }
+    if (character === ',' && depth === 0) {
+      parts.push(current);
+      current = '';
+      continue;
+    }
+    current += character;
+  }
+  parts.push(current);
+  return parts;
+}
+
+/**
+ * Stryker's own mutation-range grammar, copied from
+ * `@stryker-mutator/core`'s `MUTATION_RANGE_REGEX` (`fs/project-reader.js`):
+ * `src/a.ts:1-11`, `src/a.ts:5:4-6:4`, `src/a.ts:5-6:4`. Only the path half is
+ * wanted here — the line range is stryker's to apply, and a file carrying one
+ * is in scope by definition.
+ *
+ * Matched as a TAIL and sliced off, where stryker captures the path half with
+ * a leading `(.*?)`. Same answers, without the lazy-wildcard backtracking
+ * `sonarjs/super-linear-regex` objects to.
+ *
+ * A hardcoded third-party grammar, so it drifts the way the rule ids in
+ * `loose-rules.ts` drift. `test/drift/stryker-scope.test.ts` is what notices:
+ * it resolves a fixture's patterns through real stryker and compares.
+ */
+const MUTATION_RANGE = /:\d+(?::\d+)?-\d+(?::\d+)?$/;
+
+function stripMutationRange(entry: string): string {
+  const range = MUTATION_RANGE.exec(entry);
+  return range === null ? entry : entry.slice(0, range.index);
+}
+
+/**
+ * The string entries of a stryker config's `mutate` array, or `[]` for
+ * anything this cannot read.
+ *
+ * Shared by both readers of that array, which differ only in how they split an
+ * entry and which half they keep. Extracted when the duplication detector
+ * measured 52 lines across the two — and the right call rather than a
+ * threshold fix, because the two must stay agreed about what counts as an
+ * entry at all: a config shape one accepted and the other rejected would mean
+ * a file excluded from the ratchet but still mutated by the gate, which is the
+ * #56/#69 failure in miniature.
+ */
+function strykerMutateEntries(configJson: string): string[] {
+  const { parsed } = parseJsonText(configJson);
+  if (!isRecord(parsed)) {
+    return [];
+  }
+  const mutate = parsed.mutate;
+  if (!Array.isArray(mutate)) {
+    return [];
+  }
+  return mutate.filter((entry): entry is string => typeof entry === 'string');
+}
+
+/**
  * The `!` exclusions a project declared in its own stryker config.
  *
  * `--mutate` REPLACES the config's `mutate` array rather than intersecting
@@ -870,6 +978,13 @@ const STRYKER_CONFIG_FILES = ['stryker.conf.json', '.stryker.conf.json'];
  * through onto the CLI restores the project's single source of truth without
  * adding a configuration surface of our own: the file the project excluded
  * from the ratchet is the file the gate excludes, for the same reason.
+ *
+ * Reading only THIS half was #69. A negation says "excluded from mutation
+ * testing", and while the positive globs went unread it was also the only way
+ * to say "outside the gate's scope" — two different claims wearing one
+ * syntax, so a reviewer could no longer tell which one an entry made.
+ * `strykerMutatePositives` reads the other half, and the pair of them is what
+ * keeps a negation meaning one thing.
  *
  * Entries may be a bare glob (`"src/lib/**"`) or a comma-joined
  * glob-plus-negations string (`"src/a/**,!src/a/functions.ts"`) — stryker
@@ -890,19 +1005,48 @@ const STRYKER_CONFIG_FILES = ['stryker.conf.json', '.stryker.conf.json'];
  * never a scope this process invented. Pinned by a test.
  */
 export function strykerMutateNegations(configJson: string): string[] {
-  const { parsed } = parseJsonText(configJson);
-  if (!isRecord(parsed)) {
-    return [];
-  }
-  const mutate = parsed.mutate;
-  if (!Array.isArray(mutate)) {
-    return [];
-  }
-  return mutate
-    .filter((entry): entry is string => typeof entry === 'string')
+  return strykerMutateEntries(configJson)
     .flatMap((entry) => entry.split(','))
     .map((entry) => entry.trim())
     .filter((entry) => entry.startsWith('!'));
+}
+
+/**
+ * The `mutate` entries that are NOT negations: the project's own statement of
+ * what mutation testing is for.
+ *
+ * `strykerMutateNegations` reads the other half of the same array, and reading
+ * only that half is #69: the analyzer honours what a project EXCLUDED while
+ * ignoring what it DECLARED, so its effective scope is "every changed
+ * TypeScript file that is not explicitly negated" — the whole repo minus
+ * exclusions. A file no positive glob has ever covered was then required to
+ * reach 100% purely because a diff touched it, and the only way to silence it
+ * was a negation in this same array — which also removes the file from the
+ * ratchet, so `stryker.conf.json` stopped being able to distinguish "cannot be
+ * tested" from "was blocking a push".
+ *
+ * Two differences from the negation reader, both because these patterns are
+ * resolved in THIS process and never reach stryker's CLI:
+ *
+ * 1. **Commas are split outside brace expansions only.** Stryker's CLI splits
+ *    `--mutate` with `createSplitter(',')` and has no brace awareness, so the
+ *    negation reader splitting on every comma matches what stryker will do to
+ *    the value it is handed. Nothing hands these to a CLI, so fragmenting
+ *    `src/**\/*.{ts,tsx}` would invent two patterns matching nothing and
+ *    silently narrow the scope of every repo whose config uses a brace.
+ * 2. **A mutation range is stripped.** `src/a.ts:1-11` scopes LINES within a
+ *    file that is itself in scope; reading the range as part of the path would
+ *    drop the file from its own declared scope.
+ *
+ * Anything unparseable answers `[]`, which the caller reads as "no declared
+ * scope" and degrades to the previous whole-repo behaviour — never a narrowing
+ * on the strength of a config this could not read.
+ */
+export function strykerMutatePositives(configJson: string): string[] {
+  return strykerMutateEntries(configJson)
+    .flatMap((entry) => splitOutsideBraces(entry))
+    .map((entry) => stripMutationRange(entry.trim()))
+    .filter((entry) => entry.length > 0 && !entry.startsWith('!'));
 }
 
 /**
@@ -984,6 +1128,67 @@ export function applyMutateNegations(
 ): string[] {
   const matchers = negations.map((negation) => negationMatcher(negation));
   return files.filter((file) => matchers.every((matches) => !matches(file)));
+}
+
+/**
+ * The changed files that fall inside the project's DECLARED mutation scope.
+ *
+ * The mirror of `applyMutateNegations`, reading the other half of the same
+ * `mutate` array (#69). Without it the analyzer's scope was "every changed
+ * TypeScript file that is not explicitly negated" — so a file no positive glob
+ * had ever covered was required to reach 100% purely because a diff touched
+ * it, and the only way to silence it was a negation, which ALSO removed the
+ * file from the project's ratchet. The two claims a `stryker.conf.json`
+ * negation can make ("cannot be tested" and "was blocking a push") became
+ * indistinguishable to a reviewer. Intersecting here restores the negations to
+ * meaning one thing.
+ *
+ * The bias is the opposite of the negation filter's, because the costs are.
+ * Over-matching a negation rejects an incremental cache and costs a cold run;
+ * under-matching a POSITIVE glob drops a file the project declared in scope
+ * from the mutation gate silently, which is the under-reporting this pack
+ * exists to prevent. So every unreadable case widens: an empty `positives` —
+ * no config, an unparseable one, or no `mutate` key — keeps every file, which
+ * is the behaviour that shipped before this existed.
+ *
+ * `path.matchesGlob` rather than a glob dependency, with both sides resolved
+ * against `repoRoot` exactly as stryker's own `FileMatcher` resolves them
+ * (`path.resolve`, and `dot: false` for mutate patterns, which is
+ * `matchesGlob`'s default too). Measured to agree with the installed minimatch
+ * across braces, extglobs, character classes, `?`, `**` spanning and stryker's
+ * own default pattern; `test/drift/stryker-scope.test.ts` is what notices them
+ * drifting apart, and is the reason this needs no dependency.
+ *
+ * A pattern neither matcher can parse answers `false` rather than throwing —
+ * measured against `path.matchesGlob`, which returns false for `[`, `{a`,
+ * `!(` and every other malformed shape tried. So there is no throw to guard
+ * and no widening fallback to write: an unreadable glob simply covers
+ * nothing, in both implementations. What would NOT be safe is the two
+ * disagreeing about a glob they can both parse, and that is what the drift
+ * guard measures.
+ */
+export function applyMutateScope(
+  files: readonly string[],
+  positives: readonly string[],
+  repoRoot: string,
+): string[] {
+  if (positives.length === 0) {
+    return [...files];
+  }
+  return files.filter((file) =>
+    positives.some((pattern) => isFileInGlob(file, pattern, repoRoot)),
+  );
+}
+
+function isFileInGlob(
+  file: string,
+  pattern: string,
+  repoRoot: string,
+): boolean {
+  return path.matchesGlob(
+    path.resolve(repoRoot, file),
+    path.resolve(repoRoot, pattern),
+  );
 }
 
 /**
@@ -1201,9 +1406,6 @@ async function runStryker(
     repoRoot,
     readFile,
   );
-  if (production.length === 0) {
-    return [];
-  }
   // One read, two decisions: the `!` exclusions the project declared, and
   // whether this run will be able to spot a stale cached verdict. A read that
   // fails is not distinguished from a config without negations — both mean
@@ -1211,6 +1413,25 @@ async function runStryker(
   // unreadable config must refuse reuse rather than assume it.
   const strykerConfig = (await readStrykerConfig(repoRoot, readFile)) ?? '';
   const negations = strykerMutateNegations(strykerConfig);
+  // The project's DECLARED scope, and the changed files that fall inside it
+  // (#69). A file outside every positive glob is not untested, it is not in
+  // scope — reported below rather than mutated and blocked.
+  const inScope = applyMutateScope(
+    production,
+    strykerMutatePositives(strykerConfig),
+    repoRoot,
+  );
+  const outOfScope = applyMutateNegations(
+    production.filter((file) => !inScope.includes(file)),
+    negations,
+  ).map((file) => strykerOutOfScopeViolation(file));
+  // Nothing in scope, nothing to run — which subsumes the "no changed
+  // production files at all" case too: an empty changed set intersects to an
+  // empty scope and warns about nothing. A separate guard in front of the
+  // config read would be one no test could distinguish.
+  if (inScope.length === 0) {
+    return outOfScope;
+  }
   const removeFile =
     options.removeFile ?? ((filePath) => fsRm(filePath, { force: true }));
   const fileModifiedTime =
@@ -1231,7 +1452,7 @@ async function runStryker(
     { readFile, removeFile, fileModifiedTime, repoRoot },
     // The project's own `!` exclusions applied, so a cache holding a file this
     // run will not mutate cannot survive — see `applyMutateNegations`.
-    applyMutateNegations(production, negations),
+    applyMutateNegations(inScope, negations),
     // The other axis (#67): the tests this turn touched. They are the files
     // `candidates` above filtered OUT of the mutate set, and a cache older than
     // any of them describes a suite that no longer exists.
@@ -1247,7 +1468,7 @@ async function runStryker(
       '--reporters',
       'json',
       '--mutate',
-      [...production, ...negations].join(','),
+      [...inScope, ...negations].join(','),
     ],
     { cwd: repoRoot },
   );
@@ -1270,20 +1491,21 @@ async function runStryker(
   // findings are the answer no matter what the exit code was -- unless the
   // verdicts in it were never produced by a test run at all.
   if (isStrykerReportJson(report)) {
-    const unrun = unrunSurvivedMutants(report, production);
+    const unrun = unrunSurvivedMutants(report, inScope);
     if (unrun > 0) {
-      return [strykerUnrunMutantsViolation(unrun)];
+      return [...outOfScope, strykerUnrunMutantsViolation(unrun)];
     }
-    return parseStrykerJson(report, production);
+    return [...outOfScope, ...parseStrykerJson(report, inScope)];
   }
   if (result.code !== 0) {
     // Outcome 2: nothing to mutate is vacuously clean, even though the runner
     // threw on its way to discovering that.
     if (isZeroMutantRun(`${result.stdout}\n${result.stderr}`)) {
-      return [];
+      return outOfScope;
     }
     // Outcome 3.
     return [
+      ...outOfScope,
       analyzerFailedViolation(
         'stryker',
         result.code,
@@ -1292,7 +1514,7 @@ async function runStryker(
       ),
     ];
   }
-  return [strykerReportMissingViolation(reportPath)];
+  return [...outOfScope, strykerReportMissingViolation(reportPath)];
 }
 
 // `Rung` and `RUNG_ORDER` moved to `analyzer-policy.ts`, so `config.ts` can
