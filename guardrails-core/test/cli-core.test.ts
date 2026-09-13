@@ -272,6 +272,43 @@ describe('runCommand — scope-check', () => {
     expect(out.join('')).toBe('');
   });
 
+  it('denies a fixer Copilot `search` outside the repo', async () => {
+    // Copilot names the tool `search`, with `Grep`/`Glob` as documented
+    // aliases. The Claude-side grant does not carry to that surface, so
+    // neither may the read rule be left behind there.
+    writeActiveViolations('default', [violation('src/a.ts')]);
+    const stdin = JSON.stringify({
+      cwd: root,
+      tool_name: 'search',
+      tool_input: { path: '/home/u/.claude/projects' },
+      agent_id: 'fixer',
+      agent_type: 'guardrail-fixer',
+    });
+    await runCommand(
+      'scope-check',
+      [],
+      dependencies({ readStdin: () => Promise.resolve(stdin) }),
+    );
+    expect(out.join('')).toContain('deny');
+  });
+
+  it('allows a fixer Copilot `search` inside the repo', async () => {
+    writeActiveViolations('default', [violation('src/a.ts')]);
+    const stdin = JSON.stringify({
+      cwd: root,
+      tool_name: 'search',
+      tool_input: { path: root },
+      agent_id: 'fixer',
+      agent_type: 'guardrail-fixer',
+    });
+    await runCommand(
+      'scope-check',
+      [],
+      dependencies({ readStdin: () => Promise.resolve(stdin) }),
+    );
+    expect(out.join('')).toBe('');
+  });
+
   it('allows a fixer Grep with no path, which defaults to the repo', async () => {
     // `path` is optional on both tools; absent means "search from here", and
     // `hookFilePaths` yields nothing, so there is no path to judge. Must not

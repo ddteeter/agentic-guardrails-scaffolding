@@ -32,6 +32,59 @@ describe('consumer templates', () => {
     expect(existsSync(path.join(templates, relative))).toBe(true);
   });
 
+  it('grants every fixer surface a way to SEARCH, under its own tool name', () => {
+    // The two surfaces name the same capability differently, and a grant
+    // written for one silently does not apply to the other: Claude Code takes
+    // `Grep`/`Glob`, while Copilot takes `search` (with those two as
+    // documented aliases). Two fixer runs made no edit at all for want of
+    // this, so a surface shipping without it is a regression worth failing on.
+    for (const agent of ['guardrail-fixer', 'guardrail-fixer-thorough']) {
+      const claude = readFileSync(
+        path.join(templates, 'claude', 'agents', `${agent}.md`),
+        'utf8',
+      );
+      expect(claude).toContain('tools: Read, Grep, Glob, Edit, Write');
+
+      const copilot = readFileSync(
+        path.join(templates, 'copilot', 'agents', `${agent}.agent.md`),
+        'utf8',
+      );
+      // Copilot's CANONICAL identifiers, not the names its runtime reports.
+      // Unrecognised entries are silently ignored there, so a list written in
+      // the wrong namespace grants nothing and says nothing — which is how
+      // this channel shipped with a fixer that could not read its own
+      // manifest. Pinned exactly, so a well-meant `view` cannot creep back.
+      expect(copilot).toContain('tools: [read, edit, search]');
+    }
+  });
+
+  it('withholds execution, fan-out and the network from the Copilot fixer', () => {
+    // The capability boundary, in Copilot's vocabulary. `execute` is the one
+    // that matters most: the diff-auditor and re-verify are trusted because a
+    // fixer can only propose text, and a fixer that can run commands can run a
+    // weakened suite and report success.
+    for (const agent of ['guardrail-fixer', 'guardrail-fixer-thorough']) {
+      const copilot = readFileSync(
+        path.join(templates, 'copilot', 'agents', `${agent}.agent.md`),
+        'utf8',
+      );
+      const tools = /^tools: \[(.*)]$/m.exec(copilot)?.[1] ?? '';
+      for (const withheld of [
+        'execute',
+        'shell',
+        'Bash',
+        'powershell',
+        'agent',
+        'web',
+        'WebFetch',
+        'todo',
+      ]) {
+        expect(tools.split(', ')).not.toContain(withheld);
+      }
+      expect(copilot).toContain('agents: []');
+    }
+  });
+
   it('carries all five Claude hook events', () => {
     const raw: unknown = JSON.parse(
       readFileSync(

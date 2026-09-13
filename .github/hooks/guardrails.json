@@ -24,7 +24,7 @@
         ]
       },
       {
-        "matcher": "edit|create|str_replace_editor|apply_patch|view|grep|glob",
+        "matcher": "edit|create|str_replace_editor|apply_patch|view|search|grep|glob",
         "hooks": [
           {
             "type": "command",

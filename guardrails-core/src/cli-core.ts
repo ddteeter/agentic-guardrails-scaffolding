@@ -710,7 +710,8 @@ function denyPreToolUse(
 
 /**
  * Read-family tool names across dialects: Claude's `Read`, `Grep` and `Glob`,
- * Copilot's `view`.
+ * Copilot's `view` and `search` (whose documented aliases are `Grep`/`Glob`,
+ * already covered).
  *
  * Search belongs here, not in the edit branch below. `hookFilePaths` reads
  * `tool_input.path`, which on `Grep`/`Glob` is the directory to search rather
@@ -723,7 +724,7 @@ function denyPreToolUse(
  * exists to keep out (the user's `~/.claude` memory, say) one `pattern` at a
  * time, which is why granting the tools did not mean exempting them.
  */
-const READ_TOOLS = /^(?:read|view|grep|glob)$/i;
+const READ_TOOLS = /^(?:read|view|grep|glob|search)$/i;
 
 function isReadTool(toolName: string | undefined): boolean {
   // Equivalent mutant on the `!== undefined` half: READ_TOOLS.test(undefined)

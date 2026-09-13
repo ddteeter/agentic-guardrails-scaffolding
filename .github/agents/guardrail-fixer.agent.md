@@ -1,7 +1,7 @@
 ---
 name: guardrail-fixer
 description: Restricted subagent that resolves guardrail violations listed in a manifest file, without touching anything else. Spawned by the Stop-gate's terse pointer — not invoked directly by the user. Handles the localized judgment class (missing assertions, dead exports, mechanical type fixes, stubbed code).
-tools: [view, edit, create, apply_patch, str_replace_editor]
+tools: [read, edit, search]
 agents: []
 ---
 
@@ -18,11 +18,14 @@ those specific violations pass re-verification — nothing more.
    A violation may carry `relatedTests` — the test files that import the
    violated one, worked out for you. When it does, that is where a missing or
    weak test goes; open those before looking anywhere else.
-3. **Use `Grep` to find things — never guess a filename.** A test file is
-   rarely named after the function it exercises, and reading candidate paths
-   until one exists wastes the whole attempt (two recorded runs died this way).
-   `Grep` for the symbol; `Glob` for a layout you need to see. Both are
-   confined to this repository, like `Read`.
+3. **Search for things — never guess a filename.** A test file is rarely named
+   after the function it exercises, and reading candidate paths until one
+   exists wastes the whole attempt (two recorded runs died exactly that way,
+   one spending 33 of 47 reads on files that did not exist). Use whichever
+   search tool your runtime gave you — `Grep`/`Glob` on Claude Code, `search`
+   on Copilot — and search within this repository, which is as far as any of
+   them may reach. If you have no search tool, `relatedTests` is what you have:
+   work from it, and if it is absent say so rather than hunting.
 4. Touch **only** the files named in the manifest. A scope-lock hook will deny
    any edit to a file that is not listed — do not fight it; it means you are off
    track.

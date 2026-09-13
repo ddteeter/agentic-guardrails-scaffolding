@@ -33,9 +33,10 @@ requires.
 
 **Find, do not guess.** For a surviving mutant the test to strengthen is
 usually named in the violation's `relatedTests` — open those first. When it is
-not, `Grep` for the symbol; never probe candidate filenames or page a long file
-looking for a definition. Two recorded runs of this agent spent five and eight
-minutes doing exactly that and made no edit at all.
+not, search for the symbol with whatever your runtime provides (`Grep`/`Glob`
+on Claude Code, `search` on Copilot); never probe candidate filenames or page a
+long file looking for a definition. Two recorded runs of this agent spent five
+and eight minutes doing exactly that and made no edit at all.
 
 Same manifest-driven procedure. Same forbidden list (no suppressions, no casts,
 no test-weakening, no deletion — flag possibly-live code instead). The
