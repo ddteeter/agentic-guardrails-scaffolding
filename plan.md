@@ -2807,3 +2807,64 @@ real vitest-runner cache still satisfies the predicate — if it stops, reuse
 silently switches off for everyone — and (b) the cached survivor comes back
 KILLED once its covering test is strengthened. Same shape, and the same reason,
 as `stryker-runner.test.ts`.
+
+### Finding (issue #67, same adoption): the reuse rule checked production, not tests
+
+`canReuseIncrementalCache` answers #59's question well — a cache whose FILES
+fall outside this run's `--mutate` set is discarded — and that is the only
+question it answers. The cache was kept whenever its file set was a subset of
+this run's mutate set, **however much the test suite had changed since it was
+written**. The gate's own loop is "add the test that kills the survivor, run
+again", and the second run's mutate set is usually the same one file, so the
+cache was judged reusable at exactly the moment its verdicts went stale.
+
+Reported twice in one day on the consumer repo, both cleared by
+`rm -f reports/stryker-incremental.json` with no other change, and once with the
+gate and a hand-run `npx stryker run --mutate <same file>` disagreeing on
+identical source — which is the cleanest statement of it.
+
+The cost is not the wasted run. The gate's message is "a test executes this line
+but does not assert its behavior", so a false `Survived` invites an assertion
+the developer does not believe in, or an equivalence grant that is not real. On
+a `break: 100` ratchet that is pressure to weaken the suite to satisfy a cache.
+**A gate that is wrong in the lenient direction wastes a run; one that is wrong
+in the strict direction corrodes the thing it protects.**
+
+Stryker's `IncrementalDiffer.mutantCanBeReused` is supposed to prevent this — it
+refuses a non-killed mutant once any covering test reads as `added` — and real
+stryker under the vitest runner does exactly that (the drift guard proves it,
+and a hand-built fixture reproducing the reported loop, production file edited
+AND test strengthened in the same run, came back 100%). But that guard rests on
+machinery not observable from here: a test's identity is name + file + location
+(the vitest runner reports NO location, measured), `added` is decided against
+the coverage THIS run measured, and the check is skipped wholesale when
+`hasCoverage` is false. A multi-project vitest setup that reports per-test
+coverage for some tests and not others leaves a `Survived` mutant with no
+covering tests to diff — nothing reads as `added`, and the stale verdict stands.
+
+**Shipped:** a second axis (`haveTestsChangedSinceCache`), deliberately NOT a model
+of stryker's internals. The cache is discarded when any test file in this turn's
+changed set is at least as new as the cache file itself — stryker writes the
+cache at the end of a run, so its mtime is the "written at". `>=` rather than
+`>` because a coarse clock can stamp both in the same millisecond, and the two
+errors are not symmetric. An unreadable timestamp resolves to the sentinel that
+makes the cache unusable — `UNREADABLE_CACHE_TIME` / `UNREADABLE_TEST_TIME`,
+distinct values rather than one shared `undefined`, because a single absent
+value either operand could produce made the two failure paths
+indistinguishable and gave the mutation gate an equivalent mutant. A turn that
+touched only production code changed no test, takes no stat at all, and keeps
+the reuse #59 restored.
+
+The other three resolutions the issue offered were weighed and not taken:
+per-mutate-set `--incrementalFile` (a new cross-run path and a cache-directory
+growth problem, for the scope question already answered); dropping
+`--incremental` from the analyzer (reverts #59 for every consumer, to fix a
+staleness this closes directly); and marking reused verdicts in the violation
+text (the report does not distinguish a reused verdict from a measured one, so
+there is nothing honest to mark).
+
+**Also found while reproducing it:** the drift guard was strengthening its
+fixture's test by RENAMING the `it`. With no location reported, a renamed test
+is a trivially `added` one, so half two of the guard passed without ever
+exercising the source-diff that has to notice an edit made in place — which is
+what a fixer actually does. The fixture now keeps the name and still passes.

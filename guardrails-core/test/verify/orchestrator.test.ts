@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -2688,6 +2688,232 @@ describe('stryker fails open twice (defect 3)', () => {
     // And the flag that makes the kept cache mean anything is still passed.
     const args = calls.find((call) => call.command === 'stryker')?.args ?? [];
     expect(args).toContain('--incremental');
+  });
+
+  /**
+   * The changed set for the #67 loop: one production file AND the test written
+   * to kill its survivor. `execWithStryker` alone reports production only, so
+   * the test-suite axis is never exercised by it.
+   */
+  function execWithChangedTest(): { exec: Exec; calls: Call[] } {
+    const { exec: base, calls } = fakeExec({
+      ...changedFilesOverrides,
+      'git diff --name-only --diff-filter=ACM main': {
+        stdout:
+          'guardrails-core/src/foo.ts\nguardrails-core/test/foo.test.ts\n',
+        stderr: '',
+        code: 0,
+      },
+    });
+    const exec: Exec = (command, args, options) => {
+      if (command === 'stryker') {
+        calls.push({ command, args, options });
+        return Promise.resolve({ stdout: '', stderr: '', code: 0 });
+      }
+      return base(command, args, options);
+    };
+    return { exec, calls };
+  }
+
+  /** The `readFile` seam every #67 case shares: a real runner, and a cache both
+   *  other rules accept, so the test-suite axis is the only thing left to
+   *  decide the outcome. */
+  const reusableCacheReader = (filePath: string): Promise<string> => {
+    if (filePath.includes('stryker.conf.json')) {
+      return Promise.resolve(JSON.stringify({ testRunner: 'vitest' }));
+    }
+    return Promise.resolve(
+      filePath.includes('stryker-incremental')
+        ? reusableCache
+        : JSON.stringify({ files: {} }),
+    );
+  };
+
+  it('deletes an otherwise-reusable cache older than a test this run changed', async () => {
+    // #67: the cache's FILES were this run's, so it was kept — however much the
+    // suite had changed underneath it. On a gate the loop is "add the test that
+    // kills the survivor, run again" with the same one file in `--mutate`, so
+    // the cache was judged reusable at exactly the moment its verdicts went
+    // stale, and the survivor came back from the cache rather than a run.
+    const removed: string[] = [];
+    const { exec } = execWithChangedTest();
+    await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      profile: 'commit',
+      readFile: reusableCacheReader,
+      fileModifiedTime: (filePath) =>
+        Promise.resolve(filePath.includes('stryker-incremental') ? 1000 : 2000),
+      removeFile: (filePath) => {
+        removed.push(filePath);
+        return Promise.resolve();
+      },
+    });
+    expect(removed.some((file) => file.includes('stryker-incremental'))).toBe(
+      true,
+    );
+  });
+
+  it('keeps a cache newer than every test this run changed', async () => {
+    // The other side of #67, and what keeps the fix from being "delete the
+    // cache whenever a test file is in the changed set": once the cold run has
+    // rewritten the cache, a re-run that edited nothing further reuses it.
+    const removed: string[] = [];
+    const stat: string[] = [];
+    const { exec } = execWithChangedTest();
+    await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      profile: 'commit',
+      readFile: reusableCacheReader,
+      fileModifiedTime: (filePath) => {
+        stat.push(filePath);
+        return Promise.resolve(
+          filePath.includes('stryker-incremental') ? 3000 : 2000,
+        );
+      },
+      removeFile: (filePath) => {
+        removed.push(filePath);
+        return Promise.resolve();
+      },
+    });
+    expect(removed.some((file) => file.includes('stryker-incremental'))).toBe(
+      false,
+    );
+    // The paths, not merely the verdict: both are resolved against the repo
+    // root, so a stat of the bare relative path (which would fail, and fail
+    // CLOSED, deleting every cache) cannot pass this.
+    expect(stat.toSorted((a, b) => a.localeCompare(b))).toEqual([
+      path.join('/repo', 'guardrails-core', 'test', 'foo.test.ts'),
+      path.join('/repo', 'reports', 'stryker-incremental.json'),
+    ]);
+    // And the production file is not among them: it is stryker's own diff to
+    // reason about, not evidence the suite moved.
+    expect(stat.some((file) => file.includes('src/foo.ts'))).toBe(false);
+  });
+
+  it('deletes the cache when a changed test cannot be stat-ed', async () => {
+    // Fail toward the cold run, as everywhere else in this module: an
+    // unanswerable question about the suite is not a licence to reuse.
+    const removed: string[] = [];
+    const { exec } = execWithChangedTest();
+    await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      profile: 'commit',
+      readFile: reusableCacheReader,
+      fileModifiedTime: (filePath) =>
+        filePath.includes('stryker-incremental')
+          ? Promise.resolve(3000)
+          : Promise.reject(new Error('ENOENT: no such file')),
+      removeFile: (filePath) => {
+        removed.push(filePath);
+        return Promise.resolve();
+      },
+    });
+    expect(removed.some((file) => file.includes('stryker-incremental'))).toBe(
+      true,
+    );
+  });
+
+  it('deletes the cache when the cache itself cannot be stat-ed', async () => {
+    // The other unreadable timestamp, and the reason the two fallbacks are
+    // distinct values: a cache with no readable mtime is infinitely old, so the
+    // changed test outranks it and the run goes cold.
+    const removed: string[] = [];
+    const { exec } = execWithChangedTest();
+    await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      profile: 'commit',
+      readFile: reusableCacheReader,
+      fileModifiedTime: (filePath) =>
+        filePath.includes('stryker-incremental')
+          ? Promise.reject(new Error('ENOENT: no such file'))
+          : Promise.resolve(2000),
+      removeFile: (filePath) => {
+        removed.push(filePath);
+        return Promise.resolve();
+      },
+    });
+    expect(removed.some((file) => file.includes('stryker-incremental'))).toBe(
+      true,
+    );
+  });
+
+  it('reads real mtimes off disk when no seam is injected', async () => {
+    // The default seam, exercised against a real filesystem — the only test
+    // here that does. Everything else injects `fileModifiedTime`, which would
+    // leave `fsStat` in a block nothing runs and therefore a mutant nothing
+    // can kill.
+    const directory = await mkdtemp(path.join(tmpdir(), 'guardrails-mtime-'));
+    await mkdir(path.join(directory, 'reports'), { recursive: true });
+    await mkdir(path.join(directory, 'guardrails-core', 'test'), {
+      recursive: true,
+    });
+    const cachePath = path.join(
+      directory,
+      'reports',
+      'stryker-incremental.json',
+    );
+    const testPath = path.join(
+      directory,
+      'guardrails-core',
+      'test',
+      'foo.test.ts',
+    );
+    await writeFile(cachePath, reusableCache);
+    await writeFile(testPath, '// the test that kills the survivor\n');
+    // The cache written first, the test edited after it — the #67 loop, stamped
+    // rather than described.
+    await utimes(cachePath, new Date(1_000_000), new Date(1_000_000));
+    await utimes(testPath, new Date(2_000_000), new Date(2_000_000));
+
+    const removed: string[] = [];
+    const { exec } = execWithChangedTest();
+    await runVerify({
+      repoRoot: directory,
+      baseBranch: 'main',
+      exec,
+      profile: 'commit',
+      readFile: reusableCacheReader,
+      removeFile: (filePath) => {
+        removed.push(filePath);
+        return Promise.resolve();
+      },
+    });
+    expect(removed).toContain(cachePath);
+  });
+
+  it('asks for no mtime at all when this run changed no test file', async () => {
+    // The reuse #59 restored is untouched for a production-only turn, and the
+    // stat is not merely harmless there — it is never taken.
+    const stat: string[] = [];
+    const { exec } = execWithStryker({ stdout: '', stderr: '', code: 0 });
+    const removed: string[] = [];
+    await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      profile: 'commit',
+      readFile: reusableCacheReader,
+      fileModifiedTime: (filePath) => {
+        stat.push(filePath);
+        return Promise.resolve(0);
+      },
+      removeFile: (filePath) => {
+        removed.push(filePath);
+        return Promise.resolve();
+      },
+    });
+    expect(stat).toEqual([]);
+    expect(removed.some((file) => file.includes('stryker-incremental'))).toBe(
+      false,
+    );
   });
 
   it('deletes an incremental cache holding a file this run does not mutate', async () => {

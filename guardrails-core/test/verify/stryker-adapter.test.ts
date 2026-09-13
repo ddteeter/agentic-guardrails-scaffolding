@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  UNREADABLE_CACHE_TIME,
+  UNREADABLE_TEST_TIME,
   canReuseIncrementalCache,
+  haveTestsChangedSinceCache,
   isStrykerReportJson,
   parseStrykerJson,
   unrunSurvivedMutants,
@@ -716,5 +719,55 @@ describe('canReuseIncrementalCache', () => {
         [],
       ),
     ).toBe(false);
+  });
+});
+
+/**
+ * The test-suite half of the reuse question (#67).
+ *
+ * `canReuseIncrementalCache` asks only about the cache's PRODUCTION files, so a
+ * cache stayed reusable however much the suite had changed underneath it — and
+ * the gate's own loop is "add the test that kills the survivor, run again",
+ * where the mutate set is usually the same one file. This predicate is the
+ * other axis: the cache is stale the moment a test that changed is newer than
+ * it.
+ */
+describe('haveTestsChangedSinceCache', () => {
+  it('accepts a cache written after every changed test was last touched', () => {
+    expect(haveTestsChangedSinceCache(2000, [1000, 1500])).toBe(false);
+  });
+
+  it('rejects a cache older than a changed test', () => {
+    // The reported loop: the fixer writes the killing test, the next gate run
+    // reads a cache whose verdict predates it.
+    expect(haveTestsChangedSinceCache(2000, [1000, 2500])).toBe(true);
+  });
+
+  it('rejects on an equal timestamp, the fail-closed direction', () => {
+    // A coarse filesystem clock can stamp the cache write and a test edit in
+    // the same millisecond. Re-running is a wasted run; reusing is a verdict
+    // nothing measured.
+    expect(haveTestsChangedSinceCache(2000, [2000])).toBe(true);
+  });
+
+  it('rejects when a changed test cannot be stat-ed at all', () => {
+    // An unreadable test is infinitely new, so it outranks any cache.
+    expect(haveTestsChangedSinceCache(2000, [UNREADABLE_TEST_TIME])).toBe(true);
+  });
+
+  it('rejects when the cache itself cannot be stat-ed', () => {
+    // And an unreadable cache is infinitely old, so any test outranks it. The
+    // two sentinels are distinct on purpose: one shared absent value would make
+    // the two failure paths indistinguishable.
+    expect(haveTestsChangedSinceCache(UNREADABLE_CACHE_TIME, [1000])).toBe(
+      true,
+    );
+  });
+
+  it('accepts when this run changed no test file, whatever the cache mtime', () => {
+    // Nothing to compare is not staleness: a run that touched only production
+    // code keeps the reuse #59 restored, and the cache mtime does not matter
+    // even when it is the unreadable sentinel.
+    expect(haveTestsChangedSinceCache(UNREADABLE_CACHE_TIME, [])).toBe(false);
   });
 });
