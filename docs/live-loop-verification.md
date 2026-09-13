@@ -85,13 +85,18 @@ pass.
 
 ## 4. Scope-lock — _fixer can't wander_ (CONFIRM this fires)
 
-The session-level `PreToolUse` hook (matcher `Read|Edit|Write`) runs
+The session-level `PreToolUse` hook (matcher `Read|Grep|Glob|Edit|Write`) runs
 `guardrails scope-check`. It is self-filtering: with no `.pre-fix.json` marker
 for the payload's exact session it is silent, so ordinary main-agent work and
 later escalation turns are unconstrained. During delegation the marker exists
 and the hook enforces the manifest. This placement is deliberate: live Claude
 Code 2.1.258 did not execute the repo-local fixer-agent frontmatter hook, so the
 old placement was not a guardrail at all.
+
+Search is part of that lock, not an exception to it: `Grep` and `Glob` are
+classified read-family, so a fixer may search anywhere inside the repo and
+nowhere outside it. Confirm both halves — an in-repo `Grep` is silent, and a
+`Grep` rooted at `~/.claude` is denied.
 
 Two things to observe:
 

@@ -34,6 +34,7 @@ import path from 'node:path';
 import { auditDiff, findingKey, type AuditFinding } from './audit.js';
 import type { SanctionedFile, SanctionedSuppression } from './config.js';
 import type { Exec } from './exec.js';
+import { readTestCorpus, withCoveringTests } from './covering-tests.js';
 import { withGuidance } from './guidance.js';
 import {
   decideGate,
@@ -339,6 +340,25 @@ function toViolation(finding: AuditFinding): Violation {
   };
 }
 
+/**
+ * Everything the manifest carries beyond the raw violations, in the order the
+ * pieces depend on each other: workspace attribution, then guidance by rule
+ * class, then the test files covering each violated file.
+ *
+ * One function rather than the same three-call stack at both write sites: the
+ * two manifests are read by the same fixer, so a difference between them would
+ * be a difference in what it knows.
+ */
+function forTheFixer(
+  violations: readonly Violation[],
+  repoRoot: string,
+): Violation[] {
+  const attributed = withPackages(violations, loadWorkspaceResolver(repoRoot));
+  return withCoveringTests(withGuidance(attributed), () =>
+    readTestCorpus(repoRoot),
+  );
+}
+
 export async function runStopGate(
   options: StopGateOptions,
 ): Promise<StopGateResult> {
@@ -385,11 +405,9 @@ export async function runStopGate(
   // are already attributed; `withPackages` is idempotent, so re-applying is a
   // no-op — this call is what attributes the audit-derived findings, which
   // carry files too.
-  const combined = withGuidance(
-    withPackages(
-      [...violations, ...auditFindings.map((finding) => toViolation(finding))],
-      loadWorkspaceResolver(repoRoot),
-    ),
+  const combined = forTheFixer(
+    [...violations, ...auditFindings.map((finding) => toViolation(finding))],
+    repoRoot,
   );
 
   writeViolations(directory, sessionId, combined);
@@ -519,11 +537,9 @@ export async function runCommitGate(
   // attached -- so `guardrail-fixer` needs no second format to understand.
   const directory = stateDirectory(options.repoRoot);
   const manifestId = commitManifestId(options.sessionId);
-  const combined = withGuidance(
-    withPackages(
-      [...guided, ...findings.map((finding) => toViolation(finding))],
-      loadWorkspaceResolver(options.repoRoot),
-    ),
+  const combined = forTheFixer(
+    [...guided, ...findings.map((finding) => toViolation(finding))],
+    options.repoRoot,
   );
   writeViolations(directory, manifestId, combined);
 

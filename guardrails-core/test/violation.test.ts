@@ -46,6 +46,34 @@ describe('isViolation', () => {
   });
 });
 
+describe('relatedTests', () => {
+  it('accepts a violation carrying the covering test files', () => {
+    expect(isViolation({ ...base, relatedTests: ['test/a.test.ts'] })).toBe(
+      true,
+    );
+  });
+
+  it('rejects a relatedTests that is not an array of strings', () => {
+    // Present-but-wrongly-typed is the case that matters: this field is read
+    // straight out of a JSON manifest, and a fixer told its test lives at
+    // `42` has been misled by the channel that exists to orient it.
+    expect(isViolation({ ...base, relatedTests: 'test/a.test.ts' })).toBe(
+      false,
+    );
+    expect(isViolation({ ...base, relatedTests: [42] })).toBe(false);
+    // A MIXED array is the case that separates "every entry is a string" from
+    // "some entry is": with `some`, this payload validates and the fixer is
+    // handed `42` as a path to open.
+    expect(isViolation({ ...base, relatedTests: ['test/a.test.ts', 42] })).toBe(
+      false,
+    );
+  });
+
+  it('accepts a violation with no relatedTests at all', () => {
+    expect(isViolation(base)).toBe(true);
+  });
+});
+
 describe('hasErrors', () => {
   it('is true when any violation is error severity', () => {
     expect(hasErrors([{ ...base, severity: 'warn' }, base])).toBe(true);

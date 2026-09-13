@@ -203,16 +203,34 @@ console.log(
   `synced ${skillList.length} skill doc(s): guardrails-plugin/skills → docs/guardrails + guardrails-core/guidance + .github/copilot-instructions.md`,
 );
 
-// Copilot fixer tool allowlist (Copilot tool names, NOT Claude's). Read+edit
-// family only; `bash` and `agent`/`task` are withheld so the fixer can't shell
-// out or fan out (the latter reinforced by `agents: []`).
-const COPILOT_TOOLS = [
-  'view',
-  'edit',
-  'create',
-  'apply_patch',
-  'str_replace_editor',
-];
+// Copilot fixer tool allowlist, in Copilot's CANONICAL identifiers.
+//
+// These are frontmatter inputs, which is a different namespace from the tool
+// names a runtime reports at hook time. GitHub documents seven primaries —
+// `execute`, `read`, `edit`, `search`, `agent`, `web`, `todo` — each with
+// compatible aliases, and **all unrecognized names are silently ignored**
+// (docs.github.com/en/copilot/reference/custom-agents-configuration).
+//
+// That last rule is why this list is now canonical names only. It used to read
+// `[view, edit, create, apply_patch, str_replace_editor]`, and of those only
+// `edit` is a recognised identifier: `view` is the CLOUD-AGENT MAPPING of
+// `read` (what the runtime calls the tool, not what you ask for), and `create`
+// and `apply_patch` appear nowhere in the table. Ignored silently, they left
+// the Copilot fixer holding `edit` and nothing else — no way to read the
+// manifest it is handed, on a channel nobody has exercised yet.
+//
+// Withheld deliberately, and each for a reason the loop depends on:
+// `execute` (a fixer that can run commands can run a weakened suite and report
+// success — the diff-auditor and re-verify are trusted precisely because it
+// cannot), `agent` (no fan-out; reinforced by `agents: []`), `web` (a fixer
+// that can read the internet can be steered by it), `todo` (no value in a
+// single-manifest task).
+//
+// `search` is Copilot's name for what Claude Code calls `Grep`/`Glob` — both
+// are listed as its aliases — so the Claude-side grant does not carry over and
+// has to be named here, or the Copilot fixer keeps the bug the Claude one had:
+// no way to find the test for a violated file except guessing at names.
+const COPILOT_TOOLS = ['read', 'edit', 'search'];
 
 // Map the CC model tier keyword → a Copilot model id from guardrails.config.json.
 // These knobs default UNSET, so the generated `.agent.md` omits `model:`. That is

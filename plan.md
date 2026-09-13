@@ -393,12 +393,82 @@ config; and external-tool output). Two tracks:
   1600+800, 1200+400), looking for a definition by eye. A grep would have been
   one call.
 
-  Two candidate fixes, both small: give the fixers `Grep` and `Glob` (read-only,
-  and the existing `Read` scope-check matcher extends to them, so the
-  scope-lock is unchanged); and/or have the manifest name the test file that
-  covers each violated file, since the gate already knows the changed set.
-  The first is the general fix — "find the test for this function" is the
-  question both runs died on.
+  **Both fixes shipped together.** The fixers are now
+  `Read, Grep, Glob, Edit, Write`, and search takes the read rule rather than
+  an exemption: `READ_TOOLS` gained `grep|glob`, so a search rooted outside the
+  repo is denied exactly as an out-of-repo `Read` is. That classification is
+  load-bearing in the other direction too — `hookFilePaths` reads
+  `tool_input.path`, which on `Grep` is the directory to SEARCH, so before the
+  reclassification a fixer grepping its own repo was denied as an unlisted
+  write target and the tool would have been useless the moment it was granted.
+
+  Alongside it, `covering-tests.ts` resolves the test files that import a
+  violated file and attaches them as `relatedTests`, so the common case needs
+  no search at all. Matched on the import graph, not on a filename convention,
+  because convention is what failed: `test/verify/orchestrator.test.ts` is the
+  test for `src/verify/index.ts` and shares no name with it, while a substring
+  rule would hand `src/a.ts`'s tests to `src/ab.ts`. The corpus is read once
+  per manifest, lazily, capped at 800 files and 512KB each; a repo past the cap
+  gets no hint and greps instead, which is the pre-existing behaviour.
+
+  Grep is the general fix and `relatedTests` is the fast path — neither
+  replaces the other. A fixer still has to search when the test it needs does
+  not exist yet, which is the `no-coverage` case.
+
+  **The three surfaces do not get the same fix, and checking that changed the
+  change.** The tool grant is per-host and none of it carries across:
+
+  - **Claude Code** — `tools: Read, Grep, Glob, Edit, Write` in the agent
+    frontmatter. The full fix.
+  - **Copilot** — the grant is a different vocabulary, and the first pass
+    missed it. Copilot's identifiers are `execute`, `read`, `edit`, `search`,
+    `agent`, `web`, `todo`, and `Grep`/`Glob` are documented ALIASES of
+    `search` (docs.github.com/en/copilot/reference/custom-agents-configuration)
+    — so `COPILOT_TOOLS` needed `search` added or the Copilot fixer kept the
+    bug while the Claude one was fixed. `templates.test.ts` now fails if either
+    surface ships without a search tool, or if Copilot's list ever gains
+    `execute`.
+  - **Codex** — gets NEITHER half of the tool fix, and cannot. It has no
+    per-agent tool allowlist at all (`openai/codex#16226`), so there is no
+    frontmatter to grant through; its search is the shell, and the capability
+    lock denies shell outright while a manifest is active. Relaxing that is not
+    on the table — a fixer that can run commands can run a weakened suite and
+    report success, which is the property the whole loop rests on. So on Codex
+    `relatedTests` is not the fast path, it is the only path.
+
+  That asymmetry is the argument for having built both halves rather than
+  stopping at the tool grant: the manifest is the one channel every surface
+  reads, so a fix delivered through it is the only one that reaches all three.
+
+  **And checking that turned up a second, worse bug on the same channel.**
+  Copilot's documented rule is that **all unrecognized tool names are silently
+  ignored**. Of the five names `COPILOT_TOOLS` used to carry — `view`, `edit`,
+  `create`, `apply_patch`, `str_replace_editor` — only `edit` is a recognised
+  identifier. `view` is the CLOUD-AGENT MAPPING of `read` (the name the runtime
+  reports, not one you may ask for); `create` and `apply_patch` appear nowhere
+  in the table. So the Copilot fixer's effective grant was `edit` alone: it
+  could not read the file it was told to fix, or the manifest naming it, and
+  nothing said so. The channel has never been exercised end to end, which is
+  why it went unnoticed.
+
+  Now `['read', 'edit', 'search']`, canonical names only, with `execute`,
+  `agent`, `web` and `todo` withheld for the reasons each is dangerous to this
+  loop — `execute` above all, since a fixer that can run commands can run a
+  weakened suite and report success. `templates.test.ts` pins the list exactly
+  (so a well-meant `view` cannot creep back) and separately asserts the four
+  withheld capabilities are absent.
+
+  The two namespaces are worth keeping straight, because the fix depends on
+  not conflating them: the agent frontmatter takes Copilot's CANONICAL
+  identifiers, while the hook matchers and `READ_TOOLS` match the names the
+  runtime actually reports (`view`, `search`, `str_replace_editor`, …). Both
+  are correct in their own place; the old list was frontmatter written in the
+  runtime's vocabulary.
+
+  **Still unverified:** none of this has run live on Copilot. The next thing
+  that channel needs is one end-to-end pass of
+  `docs/copilot-live-loop-verification.md`, which would have caught a fixer
+  with no read tool immediately.
 
 - **A fixer proposing a sanction is often a restructuring signal, not an
   exemption request.** Three times in the #59/#61 sessions a fixer correctly

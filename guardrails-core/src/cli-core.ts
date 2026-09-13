@@ -709,9 +709,22 @@ function denyPreToolUse(
 }
 
 /**
-Read-family tool names across dialects: Claude's `Read`, Copilot's `view`.
-*/
-const READ_TOOLS = /^(?:read|view)$/i;
+ * Read-family tool names across dialects: Claude's `Read`, `Grep` and `Glob`,
+ * Copilot's `view` and `search` (whose documented aliases are `Grep`/`Glob`,
+ * already covered).
+ *
+ * Search belongs here, not in the edit branch below. `hookFilePaths` reads
+ * `tool_input.path`, which on `Grep`/`Glob` is the directory to search rather
+ * than a file to change — so before search joined this list, a fixer grepping
+ * its own repository was denied as an unlisted WRITE target, and the tool was
+ * useless the moment it was granted.
+ *
+ * They are reads, and they take the read rule: anywhere inside the repo, never
+ * outside it. A search rooted outside would reach exactly what the read-lock
+ * exists to keep out (the user's `~/.claude` memory, say) one `pattern` at a
+ * time, which is why granting the tools did not mean exempting them.
+ */
+const READ_TOOLS = /^(?:read|view|grep|glob|search)$/i;
 
 function isReadTool(toolName: string | undefined): boolean {
   // Equivalent mutant on the `!== undefined` half: READ_TOOLS.test(undefined)
