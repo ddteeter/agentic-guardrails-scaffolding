@@ -28,6 +28,14 @@ Expect that to surface new work: covering a `no-coverage` region routinely turns
 up genuine survivors that were invisible while the region was uncovered. That is
 the point, not a setback.
 
+**A file the project never declared in scope does not reach you as a mutant at
+all.** The gate intersects the changed files with the positive globs in
+`stryker.conf.json`'s `mutate` array, so a file outside every one of them is
+reported once as `guardrails/stryker-out-of-scope` — a warning that does not
+block — instead of as a wall of `no-coverage` mutants. If you are looking at
+`no-coverage` violations, the project has claimed that file. Cover it; do not
+reach for a negation to make it stop.
+
 ## The loop
 
 1. **Scope the run to the file you are working on.** A whole-repo run is minutes;
@@ -213,3 +221,8 @@ explain it and the developer can still say "no — fix the code instead."
   all — a coverage gap, not a hollow assertion.
 - **Do not raise thresholds or widen `excludedMutations`** to make a run pass.
   Noise is controlled by scoping the run, never by tolerating survivors.
+- **Do not add a `!` negation to `stryker.conf.json` to silence a file the gate
+  is asking you to cover.** That array is the project's ratchet — a negation
+  removes the file from `npm run mutate` and from CI too, and says "this cannot
+  be tested" where you meant "this was blocking me". Negate a file only when
+  the first claim is the true one, and say why where a reviewer will read it.

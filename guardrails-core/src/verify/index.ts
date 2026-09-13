@@ -979,6 +979,13 @@ function strykerMutateEntries(configJson: string): string[] {
  * adding a configuration surface of our own: the file the project excluded
  * from the ratchet is the file the gate excludes, for the same reason.
  *
+ * Reading only THIS half was #69. A negation says "excluded from mutation
+ * testing", and while the positive globs went unread it was also the only way
+ * to say "outside the gate's scope" — two different claims wearing one
+ * syntax, so a reviewer could no longer tell which one an entry made.
+ * `strykerMutatePositives` reads the other half, and the pair of them is what
+ * keeps a negation meaning one thing.
+ *
  * Entries may be a bare glob (`"src/lib/**"`) or a comma-joined
  * glob-plus-negations string (`"src/a/**,!src/a/functions.ts"`) — stryker
  * accepts both, so each entry is split on `,` before the negations are picked

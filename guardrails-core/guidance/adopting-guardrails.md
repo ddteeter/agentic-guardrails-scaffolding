@@ -164,6 +164,17 @@ maintaining lint rules for somebody else's repository. That's this step's job:
   puts its entry points elsewhere (a `bin/`, several package entries, a
   framework's convention), say so in `knip.json` now: knip reports every module
   no entry point reaches, so a wrong `entry` reports live code as dead.
+- **Stryker's `mutate` array** — the seed leaves it at stryker's default, and
+  it is the gate's scope as well as the ratchet's. The commit gate mutates a
+  changed file only if some positive glob in that array covers it; anything
+  else is reported once as `guardrails/stryker-out-of-scope`, a warning that
+  does not block. So declare what mutation testing is FOR here, positively.
+  Two consequences worth knowing before you write it: a file you never list is
+  never gated (the warning is your notice that it joined nothing), and a `!`
+  negation removes a file from `npm run mutate` and CI as well as from the
+  gate — it says "this cannot be tested", so do not reach for one to quiet a
+  file you simply have not covered yet.
+
 - **Stryker's test-runner plugin** — swap `command` for a framework-specific
   runner once one is installed. That also clears a finding you would otherwise
   hit immediately: knip reads `stryker.conf.json`, sees `testRunner: "command"`,
