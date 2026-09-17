@@ -79,6 +79,14 @@ dependency, **review both**:
   whether the tool **renamed or removed** any rule-id it references, and whether
   the new version adds rules that should be classified **loose** (a green fix
   easily not a good one — test-integrity, architecture, mutation, dead-code).
+  Those four name what the analyzer **checks**, which is a proxy. The question
+  they proxy for — and the fifth one to ask of every new rule, whatever its
+  category — is **can the obvious mechanical fix be wrong?** A plain style rule
+  qualifies when the cheapest green edit changes runtime behaviour:
+  `unicorn/no-null`'s is `== null` → `=== undefined`, which narrows a guard from
+  two values to one (#78). If the answer is yes, it is loose no matter which
+  analyzer produced it — and it costs a more expensive model on every
+  occurrence, so answer it about the _obvious_ fix, not an imaginable bad one.
 - **`guardrails-core/src/audit.ts`** — the diff-auditor suppression signatures
   (`eslint-disable`, `@ts-*`, `@SuppressWarnings`, `.skip`, …). Confirm the tool
   hasn't changed the syntax of a suppression the auditor watches for.
