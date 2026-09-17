@@ -13,9 +13,13 @@ follow them exactly. You are invoked when a fix needs more care:
   whether your change actually resolves the root cause, not just the symptom the
   checker names.
 - Or the violation is a **loose class** — architecture boundary, surviving
-  mutant, a type error that reveals a logic mistake, or maybe-live dead code —
-  where the check only loosely pins the fix. For these, "make verify pass" is
-  not enough: reason about what the _correct_ behavior is before editing.
+  mutant, a type error that reveals a logic mistake, maybe-live dead code, or a
+  rule whose mechanical fix changes behaviour (`unicorn/no-null` is the measured
+  one) — where the check only loosely pins the fix. For these, "make verify
+  pass" is not enough: reason about what the _correct_ behavior is before
+  editing. The fast tier's **when the obvious fix changes behaviour** section is
+  yours too, and that last class belongs here for the reason its worked example
+  shows: the cheapest green rewrite of a guard is the one that loses a case.
 
 For a **surviving mutant** (`stryker/survived`), read the guidance before you
 touch anything — the violation in your manifest carries its path in a `guidance`

@@ -68,3 +68,59 @@ describe('fixer agents — report-never-silence contract', () => {
     }
   });
 });
+
+/**
+ * What the fast fixer's prompt has to say about a rule whose mechanical fix
+ * changes behaviour, and why.
+ *
+ * Issue #78, suggestion (2). Two fixers were handed the identical
+ * `unicorn/no-null` finding on a nullable database column: one wrote
+ * `=== undefined`, which satisfies the rule and leaves the guard unreachable
+ * for the `null` it existed to catch; the other wrote a `typeof` narrowing,
+ * which is green AND correct. Routing the rule to the better model (#84) does
+ * not by itself name the right edit — the prompt is the only place the two
+ * runs differed, so it has to carry the worked example and, more importantly,
+ * the question the example exists to teach.
+ */
+const BEHAVIOUR_CHANGING_FIX_CONTRACT: readonly (readonly [string, string])[] =
+  [
+    ['names the measured rule', 'unicorn/no-null'],
+    ['names the idiom that rule bans', '== null'],
+    ['names the edit that broke the guard', '=== undefined'],
+    ['names a shape that is green and correct', "typeof x !== 'number'"],
+    // Kept to one source line: the prompts are hard-wrapped prose, so a phrase
+    // that spans a wrap would pin the wrapping rather than the words.
+    [
+      'generalizes past the one rule',
+      'which values the old expression matched',
+    ],
+    // The sibling rules get the question, not a second recipe: whether deleting
+    // a check the type system calls unnecessary is safe depends on whether the
+    // declared type is a fact or an assertion, which no recipe can decide.
+    ['names the type-belief family', 'no-unnecessary-condition'],
+    ['says what makes that family unsafe', 'trust boundary'],
+  ];
+
+describe('fixer agents — behaviour-changing-fix contract', () => {
+  it.each(BEHAVIOUR_CHANGING_FIX_CONTRACT)('%s', (_case, phrase) => {
+    expect(agentSource('guardrail-fixer')).toContain(phrase);
+  });
+
+  it('points the thorough tier at the section without forking it', () => {
+    // Same one-source-of-truth rule as the constraint list: the thorough tier
+    // is the one handed these findings from attempt 1, so it must NAME the
+    // class — but the worked example stays in the fast tier's prompt alone.
+    const thorough = agentSource('guardrail-fixer-thorough');
+    expect(thorough).toContain('unicorn/no-null');
+    expect(thorough).toContain('obvious fix changes behaviour');
+    expect(thorough).not.toContain('=== undefined');
+  });
+
+  it('carries the worked example into the committed Copilot fixer', () => {
+    const generated = readFileSync(
+      path.join(repoDirectory, '.github', 'agents', 'guardrail-fixer.agent.md'),
+      'utf8',
+    );
+    expect(generated).toContain("typeof x !== 'number'");
+  });
+});
