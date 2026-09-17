@@ -62,6 +62,17 @@ export interface Violation {
   guidance?: string;
 }
 
+/**
+ * Rule id the gate raises for a suppression the fix loop ADDED — the one
+ * violation class whose resolution may legitimately be a config grant rather
+ * than a code change.
+ *
+ * Named here, in the shared contract module, rather than spelled as a literal
+ * at each end: the gate emits it and `guardrails sanction` selects on it to
+ * derive the grant entry, so the two must not be able to drift apart.
+ */
+export const ADDED_SUPPRESSION_RULE = 'guardrails/added-suppression';
+
 const SEVERITIES = new Set<Severity>(['error', 'warn']);
 
 function isSeverity(value: unknown): value is Severity {

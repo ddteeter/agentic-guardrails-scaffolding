@@ -526,6 +526,13 @@ describe('runStopGate — a fix loop is open', () => {
     // got back said only that it had been caught -- so the message has to carry
     // the remedy (fix or report it) and the fact that an exemption is a
     // developer-approved grant in a file the fixer cannot reach.
+    //
+    // Issue #75 is the other half of the same sentence: for whoever CAN reach
+    // that file, the message names the derivation command and the ask. This is
+    // the one blocking class whose legitimate resolution can be a config grant,
+    // and it was the one class with no pointer at the next action -- so whether
+    // a human got asked was left to the agent's judgment. The pointer, not the
+    // judgment, has to carry it.
     writeSnapshot(JSON.stringify([]));
     await runStopGate(options(suppressionExec()));
     const added = readViolations(stateDirectory(root), 'sid').find(
@@ -534,6 +541,8 @@ describe('runStopGate — a fix loop is open', () => {
     expect(added?.message).toContain('Remove it');
     expect(added?.message).toContain('report');
     expect(added?.message).toContain('guardrails.config.json');
+    expect(added?.message).toContain('guardrails sanction');
+    expect(added?.message).toContain('ASK the developer');
   });
 });
 

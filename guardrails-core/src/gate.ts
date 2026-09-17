@@ -65,7 +65,11 @@ import {
   withLease,
   withoutLease,
 } from './state.js';
-import { hasErrors, type Violation } from './violation.js';
+import {
+  ADDED_SUPPRESSION_RULE,
+  hasErrors,
+  type Violation,
+} from './violation.js';
 import { parseFileList } from './verify/git.js';
 import { runVerify } from './verify/index.js';
 import { loadWorkspaceResolver, withPackages } from './workspaces.js';
@@ -438,13 +442,30 @@ function untrackedFileDiff(repoRoot: string, file: string): string {
  * So the text also names the honest move (fix it, or report that you could
  * not) and where a real exemption comes from — a file the fixer cannot reach,
  * which is the point: the report is what asks for the grant.
+ *
+ * It then names the DERIVATION, for whoever can reach that file (#75). This is
+ * the one blocking class whose legitimate resolution can be a CONFIG entry
+ * rather than a code change, and it was the one class with no pointer at the
+ * next action: whether a human got asked was left to the agent's judgment,
+ * which held for a novel grant and slipped on the ninth identical one. A terse
+ * pointer naming the next action is the mechanism the rest of the loop already
+ * runs on.
  */
+const SUPPRESSION_REMEDY =
+  'Remove it and fix the underlying finding, or report that you could not — ' +
+  'an exemption is a developer-approved grant in guardrails.config.json, and ' +
+  'a suppression is not a shortcut to one. `guardrails sanction` derives that ' +
+  'grant entry for whoever can reach that file; ASK the developer before ' +
+  'adding it, and never grant it to yourself.';
+
 function toViolation(finding: AuditFinding): Violation {
   return {
-    ruleId: 'guardrails/added-suppression',
+    ruleId: ADDED_SUPPRESSION_RULE,
     file: finding.file,
     line: finding.line,
-    message: `Forbidden ${finding.kind} added during the fix loop: ${finding.text}. Remove it and fix the underlying finding, or report that you could not — an exemption is a developer-approved grant in guardrails.config.json, and a suppression is not a shortcut to one.`,
+    message:
+      `Forbidden ${finding.kind} added during the fix loop: ` +
+      `${finding.text}. ${SUPPRESSION_REMEDY}`,
     severity: 'error',
     fixable: false,
     tool: 'guardrails',
