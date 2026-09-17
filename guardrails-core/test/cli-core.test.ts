@@ -14,6 +14,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { type CliDependencies, runCommand } from '../src/cli-core.js';
 import type { Exec, ExecResult } from '../src/exec.js';
 import {
+  appendDecision,
   loadSession,
   saveSession,
   sessionFile,
@@ -160,6 +161,48 @@ describe('runCommand — state', () => {
       session: { attempts: 0, ruleCounts: {}, corrected: [] },
       recurrence: {},
     });
+  });
+});
+
+describe('runCommand — report', () => {
+  const row = {
+    at: '2026-09-01T10:00:00.000Z',
+    rung: 'stop',
+    session: 'sid',
+    outcome: 'delegate' as const,
+    fixer: 'guardrail-fixer',
+    attempt: 1,
+    violations: 1,
+    rules: { 'stryker/survived': 1 },
+    introduced: 0,
+    resolved: 0,
+    stalled: false,
+  };
+
+  it('says the log is empty rather than printing a table of zeroes', async () => {
+    expect(await runCommand('report', [], dependencies())).toBe(0);
+    expect(out.join('')).toContain('no gate decisions recorded');
+  });
+
+  it('reports the delegation share over the recorded decisions', async () => {
+    // The headline number of #83: what fraction of the blocking decisions a
+    // fixer handled without ever reaching the main agent.
+    const directory = stateDirectory(root);
+    appendDecision(directory, row);
+    appendDecision(directory, row);
+    appendDecision(directory, row);
+    appendDecision(directory, {
+      ...row,
+      outcome: 'escalate',
+      fixer: undefined,
+      introduced: 2,
+    });
+
+    expect(await runCommand('report', [], dependencies())).toBe(0);
+    const text = out.join('');
+    expect(text).toContain('delegation share');
+    expect(text).toContain('75%');
+    expect(text).toContain('stryker/survived');
   });
 });
 

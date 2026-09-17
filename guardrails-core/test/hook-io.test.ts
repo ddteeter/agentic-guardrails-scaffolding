@@ -271,6 +271,15 @@ describe('formatStopHookOutput', () => {
     message: 'spawn the fixer',
     nextSession: { attempts: 1, ruleCounts: {}, corrected: [] },
     nextRecurrence: {},
+    log: {
+      outcome: 'delegate',
+      attempt: 1,
+      violations: 1,
+      rules: { 'eslint/no-console': 1 },
+      introduced: 0,
+      resolved: 0,
+      stalled: false,
+    },
   };
 
   it('returns null when the decision does not block', () => {
@@ -335,6 +344,15 @@ describe('formatCopilotStopOutput', () => {
     message: 'spawn the fixer',
     nextSession: { attempts: 1, ruleCounts: {}, corrected: [] },
     nextRecurrence: {},
+    log: {
+      outcome: 'delegate',
+      attempt: 1,
+      violations: 1,
+      rules: { 'eslint/no-console': 1 },
+      introduced: 0,
+      resolved: 0,
+      stalled: false,
+    },
   };
 
   it('returns null when not blocking', () => {

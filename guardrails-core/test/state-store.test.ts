@@ -1,4 +1,5 @@
 import {
+  appendFileSync,
   mkdirSync,
   mkdtempSync,
   rmSync,
@@ -13,9 +14,12 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { createSession } from '../src/state.js';
 import {
+  appendDecision,
+  decisionsFile,
   deleteSession,
   loadRecurrence,
   loadSession,
+  readDecisions,
   readViolations,
   recurrenceFile,
   saveRecurrence,
@@ -62,6 +66,7 @@ describe('session round-trip', () => {
     const state = {
       attempts: 2,
       escalated: false,
+      forgivenAttempts: 0,
       ruleCounts: { 'ts/no-stub': 3 },
       corrected: [],
     };
@@ -79,6 +84,7 @@ describe('session round-trip', () => {
     const state = {
       attempts: 1,
       escalated: false,
+      forgivenAttempts: 0,
       ruleCounts: {},
       corrected: [],
       lastViolationDigest: 'src/a.ts:3:eslint/no-console',
@@ -121,6 +127,86 @@ describe('session round-trip', () => {
     ).toBeUndefined();
   });
 
+  it('round-trips the violation identities the delta is computed from', () => {
+    // Same across-processes argument as the digest above, and the same failure
+    // mode if it is dropped: the introduced/resolved delta (#81) would be
+    // permanently empty in production while every in-memory unit test passed.
+    const state = {
+      attempts: 1,
+      escalated: false,
+      forgivenAttempts: 1,
+      ruleCounts: {},
+      corrected: [],
+      lastViolationDigest: '["src/a.ts",3,"eslint/no-console"]',
+      lastViolationKeys: ['["src/a.ts",3,"eslint/no-console"]'],
+    };
+    saveSession(directory, 'sid-keys', state);
+
+    expect(loadSession(directory, 'sid-keys')).toEqual(state);
+  });
+
+  it('discards violation identities that are not a list of strings', () => {
+    // Values are validated, not just shape. A tampered entry reaching the
+    // delta would be counted as a violation identity that never existed, and
+    // read as a resolution the fixer never made.
+    writeFileSync(
+      sessionFile(directory, 'sid-bad-keys'),
+      JSON.stringify({
+        attempts: 1,
+        ruleCounts: {},
+        corrected: [],
+        lastViolationKeys: 'not-an-array',
+      }),
+    );
+
+    expect(
+      loadSession(directory, 'sid-bad-keys').lastViolationKeys,
+    ).toBeUndefined();
+  });
+
+  it('keeps only the string entries of a partially corrupt identity list', () => {
+    writeFileSync(
+      sessionFile(directory, 'sid-mixed-keys'),
+      JSON.stringify({
+        attempts: 1,
+        ruleCounts: {},
+        corrected: [],
+        lastViolationKeys: ['["src/a.ts",1,"x"]', 42],
+      }),
+    );
+
+    expect(loadSession(directory, 'sid-mixed-keys').lastViolationKeys).toEqual([
+      '["src/a.ts",1,"x"]',
+    ]);
+  });
+
+  it('discards a non-number forgiven-attempt count', () => {
+    // A string here would make `count + 1` produce `"oops1"` and silently
+    // uncap the forgiveness the ceiling exists to bound.
+    writeFileSync(
+      sessionFile(directory, 'sid-bad-forgiven'),
+      JSON.stringify({
+        attempts: 1,
+        ruleCounts: {},
+        corrected: [],
+        forgivenAttempts: 'oops',
+      }),
+    );
+
+    expect(loadSession(directory, 'sid-bad-forgiven').forgivenAttempts).toBe(0);
+  });
+
+  it('loads a session written before the delta fields existed', () => {
+    writeFileSync(
+      sessionFile(directory, 'sid-pre-delta'),
+      JSON.stringify({ attempts: 2, ruleCounts: {}, corrected: [] }),
+    );
+
+    const loaded = loadSession(directory, 'sid-pre-delta');
+    expect(loaded.lastViolationKeys).toBeUndefined();
+    expect(loaded.forgivenAttempts).toBe(0);
+  });
+
   it('returns a fresh session when the file is missing', () => {
     expect(loadSession(directory, 'nope')).toEqual(createSession());
   });
@@ -144,6 +230,7 @@ describe('session round-trip', () => {
     expect(loadSession(directory, 'sid1')).toEqual({
       attempts: 1,
       escalated: false,
+      forgivenAttempts: 0,
       ruleCounts: { good: 2 },
       corrected: ['ok'],
     });
@@ -317,5 +404,63 @@ describe('sweepStale', () => {
 
   it('is a no-op on a missing directory', () => {
     expect(sweepStale(path.join(root, 'absent'), 1000, Date.now())).toEqual([]);
+  });
+});
+
+describe('decision log', () => {
+  const row = {
+    at: '2026-09-01T10:00:00.000Z',
+    rung: 'stop',
+    session: 'sid',
+    outcome: 'delegate' as const,
+    fixer: 'guardrail-fixer',
+    attempt: 1,
+    violations: 2,
+    rules: { 'stryker/survived': 2 },
+    introduced: 0,
+    resolved: 0,
+    stalled: false,
+  };
+
+  it('appends rather than replaces, so the history accumulates', () => {
+    appendDecision(directory, row);
+    appendDecision(directory, { ...row, outcome: 'clean' });
+
+    expect(readDecisions(directory).map((entry) => entry.outcome)).toEqual([
+      'delegate',
+      'clean',
+    ]);
+  });
+
+  it('reads an empty log when nothing has been recorded', () => {
+    expect(readDecisions(directory)).toEqual([]);
+  });
+
+  it('drops a malformed line instead of failing the whole report', () => {
+    // A row is appended by one process and read by another; a half-written or
+    // hand-edited line must not take the rest of the history with it.
+    appendDecision(directory, row);
+    appendFileSync(decisionsFile(directory), '{ not json\n');
+    appendDecision(directory, { ...row, outcome: 'escalate' });
+
+    expect(readDecisions(directory)).toHaveLength(2);
+  });
+
+  it('drops a well-formed line that is not a decision row', () => {
+    appendFileSync(decisionsFile(directory), `${JSON.stringify({ a: 1 })}\n`);
+
+    expect(readDecisions(directory)).toEqual([]);
+  });
+
+  it('survives the stale sweep, unlike the per-session files', () => {
+    // The log is the one file in the state directory whose whole value is that
+    // it outlives the sessions it describes.
+    appendDecision(directory, row);
+    const old = new Date(Date.now() - 1000 * 60 * 60 * 24 * 30);
+    utimesSync(decisionsFile(directory), old, old);
+
+    sweepStale(directory, 1000, Date.now());
+
+    expect(readDecisions(directory)).toHaveLength(1);
   });
 });

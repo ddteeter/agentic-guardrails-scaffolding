@@ -5,7 +5,7 @@ import {
   type GateConfig,
   type GateDecision,
 } from '../src/gate-decision.js';
-import { createSession, violationDigest } from '../src/state.js';
+import { createSession, violationDigest, violationKeys } from '../src/state.js';
 import { recurrenceKey, type Violation } from '../src/violation.js';
 
 function v(partial: Partial<Violation> & Pick<Violation, 'ruleId'>): Violation {
@@ -103,7 +103,7 @@ describe('decideGate — delegate', () => {
 });
 
 describe('decideGate — escalate', () => {
-  it('stops hiding and hands the full dump to the main agent past MAX', () => {
+  it('hands the main agent an aggregate and the manifest path past MAX', () => {
     const decision = decideGate(
       input({
         violations: [v({ ruleId: 'no-console', file: 'src/a.ts', line: 9 })],
@@ -113,10 +113,8 @@ describe('decideGate — escalate', () => {
     expect(decision.outcome).toBe('escalate');
     expect(decision.block).toBe(true);
     expect(decision.fixerAgent).toBeUndefined();
-    expect(decision.message).toContain('no-console');
-    expect(decision.message).toContain('src/a.ts');
     expect(decision.additionalContext).toBeUndefined();
-    // The full dump arms a terminal release instead of restarting forever.
+    // The escalation arms a terminal release instead of restarting forever.
     expect(decision.nextSession.attempts).toBe(0);
     expect(decision.nextSession.escalated).toBe(true);
     // No fixer is in flight on this path, so the caveat block must be entirely
@@ -124,9 +122,115 @@ describe('decideGate — escalate', () => {
     // exact rendering so an empty-array regression (e.g. a stray placeholder
     // line) is caught even though it wouldn't match that phrase.
     expect(decision.message).toBe(
-      '1 violation(s) survived the fix loop. Resolve them directly:\n' +
-        '- src/a.ts:9 [no-console] boom (eslint)',
+      '1 violation(s) survived the fix loop across 1 file(s): ' +
+        'no-console ×1. Read the manifest at ' +
+        `${manifestPath} and resolve them directly — a spent fix loop is the ` +
+        'one point at which reading it is correct. Prefer the smallest ' +
+        'targeted edit that resolves each one.',
     );
+  });
+
+  /**
+   * #80: the escalation used to enumerate every violation inline, so the one
+   * message the design cannot afford to be verbose in — it fires only after
+   * BOTH fixer tiers are spent, i.e. on the hardest and therefore longest
+   * manifests — was the only one that was. Observed at 17 violations dumped
+   * into the main thread in one live case.
+   *
+   * The aggregate is strictly less context and strictly more useful: the
+   * manifest it points at holds the per-violation detail the summary elides,
+   * and reading it HERE is correct, because no fixer is left to read it.
+   */
+  it('does not enumerate the violations it is escalating', () => {
+    const decision = decideGate(
+      input({
+        violations: [
+          v({ ruleId: 'stryker/survived', file: 'src/a.ts', line: 9 }),
+          v({ ruleId: 'stryker/survived', file: 'src/b.ts', line: 4 }),
+          v({ ruleId: 'stryker/survived', file: 'src/b.ts', line: 7 }),
+          v({ ruleId: 'no-console', file: 'src/c.ts', line: 1 }),
+        ],
+        session: { attempts: 3, ruleCounts: {}, corrected: [] },
+      }),
+    );
+    expect(decision.message).not.toContain('src/a.ts');
+    expect(decision.message).not.toContain('boom');
+    // Counts by rule, most frequent first, so the main agent knows the shape
+    // of the work before it opens the manifest.
+    expect(decision.message).toContain(
+      '4 violation(s) survived the fix loop across 3 file(s): ' +
+        'stryker/survived ×3, no-console ×1.',
+    );
+    expect(decision.message).toContain(manifestPath);
+  });
+
+  it('stops naming rules past a bound, so the aggregate stays bounded', () => {
+    const decision = decideGate(
+      input({
+        violations: ['a', 'b', 'c', 'd', 'e', 'f'].map((ruleId) =>
+          v({ ruleId, file: `src/${ruleId}.ts` }),
+        ),
+        session: { attempts: 3, ruleCounts: {}, corrected: [] },
+      }),
+    );
+    expect(decision.message).toContain(
+      'a ×1, b ×1, c ×1, d ×1, +2 more rule(s).',
+    );
+    expect(decision.message).not.toContain('e ×1');
+  });
+
+  /**
+   * The bound test above happens to push rule-ids in already-sorted order (all
+   * counts equal to 1, so the tie-break — alphabetical — coincides with the
+   * insertion order), which cannot distinguish a real frequency sort from a
+   * no-op. This case sets the counts so that the FIRST-seen rule-id ('A') has
+   * the LOWEST count: a correct descending sort must move it to the end, so
+   * this fails under a comparator that leaves the input order unchanged
+   * (whether from an emptied comparator body, a conditional collapsed to
+   * `false`, or an arithmetic flip that never satisfies "should swap").
+   */
+  it('reorders by frequency even when the first-seen rule is least frequent', () => {
+    const decision = decideGate(
+      input({
+        violations: [
+          v({ ruleId: 'A', file: 'src/a.ts' }),
+          v({ ruleId: 'B', file: 'src/b1.ts' }),
+          v({ ruleId: 'B', file: 'src/b2.ts' }),
+          v({ ruleId: 'B', file: 'src/b3.ts' }),
+          v({ ruleId: 'C', file: 'src/c1.ts' }),
+          v({ ruleId: 'C', file: 'src/c2.ts' }),
+        ],
+        session: { attempts: 3, ruleCounts: {}, corrected: [] },
+      }),
+    );
+    expect(decision.message).toContain('B ×3, C ×2, A ×1');
+  });
+
+  /**
+   * The tie-break half of the comparator (`byCount === 0 ? alphabetical :
+   * byCount`) is a separate mutation target from the descending-frequency
+   * half exercised above. A `ConditionalExpression` mutant that forces the
+   * ternary's CONDITION to `false` always falls through to the `byCount`
+   * branch — which is what the real condition also returns whenever counts
+   * differ, so a test with no ties cannot see it. It only shows up on a real
+   * tie: the mutant then returns `byCount`, which is `0` ("equal") for a tie,
+   * leaving the pair in insertion order instead of sorting it alphabetically.
+   * The bound test above ties every rule-id, but its insertion order is
+   * already alphabetical, so it can't distinguish the two either (see its
+   * comment). This test puts the alphabetically-LATER rule-id first so
+   * insertion order and alphabetical order disagree.
+   */
+  it('breaks a tie alphabetically rather than leaving insertion order', () => {
+    const decision = decideGate(
+      input({
+        violations: [
+          v({ ruleId: 'zebra', file: 'src/z.ts' }),
+          v({ ruleId: 'apple', file: 'src/a.ts' }),
+        ],
+        session: { attempts: 3, ruleCounts: {}, corrected: [] },
+      }),
+    );
+    expect(decision.message).toContain('apple ×1, zebra ×1');
   });
 
   /**
@@ -161,9 +265,9 @@ describe('decideGate — escalate', () => {
       }),
     );
     expect(decision.outcome).toBe('escalate');
-    // The dump is still there — the agent still needs to know what to fix.
+    // The pointer is still there — the agent still needs to know what to fix.
     expect(decision.message).toContain('no-console');
-    expect(decision.message).toContain('src/a.ts');
+    expect(decision.message).toContain(manifestPath);
     // ...but it is told to let the in-flight fixer land first.
     expect(decision.message).toContain('may still be running');
     expect(decision.message).toContain('guardrail-fixer-thorough');
@@ -185,7 +289,7 @@ describe('decideGate — escalate', () => {
       }),
     );
     expect(decision.outcome).toBe('escalate');
-    expect(decision.message).toContain('no-console');
+    expect(decision.message).toContain(manifestPath);
     expect(decision.message).not.toContain('may still be running');
   });
 
@@ -206,11 +310,18 @@ describe('decideGate — escalate', () => {
     expect(decision.message).not.toContain('may still be running');
   });
 
-  it('renders an unknown line explicitly in the terminal dump', () => {
+  it('counts distinct files, not violations, in the aggregate', () => {
     const decision = decideGate(
-      input({ session: { ...createSession(), attempts: 3 } }),
+      input({
+        violations: [
+          v({ ruleId: 'no-console', file: 'src/foo.ts', line: 1 }),
+          v({ ruleId: 'no-console', file: 'src/foo.ts', line: 2 }),
+        ],
+        session: { ...createSession(), attempts: 3 },
+      }),
     );
-    expect(decision.message).toContain('src/foo.ts:?');
+    expect(decision.message).toContain('2 violation(s)');
+    expect(decision.message).toContain('across 1 file(s)');
   });
 
   it('releases the retry after the main agent received the full dump', () => {
@@ -416,5 +527,224 @@ describe('decideGate: a retry that changed nothing', () => {
 
     expect(first.message).toMatch(/Spawn the \S+ subagent/);
     expect(first.message).not.toMatch(/unchanged/i);
+  });
+});
+
+/**
+ * A retry whose previous block reported `previous`, and whose manifest now
+ * holds `now` — the shape every regression case below is a variation of.
+ */
+function afterFixer(
+  previous: Violation[],
+  now: Violation[],
+  session: Partial<Parameters<typeof decideGate>[0]['session']> = {},
+): GateDecision {
+  return decideGate(
+    input({
+      violations: now,
+      isRetry: true,
+      session: {
+        attempts: 1,
+        escalated: false,
+        forgivenAttempts: 0,
+        ruleCounts: {},
+        corrected: [],
+        lastViolationDigest: violationDigest(previous),
+        lastViolationKeys: violationKeys(previous),
+        ...session,
+      },
+    }),
+  );
+}
+
+/**
+ * #81: the attempt budget spent one attempt per firing, unconditionally, so a
+ * fixer that broke something walked the ladder to escalation on its own mess.
+ * `lastViolationDigest` cannot see this — it answers "did anything change?" and
+ * a fixer that resolves three and introduces four has certainly changed
+ * something. Both escalations observed in a live adoption were this, not a
+ * violation that was genuinely too hard.
+ */
+describe('decideGate: a retry whose fixer introduced new violations', () => {
+  const inherited = v({ ruleId: 'a/one', file: 'src/a.ts', line: 1 });
+  const collateral = v({ ruleId: 'tsc/2322', file: 'src/b.ts', line: 7 });
+
+  it('does not charge the attempt to the budget', () => {
+    const decision = afterFixer([inherited], [inherited, collateral]);
+    expect(decision.outcome).toBe('delegate');
+    expect(decision.nextSession.attempts).toBe(1);
+    expect(decision.nextSession.forgivenAttempts).toBe(1);
+  });
+
+  it('routes to the thorough fixer immediately, whatever the attempt', () => {
+    // A fixer that damaged the tree on a non-loose, attempt-1 manifest has
+    // already shown the fast tier cannot hold this work.
+    const decision = afterFixer([inherited], [inherited, collateral]);
+    expect(decision.fixerAgent).toBe('guardrail-fixer-thorough');
+  });
+
+  it('says what the last attempt actually did, by rule', () => {
+    const decision = afterFixer([inherited], [inherited, collateral]);
+    expect(decision.message).toContain('resolved 0');
+    expect(decision.message).toContain('introduced 1');
+    expect(decision.message).toContain('tsc/2322 ×1');
+    // The breakdown names only the violation that was actually introduced
+    // (collateral) -- not `inherited`, which survived the retry unresolved.
+    // A rule-breakdown built from the whole `violations` array rather than
+    // the introduced subset would wrongly surface it here too.
+    expect(decision.message).not.toContain('a/one');
+    // Still a pointer, not a dump: the manifest is named and reading it is
+    // still forbidden, because a fixer is still the one doing the work.
+    expect(decision.message).toContain(manifestPath);
+    expect(decision.message).toContain('Do NOT read it');
+    expect(decision.message).not.toContain('src/b.ts');
+  });
+
+  it('charges the attempt when the fixer also resolved something', () => {
+    // Partial progress is progress. Only a net-damage attempt -- nothing
+    // resolved, something introduced -- is the fixer failing to start.
+    const decision = afterFixer([inherited], [collateral]);
+    expect(decision.nextSession.attempts).toBe(2);
+    expect(decision.nextSession.forgivenAttempts).toBe(0);
+    expect(decision.message).toMatch(/Spawn the \S+ subagent/);
+    expect(decision.message).not.toContain('introduced');
+  });
+
+  it('forgives at most one attempt per fix loop', () => {
+    // The loop-safety bound. `isStalled` catches a regression that repeats
+    // ITSELF; nothing else stops a fixer from breaking something DIFFERENT on
+    // every retry, so forgiveness has a ceiling and the ladder still ends.
+    const decision = afterFixer([inherited], [inherited, collateral], {
+      forgivenAttempts: 1,
+    });
+    expect(decision.nextSession.attempts).toBe(2);
+    expect(decision.nextSession.forgivenAttempts).toBe(1);
+  });
+
+  it('still escalates once the budget is genuinely spent', () => {
+    const decision = afterFixer([inherited], [inherited, collateral], {
+      attempts: 3,
+      forgivenAttempts: 1,
+    });
+    expect(decision.outcome).toBe('escalate');
+  });
+
+  it('persists the identities the next retry compares against', () => {
+    const decision = afterFixer([inherited], [inherited, collateral]);
+    expect(decision.nextSession.lastViolationKeys).toEqual(
+      violationKeys([inherited, collateral]),
+    );
+  });
+
+  it('computes no delta on a first block, which inherited nothing', () => {
+    const decision = decideGate(
+      input({ violations: [inherited, collateral], isRetry: false }),
+    );
+    expect(decision.message).toMatch(/Spawn the \S+ subagent/);
+    expect(decision.nextSession.attempts).toBe(1);
+    expect(decision.nextSession.forgivenAttempts).toBe(0);
+  });
+
+  it('computes no delta against a session that predates the identity list', () => {
+    // Backward compatibility: state written before #81 carries a digest but no
+    // identities, so the delta is unknowable and the attempt is charged as it
+    // always was.
+    const decision = decideGate(
+      input({
+        violations: [inherited, collateral],
+        isRetry: true,
+        session: {
+          attempts: 1,
+          ruleCounts: {},
+          corrected: [],
+          lastViolationDigest: violationDigest([inherited]),
+        },
+      }),
+    );
+    expect(decision.nextSession.attempts).toBe(2);
+  });
+});
+
+/**
+ * #83: `decideGate` computed the outcome, the fixer it named and the delta on
+ * every firing and then threw all three away, so nothing in the loop could
+ * report whether work was landing on the cheap agent. The decision carries them
+ * out as one row; the CALLER persists it, so the engine stays pure.
+ */
+describe('decideGate: the decision log row', () => {
+  it('carries the delegation and the rules behind it', () => {
+    const decision = decideGate(
+      input({
+        violations: [
+          v({ ruleId: 'stryker/survived', file: 'src/a.ts' }),
+          v({ ruleId: 'stryker/survived', file: 'src/b.ts' }),
+          v({ ruleId: 'no-console', file: 'src/c.ts' }),
+        ],
+      }),
+    );
+    expect(decision.log).toEqual({
+      outcome: 'delegate',
+      fixer: 'guardrail-fixer',
+      attempt: 1,
+      violations: 3,
+      rules: { 'stryker/survived': 2, 'no-console': 1 },
+      introduced: 0,
+      resolved: 0,
+      stalled: false,
+    });
+  });
+
+  it('records the delta even when the attempt made partial progress', () => {
+    // The regression path is not the only one worth counting: an attempt that
+    // resolved two and introduced one is the tier-accuracy signal, and it never
+    // reaches `regressionPointer`.
+    const before = v({ ruleId: 'a/one', file: 'src/a.ts' });
+    const also = v({ ruleId: 'a/two', file: 'src/a.ts' });
+    const after = v({ ruleId: 'tsc/2322', file: 'src/b.ts' });
+    const decision = afterFixer([before, also], [after]);
+    expect(decision.log.introduced).toBe(1);
+    expect(decision.log.resolved).toBe(2);
+  });
+
+  it('marks the firing whose manifest did not move', () => {
+    const stuck = [v({ ruleId: 'a/one', file: 'src/a.ts' })];
+    const decision = afterFixer(stuck, stuck);
+    expect(decision.log.stalled).toBe(true);
+    expect(decision.log.outcome).toBe('delegate');
+  });
+
+  it("names no fixer on an escalation, which is the main agent's work", () => {
+    const decision = decideGate(
+      input({ session: { ...createSession(), attempts: 3 } }),
+    );
+    expect(decision.log.outcome).toBe('escalate');
+    expect(decision.log.fixer).toBeUndefined();
+    expect(decision.log.attempt).toBe(4);
+  });
+
+  it('records a clean turn, so the share has a denominator', () => {
+    const decision = decideGate(
+      input({ violations: [v({ ruleId: 'x', severity: 'warn' })] }),
+    );
+    expect(decision.log.outcome).toBe('clean');
+    expect(decision.log.violations).toBe(1);
+    expect(decision.log.attempt).toBe(0);
+    // `logEntry` is not given a `stalled` value on this path -- it must
+    // default to `false` rather than leaving it undefined or flipping it true.
+    expect(decision.log.stalled).toBe(false);
+  });
+
+  it('records the terminal release', () => {
+    const decision = decideGate(
+      input({
+        session: { ...createSession(), attempts: 2, escalated: true },
+        isRetry: true,
+      }),
+    );
+    expect(decision.log.outcome).toBe('release');
+    expect(decision.log.attempt).toBe(2);
+    // Same as the clean path: no `stalled` value is passed in, so the default
+    // must be `false`, not `true`.
+    expect(decision.log.stalled).toBe(false);
   });
 });

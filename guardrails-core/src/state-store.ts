@@ -8,6 +8,7 @@
  */
 
 import {
+  appendFileSync,
   mkdirSync,
   readdirSync,
   readFileSync,
@@ -17,6 +18,7 @@ import {
 } from 'node:fs';
 import path from 'node:path';
 
+import { type DecisionRecord, isDecisionRecord } from './decision-log.js';
 import {
   createSession,
   type RecurrenceCounts,
@@ -83,8 +85,15 @@ export function loadSession(
   if (!isRecord(raw)) {
     return createSession();
   }
-  const { attempts, escalated, ruleCounts, corrected, lastViolationDigest } =
-    raw;
+  const {
+    attempts,
+    escalated,
+    forgivenAttempts,
+    ruleCounts,
+    corrected,
+    lastViolationDigest,
+    lastViolationKeys,
+  } = raw;
   if (
     typeof attempts !== 'number' ||
     !isRecord(ruleCounts) ||
@@ -116,6 +125,23 @@ export function loadSession(
     // in production while every in-memory unit test passed (found in review of
     // #47).
     ...(typeof lastViolationDigest === 'string' && { lastViolationDigest }),
+    // Conditionally spread for the same reason as the digest: an absent list
+    // means "no previous block to compare against", which `violationDelta`
+    // must be able to tell apart from an empty one. Entries are filtered to
+    // strings the way `corrected` is -- a tampered non-string reaching the
+    // delta would read as an identity that never existed, i.e. a resolution
+    // the fixer never made.
+    ...(Array.isArray(lastViolationKeys) && {
+      lastViolationKeys: lastViolationKeys.filter(
+        (entry) => typeof entry === 'string',
+      ),
+    }),
+    // Defaulted, not conditionally spread: unlike the two fields above, zero
+    // and absent mean the same thing here -- no attempt in this loop has been
+    // forgiven yet -- so state written before the ceiling existed reads
+    // correctly as a full allowance.
+    forgivenAttempts:
+      typeof forgivenAttempts === 'number' ? forgivenAttempts : 0,
   };
 }
 
@@ -158,6 +184,66 @@ export function readViolations(
 ): Violation[] {
   const raw = readJson(manifestFile(directory, sessionId));
   return Array.isArray(raw) ? raw.filter((entry) => isViolation(entry)) : [];
+}
+
+/**
+ * The durable decision log (#83).
+ *
+ * `.jsonl`, not `.json`, for two reasons that both matter here: appending one
+ * line is atomic enough for a file several processes write to and nobody reads
+ * concurrently, and the extension keeps it out of `sweepStale`, which collects
+ * every `*.json` in this directory that is not the recurrence counter. The log
+ * exists precisely to outlive the sessions it describes, so being swept would
+ * defeat it.
+ *
+ * Gitignored with the rest of `state/*`: it is one repo's own measurements, not
+ * a shared artifact, and it grows by roughly one short line per gate firing.
+ */
+export function decisionsFile(directory: string): string {
+  return path.join(directory, 'decisions.jsonl');
+}
+
+export function appendDecision(directory: string, entry: DecisionRecord): void {
+  mkdirSync(directory, { recursive: true });
+  appendFileSync(decisionsFile(directory), `${JSON.stringify(entry)}\n`);
+}
+
+/**
+ * Every well-formed row, oldest first.
+ *
+ * Defensive line by line rather than for the file as a whole: one row is
+ * written by a process that may be killed mid-write, and losing the entire
+ * history to a single truncated line would make the log less trustworthy than
+ * no log at all.
+ *
+ * There is deliberately no separate "skip blank lines" guard: `JSON.parse` on
+ * an empty or whitespace-only line always throws, which the catch below
+ * already handles by leaving `parsed` undefined -- the guard below rejects
+ * that the same way it rejects any other malformed line, so a dedicated
+ * early-continue would be a second path to the one answer, untestable by
+ * construction (the pattern `verify/npm-peers-adapter.ts` also uses).
+ */
+export function readDecisions(directory: string): DecisionRecord[] {
+  let text: string;
+  try {
+    text = readFileSync(decisionsFile(directory), 'utf8');
+  } catch {
+    return [];
+  }
+  const rows: DecisionRecord[] = [];
+  for (const line of text.split('\n')) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      // Deliberately empty: leaving `parsed` undefined lets the guard below
+      // reject it, so a blank line and malformed JSON share ONE exit.
+    }
+    if (isDecisionRecord(parsed)) {
+      rows.push(parsed);
+    }
+  }
+  return rows;
 }
 
 /**

@@ -9,7 +9,10 @@ import {
   newlyCrossed,
   recordViolations,
   resetAttempts,
+  forgiveAttempt,
+  violationDelta,
   violationDigest,
+  violationKeys,
 } from '../src/state.js';
 import type { Violation } from '../src/violation.js';
 
@@ -29,6 +32,7 @@ describe('createSession', () => {
     expect(createSession()).toEqual({
       attempts: 0,
       escalated: false,
+      forgivenAttempts: 0,
       ruleCounts: {},
       corrected: [],
     });
@@ -201,5 +205,87 @@ describe('violationDigest: separator safety', () => {
     expect(violationDigest([v({ ruleId: 'a/one', file: 'a.ts' })])).not.toBe(
       violationDigest([v({ ruleId: 'a/one', file: 'a.ts', line: 1 })]),
     );
+  });
+});
+
+describe('violationKeys', () => {
+  it('is the digest, split — one entry per violation, sorted', () => {
+    const violations = [
+      v({ ruleId: 'b/two', file: 'src/b.ts', line: 2 }),
+      v({ ruleId: 'a/one', file: 'src/a.ts', line: 1 }),
+    ];
+    // One definition of identity, used two ways: the digest answers "did
+    // anything change?", the key list answers "what exactly changed?". They
+    // must not be able to disagree.
+    expect(violationKeys(violations).join('|')).toBe(
+      violationDigest(violations),
+    );
+    expect(violationKeys(violations)).toHaveLength(2);
+  });
+
+  it('keeps duplicates, so resolving one of two identical findings shows', () => {
+    const twice = [v({ ruleId: 'a/one' }), v({ ruleId: 'a/one' })];
+    expect(violationKeys(twice)).toHaveLength(2);
+  });
+});
+
+describe('violationDelta', () => {
+  it('reports nothing introduced or resolved when the set is unchanged', () => {
+    const keys = violationKeys([v({ ruleId: 'a/one', file: 'src/a.ts' })]);
+    expect(violationDelta(keys, keys)).toEqual({
+      introduced: [],
+      resolved: [],
+    });
+  });
+
+  it('separates what the attempt added from what it removed', () => {
+    const before = violationKeys([
+      v({ ruleId: 'a/one', file: 'src/a.ts' }),
+      v({ ruleId: 'b/two', file: 'src/b.ts' }),
+    ]);
+    const after = violationKeys([
+      v({ ruleId: 'a/one', file: 'src/a.ts' }),
+      v({ ruleId: 'c/three', file: 'src/c.ts' }),
+    ]);
+    const delta = violationDelta(before, after);
+    expect(delta.introduced).toEqual(
+      violationKeys([v({ ruleId: 'c/three', file: 'src/c.ts' })]),
+    );
+    expect(delta.resolved).toEqual(
+      violationKeys([v({ ruleId: 'b/two', file: 'src/b.ts' })]),
+    );
+  });
+
+  it('counts multiplicity, not membership', () => {
+    // Three identical findings became one: two were resolved, and a
+    // set-based delta would report none.
+    const one = v({ ruleId: 'a/one', file: 'src/a.ts', line: 3 });
+    const delta = violationDelta(
+      violationKeys([one, one, one]),
+      violationKeys([one]),
+    );
+    expect(delta.resolved).toHaveLength(2);
+    expect(delta.introduced).toEqual([]);
+  });
+});
+
+describe('forgiveAttempt', () => {
+  it('counts a forgiven attempt without spending the budget', () => {
+    const forgiven = forgiveAttempt(incrementAttempt(createSession()));
+    expect(forgiven.attempts).toBe(1);
+    expect(forgiven.forgivenAttempts).toBe(1);
+  });
+
+  it('is cleared by resetAttempts, so each fix loop gets its own allowance', () => {
+    const forgiven = forgiveAttempt(createSession());
+    expect(resetAttempts(forgiven).forgivenAttempts).toBe(0);
+  });
+
+  it('accumulates across repeated forgiven attempts in the same fix loop', () => {
+    // A non-zero starting count is the case that distinguishes `?? 0`
+    // (carry the existing count forward) from a mutant that discards it
+    // whenever the count is already truthy -- from 0 both read the same.
+    const forgiven = forgiveAttempt(forgiveAttempt(createSession()));
+    expect(forgiven.forgivenAttempts).toBe(2);
   });
 });

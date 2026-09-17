@@ -43,6 +43,7 @@ import {
 } from './gate-decision.js';
 import type { AnalyzerMode, Rung } from './verify/analyzer-policy.js';
 import {
+  appendDecision,
   loadRecurrence,
   loadSession,
   manifestFile,
@@ -532,6 +533,18 @@ export async function runStopGate(
 
   saveSession(directory, sessionId, decision.nextSession);
   saveRecurrence(directory, decision.nextRecurrence);
+  // The durable half of the memory (#83). `decideGate` computes the outcome,
+  // the fixer it named and the delta and returns them; writing them is this
+  // caller's job, because the engine is shared with the commit gate and has to
+  // stay a pure function. Appended for EVERY outcome, clean included -- the
+  // delegation share is a fraction, and a log of only the blocks has no
+  // denominator.
+  appendDecision(directory, {
+    at: new Date().toISOString(),
+    rung: 'stop',
+    session: sessionId,
+    ...decision.log,
+  });
 
   if (decision.outcome === 'delegate') {
     // Snapshot the pre-fix suppression baseline once per fix loop -- this
