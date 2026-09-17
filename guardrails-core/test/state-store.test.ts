@@ -12,13 +12,16 @@ import path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { createSession } from '../src/state.js';
+import { createSession, type FixerLease } from '../src/state.js';
 import {
   appendDecision,
   decisionsFile,
   deleteSession,
+  leasesFile,
+  loadLeases,
   loadRecurrence,
   loadSession,
+  saveLeases,
   readDecisions,
   readViolations,
   recurrenceFile,
@@ -462,5 +465,58 @@ describe('decision log', () => {
     sweepStale(directory, 1000, Date.now());
 
     expect(readDecisions(directory)).toHaveLength(1);
+  });
+});
+
+describe('fixer leases', () => {
+  const lease: FixerLease = {
+    owner: 'commit:sid-commit',
+    manifestPath: '.guardrails/state/sid-commit.last.json',
+    fixerAgent: 'guardrail-fixer',
+    files: ['src/a.ts'],
+    grantedAt: 1000,
+    deferrals: 0,
+  };
+
+  it('round-trips what was saved', () => {
+    saveLeases(directory, [lease]);
+    expect(loadLeases(directory)).toEqual([lease]);
+  });
+
+  it('reads an empty list when nothing has ever claimed a file', () => {
+    expect(loadLeases(directory)).toEqual([]);
+  });
+
+  it('reads an empty list from a corrupt file rather than bricking the turn', () => {
+    writeFileSync(leasesFile(directory), '{ not json');
+    expect(loadLeases(directory)).toEqual([]);
+  });
+
+  it('drops a malformed entry but keeps the well-formed ones', () => {
+    // Several short-lived processes write this file; a half-written entry must
+    // not take the live claims with it, and must not be trusted either -- a
+    // lease missing its fixer would make a gate wait for nobody.
+    writeFileSync(
+      leasesFile(directory),
+      JSON.stringify([lease, { owner: 'stop:sid' }, 'nope']),
+    );
+    expect(loadLeases(directory)).toEqual([lease]);
+  });
+
+  it('reads an empty list when the file is not an array', () => {
+    writeFileSync(leasesFile(directory), JSON.stringify({ owner: 'stop:sid' }));
+    expect(loadLeases(directory)).toEqual([]);
+  });
+
+  it('survives the stale sweep, which would report it as a swept session', () => {
+    // `leases.json` is shared across sessions like `recurrence.json`, not
+    // per-session like the tallies. Sweeping it would also push its name into
+    // the swept-session list the caller reports.
+    saveLeases(directory, [lease]);
+    const old = new Date(Date.now() - 1000 * 60 * 60 * 24 * 30);
+    utimesSync(leasesFile(directory), old, old);
+
+    expect(sweepStale(directory, 1000, Date.now())).toEqual([]);
+    expect(loadLeases(directory)).toEqual([lease]);
   });
 });

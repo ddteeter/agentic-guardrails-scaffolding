@@ -21,6 +21,8 @@ import path from 'node:path';
 import { type DecisionRecord, isDecisionRecord } from './decision-log.js';
 import {
   createSession,
+  type FixerLease,
+  isFixerLease,
   type RecurrenceCounts,
   type SessionState,
 } from './state.js';
@@ -40,6 +42,45 @@ export function manifestFile(directory: string, sessionId: string): string {
 
 export function recurrenceFile(directory: string): string {
   return path.join(directory, 'recurrence.json');
+}
+
+/**
+ * The live file-level claims, shared by every rung and every session (#76).
+ *
+ * One file rather than one per manifest, because the question it answers is
+ * cross-cutting: "is any fixer anywhere already holding these files?". A
+ * per-manifest file would have to be enumerated and parsed on every gate
+ * firing to answer it, and would leave one claim readable while another is
+ * half-written.
+ *
+ * Best-effort under concurrency, deliberately. Two gates blocking in the same
+ * millisecond can lose one claim to the other's read-modify-write; the cost of
+ * that is one missed wait, which is the behaviour before this existed. Taking a
+ * real lock here would mean a lock that can wedge the loop, which is strictly
+ * worse than the race it would prevent.
+ */
+export function leasesFile(directory: string): string {
+  return path.join(directory, 'leases.json');
+}
+
+/**
+ * Every well-formed live claim.
+ *
+ * Entries are validated one by one rather than the file as a whole: this file
+ * is written by several short-lived processes, and losing every live claim to
+ * one half-written entry would silently turn the guard off at exactly the
+ * moment several gates are firing.
+ */
+export function loadLeases(directory: string): FixerLease[] {
+  const raw = readJson(leasesFile(directory));
+  return Array.isArray(raw) ? raw.filter((entry) => isFixerLease(entry)) : [];
+}
+
+export function saveLeases(
+  directory: string,
+  leases: readonly FixerLease[],
+): void {
+  writeJson(leasesFile(directory), leases);
 }
 
 function readJson(file: string): unknown {
@@ -247,6 +288,21 @@ export function readDecisions(directory: string): DecisionRecord[] {
 }
 
 /**
+ * The `.json` files in the state directory that belong to NO session, and so
+ * must survive a sweep that collects stale sessions.
+ *
+ * `recurrence.json` is the cross-session memory; `leases.json` is the live
+ * cross-rung file claims, which expire on their own TTL (`LEASE_TTL_MS`) and
+ * are rewritten on every gate firing. Sweeping either would also push its
+ * filename into the swept-SESSION list this function returns, which the caller
+ * reports as sessions it cleaned up.
+ */
+const SHARED_STATE_FILES: ReadonlySet<string> = new Set([
+  'recurrence.json',
+  'leases.json',
+]);
+
+/**
  * Delete session tallies + manifests whose backing file is older than
  * `maxAgeMs` relative to `now`. Returns the deleted tally filenames.
  * Called at SessionStart to keep the state dir from accumulating stale runs.
@@ -270,7 +326,7 @@ export function sweepStale(
   }
   const deleted: string[] = [];
   for (const name of entries) {
-    if (name === 'recurrence.json' || !name.endsWith('.json')) {
+    if (SHARED_STATE_FILES.has(name) || !name.endsWith('.json')) {
       continue;
     }
     const file = path.join(directory, name);
