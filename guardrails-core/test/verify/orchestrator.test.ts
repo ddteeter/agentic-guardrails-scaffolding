@@ -1880,6 +1880,46 @@ describe('runVerify analyzer invocation contract', () => {
     expect(calls.some((call) => call.args.includes('--build'))).toBe(false);
   });
 
+  it('fails closed, naming the kill, when showConfig is KILLED', async () => {
+    // A killed showConfig reports exit 0 with no stdout, so without the signal
+    // check it reaches the shape guard and is reported as "TypeScript produced
+    // an unreadable resolved configuration" — a true sentence about the wrong
+    // thing, and one that sends a reader into their tsconfig.
+    const { exec, calls } = fakeExec({
+      'tsc --noEmit --pretty false -p tsconfig.json': {
+        stdout: '',
+        stderr: '',
+        code: 0,
+      },
+      'tsc --showConfig -p tsconfig.json': {
+        stdout: '',
+        stderr: '',
+        code: 0,
+        signal: 'SIGTERM',
+      },
+    });
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      analyzers: {
+        tsc: 'required',
+        eslint: 'off',
+        knip: 'off',
+        'dependency-cruiser': 'off',
+        stryker: 'off',
+      },
+    });
+    expect(violations).toEqual([
+      expect.objectContaining({
+        ruleId: 'guardrails/analyzer-failed',
+        message: expect.stringContaining('SIGTERM'),
+      }),
+    ]);
+    expect(violations[0]?.message).not.toContain('unreadable resolved');
+    expect(calls.some((call) => call.args.includes('--build'))).toBe(false);
+  });
+
   it('does not build after showConfig cannot be spawned', async () => {
     const { exec, calls } = fakeExec({
       'tsc --noEmit --pretty false -p tsconfig.json': {
@@ -2453,7 +2493,142 @@ describe('analyzers that run and then fail (defect 1: exit code ignored)', () =>
         violations.some((v) => v.ruleId === 'guardrails/analyzer-missing'),
       ).toBe(false);
     });
+
+    it(`flags ${analyzer.tool} as analyzer-failed when it is KILLED by a signal`, async () => {
+      // The fail-open: with `shell: false` Node reports a killed child as
+      // `code === null`, which `spawnExec` coalesces to 0. A killed analyzer
+      // writes nothing, every adapter parses nothing out of nothing, and the
+      // exit-code check sees a zero — so the run reads exactly like a clean
+      // one. A harness command timeout, a cancelled CI job, an OOM kill or a
+      // Ctrl-C all produce it.
+      const { exec } = fakeExec({
+        [analyzer.key]: {
+          stdout: '',
+          stderr: '',
+          code: 0,
+          signal: 'SIGTERM',
+        },
+      });
+      const { violations } = await runVerify({
+        repoRoot: '/repo',
+        baseBranch: 'main',
+        exec,
+        profile: analyzer.profile ?? 'stop',
+        readFile: () => Promise.resolve(emptyStrykerReport),
+      });
+      const failed = violations.filter(
+        (v) => v.ruleId === 'guardrails/analyzer-failed',
+      );
+      expect(failed).toHaveLength(1);
+      expect(failed[0]?.message).toContain(analyzer.tool);
+      expect(failed[0]?.message).toContain('SIGTERM');
+      expect(failed[0]?.severity).toBe('error');
+      // Not fixable: no edit to this repository can resolve a kill, so a fixer
+      // subagent must never be handed one to work on.
+      expect(failed[0]?.fixable).toBe(false);
+      expect(failed[0]?.tool).toBe('guardrails');
+      expect(failed[0]?.file).toBe('package.json');
+      expect(hasErrors(violations)).toBe(true);
+    });
+
+    it(`does not blame ${analyzer.tool}'s config when it was killed`, async () => {
+      // The message a killed run used to get (once it got one at all) offered
+      // "a bad config, a crash, an unexpected flag" — three things wrong with
+      // the REPO — and sent an agent hunting through its own configuration for
+      // a fault in the invocation environment.
+      const { exec } = fakeExec({
+        [analyzer.key]: {
+          stdout: '',
+          stderr: '',
+          code: 0,
+          signal: 'SIGTERM',
+        },
+      });
+      const { violations } = await runVerify({
+        repoRoot: '/repo',
+        baseBranch: 'main',
+        exec,
+        profile: analyzer.profile ?? 'stop',
+        readFile: () => Promise.resolve(emptyStrykerReport),
+      });
+      const failed = violations.find(
+        (v) => v.ruleId === 'guardrails/analyzer-failed',
+      );
+      expect(failed?.message).not.toContain('a bad config');
+      expect(failed?.message).toContain('killed');
+    });
+
+    it(`reads ${analyzer.tool}'s 128+N exit as the kill a wrapper collapsed`, async () => {
+      // Nothing guarantees guardrails spawns the analyzer directly: npx, a
+      // shell script or a package-manager shim waits on the child itself and
+      // re-reports the kill the way a shell does, as 128 + the signal number.
+      // 143 is the most recognisable number in this space and used to be
+      // reported as an opaque one.
+      const { exec } = fakeExec({
+        [analyzer.key]: { stdout: '', stderr: '', code: 143 },
+      });
+      const { violations } = await runVerify({
+        repoRoot: '/repo',
+        baseBranch: 'main',
+        exec,
+        profile: analyzer.profile ?? 'stop',
+        readFile: () => Promise.resolve(emptyStrykerReport),
+      });
+      const failed = violations.find(
+        (v) => v.ruleId === 'guardrails/analyzer-failed',
+      );
+      expect(failed?.message).toContain('SIGTERM');
+      expect(failed?.message).not.toContain('a bad config');
+    });
   }
+
+  it('drops the quoted output of a killed run, which is mid-stream noise rather than a diagnosis', async () => {
+    // The field report: stryker prints `WARN OptionsValidator Unknown stryker
+    // config option "//"` on every run, successful or not. Quoted under a
+    // message that had just said "a bad config", it read as a smoking gun.
+    // Whatever a killed tool printed, it is not a verdict — the kill is.
+    const { exec } = fakeExec({
+      'eslint --format json --no-warn-ignored src/foo.ts src/new.ts': {
+        stdout: '',
+        stderr: 'WARN OptionsValidator Unknown option "//"',
+        code: 0,
+        signal: 'SIGTERM',
+      },
+    });
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      readFile: () => Promise.resolve(emptyStrykerReport),
+    });
+    const failed = violations.find(
+      (v) => v.ruleId === 'guardrails/analyzer-failed',
+    );
+    expect(failed?.message).not.toContain('OptionsValidator');
+  });
+
+  it('still names the crash diagnosis when a non-zero exit was NOT a kill', async () => {
+    // The kill wording must not swallow the case it was carved out of: an
+    // ordinary crash still has to quote what the tool said.
+    const { exec } = fakeExec({
+      'eslint --format json --no-warn-ignored src/foo.ts src/new.ts': {
+        stdout: '',
+        stderr: "ESLint couldn't find an eslint.config.* file.",
+        code: 2,
+      },
+    });
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      readFile: () => Promise.resolve(emptyStrykerReport),
+    });
+    const failed = violations.find(
+      (v) => v.ruleId === 'guardrails/analyzer-failed',
+    );
+    expect(failed?.message).toContain("couldn't find an eslint.config.* file");
+    expect(failed?.message).not.toContain('killed');
+  });
 
   it('omits the stderr detail entirely when stderr is empty/whitespace-only', async () => {
     const { exec } = fakeExec({
@@ -2681,6 +2856,57 @@ describe('git exit code ignored (defect 2)', () => {
     expect(failed.some((v) => v.message.includes('128'))).toBe(true);
   });
 
+  it('flags analyzer-failed naming git when the tracked-diff call is KILLED', async () => {
+    // Same fail-open as the analyzers, one step earlier and worse: a killed
+    // `git diff` reports exit 0 with empty stdout, which reads as "nothing
+    // changed" — so every diff-scoped analyzer is skipped for want of files and
+    // the whole run comes back clean without checking anything.
+    const { exec, calls } = fakeExec({
+      'git diff --name-only --diff-filter=ACM main': {
+        stdout: '',
+        stderr: '',
+        code: 0,
+        signal: 'SIGTERM',
+      },
+    });
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      readFile: () => Promise.resolve(emptyStrykerReport),
+    });
+    const failed = violations.filter(
+      (v) => v.ruleId === 'guardrails/analyzer-failed',
+    );
+    expect(failed.some((v) => v.message.includes('git'))).toBe(true);
+    expect(failed.some((v) => v.message.includes('SIGTERM'))).toBe(true);
+    expect(hasErrors(violations)).toBe(true);
+    expect(
+      calls.some((call) => call.command === 'eslint' || call.command === 'tsc'),
+    ).toBe(false);
+  });
+
+  it('flags analyzer-failed naming git when the untracked-files call is KILLED', async () => {
+    const { exec } = fakeExec({
+      'git ls-files --others --exclude-standard': {
+        stdout: '',
+        stderr: '',
+        code: 0,
+        signal: 'SIGKILL',
+      },
+    });
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      readFile: () => Promise.resolve(emptyStrykerReport),
+    });
+    const failed = violations.filter(
+      (v) => v.ruleId === 'guardrails/analyzer-failed',
+    );
+    expect(failed.some((v) => v.message.includes('SIGKILL'))).toBe(true);
+  });
+
   it('does not double-report when git could not be started at all (spawnFailed pre-empts the exit-code check)', async () => {
     const { violations } = await runVerify({
       repoRoot: '/repo',
@@ -2856,6 +3082,104 @@ describe('stryker fails open twice (defect 3)', () => {
       true,
     );
     expect(violations.some((v) => v.ruleId === 'stryker/survived')).toBe(false);
+  });
+
+  it('says stryker was KILLED rather than that it "exited 0" with a missing report', async () => {
+    // A directly-spawned kill leaves code 0 and no report. `runStryker` is
+    // accidentally safe here — it decides on the report, not the exit code — so
+    // it already blocked; it just told the wrong story, and "stryker exited 0
+    // but its mutation report was not found" points at a jsonReporter.fileName
+    // that is not what is wrong.
+    const { exec } = execWithStryker({
+      stdout: '',
+      stderr: '',
+      code: 0,
+      signal: 'SIGTERM',
+    });
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      profile: 'commit',
+      readFile: () => Promise.reject(new Error('ENOENT: no such file')),
+    });
+    const failed = violations.filter(
+      (v) => v.ruleId === 'guardrails/analyzer-failed',
+    );
+    expect(failed.some((v) => v.message.includes('SIGTERM'))).toBe(true);
+    expect(failed.some((v) => v.message.includes('exited 0'))).toBe(false);
+    expect(hasErrors(violations)).toBe(true);
+  });
+
+  it('does not treat a killed zero-mutant-looking run as vacuously clean', async () => {
+    // "Instrumented 0 mutants" plus a non-zero exit is the one non-zero exit
+    // `runStryker` forgives. A kill must not be able to borrow that pass: the
+    // banner says what the instrumenter found, not that the run finished.
+    const { exec } = execWithStryker({
+      stdout: 'Instrumented 0 source file(s) with 0 mutant(s)',
+      stderr: '',
+      code: 1,
+      signal: 'SIGTERM',
+    });
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      profile: 'commit',
+      readFile: () => Promise.reject(new Error('ENOENT: no such file')),
+    });
+    expect(
+      violations.some((v) => v.ruleId === 'guardrails/analyzer-failed'),
+    ).toBe(true);
+  });
+
+  it('reads stryker exit 143 as the SIGTERM a wrapper collapsed, not as a broken config', async () => {
+    // The field case (#74): a push-rung mutation sweep takes ~26 minutes, the
+    // caller's command timeout fires, and the agent spends ten turns reading
+    // hooks, state files and guardrails.config.json because the message
+    // offered it "a bad config, a crash, an unexpected flag".
+    const { exec } = execWithStryker({
+      stdout: '',
+      stderr: 'WARN OptionsValidator Unknown stryker config option "//"',
+      code: 143,
+    });
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      profile: 'commit',
+      readFile: () => Promise.reject(new Error('ENOENT: no such file')),
+    });
+    const failed = violations.find(
+      (v) =>
+        v.ruleId === 'guardrails/analyzer-failed' &&
+        v.message.includes('stryker'),
+    );
+    expect(failed?.message).toContain('SIGTERM');
+    expect(failed?.message).not.toContain('a bad config');
+    // The warning is printed on every stryker run, successful or not, and had
+    // no bearing on this failure.
+    expect(failed?.message).not.toContain('OptionsValidator');
+  });
+
+  it('still reports the findings in a report a killed run left behind', async () => {
+    // The report path is deleted before every run and stryker writes it from
+    // its reporter at the end, so anything parseable there is a completed run's
+    // verdict. Evidence beats the kill; the report-presence rule stands.
+    const { exec } = execWithStryker({
+      stdout: '',
+      stderr: '',
+      code: 0,
+      signal: 'SIGTERM',
+    });
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      profile: 'commit',
+      readFile: () => Promise.resolve(breakThresholdReport),
+    });
+    expect(violations.some((v) => v.ruleId === 'stryker/survived')).toBe(true);
   });
 
   it('reports the mutants when a break threshold turned a COMPLETED run non-zero', async () => {
@@ -3688,6 +4012,44 @@ describe('base branch resolution (the CI checkout case)', () => {
     expect(calls.find((call) => call.args.includes('HEAD'))?.options?.cwd).toBe(
       '/repo',
     );
+  });
+
+  it('blames the kill, not the base branch, when the HEAD probe is KILLED', async () => {
+    // A killed probe reports exit 0, which reads as "HEAD exists" — and the
+    // violation that follows from that tells the reader their `baseBranch` is
+    // wrong. git never answered; say so instead.
+    const { exec, calls } = fakeExec({
+      'git rev-parse --verify --quiet main^{commit}': {
+        stdout: '',
+        stderr: '',
+        code: 1,
+      },
+      'git rev-parse --verify --quiet origin/main^{commit}': {
+        stdout: '',
+        stderr: '',
+        code: 1,
+      },
+      'git rev-parse --verify --quiet HEAD': {
+        stdout: '',
+        stderr: '',
+        code: 0,
+        signal: 'SIGTERM',
+      },
+    });
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      profile: 'stop',
+    });
+    expect(violations).toEqual([
+      expect.objectContaining({
+        ruleId: 'guardrails/analyzer-failed',
+        message: expect.stringContaining('SIGTERM'),
+      }),
+    ]);
+    expect(violations[0]?.message).not.toContain('base branch');
+    expect(calls.some((call) => call.args.includes('ls-files'))).toBe(false);
   });
 
   it('fails closed when HEAD exists but the configured base cannot resolve', async () => {

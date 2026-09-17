@@ -49,7 +49,7 @@ import {
 } from 'node:fs/promises';
 import path from 'node:path';
 
-import type { Exec, ExecResult } from '../exec.js';
+import { type Exec, type ExecResult, signalFromExitCode } from '../exec.js';
 import { parseJsonText, readJsonFile } from '../json-file.js';
 import type { Violation } from '../violation.js';
 import { loadWorkspaceResolver, withPackages } from '../workspaces.js';
@@ -228,23 +228,68 @@ function outputDetail(stderr: string, stdout: string): string | undefined {
     : `${joined.slice(0, OUTPUT_DETAIL_CHARS)}…`;
 }
 
-/** A guard that ran and then crashed/misconfigured, distinct from
- *  `guardrails/analyzer-missing` (which means the binary never started). Named
- *  after the tool, its exit code, and — when present — the useful head of what
- *  it printed, so a consumer can tell why without re-running it. */
-function analyzerFailedViolation(
+/** The fields of an `ExecResult` a failure report is derived from. Taken as one
+ *  object so the signal cannot be dropped at a call site the way a trailing
+ *  positional argument can. */
+type FailedRun = Pick<ExecResult, 'code' | 'stderr' | 'stdout' | 'signal'>;
+
+/**
+ * A run that was KILLED, not one that failed.
+ *
+ * The distinction matters because the two point in opposite directions. A
+ * crash is something wrong with the repository — its config, its code — which
+ * is where `analyzerFailedViolation`'s three candidate causes send a reader. A
+ * kill is something about the invocation environment, and every minute spent
+ * reading `guardrails.config.json` for it is wasted (#74: ten-plus turns on a
+ * push-rung mutation sweep that had simply outlived its caller's timeout).
+ *
+ * Nothing the tool printed is quoted here, deliberately. A killed process was
+ * interrupted mid-stream, so its last few lines are whatever it happened to be
+ * saying — not a diagnosis. In the field those lines were stryker's routine
+ * `WARN OptionsValidator` chatter, and under a message that had just said
+ * "a bad config" they read as a smoking gun.
+ */
+function analyzerKilledViolation(
   tool: string,
-  code: number,
-  stderr: string,
-  stdout: string,
+  signal: NodeJS.Signals,
 ): Violation {
-  const head = outputDetail(stderr, stdout);
+  return {
+    ruleId: 'guardrails/analyzer-failed',
+    file: 'package.json',
+    message:
+      `${tool} was killed by ${signal} before it reported — it did not fail ` +
+      `and it did not finish, so the empty result it left behind is not a ` +
+      `verdict. Treating the check as failed, not clean. A kill comes from ` +
+      `the invocation environment rather than from this repository: a ` +
+      `caller's command timeout, a cancelled CI job, an OOM killer, a Ctrl-C. ` +
+      `Re-run the check without a timeout (or in the background) before ` +
+      `looking for a config problem — the long analyzers, mutation testing ` +
+      `above all, are the ones that outlive a caller's patience.`,
+    severity: 'error',
+    fixable: false,
+    tool: 'guardrails',
+  };
+}
+
+/** A guard that ran and then crashed/misconfigured, distinct from
+ *  `guardrails/analyzer-missing` (which means the binary never started) and
+ *  from a kill (which means it never finished). Named after the tool, its exit
+ *  code, and — when present — the useful head of what it printed, so a
+ *  consumer can tell why without re-running it. */
+function analyzerFailedViolation(tool: string, run: FailedRun): Violation {
+  // `signal` when the child was ours to observe; the exit code when a wrapper
+  // between us and the tool already collapsed the kill into 128+N.
+  const signal = run.signal ?? signalFromExitCode(run.code);
+  if (signal !== undefined) {
+    return analyzerKilledViolation(tool, signal);
+  }
+  const head = outputDetail(run.stderr, run.stdout);
   const detail = head === undefined ? '' : ` output: "${head}"`;
   return {
     ruleId: 'guardrails/analyzer-failed',
     file: 'package.json',
     message:
-      `${tool} exited with code ${code} and produced no parseable violations — ` +
+      `${tool} exited with code ${run.code} and produced no parseable violations — ` +
       `it either did not complete cleanly (a bad config, a crash, an ` +
       `unexpected flag) or reported only issue kinds this adapter does not ` +
       `map. A failed analyzer is a failed gate, not a clean one.` +
@@ -261,31 +306,37 @@ function analyzerFailedViolation(
  * So the failure signal is the conjunction: non-zero exit AND nothing parsed.
  * `spawnFailed` is excluded because that case is reported separately as
  * `guardrails/analyzer-missing` by the caller's spawn tracking.
+ *
+ * A KILL is not part of that conjunction, and is checked on its own. Two
+ * reasons it cannot ride along with the exit code: a killed child reports code
+ * 0 (see `ExecResult.signal`), so the conjunction never fires for it at all;
+ * and what a killed run managed to print before it died is not evidence that it
+ * checked anything, so unlike a non-zero exit it must be reported even when
+ * something did parse. `signalFromExitCode`'s 128+N reading is deliberately
+ * NOT given that power — it only rewords a failure already being reported.
  */
 function withExitCodeCheck(
   tool: string,
   execResult: ExecResult,
   violations: Violation[],
 ): Violation[] {
-  if (
-    execResult.spawnFailed !== true &&
-    execResult.code !== 0 &&
-    violations.length === 0
-  ) {
-    return [
-      ...violations,
-      analyzerFailedViolation(
-        tool,
-        execResult.code,
-        execResult.stderr,
-        execResult.stdout,
-      ),
-    ];
+  if (execResult.spawnFailed === true) {
+    return violations;
+  }
+  const isKilled = execResult.signal !== undefined;
+  if (isKilled || (execResult.code !== 0 && violations.length === 0)) {
+    return [...violations, analyzerFailedViolation(tool, execResult)];
   }
   return violations;
 }
 
-/** `true` when a git invocation exited non-zero.
+/** `true` when a git invocation did not answer: it exited non-zero, or it was
+ *  killed before it could.
+ *
+ *  The kill half is load-bearing rather than tidy. A killed `git diff
+ *  --name-only` reports exit 0 with empty stdout, which reads as "no files
+ *  changed" — so every diff-scoped analyzer is skipped for want of a file list
+ *  and the whole run comes back clean without having checked anything.
  *
  *  No spawn-failure guard is needed here any more: `resolveBaseReference` runs
  *  two git calls before either of these and returns early on `spawnFailed`, so
@@ -294,7 +345,7 @@ function withExitCodeCheck(
  *  exercise — and mutation testing says so. A tool that could not be STARTED is
  *  still reported only as `analyzer-missing`, never also as `analyzer-failed`. */
 function didGitCallFail(result: ExecResult): boolean {
-  return result.code !== 0;
+  return result.signal !== undefined || result.code !== 0;
 }
 
 async function changedTypeScriptFiles(
@@ -317,14 +368,7 @@ async function changedTypeScriptFiles(
     if (didGitCallFail(staged)) {
       return {
         files: [],
-        violations: [
-          analyzerFailedViolation(
-            'git',
-            staged.code,
-            staged.stderr,
-            staged.stdout,
-          ),
-        ],
+        violations: [analyzerFailedViolation('git', staged)],
       };
     }
     return {
@@ -351,6 +395,15 @@ async function changedTypeScriptFiles(
     );
     if (head.spawnFailed === true) {
       return { files: [], violations: [] };
+    }
+    // A killed `rev-parse` reports exit 0 (see `ExecResult.signal`), which
+    // would otherwise be read as "HEAD exists" and blamed on the consumer's
+    // `baseBranch` — the wrong-blame failure again. git did not answer.
+    if (head.signal !== undefined) {
+      return {
+        files: [],
+        violations: [analyzerFailedViolation('git', head)],
+      };
     }
     if (head.code === 0) {
       return {
@@ -382,14 +435,7 @@ async function changedTypeScriptFiles(
   if (failedGitCall !== undefined) {
     return {
       files: [],
-      violations: [
-        analyzerFailedViolation(
-          'git',
-          failedGitCall.code,
-          failedGitCall.stderr,
-          failedGitCall.stdout,
-        ),
-      ],
+      violations: [analyzerFailedViolation('git', failedGitCall)],
     };
   }
   const files = mergeChangedFiles(tracked.stdout, untracked.stdout).filter(
@@ -600,34 +646,23 @@ async function runTsc(
     cwd: repoRoot,
   });
   if (shown.spawnFailed === true) {
-    return [
-      analyzerFailedViolation(
-        'tsc --showConfig',
-        shown.code,
-        shown.stderr,
-        shown.stdout,
-      ),
-    ];
+    return [analyzerFailedViolation('tsc --showConfig', shown)];
   }
-  if (shown.code !== 0) {
-    return [
-      analyzerFailedViolation(
-        'tsc --showConfig',
-        shown.code,
-        shown.stderr,
-        shown.stdout,
-      ),
-    ];
+  // A kill is included here: it reports exit 0 with no stdout, which would
+  // otherwise fall through to the shape guard below and be reported as
+  // "TypeScript produced an unreadable resolved configuration" — true, but
+  // about the wrong thing.
+  if (shown.signal !== undefined || shown.code !== 0) {
+    return [analyzerFailedViolation('tsc --showConfig', shown)];
   }
   const references = resolvedProjectReferences(shown.stdout);
   if (references === undefined) {
     return [
-      analyzerFailedViolation(
-        'tsc --showConfig',
-        0,
-        'TypeScript produced an unreadable resolved configuration.',
-        '',
-      ),
+      analyzerFailedViolation('tsc --showConfig', {
+        code: 0,
+        stderr: 'TypeScript produced an unreadable resolved configuration.',
+        stdout: '',
+      }),
     ];
   }
   if (!references) {
@@ -1497,6 +1532,19 @@ async function runStryker(
     }
     return [...outOfScope, ...parseStrykerJson(report, inScope)];
   }
+  // A kill, checked between outcomes 1 and 2. It sits behind the report because
+  // the report is still the better evidence — it is deleted before the run and
+  // written from stryker's reporter at the end, so anything parseable there is
+  // a completed run's verdict. It sits ahead of everything else because a kill
+  // is not an outcome the exit code can describe: a directly-spawned kill
+  // reports 0 and would fall all the way through to "stryker exited 0 but its
+  // mutation report was not found", which sends a reader hunting for a
+  // jsonReporter.fileName that is not what is wrong. It also outranks the
+  // zero-mutant reading below: the instrumenter's banner says what stryker
+  // found to mutate, never that the run finished.
+  if (result.signal !== undefined) {
+    return [...outOfScope, analyzerFailedViolation('stryker', result)];
+  }
   if (result.code !== 0) {
     // Outcome 2: nothing to mutate is vacuously clean, even though the runner
     // threw on its way to discovering that.
@@ -1504,15 +1552,7 @@ async function runStryker(
       return outOfScope;
     }
     // Outcome 3.
-    return [
-      ...outOfScope,
-      analyzerFailedViolation(
-        'stryker',
-        result.code,
-        result.stderr,
-        result.stdout,
-      ),
-    ];
+    return [...outOfScope, analyzerFailedViolation('stryker', result)];
   }
   return [...outOfScope, strykerReportMissingViolation(reportPath)];
 }
