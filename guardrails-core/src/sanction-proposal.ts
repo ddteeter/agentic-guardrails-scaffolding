@@ -42,15 +42,30 @@ import type { SanctionedFile, SanctionedSuppression } from './config.js';
 import { ADDED_SUPPRESSION_RULE, type Violation } from './violation.js';
 
 /**
- * Which escape hatch an entry belongs in. Named on the proposal rather than
- * left to the agent: the recorded miss put a `cast-any` in a GENERATED file
- * under the counted mechanism with `"count": 50`, which `sanctions-check` then
- * polices forever against a number that has no reason to stay at 50.
+ * The whole-file grant, OFFERED rather than chosen.
+ *
+ * "Is this file generated?" is inferred from its path and header, and that
+ * inference is a guess. It earns its place by surfacing an option a reader
+ * might not consider — the recorded miss put a `cast-any` in a genuinely
+ * generated file under the counted mechanism with `"count": 50`, which
+ * `sanctions-check` would then police forever against a number with no reason
+ * to stay at 50.
+ *
+ * But it must never CHOOSE. `sanctionedFiles` is the broader grant, and a
+ * heuristic that led with it would hand a reader the un-counted exemption
+ * pre-justified in authoritative language on a wrong guess — the precise
+ * failure this command exists to prevent. So the counted entry stays the
+ * proposal, and this rides beside it as a question the reader answers.
  */
-type SanctionMechanism = 'sanctionedSuppressions' | 'sanctionedFiles';
+interface WholeFileAlternative {
+  entry: SanctionedFile;
+  /**
+  What the reader has to establish before preferring this to the counted entry.
+  */
+  question: string;
+}
 
 export interface SanctionProposal {
-  mechanism: SanctionMechanism;
   file: string;
   /**
   1-indexed line of the first occurrence.
@@ -66,17 +81,21 @@ export interface SanctionProposal {
   */
   count: number;
   /**
-  Ready-to-paste entry, `reason` deliberately blank.
+  Ready-to-paste counted entry, `reason` deliberately blank. Always the proposal.
   */
-  entry: SanctionedSuppression | SanctionedFile;
+  entry: SanctionedSuppression;
   /**
   What stops being checked once this is granted.
   */
   cost: string;
   /**
-  Why this mechanism rather than the other one.
+  What the counted mechanism costs and checks.
   */
   mechanismNote: string;
+  /**
+  Present only when the file READS as generated — an offer, never a verdict.
+  */
+  wholeFile?: WholeFileAlternative;
   /**
   How many grants of this kind the repo already holds.
   */
@@ -218,11 +237,23 @@ function mechanismNoteFor(count: number): string {
   return 'counted and re-derived against the source every run.';
 }
 
-const GENERATED_NOTE =
-  'this file reads as GENERATED, so the counted mechanism is the wrong one: ' +
-  'a generated file’s occurrence count changes on every regeneration, and ' +
-  'a pinned suppression text breaks when the generator changes its output ' +
-  'shape. The whole-file grant carries no count for exactly that reason.';
+/**
+ * The offer's wording, addressed to the reader rather than asserted about the
+ * file. "reads as generated" is the honest register for a path-and-header
+ * guess; the sentence that follows tells the reader what to do when the guess
+ * is wrong, which is to use the entry above and ignore this.
+ */
+function wholeFileQuestion(file: string, kind: AuditKind): string {
+  return (
+    `${file} reads as generated (by its path or its header) — is it? ` +
+    `If a person maintains this file, ignore this block and take the counted ` +
+    `entry above. If a GENERATOR writes it, the counted entry is the wrong ` +
+    `mechanism: its count changes on every regeneration, and its pinned ` +
+    `suppression text breaks the first time the generator changes its output ` +
+    `shape. This grant is the BROADER one — it covers every ${kind} in this ` +
+    `file, forever, with no count and nothing verifying it afterwards.`
+  );
+}
 
 function toProposal(
   finding: AuditFinding,
@@ -235,17 +266,20 @@ function toProposal(
   const isGenerated =
     source !== undefined && isGeneratedSource(finding.file, source);
   return {
-    mechanism: isGenerated ? 'sanctionedFiles' : 'sanctionedSuppressions',
     file: finding.file,
     line: finding.line,
     kind: finding.kind,
     key,
     count,
-    entry: isGenerated
-      ? { path: finding.file, kind: finding.kind, reason: '' }
-      : countedEntry(key, count),
+    entry: countedEntry(key, count),
     cost: COST[finding.kind],
-    mechanismNote: isGenerated ? GENERATED_NOTE : mechanismNoteFor(count),
+    mechanismNote: mechanismNoteFor(count),
+    ...(isGenerated && {
+      wholeFile: {
+        entry: { path: finding.file, kind: finding.kind, reason: '' },
+        question: wholeFileQuestion(finding.file, finding.kind),
+      },
+    }),
     precedent: precedentFor(finding.kind, context),
   };
 }
@@ -341,17 +375,37 @@ const ASK_FIRST: readonly string[] = [
   'accepted into `reason`: that text is what a reviewer reads later.',
 ];
 
+function entryLines(entry: SanctionedSuppression | SanctionedFile): string[] {
+  return JSON.stringify(entry, null, 2)
+    .split('\n')
+    .map((line) => `      ${line}`);
+}
+
+/**
+ * The offer, printed BELOW the counted entry and behind a question. A reader
+ * skimming this hits the proposal first and reaches the broader grant only by
+ * answering "does a generator write this file?" themselves.
+ */
+function alternativeLines(alternative: WholeFileAlternative): string[] {
+  return [
+    `    ALSO CONSIDER — sanctionedFiles, only if you can establish this:`,
+    `      ${alternative.question}`,
+    ...entryLines(alternative.entry),
+  ];
+}
+
 function proposalLines(proposal: SanctionProposal): string[] {
   return [
     `  ${proposal.file}:${proposal.line}  [${proposal.kind}]`,
-    `    mechanism: ${proposal.mechanism} — ${proposal.mechanismNote}`,
+    `    mechanism: sanctionedSuppressions — ${proposal.mechanismNote}`,
     `    cost:      ${proposal.cost}`,
     `    precedent: this repo already holds ${proposal.precedent} ` +
       `${proposal.kind} grant(s); this would be number ${proposal.precedent + 1}.`,
     '    entry:',
-    ...JSON.stringify(proposal.entry, null, 2)
-      .split('\n')
-      .map((line) => `      ${line}`),
+    ...entryLines(proposal.entry),
+    ...(proposal.wholeFile === undefined
+      ? []
+      : alternativeLines(proposal.wholeFile)),
     '',
   ];
 }

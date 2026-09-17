@@ -216,12 +216,19 @@ diff-auditor treats it as one. It requires an entry in
 Do not hand-write the key — `guardrails sanction` derives it for you. Run it
 (`--from=<manifest>` to work from a blocking manifest, or with no flag to read
 the working diff) and it prints, for every suppression that would need a grant:
-the exact key from the auditor's own lexer, the real `count`, which mechanism
-belongs (`sanctionedFiles` when the file is generated, `sanctionedSuppressions`
-otherwise), what stops being checked, and how many grants of that shape the repo
-already holds. It writes nothing — there is no `--apply`, deliberately. The
-entry it prints is what you take to the developer, and the precedent count is
-the number that should start that conversation rather than end it.
+the exact key from the auditor's own lexer, the real `count`, a ready-to-paste
+`sanctionedSuppressions` entry, what stops being checked, and how many grants of
+that shape the repo already holds. It writes nothing — there is no `--apply`,
+deliberately. The entry it prints is what you take to the developer, and the
+precedent count is the number that should start that conversation rather than
+end it.
+
+The counted entry is always the proposal. Where the file's path or header
+**reads as** generated, an `ALSO CONSIDER` block offers the whole-file
+`sanctionedFiles` grant underneath it — as a question for you to answer, not a
+finding about the file. Establish that a generator really writes the file
+before preferring it; if a person maintains the file, ignore the block and take
+the counted entry.
 
 **Nothing downstream will catch a self-grant for you.** `sanctions-check`
 prints every newly-added key and exits 0 — by design, since the human reviewing
