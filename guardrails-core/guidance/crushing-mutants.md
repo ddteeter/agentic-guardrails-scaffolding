@@ -211,7 +211,7 @@ diff-auditor treats it as one. It requires an entry in
 - what stops being checked once it is granted.
 
 Do not hand-write the key — `guardrails sanction` derives it for you. Run it
-(`--from <manifest>` to work from a blocking manifest, or with no flag to read
+(`--from=<manifest>` to work from a blocking manifest, or with no flag to read
 the working diff) and it prints, for every suppression that would need a grant:
 the exact key from the auditor's own lexer, the real `count`, which mechanism
 belongs (`sanctionedFiles` when the file is generated, `sanctionedSuppressions`

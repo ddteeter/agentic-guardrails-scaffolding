@@ -789,8 +789,24 @@ function readManifest(
  */
 async function sanctionCommand(
   dependencies: CliDependencies,
-  manifest: string | undefined,
+  rest: string[],
 ): Promise<number> {
+  // `flag` reads `--from=<path>` only, so a space-separated `--from x.json`
+  // parses as NO flag and would fall through to the working diff -- deriving
+  // proposals from a different scope than the caller asked for, silently. A
+  // quiet wrong-mode answer is the exact failure this command exists to remove.
+  // Checked on the BARE token alone rather than as "no value AND a bare
+  // --from": the compound form's first clause can never be false when the
+  // second is true, which is an equivalent mutant, and a caller who wrote both
+  // spellings is ambiguous enough to reject anyway.
+  if (rest.includes('--from')) {
+    dependencies.stderr(
+      'guardrails: --from takes its value with an equals sign: ' +
+        '`guardrails sanction --from=<manifest>`.\n',
+    );
+    return 1;
+  }
+  const manifest = flag(rest, 'from');
   const readSource = repoSourceReader(dependencies.cwd);
   let findings;
   if (manifest === undefined) {
@@ -1169,7 +1185,7 @@ export async function runCommand(
       return sanctionsCheckCommand(dependencies);
     }
     case 'sanction': {
-      return sanctionCommand(dependencies, flag(rest, 'from'));
+      return sanctionCommand(dependencies, rest);
     }
     case 'state': {
       return stateCommand(dependencies, flag(rest, 'session') ?? 'default');

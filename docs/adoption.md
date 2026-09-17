@@ -449,7 +449,7 @@ for every suppression that would need a grant, the exact `file|kind|text` key
 (from the auditor's own lexer, so it cannot be a guess), the real `count`, which
 of the two mechanisms belongs, what stops being checked, and how many grants of
 that shape the repo already holds. Take it from a blocking manifest with
-`guardrails sanction --from <manifest>`, or from the working diff with no flag.
+`guardrails sanction --from=<manifest>`, or from the working diff with no flag.
 It writes nothing: the entry is what you bring to a human, and there is no
 `--apply` on purpose — an agent installing its own exemption is the failure this
 whole hatch exists to make visible.

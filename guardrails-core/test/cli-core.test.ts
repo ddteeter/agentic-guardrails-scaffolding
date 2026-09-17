@@ -3130,6 +3130,24 @@ describe('runCommand — sanction (derive a grant, install nothing)', () => {
     expect(errors.join('')).toContain('number 3');
   });
 
+  it('refuses a space-separated `--from`, rather than quietly reading the diff', async () => {
+    // `flag` only recognises `--from=<path>`. Without this, `--from x.json`
+    // parses as no flag at all and the command silently falls back to the
+    // working diff -- deriving proposals from a DIFFERENT scope than the
+    // caller asked for, with nothing to say so. A quiet wrong-mode answer is
+    // the exact failure this command exists to remove.
+    expect(
+      await runCommand(
+        'sanction',
+        ['--from', 'violations.json'],
+        dependencies({ exec: writeSuppressedSource() }),
+      ),
+    ).toBe(1);
+    const printed = errors.join('');
+    expect(printed).toContain('--from=');
+    expect(printed).not.toContain(DERIVED_KEY);
+  });
+
   it('fails when the named manifest does not exist', async () => {
     expect(
       await runCommand(
