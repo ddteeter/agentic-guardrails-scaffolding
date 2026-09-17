@@ -626,6 +626,29 @@ describe('runStopGate — the working diff could not be read', () => {
     expect(existsSync(snapshotPath())).toBe(true);
   });
 
+  it('logs the firing, so a turn with no verdict is not missing from the log', async () => {
+    // #83 logs EVERY firing, clean included, because the delegation share is a
+    // fraction and a log that silently omits an outcome has the wrong
+    // denominator. A blocked turn that audited nothing is the one outcome most
+    // worth being able to count afterwards.
+    await runStopGate(options(execKilling('git diff HEAD', 'SIGTERM')));
+
+    const rows = readDecisions(stateDirectory(root));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      rung: 'stop',
+      session: 'sid',
+      outcome: 'escalate',
+      // Nothing was audited, so there is no violation count to report and no
+      // fixer was named -- the row says the gate fired and produced no verdict.
+      violations: 0,
+      rules: {},
+      introduced: 0,
+      resolved: 0,
+    });
+    expect(Date.parse(rows[0]?.at ?? '')).not.toBeNaN();
+  });
+
   it('does not run verify against a diff it could not read', async () => {
     // The block is decided before anything else spawns: there is no verdict to
     // be had this turn, and the remedy named in the message is to re-run the
