@@ -3,8 +3,9 @@
  * stop-gate and the Copilot commit-gate. Given the current violations, the
  * loaded session tally, and cross-session recurrence, it decides whether to
  * let the turn end (clean), divert the fix to a restricted fixer subagent
- * (delegate), or stop hiding and hand the full dump to the main agent
- * (escalate) — and computes the next persisted state.
+ * (delegate), or stop hiding and hand the main agent an aggregate plus the
+ * manifest path to resolve itself (escalate) — and computes the next persisted
+ * state.
  *
  * Keeping this a pure function means the whole control loop is unit-testable
  * without a filesystem, a git repo, or a running agent.
@@ -109,13 +110,57 @@ function unchangedPointer(
 }
 
 /**
+ * How many distinct rule-ids the escalation names before it stops enumerating.
+ *
+ * A bound rather than the full set, because the set is what this message must
+ * not be: an escalation on a wide manifest can span a dozen rules, and a dozen
+ * `rule ×n` pairs is the enumeration again in a thinner disguise. Four names
+ * the shape of the work ("mostly surviving mutants, plus some tsc") and the
+ * tail is a count.
+ */
+const MAX_NAMED_RULES = 4;
+
+/**
+ * `ruleId ×count` for the most frequent rules, most frequent first, with the
+ * tail collapsed into a count. Ties break on the rule-id so the string is
+ * deterministic — this text is asserted on, and an order that depended on
+ * analyzer emission order would make those assertions flaky.
+ */
+function ruleBreakdown(violations: readonly Violation[]): string {
+  const counts = new Map<string, number>();
+  for (const violation of violations) {
+    counts.set(violation.ruleId, (counts.get(violation.ruleId) ?? 0) + 1);
+  }
+  const ordered = [...counts].toSorted((left, right) => {
+    const byCount = right[1] - left[1];
+    return byCount === 0 ? left[0].localeCompare(right[0]) : byCount;
+  });
+  const named = ordered
+    .slice(0, MAX_NAMED_RULES)
+    .map(([ruleId, count]) => `${ruleId} ×${count}`);
+  const remaining = ordered.length - named.length;
+  return remaining > 0
+    ? [...named, `+${remaining} more rule(s)`].join(', ')
+    : named.join(', ');
+}
+
+/**
  * The terminal hand-back: the fixer ladder is spent, so the MAIN agent gets the
  * violations to resolve itself.
+ *
+ * It gets an AGGREGATE and the manifest path, not the violations themselves
+ * (#80). This message fires only after both fixer tiers are spent — i.e. on the
+ * hardest manifests, which are also the longest — so enumerating here made the
+ * design's context discipline strongest when the work was easy and absent when
+ * it was hard; 17 violations landing inline in the main thread was observed in
+ * a live adoption. The manifest holds every detail this summary elides, and
+ * this is the one moment at which the main agent reading it is correct: there
+ * is no fixer left to read it instead.
  *
  * `inFlightFixer` names a fixer that has not reported yet, and is present only
  * when this escalation fires on a retry whose manifest is unchanged. That is
  * the same signal `unchangedPointer` reads on the delegate path, and it matters
- * here for the same reason: "resolve them directly" sends the main agent into
+ * here for the same reason: resolving them directly sends the main agent into
  * files a subagent may still be editing, and two writers on one file lose each
  * other's work. Observed live — the main agent's edit raced a running fixer's
  * and survived only because the stale text no longer matched.
@@ -126,27 +171,27 @@ function unchangedPointer(
  * for a hang, and the attempt budget is spent either way. What changes is that
  * the agent is told to let the in-flight fixer land before it starts editing.
  */
-function fullDump(
+function escalationPointer(
   violations: readonly Violation[],
+  manifestPath: string,
   inFlightFixer?: string,
 ): string {
-  const lines = violations.map(
-    (violation) =>
-      `- ${violation.file}:${violation.line ?? '?'} [${violation.ruleId}] ` +
-      `${violation.message} (${violation.tool})`,
-  );
+  const files = new Set(violations.map((violation) => violation.file));
   const caveat =
     inFlightFixer === undefined
       ? []
       : [
           `NOTE: the ${inFlightFixer} from the last attempt may still be ` +
             `running — the manifest has not changed since the previous block. ` +
-            `Wait for it to report before editing these files yourself; its ` +
+            `Wait for it to report before editing those files yourself; its ` +
             `edits and yours would race.`,
         ];
   return [
-    `${violations.length} violation(s) survived the fix loop. Resolve them directly:`,
-    ...lines,
+    `${violations.length} violation(s) survived the fix loop across ` +
+      `${files.size} file(s): ${ruleBreakdown(violations)}. ` +
+      `Read the manifest at ${manifestPath} and resolve them directly — ` +
+      `a spent fix loop is the one point at which reading it is correct. ` +
+      `Prefer the smallest targeted edit that resolves each one.`,
     ...caveat,
   ].join('\n');
 }
@@ -208,15 +253,15 @@ export function decideGate(input: GateInput): GateDecision {
     };
   }
 
-  // The main agent received the full dump on the preceding blocked Stop. If it
-  // still cannot resolve the violation, release this retry and leave the
-  // commit/CI gate as the hard backstop. Without this terminal state, resetting
-  // attempts after escalation restarts the fixer ladder forever.
+  // The main agent received the escalation pointer on the preceding blocked
+  // Stop. If it still cannot resolve the violation, release this retry and
+  // leave the commit/CI gate as the hard backstop. Without this terminal state,
+  // resetting attempts after escalation restarts the fixer ladder forever.
   if (isRetry && session.escalated) {
     return {
       outcome: 'release',
       block: false,
-      message: fullDump(violations),
+      message: escalationPointer(violations, manifestPath),
       nextSession: session,
       nextRecurrence: recurrence,
     };
@@ -253,7 +298,7 @@ export function decideGate(input: GateInput): GateDecision {
   // Identical manifest on a retry means no fixer edit has landed yet. Read by
   // BOTH exits below: `unchangedPointer` on the delegate path, and the
   // in-flight caveat on the escalate path. See `unchangedPointer` and
-  // `fullDump`.
+  // `escalationPointer`.
   const digest = violationDigest(violations);
   const isStalled = isRetry && session.lastViolationDigest === digest;
 
@@ -262,7 +307,11 @@ export function decideGate(input: GateInput): GateDecision {
       {
         outcome: 'escalate',
         block: true,
-        message: fullDump(violations, isStalled ? fixerAgent : undefined),
+        message: escalationPointer(
+          violations,
+          manifestPath,
+          isStalled ? fixerAgent : undefined,
+        ),
         nextSession: { ...resetAttempts(corrected), escalated: true },
         nextRecurrence,
       },

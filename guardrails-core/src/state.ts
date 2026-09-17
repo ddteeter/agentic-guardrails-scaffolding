@@ -16,8 +16,9 @@ export interface SessionState {
   Bounded fix-attempt counter for the current Stop loop.
   */
   attempts: number;
-  /** The full dump has already been handed to the main agent. The next Stop
-   * retry releases the turn instead of starting the fixer ladder again. */
+  /** The escalation pointer has already been handed to the main agent. The
+   * next Stop retry releases the turn instead of starting the fixer ladder
+   * again. */
   escalated?: boolean;
   /**
   Distinct rule-key → number of separate turns it has appeared in.

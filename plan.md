@@ -320,8 +320,9 @@ config; and external-tool output). Two tracks:
   write. Same class of bug the unchanged-manifest guard exists to prevent,
   missing from the other exit.
 
-  `fullDump` now takes the in-flight fixer's name and appends a wait-first
-  caveat, on exactly the `isStalled` signal `unchangedPointer` already reads.
+  `escalationPointer` (then named `fullDump`) now takes the in-flight fixer's
+  name and appends a wait-first caveat, on exactly the `isStalled` signal
+  `unchangedPointer` already reads.
   The escalation itself is deliberately NOT withheld: an unchanged digest cannot
   distinguish "still running" from "finished and achieved nothing", so blocking
   on a change that may never arrive would trade a race for a hang, and the

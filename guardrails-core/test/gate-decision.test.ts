@@ -103,7 +103,7 @@ describe('decideGate — delegate', () => {
 });
 
 describe('decideGate — escalate', () => {
-  it('stops hiding and hands the full dump to the main agent past MAX', () => {
+  it('hands the main agent an aggregate and the manifest path past MAX', () => {
     const decision = decideGate(
       input({
         violations: [v({ ruleId: 'no-console', file: 'src/a.ts', line: 9 })],
@@ -113,10 +113,8 @@ describe('decideGate — escalate', () => {
     expect(decision.outcome).toBe('escalate');
     expect(decision.block).toBe(true);
     expect(decision.fixerAgent).toBeUndefined();
-    expect(decision.message).toContain('no-console');
-    expect(decision.message).toContain('src/a.ts');
     expect(decision.additionalContext).toBeUndefined();
-    // The full dump arms a terminal release instead of restarting forever.
+    // The escalation arms a terminal release instead of restarting forever.
     expect(decision.nextSession.attempts).toBe(0);
     expect(decision.nextSession.escalated).toBe(true);
     // No fixer is in flight on this path, so the caveat block must be entirely
@@ -124,9 +122,115 @@ describe('decideGate — escalate', () => {
     // exact rendering so an empty-array regression (e.g. a stray placeholder
     // line) is caught even though it wouldn't match that phrase.
     expect(decision.message).toBe(
-      '1 violation(s) survived the fix loop. Resolve them directly:\n' +
-        '- src/a.ts:9 [no-console] boom (eslint)',
+      '1 violation(s) survived the fix loop across 1 file(s): ' +
+        'no-console ×1. Read the manifest at ' +
+        `${manifestPath} and resolve them directly — a spent fix loop is the ` +
+        'one point at which reading it is correct. Prefer the smallest ' +
+        'targeted edit that resolves each one.',
     );
+  });
+
+  /**
+   * #80: the escalation used to enumerate every violation inline, so the one
+   * message the design cannot afford to be verbose in — it fires only after
+   * BOTH fixer tiers are spent, i.e. on the hardest and therefore longest
+   * manifests — was the only one that was. Observed at 17 violations dumped
+   * into the main thread in one live case.
+   *
+   * The aggregate is strictly less context and strictly more useful: the
+   * manifest it points at holds the per-violation detail the summary elides,
+   * and reading it HERE is correct, because no fixer is left to read it.
+   */
+  it('does not enumerate the violations it is escalating', () => {
+    const decision = decideGate(
+      input({
+        violations: [
+          v({ ruleId: 'stryker/survived', file: 'src/a.ts', line: 9 }),
+          v({ ruleId: 'stryker/survived', file: 'src/b.ts', line: 4 }),
+          v({ ruleId: 'stryker/survived', file: 'src/b.ts', line: 7 }),
+          v({ ruleId: 'no-console', file: 'src/c.ts', line: 1 }),
+        ],
+        session: { attempts: 3, ruleCounts: {}, corrected: [] },
+      }),
+    );
+    expect(decision.message).not.toContain('src/a.ts');
+    expect(decision.message).not.toContain('boom');
+    // Counts by rule, most frequent first, so the main agent knows the shape
+    // of the work before it opens the manifest.
+    expect(decision.message).toContain(
+      '4 violation(s) survived the fix loop across 3 file(s): ' +
+        'stryker/survived ×3, no-console ×1.',
+    );
+    expect(decision.message).toContain(manifestPath);
+  });
+
+  it('stops naming rules past a bound, so the aggregate stays bounded', () => {
+    const decision = decideGate(
+      input({
+        violations: ['a', 'b', 'c', 'd', 'e', 'f'].map((ruleId) =>
+          v({ ruleId, file: `src/${ruleId}.ts` }),
+        ),
+        session: { attempts: 3, ruleCounts: {}, corrected: [] },
+      }),
+    );
+    expect(decision.message).toContain(
+      'a ×1, b ×1, c ×1, d ×1, +2 more rule(s).',
+    );
+    expect(decision.message).not.toContain('e ×1');
+  });
+
+  /**
+   * The bound test above happens to push rule-ids in already-sorted order (all
+   * counts equal to 1, so the tie-break — alphabetical — coincides with the
+   * insertion order), which cannot distinguish a real frequency sort from a
+   * no-op. This case sets the counts so that the FIRST-seen rule-id ('A') has
+   * the LOWEST count: a correct descending sort must move it to the end, so
+   * this fails under a comparator that leaves the input order unchanged
+   * (whether from an emptied comparator body, a conditional collapsed to
+   * `false`, or an arithmetic flip that never satisfies "should swap").
+   */
+  it('reorders by frequency even when the first-seen rule is least frequent', () => {
+    const decision = decideGate(
+      input({
+        violations: [
+          v({ ruleId: 'A', file: 'src/a.ts' }),
+          v({ ruleId: 'B', file: 'src/b1.ts' }),
+          v({ ruleId: 'B', file: 'src/b2.ts' }),
+          v({ ruleId: 'B', file: 'src/b3.ts' }),
+          v({ ruleId: 'C', file: 'src/c1.ts' }),
+          v({ ruleId: 'C', file: 'src/c2.ts' }),
+        ],
+        session: { attempts: 3, ruleCounts: {}, corrected: [] },
+      }),
+    );
+    expect(decision.message).toContain('B ×3, C ×2, A ×1');
+  });
+
+  /**
+   * The tie-break half of the comparator (`byCount === 0 ? alphabetical :
+   * byCount`) is a separate mutation target from the descending-frequency
+   * half exercised above. A `ConditionalExpression` mutant that forces the
+   * ternary's CONDITION to `false` always falls through to the `byCount`
+   * branch — which is what the real condition also returns whenever counts
+   * differ, so a test with no ties cannot see it. It only shows up on a real
+   * tie: the mutant then returns `byCount`, which is `0` ("equal") for a tie,
+   * leaving the pair in insertion order instead of sorting it alphabetically.
+   * The bound test above ties every rule-id, but its insertion order is
+   * already alphabetical, so it can't distinguish the two either (see its
+   * comment). This test puts the alphabetically-LATER rule-id first so
+   * insertion order and alphabetical order disagree.
+   */
+  it('breaks a tie alphabetically rather than leaving insertion order', () => {
+    const decision = decideGate(
+      input({
+        violations: [
+          v({ ruleId: 'zebra', file: 'src/z.ts' }),
+          v({ ruleId: 'apple', file: 'src/a.ts' }),
+        ],
+        session: { attempts: 3, ruleCounts: {}, corrected: [] },
+      }),
+    );
+    expect(decision.message).toContain('apple ×1, zebra ×1');
   });
 
   /**
@@ -161,9 +265,9 @@ describe('decideGate — escalate', () => {
       }),
     );
     expect(decision.outcome).toBe('escalate');
-    // The dump is still there — the agent still needs to know what to fix.
+    // The pointer is still there — the agent still needs to know what to fix.
     expect(decision.message).toContain('no-console');
-    expect(decision.message).toContain('src/a.ts');
+    expect(decision.message).toContain(manifestPath);
     // ...but it is told to let the in-flight fixer land first.
     expect(decision.message).toContain('may still be running');
     expect(decision.message).toContain('guardrail-fixer-thorough');
@@ -185,7 +289,7 @@ describe('decideGate — escalate', () => {
       }),
     );
     expect(decision.outcome).toBe('escalate');
-    expect(decision.message).toContain('no-console');
+    expect(decision.message).toContain(manifestPath);
     expect(decision.message).not.toContain('may still be running');
   });
 
@@ -206,11 +310,18 @@ describe('decideGate — escalate', () => {
     expect(decision.message).not.toContain('may still be running');
   });
 
-  it('renders an unknown line explicitly in the terminal dump', () => {
+  it('counts distinct files, not violations, in the aggregate', () => {
     const decision = decideGate(
-      input({ session: { ...createSession(), attempts: 3 } }),
+      input({
+        violations: [
+          v({ ruleId: 'no-console', file: 'src/foo.ts', line: 1 }),
+          v({ ruleId: 'no-console', file: 'src/foo.ts', line: 2 }),
+        ],
+        session: { ...createSession(), attempts: 3 },
+      }),
     );
-    expect(decision.message).toContain('src/foo.ts:?');
+    expect(decision.message).toContain('2 violation(s)');
+    expect(decision.message).toContain('across 1 file(s)');
   });
 
   it('releases the retry after the main agent received the full dump', () => {
