@@ -106,7 +106,10 @@ Everything is authored in strict TypeScript, compiled to pure-Node ESM
   engine + snapshot-based fixer audit, shared by the CC stop-gate and (Phase B)
   the Codex and Copilot commit gates.
 - **CLI** (`src/cli.ts`, `src/cli-core.ts`) — `verify | autofix | audit | gate |
-state | scope-check | session-start | session-end`.
+state | report | scope-check | session-start | session-end`.
+- **Decision log** (`src/decision-log.ts`) — one appended row per gate decision
+  in `.guardrails/state/decisions.jsonl`; `guardrails report` turns it into the
+  delegation share, the escalation causes and the rules behind them.
 - **Plugin** (`guardrails-plugin/`) — `hooks.json`, two fixer subagents, and a
   session hook whose exact-session fix-loop marker makes the scope-lock active
   only during delegation.

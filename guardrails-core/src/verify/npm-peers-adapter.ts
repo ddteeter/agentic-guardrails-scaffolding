@@ -17,6 +17,7 @@
  */
 import path from 'node:path';
 
+import { isRecord } from '../is-record.js';
 import type { Violation } from '../violation.js';
 
 /** The fields this adapter reads from one node of npm's dependency tree.
@@ -27,10 +28,6 @@ interface NpmLsNode {
   invalid?: unknown;
   path?: unknown;
   dependencies?: unknown;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function peerViolation(

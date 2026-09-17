@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 
 import { auditDiff, type AuditFinding } from './audit.js';
 import { runAutofix } from './autofix.js';
+import { formatDecisionReport, summarizeDecisions } from './decision-log.js';
 import {
   loadConfig,
   type RepoConfig,
@@ -51,6 +52,7 @@ import {
   deleteSession,
   loadRecurrence,
   loadSession,
+  readDecisions,
   stateDirectory,
   sweepStale,
 } from './state-store.js';
@@ -700,6 +702,17 @@ function stateCommand(
   return 0;
 }
 
+/**
+ * `guardrails report` — where the work landed (#83). Reads the durable decision
+ * log and prints the delegation share, the escalation causes, and the rules
+ * behind them.
+ */
+function reportCommand(dependencies: CliDependencies): number {
+  const records = readDecisions(stateDirectory(dependencies.cwd));
+  dependencies.stdout(formatDecisionReport(summarizeDecisions(records)));
+  return 0;
+}
+
 function denyPreToolUse(
   dependencies: CliDependencies,
   reason: string,
@@ -1010,6 +1023,9 @@ export async function runCommand(
     case 'state': {
       return stateCommand(dependencies, flag(rest, 'session') ?? 'default');
     }
+    case 'report': {
+      return reportCommand(dependencies);
+    }
     case 'scope-check': {
       const dialect = resolveDialect(rest);
       await scopeCheckCommand(dependencies, dialect);
@@ -1035,7 +1051,7 @@ export async function runCommand(
           '       [--analyzers=<tool>=<off|auto|required>[,...]] [--distribution=solo|team]\n' +
           '  gate --mode=stop|commit|push|ci|pretooluse [--dialect=codex|copilot]\n' +
           '  verify | autofix | audit | sanctions-check | install-hooks\n' +
-          '  state | scope-check | session-start | session-end\n',
+          '  state | report | scope-check | session-start | session-end\n',
       );
       return 1;
     }

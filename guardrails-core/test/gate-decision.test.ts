@@ -664,3 +664,87 @@ describe('decideGate: a retry whose fixer introduced new violations', () => {
     expect(decision.nextSession.attempts).toBe(2);
   });
 });
+
+/**
+ * #83: `decideGate` computed the outcome, the fixer it named and the delta on
+ * every firing and then threw all three away, so nothing in the loop could
+ * report whether work was landing on the cheap agent. The decision carries them
+ * out as one row; the CALLER persists it, so the engine stays pure.
+ */
+describe('decideGate: the decision log row', () => {
+  it('carries the delegation and the rules behind it', () => {
+    const decision = decideGate(
+      input({
+        violations: [
+          v({ ruleId: 'stryker/survived', file: 'src/a.ts' }),
+          v({ ruleId: 'stryker/survived', file: 'src/b.ts' }),
+          v({ ruleId: 'no-console', file: 'src/c.ts' }),
+        ],
+      }),
+    );
+    expect(decision.log).toEqual({
+      outcome: 'delegate',
+      fixer: 'guardrail-fixer',
+      attempt: 1,
+      violations: 3,
+      rules: { 'stryker/survived': 2, 'no-console': 1 },
+      introduced: 0,
+      resolved: 0,
+      stalled: false,
+    });
+  });
+
+  it('records the delta even when the attempt made partial progress', () => {
+    // The regression path is not the only one worth counting: an attempt that
+    // resolved two and introduced one is the tier-accuracy signal, and it never
+    // reaches `regressionPointer`.
+    const before = v({ ruleId: 'a/one', file: 'src/a.ts' });
+    const also = v({ ruleId: 'a/two', file: 'src/a.ts' });
+    const after = v({ ruleId: 'tsc/2322', file: 'src/b.ts' });
+    const decision = afterFixer([before, also], [after]);
+    expect(decision.log.introduced).toBe(1);
+    expect(decision.log.resolved).toBe(2);
+  });
+
+  it('marks the firing whose manifest did not move', () => {
+    const stuck = [v({ ruleId: 'a/one', file: 'src/a.ts' })];
+    const decision = afterFixer(stuck, stuck);
+    expect(decision.log.stalled).toBe(true);
+    expect(decision.log.outcome).toBe('delegate');
+  });
+
+  it("names no fixer on an escalation, which is the main agent's work", () => {
+    const decision = decideGate(
+      input({ session: { ...createSession(), attempts: 3 } }),
+    );
+    expect(decision.log.outcome).toBe('escalate');
+    expect(decision.log.fixer).toBeUndefined();
+    expect(decision.log.attempt).toBe(4);
+  });
+
+  it('records a clean turn, so the share has a denominator', () => {
+    const decision = decideGate(
+      input({ violations: [v({ ruleId: 'x', severity: 'warn' })] }),
+    );
+    expect(decision.log.outcome).toBe('clean');
+    expect(decision.log.violations).toBe(1);
+    expect(decision.log.attempt).toBe(0);
+    // `logEntry` is not given a `stalled` value on this path -- it must
+    // default to `false` rather than leaving it undefined or flipping it true.
+    expect(decision.log.stalled).toBe(false);
+  });
+
+  it('records the terminal release', () => {
+    const decision = decideGate(
+      input({
+        session: { ...createSession(), attempts: 2, escalated: true },
+        isRetry: true,
+      }),
+    );
+    expect(decision.log.outcome).toBe('release');
+    expect(decision.log.attempt).toBe(2);
+    // Same as the clean path: no `stalled` value is passed in, so the default
+    // must be `false`, not `true`.
+    expect(decision.log.stalled).toBe(false);
+  });
+});

@@ -58,6 +58,50 @@ export interface GateInput {
 
 export type GateOutcome = 'clean' | 'delegate' | 'escalate' | 'release';
 
+/**
+ * The facts one gate decision produces that are worth keeping, as one row of
+ * the decision log (#83).
+ *
+ * Returned rather than written: `decideGate` is shared by the Claude Code
+ * stop-gate and the Copilot commit-gate and must stay a pure function over its
+ * input, so the CALLER — which already owns the state directory — appends the
+ * row. `at`, `rung` and `session` are the caller's to add; see
+ * `DecisionRecord`.
+ */
+export interface GateLogEntry {
+  outcome: GateOutcome;
+  /**
+  The fixer named, when one was — absent on clean, escalate and release.
+  */
+  fixer?: string | undefined;
+  /**
+   * The attempt this firing charged. Zero on a clean turn, which charges none;
+   * the session's standing count on a release, which is past the ladder.
+   */
+  attempt: number;
+  violations: number;
+  /**
+  Rule-id → occurrences in this decision's violation set.
+  */
+  rules: Record<string, number>;
+  /**
+   * The previous attempt's delta (#81) — how many findings it added that its
+   * own manifest did not contain, and how many it removed. Both zero where
+   * there is nothing to compare against: a first block, a clean turn, a
+   * release, or a session written before the identities were persisted.
+   *
+   * Logged for EVERY firing, not only the net-damage one the budget forgives:
+   * an attempt that resolved two and introduced one never reaches the
+   * regression path, and is exactly the tier-accuracy signal the report wants.
+   */
+  introduced: number;
+  resolved: number;
+  /**
+  The manifest was identical to the previous block's.
+  */
+  stalled: boolean;
+}
+
 export interface GateDecision {
   outcome: GateOutcome;
   /**
@@ -69,6 +113,10 @@ export interface GateDecision {
   fixerAgent?: string | undefined;
   nextSession: SessionState;
   nextRecurrence: RecurrenceCounts;
+  /**
+  One row for the decision log — see `GateLogEntry`.
+  */
+  log: GateLogEntry;
 }
 
 function tersePointer(
@@ -210,15 +258,21 @@ const MAX_NAMED_RULES = 4;
  * deterministic — this text is asserted on, and an order that depended on
  * analyzer emission order would make those assertions flaky.
  */
-function ruleBreakdown(violations: readonly Violation[]): string {
-  const counts = new Map<string, number>();
+function countByRule(violations: readonly Violation[]): Record<string, number> {
+  const counts: Record<string, number> = {};
   for (const violation of violations) {
-    counts.set(violation.ruleId, (counts.get(violation.ruleId) ?? 0) + 1);
+    counts[violation.ruleId] = (counts[violation.ruleId] ?? 0) + 1;
   }
-  const ordered = [...counts].toSorted((left, right) => {
-    const byCount = right[1] - left[1];
-    return byCount === 0 ? left[0].localeCompare(right[0]) : byCount;
-  });
+  return counts;
+}
+
+function ruleBreakdown(violations: readonly Violation[]): string {
+  const ordered = Object.entries(countByRule(violations)).toSorted(
+    (left, right) => {
+      const byCount = right[1] - left[1];
+      return byCount === 0 ? left[0].localeCompare(right[0]) : byCount;
+    },
+  );
   const named = ordered
     .slice(0, MAX_NAMED_RULES)
     .map(([ruleId, count]) => `${ruleId} ×${count}`);
@@ -317,19 +371,40 @@ function withOptional(
   };
 }
 
+interface LogEntryInput {
+  outcome: GateOutcome;
+  violations: readonly Violation[];
+  attempt: number;
+  fixer?: string | undefined;
+  delta?: ViolationDelta | undefined;
+  stalled?: boolean;
+}
+
 /**
- * The previous attempt's delta, but ONLY when it was net damage: something
- * introduced and nothing resolved.
+One decision log row, built from what this firing already knows.
+*/
+function logEntry(input: LogEntryInput): GateLogEntry {
+  return {
+    outcome: input.outcome,
+    fixer: input.fixer,
+    attempt: input.attempt,
+    violations: input.violations.length,
+    rules: countByRule(input.violations),
+    introduced: input.delta?.introduced.length ?? 0,
+    resolved: input.delta?.resolved.length ?? 0,
+    stalled: input.stalled ?? false,
+  };
+}
+
+/**
+ * What the previous attempt did to the violation set, or `undefined` where
+ * there is nothing to compare against — a first block, or a session written
+ * before the identities were persisted.
  *
- * Partial progress is progress — a fixer that resolved three and introduced one
- * moved the loop forward and spends its attempt like any other. The case this
- * names is the one the budget could not see: an attempt whose entire effect was
- * to add findings its own manifest never contained.
- *
- * `undefined` rather than an empty delta, so every caller reads the same
- * question ("was this a regression?") off the same value.
+ * Every firing computes it, because the log wants the counts even when the
+ * budget does not care about them (`GateLogEntry.introduced`).
  */
-function netDamage(
+function attemptDelta(
   session: SessionState,
   violations: readonly Violation[],
   isRetry: boolean,
@@ -338,10 +413,23 @@ function netDamage(
   if (!isRetry || previous === undefined) {
     return undefined;
   }
-  const delta = violationDelta(previous, violationKeys(violations));
-  return delta.introduced.length > 0 && delta.resolved.length === 0
-    ? delta
-    : undefined;
+  return violationDelta(previous, violationKeys(violations));
+}
+
+/**
+ * Whether that delta was NET DAMAGE: something introduced and nothing resolved.
+ *
+ * Partial progress is progress — a fixer that resolved three and introduced one
+ * moved the loop forward and spends its attempt like any other. The case this
+ * names is the one the budget could not see: an attempt whose entire effect was
+ * to add findings its own manifest never contained.
+ */
+function isNetDamage(delta: ViolationDelta | undefined): boolean {
+  return (
+    delta !== undefined &&
+    delta.introduced.length > 0 &&
+    delta.resolved.length === 0
+  );
 }
 
 export function decideGate(input: GateInput): GateDecision {
@@ -361,6 +449,7 @@ export function decideGate(input: GateInput): GateDecision {
       message: '',
       nextSession: { ...resetAttempts(session), escalated: false },
       nextRecurrence: recurrence,
+      log: logEntry({ outcome: 'clean', violations, attempt: 0 }),
     };
   }
 
@@ -375,6 +464,11 @@ export function decideGate(input: GateInput): GateDecision {
       message: escalationPointer(violations, manifestPath),
       nextSession: session,
       nextRecurrence: recurrence,
+      log: logEntry({
+        outcome: 'release',
+        violations,
+        attempt: session.attempts,
+      }),
     };
   }
 
@@ -392,7 +486,8 @@ export function decideGate(input: GateInput): GateDecision {
   // What the PREVIOUS attempt did, not merely that it changed something (#81).
   // Absent on a first block, and on a session written before the identities
   // were persisted — in both cases there is nothing to have regressed from.
-  const regression = netDamage(session, violations, isRetry);
+  const delta = attemptDelta(session, violations, isRetry);
+  const regression = isNetDamage(delta) ? delta : undefined;
   // A fixer that only broke things has not shown the violation is hard, so the
   // attempt is not charged — up to `MAX_FORGIVEN_ATTEMPTS`, which is what keeps
   // the ladder finite when the damage is different every time.
@@ -440,6 +535,13 @@ export function decideGate(input: GateInput): GateDecision {
         ),
         nextSession: { ...resetAttempts(corrected), escalated: true },
         nextRecurrence,
+        log: logEntry({
+          outcome: 'escalate',
+          violations,
+          attempt,
+          delta,
+          stalled: isStalled,
+        }),
       },
       { additionalContext },
     );
@@ -462,6 +564,14 @@ export function decideGate(input: GateInput): GateDecision {
         lastViolationKeys: violationKeys(violations),
       },
       nextRecurrence,
+      log: logEntry({
+        outcome: 'delegate',
+        violations,
+        attempt,
+        fixer: fixerAgent,
+        delta,
+        stalled: isStalled,
+      }),
     },
     { additionalContext, fixerAgent },
   );

@@ -23,6 +23,7 @@ import { createSession } from '../src/state.js';
 import {
   loadRecurrence,
   loadSession,
+  readDecisions,
   readViolations,
   stateDirectory,
 } from '../src/state-store.js';
@@ -76,6 +77,56 @@ function eslintError(): string {
 }
 
 describe('runStopGate', () => {
+  /**
+   * #83: the caller, not `decideGate`, writes the decision log — the engine is
+   * shared with the commit gate and has to stay a pure function over its input.
+   * This is the write that turns "the gate decided something" into a fact an
+   * adopter can count later.
+   */
+  it('appends one decision-log row per firing', async () => {
+    const exec = makeExec((line) => {
+      if (line.includes('--name-only')) return ok('src/foo.ts');
+      if (line.includes('--others')) return ok('');
+      if (line.includes('diff') && line.includes('HEAD')) return ok('');
+      if (line.includes('eslint')) return ok(eslintError());
+      if (line.includes('--showConfig'))
+        return ok(JSON.stringify({ files: ['src/foo.ts'] }));
+      return ok('');
+    });
+
+    await runStopGate(options(exec));
+    await runStopGate(options(exec));
+
+    const rows = readDecisions(stateDirectory(root));
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({
+      rung: 'stop',
+      session: 'sid',
+      outcome: 'delegate',
+      fixer: 'guardrail-fixer',
+      attempt: 1,
+      rules: { 'no-console': 1 },
+    });
+    // A real instant, not a placeholder: the report orders the log by it.
+    expect(Date.parse(rows[0]?.at ?? '')).not.toBeNaN();
+  });
+
+  it('logs a clean turn too, so the delegation share has a denominator', async () => {
+    const exec = makeExec((line) => {
+      if (line.includes('--name-only')) return ok('src/foo.ts');
+      if (line.includes('--others')) return ok('');
+      if (line.includes('--showConfig'))
+        return ok(JSON.stringify({ files: ['src/foo.ts'] }));
+      return ok('');
+    });
+
+    await runStopGate(options(exec));
+
+    expect(
+      readDecisions(stateDirectory(root)).map((row) => row.outcome),
+    ).toEqual(['clean']);
+  });
+
   it('persists the recurrence tally to disk, not just the session', async () => {
     // Recurrence is the CROSS-session half of the memory: it is what lets a
     // rule that keeps coming back attach a behavioural correction on a later
@@ -788,6 +839,15 @@ const blockDecision = (over: Partial<GateDecision> = {}): GateDecision => ({
   message: 'Guardrail blocked this turn.',
   nextSession: createSession(),
   nextRecurrence: {},
+  log: {
+    outcome: 'delegate',
+    attempt: 1,
+    violations: 1,
+    rules: { 'eslint/no-console': 1 },
+    introduced: 0,
+    resolved: 0,
+    stalled: false,
+  },
   ...over,
 });
 

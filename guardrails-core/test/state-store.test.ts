@@ -1,4 +1,5 @@
 import {
+  appendFileSync,
   mkdirSync,
   mkdtempSync,
   rmSync,
@@ -13,9 +14,12 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { createSession } from '../src/state.js';
 import {
+  appendDecision,
+  decisionsFile,
   deleteSession,
   loadRecurrence,
   loadSession,
+  readDecisions,
   readViolations,
   recurrenceFile,
   saveRecurrence,
@@ -400,5 +404,63 @@ describe('sweepStale', () => {
 
   it('is a no-op on a missing directory', () => {
     expect(sweepStale(path.join(root, 'absent'), 1000, Date.now())).toEqual([]);
+  });
+});
+
+describe('decision log', () => {
+  const row = {
+    at: '2026-09-01T10:00:00.000Z',
+    rung: 'stop',
+    session: 'sid',
+    outcome: 'delegate' as const,
+    fixer: 'guardrail-fixer',
+    attempt: 1,
+    violations: 2,
+    rules: { 'stryker/survived': 2 },
+    introduced: 0,
+    resolved: 0,
+    stalled: false,
+  };
+
+  it('appends rather than replaces, so the history accumulates', () => {
+    appendDecision(directory, row);
+    appendDecision(directory, { ...row, outcome: 'clean' });
+
+    expect(readDecisions(directory).map((entry) => entry.outcome)).toEqual([
+      'delegate',
+      'clean',
+    ]);
+  });
+
+  it('reads an empty log when nothing has been recorded', () => {
+    expect(readDecisions(directory)).toEqual([]);
+  });
+
+  it('drops a malformed line instead of failing the whole report', () => {
+    // A row is appended by one process and read by another; a half-written or
+    // hand-edited line must not take the rest of the history with it.
+    appendDecision(directory, row);
+    appendFileSync(decisionsFile(directory), '{ not json\n');
+    appendDecision(directory, { ...row, outcome: 'escalate' });
+
+    expect(readDecisions(directory)).toHaveLength(2);
+  });
+
+  it('drops a well-formed line that is not a decision row', () => {
+    appendFileSync(decisionsFile(directory), `${JSON.stringify({ a: 1 })}\n`);
+
+    expect(readDecisions(directory)).toEqual([]);
+  });
+
+  it('survives the stale sweep, unlike the per-session files', () => {
+    // The log is the one file in the state directory whose whole value is that
+    // it outlives the sessions it describes.
+    appendDecision(directory, row);
+    const old = new Date(Date.now() - 1000 * 60 * 60 * 24 * 30);
+    utimesSync(decisionsFile(directory), old, old);
+
+    sweepStale(directory, 1000, Date.now());
+
+    expect(readDecisions(directory)).toHaveLength(1);
   });
 });
