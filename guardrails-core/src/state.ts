@@ -6,6 +6,7 @@
  * layer (see `./state-store.js`). The gate composes them.
  */
 
+import { isRecord } from './is-record.js';
 import { recurrenceKey, type Violation } from './violation.js';
 
 /**
@@ -299,4 +300,241 @@ export function graduationCandidates(
   return Object.entries(counts)
     .filter(([, count]) => count >= threshold)
     .map(([key]) => key);
+}
+
+/**
+ * The files one manifest's violations name — the set a fixer pointed at that
+ * manifest is about to edit (#76).
+ *
+ * Sorted and de-duplicated, because it is persisted, compared and printed:
+ * analyzer emission order must not make two identical claims look different.
+ * Violations naming no file are dropped — they claim nothing, and an empty
+ * path would intersect another empty path and invent a collision.
+ */
+export function violationFiles(violations: readonly Violation[]): string[] {
+  return [...new Set(violations.map((violation) => violation.file))]
+    .filter((file) => file !== '')
+    .toSorted((left, right) => left.localeCompare(right));
+}
+
+/**
+ * A claim on the files ONE manifest covers, held while the fixer named against
+ * it is presumed to still be editing them (#76).
+ *
+ * The problem it exists for: the commit gate and the Stop gate write DIFFERENT
+ * manifests (`<session>-commit.last.json` vs `<session>.last.json`) and name
+ * fixers independently, so the existing unchanged-digest guard — which asks "is
+ * a fixer already running on THIS manifest" — is silent when the two rungs put
+ * two fixers in the same files. Observed as real damage: one fixer removed two
+ * imports as unused while the other's code still used them. Each fixer was
+ * individually correct about its own manifest; the file that resulted did not
+ * compile.
+ *
+ * A lease is ADVISORY, not a lock. Nothing here can stop a subagent from
+ * writing to a file — guardrails sees gate firings, not edits. What it can do
+ * is stop the gate from telling an agent to start a second fixer in files a
+ * first one already holds, which is where the instruction to collide actually
+ * comes from.
+ */
+export interface FixerLease {
+  /**
+   * Who granted it — `<rung>:<manifest id>`. Exactly one gate refreshes or
+   * releases a given lease; every other firing is a foreign observer, and the
+   * owner is what tells the two apart. Keying on the RUNG and manifest rather
+   * than the session is deliberate: the collision this exists for is between
+   * two rungs of one session.
+   */
+  owner: string;
+  /**
+  Repo-relative manifest the fixer was pointed at.
+  */
+  manifestPath: string;
+  fixerAgent: string;
+  /**
+  `violationFiles` of that manifest — sorted, unique, repo-relative.
+  */
+  files: readonly string[];
+  /**
+  Epoch ms the lease was granted or last refreshed.
+  */
+  grantedAt: number;
+  /**
+   * How many foreign gate firings have already been told to wait for it.
+   *
+   * This is what bounds the wait. The owning rung only releases its lease when
+   * it fires again, and a rung can go a long time without firing — the commit
+   * gate fires on the next commit ATTEMPT, which the agent may never make while
+   * the Stop gate keeps blocking. Honouring a lease forever would trade a race
+   * for a hang; honouring it `MAX_LEASE_DEFERRALS` times spends exactly the one
+   * round trip the message asks for ("wait for it to report, then try again")
+   * and then gets out of the way.
+   */
+  deferrals: number;
+}
+
+/**
+ * What a foreign lease and the manifest being written have in common — the
+ * facts a pointer needs to say why it is asking the agent to wait.
+ */
+export interface LeaseOverlap {
+  /**
+  The holding lease's `owner`, so the caller can charge the deferral to it.
+  */
+  owner: string;
+  manifestPath: string;
+  fixerAgent: string;
+  /**
+  The files both manifests name, sorted.
+  */
+  files: string[];
+}
+
+/**
+ * How long a lease is honoured before it is treated as abandoned.
+ *
+ * A backstop, not the primary bound — `deferrals` is that. This is what clears
+ * a lease whose owning rung never fires again at all (the branch was
+ * abandoned, the session was killed mid-fix), so `leases.json` cannot
+ * accumulate claims nobody will ever release. Thirty minutes comfortably
+ * outlasts the longest fixer run measured in this repo (8m23s).
+ */
+export const LEASE_TTL_MS = 30 * 60 * 1000;
+
+/**
+ * How many foreign gate firings one lease may send away waiting.
+ *
+ * One. The message a deferral produces asks for a single round trip — wait for
+ * the running fixer to report, then try again — so honouring the lease a second
+ * time would be asking for a wait the agent has already done, with no new
+ * information to justify it and no way for the loop to make progress if the
+ * fixer died.
+ */
+export const MAX_LEASE_DEFERRALS = 1;
+
+function isStringArray(value: unknown): value is string[] {
+  return (
+    Array.isArray(value) && value.every((entry) => typeof entry === 'string')
+  );
+}
+
+/**
+ * Runtime validator for one stored lease.
+ *
+ * `leases.json` is written by several short-lived processes and read by all of
+ * them, so a partially-written or hand-edited entry must be dropped rather than
+ * trusted: a malformed lease that still had a `files` array would make the gate
+ * defer to a fixer that does not exist.
+ */
+export function isFixerLease(value: unknown): value is FixerLease {
+  return (
+    isRecord(value) &&
+    typeof value.owner === 'string' &&
+    typeof value.manifestPath === 'string' &&
+    typeof value.fixerAgent === 'string' &&
+    isStringArray(value.files) &&
+    typeof value.grantedAt === 'number' &&
+    typeof value.deferrals === 'number'
+  );
+}
+
+function isExpired(lease: FixerLease, now: number): boolean {
+  return now - lease.grantedAt >= LEASE_TTL_MS;
+}
+
+function intersect(
+  files: readonly string[],
+  leased: readonly string[],
+): string[] {
+  const held = new Set(leased);
+  return files
+    .filter((file) => held.has(file))
+    .toSorted((left, right) => left.localeCompare(right));
+}
+
+/**
+ * The live lease held by ANOTHER gate whose file set this manifest walks into,
+ * or `undefined` when there is none.
+ *
+ * The observer's own lease is skipped: a gate waiting for its own fixer is the
+ * unchanged-digest guard's job, and it already says something more specific.
+ *
+ * One overlap rather than all of them, and the widest one: the message exists
+ * to name a fixer to wait for, and naming several would be the enumeration the
+ * terse-pointer design exists to avoid. Ties break on the manifest path so the
+ * text is deterministic — it is asserted on, and an order that depended on the
+ * file's write order would make those assertions flaky.
+ */
+export function findLeaseOverlap(
+  leases: readonly FixerLease[],
+  owner: string,
+  files: readonly string[],
+  now: number,
+): LeaseOverlap | undefined {
+  return leases
+    .filter(
+      (lease) =>
+        lease.owner !== owner &&
+        !isExpired(lease, now) &&
+        lease.deferrals < MAX_LEASE_DEFERRALS,
+    )
+    .map((lease) => ({
+      owner: lease.owner,
+      manifestPath: lease.manifestPath,
+      fixerAgent: lease.fixerAgent,
+      files: intersect(files, lease.files),
+    }))
+    .filter((overlap) => overlap.files.length > 0)
+    .toSorted((left, right) => {
+      const byCount = right.files.length - left.files.length;
+      return byCount === 0
+        ? left.manifestPath.localeCompare(right.manifestPath)
+        : byCount;
+    })[0];
+}
+
+/**
+Drop leases past the TTL — see `LEASE_TTL_MS`.
+*/
+export function pruneLeases(
+  leases: readonly FixerLease[],
+  now: number,
+): FixerLease[] {
+  return leases.filter((lease) => !isExpired(lease, now));
+}
+
+/**
+ * Record `lease` as its owner's ONE claim, replacing whatever that owner held
+ * before. A rung that blocks twice in a row refreshes rather than accumulates,
+ * so the file holds at most one entry per rung per manifest.
+ */
+export function withLease(
+  leases: readonly FixerLease[],
+  lease: FixerLease,
+): FixerLease[] {
+  return [...withoutLease(leases, lease.owner), lease];
+}
+
+/**
+Release the named owner's claim — its fix loop ended.
+*/
+export function withoutLease(
+  leases: readonly FixerLease[],
+  owner: string,
+): FixerLease[] {
+  return leases.filter((lease) => lease.owner !== owner);
+}
+
+/**
+ * Charge one round trip to the lease that was waited on, so the wait is bounded
+ * by `MAX_LEASE_DEFERRALS` rather than by the holder ever firing again.
+ */
+export function withDeferral(
+  leases: readonly FixerLease[],
+  owner: string,
+): FixerLease[] {
+  return leases.map((lease) =>
+    lease.owner === owner
+      ? { ...lease, deferrals: lease.deferrals + 1 }
+      : lease,
+  );
 }

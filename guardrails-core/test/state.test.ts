@@ -12,7 +12,17 @@ import {
   forgiveAttempt,
   violationDelta,
   violationDigest,
+  violationFiles,
   violationKeys,
+  findLeaseOverlap,
+  isFixerLease,
+  pruneLeases,
+  withDeferral,
+  withLease,
+  withoutLease,
+  type FixerLease,
+  LEASE_TTL_MS,
+  MAX_LEASE_DEFERRALS,
 } from '../src/state.js';
 import type { Violation } from '../src/violation.js';
 
@@ -287,5 +297,211 @@ describe('forgiveAttempt', () => {
     // whenever the count is already truthy -- from 0 both read the same.
     const forgiven = forgiveAttempt(forgiveAttempt(createSession()));
     expect(forgiven.forgivenAttempts).toBe(2);
+  });
+});
+
+describe('violationFiles', () => {
+  it('is the sorted, de-duplicated set of files the violations name', () => {
+    expect(
+      violationFiles([
+        v({ ruleId: 'a', file: 'src/b.ts' }),
+        v({ ruleId: 'b', file: 'src/a.ts' }),
+        v({ ruleId: 'c', file: 'src/b.ts' }),
+      ]),
+    ).toEqual(['src/a.ts', 'src/b.ts']);
+  });
+
+  it('drops violations naming no file, which claim nothing', () => {
+    expect(
+      violationFiles([v({ ruleId: 'a' }), { ...v({ ruleId: 'b' }), file: '' }]),
+    ).toEqual(['src/foo.ts']);
+  });
+});
+
+function lease(partial: Partial<FixerLease> = {}): FixerLease {
+  return {
+    owner: 'commit:sid-commit',
+    manifestPath: '.guardrails/state/sid-commit.last.json',
+    fixerAgent: 'guardrail-fixer',
+    files: ['src/a.ts', 'src/b.ts'],
+    grantedAt: 1000,
+    deferrals: 0,
+    ...partial,
+  };
+}
+
+describe('isFixerLease', () => {
+  it('accepts a well-formed lease', () => {
+    expect(isFixerLease(lease())).toBe(true);
+  });
+
+  it.each([
+    ['a non-record', 'nope'],
+    ['a non-string owner', { ...lease(), owner: 1 }],
+    ['an absent manifestPath', { ...lease(), manifestPath: undefined }],
+    ['a null fixerAgent', { ...lease(), fixerAgent: null }],
+    ['a non-array file set', { ...lease(), files: 'src/a.ts' }],
+    ['a non-string file entry', { ...lease(), files: ['src/a.ts', 7] }],
+    ['a non-numeric grantedAt', { ...lease(), grantedAt: '1000' }],
+    ['a non-numeric deferrals', { ...lease(), deferrals: '0' }],
+  ])('rejects %s', (_label, value) => {
+    expect(isFixerLease(value)).toBe(false);
+  });
+});
+
+describe('findLeaseOverlap', () => {
+  const now = 1000;
+
+  it('finds nothing when no lease is held', () => {
+    expect(findLeaseOverlap([], 'stop:sid', ['src/a.ts'], now)).toBeUndefined();
+  });
+
+  it('finds nothing in the observing gate own lease', () => {
+    // The same-manifest case is already covered by the unchanged-digest
+    // guard; a lease must never make a gate wait for its own fixer.
+    expect(
+      findLeaseOverlap(
+        [lease({ owner: 'stop:sid' })],
+        'stop:sid',
+        ['src/a.ts'],
+        now,
+      ),
+    ).toBeUndefined();
+  });
+
+  it('finds nothing when the file sets are disjoint', () => {
+    expect(
+      findLeaseOverlap([lease()], 'stop:sid', ['src/z.ts'], now),
+    ).toBeUndefined();
+  });
+
+  it('reports the sorted intersection with the holder manifest and fixer', () => {
+    const overlap = findLeaseOverlap(
+      [lease({ fixerAgent: 'guardrail-fixer-thorough' })],
+      'stop:sid',
+      ['src/b.ts', 'src/a.ts', 'src/z.ts'],
+      now,
+    );
+    expect(overlap).toEqual({
+      owner: 'commit:sid-commit',
+      manifestPath: '.guardrails/state/sid-commit.last.json',
+      fixerAgent: 'guardrail-fixer-thorough',
+      files: ['src/a.ts', 'src/b.ts'],
+    });
+  });
+
+  it('ignores a lease older than the TTL, so a dead fixer cannot deadlock the loop', () => {
+    // Pinned to the literal, not the constant: every assertion below is written
+    // in terms of LEASE_TTL_MS, so an arithmetic mutant that shrinks the TTL to
+    // milliseconds would survive all of them without this line.
+    expect(LEASE_TTL_MS).toBe(30 * 60 * 1000);
+    expect(
+      findLeaseOverlap(
+        [lease({ grantedAt: 0 })],
+        'stop:sid',
+        ['src/a.ts'],
+        LEASE_TTL_MS + 1,
+      ),
+    ).toBeUndefined();
+  });
+
+  it('ignores a lease already waited on, so the wait is one round trip', () => {
+    // The literal 1 rather than the constant, deliberately: asserting with
+    // `MAX_LEASE_DEFERRALS` would pass for any ceiling, which is exactly the
+    // mutant this has to kill.
+    expect(MAX_LEASE_DEFERRALS).toBe(1);
+    expect(
+      findLeaseOverlap(
+        [lease({ deferrals: 1 })],
+        'stop:sid',
+        ['src/a.ts'],
+        now,
+      ),
+    ).toBeUndefined();
+  });
+
+  it('picks the lease with the largest intersection', () => {
+    const overlap = findLeaseOverlap(
+      [
+        lease({
+          owner: 'commit:one',
+          manifestPath: 'one.json',
+          files: ['src/a.ts'],
+        }),
+        lease({
+          owner: 'commit:two',
+          manifestPath: 'two.json',
+          files: ['src/a.ts', 'src/b.ts'],
+        }),
+      ],
+      'stop:sid',
+      ['src/a.ts', 'src/b.ts'],
+      now,
+    );
+    expect(overlap?.manifestPath).toBe('two.json');
+  });
+
+  it('breaks ties on the manifest path, so the message is deterministic', () => {
+    const overlap = findLeaseOverlap(
+      [
+        lease({
+          owner: 'commit:two',
+          manifestPath: 'two.json',
+          files: ['src/a.ts'],
+        }),
+        lease({
+          owner: 'commit:one',
+          manifestPath: 'one.json',
+          files: ['src/a.ts'],
+        }),
+      ],
+      'stop:sid',
+      ['src/a.ts'],
+      now,
+    );
+    expect(overlap?.manifestPath).toBe('one.json');
+  });
+});
+
+describe('lease transforms', () => {
+  it('pruneLeases drops expired entries and keeps live ones', () => {
+    const live = lease({ owner: 'commit:live', grantedAt: LEASE_TTL_MS });
+    // Exactly the TTL old, which pins the boundary: a lease that has reached
+    // its age is expired, so `>=` cannot be relaxed to `>` unnoticed.
+    const dead = lease({ owner: 'commit:dead', grantedAt: 1 });
+    expect(pruneLeases([live, dead], LEASE_TTL_MS + 1)).toEqual([live]);
+  });
+
+  it('withLease replaces the owner entry rather than appending a second', () => {
+    const other = lease({ owner: 'stop:other' });
+    const next = withLease([lease(), other], lease({ grantedAt: 9000 }));
+    expect(next).toHaveLength(2);
+    expect(
+      next.find((entry) => entry.owner === 'commit:sid-commit')?.grantedAt,
+    ).toBe(9000);
+    expect(next).toContainEqual(other);
+  });
+
+  it('withLease appends when the owner holds nothing yet', () => {
+    const other = lease({ owner: 'stop:other' });
+    expect(withLease([other], lease())).toEqual([other, lease()]);
+  });
+
+  it('withoutLease drops only the named owner entry', () => {
+    const other = lease({ owner: 'stop:other' });
+    expect(withoutLease([lease(), other], 'commit:sid-commit')).toEqual([
+      other,
+    ]);
+  });
+
+  it('withDeferral counts the wait against the lease that was waited on', () => {
+    const other = lease({ owner: 'stop:other' });
+    const next = withDeferral([lease(), other], 'commit:sid-commit');
+    expect(
+      next.find((entry) => entry.owner === 'commit:sid-commit')?.deferrals,
+    ).toBe(1);
+    expect(next.find((entry) => entry.owner === 'stop:other')?.deferrals).toBe(
+      0,
+    );
   });
 });
