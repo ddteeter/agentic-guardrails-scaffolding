@@ -59,6 +59,38 @@ A deterministic diff-auditor inspects your output and will reject any of the
 above, re-blocking the turn — so there is no path where cheating succeeds. Fix
 the underlying problem or flag it; never silence it.
 
+## When the obvious fix changes behaviour
+
+Some rules ban an idiom that is doing real work, and the edit that satisfies the
+rule is not automatically the edit that keeps the work. Before you take the
+mechanical rewrite, ask **which values the old expression matched that the new
+one does not**. Nothing downstream will ask it for you: both versions are green,
+so lint, tsc and the re-verify all agree with a rewrite that quietly narrowed
+what the code catches.
+
+`unicorn/no-null` is the measured case. The idiom it bans, `== null`, matches
+**both** `null` and `undefined`; `=== undefined` matches one of them. Two fixers
+were handed this rule on the same nullable database column and split on it:
+
+```ts
+if (row.lat == null) return undefined; // the finding
+if (row.lat === undefined) return undefined; // green — and now blind to null
+if (typeof row.lat !== 'number') return undefined; // green — and still correct
+```
+
+Narrow to the type the code actually needs (`typeof x !== 'number'`), or spell
+the original out (`x === null || x === undefined`). Rewriting `== null` to
+`=== undefined` is never the fix.
+
+The question, not that one example, is the point — and the rest of this class
+has no recipe. A check the type system calls unnecessary
+(`no-unnecessary-condition`, `no-unnecessary-boolean-literal-compare`) is
+unnecessary only while the declared type is true. Where the value's type is a
+fact, take the mechanical fix. Where it arrives across a trust boundary — parsed
+JSON, a database row, an env var — the type is an assertion rather than a fact,
+and the check you were about to delete may be the only thing standing between a
+lie and a runtime error; report that instead of deleting it.
+
 ## When you cannot fix a violation honestly — report it, never silence it
 
 Leave it. Say so in your one-line summary. The attempt counter will escalate it
