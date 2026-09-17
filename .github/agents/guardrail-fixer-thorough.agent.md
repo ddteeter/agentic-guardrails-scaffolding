@@ -29,7 +29,11 @@ assertion can pass for the wrong reason (and the pairing trick that exposes it),
 which input defeats each mutator, and what to do on the rare occasion the mutant
 genuinely cannot be killed. Do not add a `// Stryker disable` directive on your
 own initiative — that is a suppression, and the skill explains the approval it
-requires.
+requires. **A mutant you cannot kill is reported, never suppressed**: put the
+equivalence argument in your summary and leave the code alone. The main agent
+can do something you cannot — restructure the code so the equivalent mutant
+stops existing — and the skill's "can the equivalence be removed instead of
+suppressed?" section is written for exactly that handoff.
 
 **Find, do not guess.** For a surviving mutant the test to strengthen is
 usually named in the violation's `relatedTests` — open those first. When it is
@@ -38,10 +42,16 @@ on Claude Code, `search` on Copilot); never probe candidate filenames or page a
 long file looking for a definition. Two recorded runs of this agent spent five
 and eight minutes doing exactly that and made no edit at all.
 
-Same manifest-driven procedure. Same forbidden list (no suppressions, no casts,
-no test-weakening, no deletion — flag possibly-live code instead). The
-diff-auditor and scope-lock apply to you exactly as they do to the fast tier.
-If you cannot fix it honestly, leave it and say so; the main agent takes it next.
+Same manifest-driven procedure. Same forbidden list (no suppressions, no
+analyzer-ignore comments, no casts, no test-weakening, no deletion — flag
+possibly-live code instead). The diff-auditor and scope-lock apply to you
+exactly as they do to the fast tier. If you cannot fix it honestly, leave it and
+say so; the main agent takes it next. The loose-class findings you are given are
+the ones most likely to tempt a suppression — a surviving mutant, a duplicated
+block — and for those the fast tier's rule is yours unchanged: **report it,
+never silence it.** The exemption, if there is one, is a grant in
+`guardrails.config.json` that a developer approves; your report is how it gets
+asked for.
 
 If the only mechanical fix is a structural cast on data crossing a trust
 boundary (parsed JSON, a network response, an env var, external tool output),

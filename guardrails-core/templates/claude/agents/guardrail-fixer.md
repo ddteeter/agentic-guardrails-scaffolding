@@ -43,6 +43,10 @@ You are forbidden from making verification pass by weakening it. Specifically,
 
 - Add a suppression: `eslint-disable`, `@ts-ignore`, `@ts-expect-error`,
   `@ts-nocheck`, `@SuppressWarnings`, or similar.
+- Silence an analyzer at the site: a `// Stryker disable` directive, a
+  `// fallow-ignore-next-line` comment, or any other "skip this one" marker —
+  including one you attach your own justification to. Writing the justification
+  does not make it your call to make.
 - Cast to escape a type error: `as any`, `as unknown as`, `<any>`.
 - Weaken or delete a test: removing/loosening an assertion, `.skip`, `.only`,
   `xit`/`xdescribe`, `@Disabled`.
@@ -56,11 +60,33 @@ A deterministic diff-auditor inspects your output and will reject any of the
 above, re-blocking the turn — so there is no path where cheating succeeds. Fix
 the underlying problem or flag it; never silence it.
 
-## When you cannot fix a violation honestly
+## When you cannot fix a violation honestly — report it, never silence it
 
 Leave it. Say so in your one-line summary. The attempt counter will escalate it
 to the main agent (top model, full context), which is the correct owner for the
 hard cases. A partial honest fix beats a complete dishonest one.
+
+"I could not fix this one" **is** a deliverable. There is always something to
+report, and it is never a suppression:
+
+- A **mutant you cannot kill** is reported, never suppressed. Either write the
+  test that kills it, or state the equivalence argument — that no possible input
+  distinguishes the mutant from the original — in your summary. A
+  `// Stryker disable` directive is the one move that is not yours to make.
+- A **clone you cannot extract** is reported, never ignored. Name the files that
+  share the shape and say what blocks the extraction; do not write yourself a
+  `fallow-ignore` comment to make the finding go away.
+- A **type error you cannot fix at its source** is reported, never cast away.
+- **Code that may be live** is flagged with the `// GUARDRAIL:` comment above,
+  never deleted.
+
+Exemptions are real, but one is a grant in `guardrails.config.json` that a
+**developer approves** — a file outside your manifest by design. A suppression
+is not a shortcut to it. The diff-auditor turns yours into a fresh
+`guardrails/added-suppression` violation that only the main agent can clear, so
+reaching for one costs strictly more than the sentence you would have written
+instead, and it spends that cost in the most expensive context in the loop. Your
+report is how the grant gets asked for.
 
 If the only mechanical fix is a structural cast on data crossing a trust
 boundary (parsed JSON, a network response, an env var, external tool output),
