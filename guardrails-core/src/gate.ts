@@ -328,12 +328,23 @@ function untrackedFileDiff(repoRoot: string, file: string): string {
   ].join('\n');
 }
 
+/**
+ * The audit finding, as the violation the blocked agent reads.
+ *
+ * The message carries the REMEDY, not just the catch. Every recorded instance
+ * of this violation was a fixer reaching for a suppression because its prompt
+ * left it no other modelled way to make a finding stop being a finding, and
+ * "Forbidden X added during the fix loop" told it only that it had been seen.
+ * So the text also names the honest move (fix it, or report that you could
+ * not) and where a real exemption comes from — a file the fixer cannot reach,
+ * which is the point: the report is what asks for the grant.
+ */
 function toViolation(finding: AuditFinding): Violation {
   return {
     ruleId: 'guardrails/added-suppression',
     file: finding.file,
     line: finding.line,
-    message: `Forbidden ${finding.kind} added during the fix loop: ${finding.text}`,
+    message: `Forbidden ${finding.kind} added during the fix loop: ${finding.text}. Remove it and fix the underlying finding, or report that you could not — an exemption is a developer-approved grant in guardrails.config.json, and a suppression is not a shortcut to one.`,
     severity: 'error',
     fixable: false,
     tool: 'guardrails',

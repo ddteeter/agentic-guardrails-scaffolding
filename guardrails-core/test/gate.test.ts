@@ -466,6 +466,22 @@ describe('runStopGate — a fix loop is open', () => {
     expect(added?.message).toContain('during the fix loop');
     expect(added?.message).not.toContain('Fixer added');
   });
+
+  it('tells the reader what to do instead of adding the suppression', async () => {
+    // Issue #77: naming the catch is not enough. Every recorded instance of
+    // this violation was a FIXER reaching for a suppression, and the message it
+    // got back said only that it had been caught -- so the message has to carry
+    // the remedy (fix or report it) and the fact that an exemption is a
+    // developer-approved grant in a file the fixer cannot reach.
+    writeSnapshot(JSON.stringify([]));
+    await runStopGate(options(suppressionExec()));
+    const added = readViolations(stateDirectory(root), 'sid').find(
+      (v) => v.ruleId === 'guardrails/added-suppression',
+    );
+    expect(added?.message).toContain('Remove it');
+    expect(added?.message).toContain('report');
+    expect(added?.message).toContain('guardrails.config.json');
+  });
 });
 
 describe('runStopGate mutation-hardening', () => {
