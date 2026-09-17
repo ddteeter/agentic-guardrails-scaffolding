@@ -2,10 +2,16 @@ import { describe, expect, it } from 'vitest';
 
 import {
   decideGate,
+  leaseWaitNote,
   type GateConfig,
   type GateDecision,
 } from '../src/gate-decision.js';
-import { createSession, violationDigest, violationKeys } from '../src/state.js';
+import {
+  createSession,
+  type LeaseOverlap,
+  violationDigest,
+  violationKeys,
+} from '../src/state.js';
 import { recurrenceKey, type Violation } from '../src/violation.js';
 
 function v(partial: Partial<Violation> & Pick<Violation, 'ruleId'>): Violation {
@@ -746,5 +752,128 @@ describe('decideGate: the decision log row', () => {
     // Same as the clean path: no `stalled` value is passed in, so the default
     // must be `false`, not `true`.
     expect(decision.log.stalled).toBe(false);
+  });
+});
+
+describe('decideGate — a fixer already holds these files (#76)', () => {
+  const overlap: LeaseOverlap = {
+    owner: 'commit:sid-commit',
+    manifestPath: '.guardrails/state/sid-commit.last.json',
+    fixerAgent: 'guardrail-fixer-thorough',
+    files: ['src/a.ts', 'src/b.ts'],
+  };
+
+  it('tells the agent to wait rather than to spawn a second fixer', () => {
+    // The damage this exists for: two fixers from two manifests editing one
+    // file, one removing imports the other's code still used. Each was right
+    // about its own manifest; the file that resulted did not compile.
+    const decision = decideGate(input({ leaseOverlap: overlap }));
+
+    expect(decision.outcome).toBe('delegate');
+    expect(decision.block).toBe(true);
+    expect(decision.message).toContain(overlap.manifestPath);
+    expect(decision.message).toContain('guardrail-fixer-thorough');
+    expect(decision.message).toContain('src/a.ts');
+    expect(decision.message).toContain('src/b.ts');
+    expect(decision.message).toContain('do NOT spawn');
+    // The unconditional order is what an agent follows literally, so it must
+    // be absent -- not merely qualified somewhere further down the message.
+    expect(decision.message).not.toContain('Spawn the');
+  });
+
+  it('still forbids reading either manifest', () => {
+    const decision = decideGate(input({ leaseOverlap: overlap }));
+    expect(decision.message).toContain('Do NOT read');
+  });
+
+  it('says why a dead-code finding in a contested file is not a finding', () => {
+    // The class of finding a concurrent edit invalidates: whether an import is
+    // used depends on code the other fixer is still writing.
+    const decision = decideGate(input({ leaseOverlap: overlap }));
+    expect(decision.message).toContain('unused-import');
+  });
+
+  it('outranks the unchanged-manifest pointer, which would advise a spawn', () => {
+    // The stall message ends "only if it has already finished and changed
+    // nothing should you spawn a fresh fixer" -- advice that is wrong while
+    // ANOTHER rung's fixer holds the files, because the fixer that has not
+    // moved this manifest is not the one to wait for.
+    const stuck = [v({ ruleId: 'a/one', file: 'src/a.ts' })];
+    const decision = decideGate(
+      input({
+        violations: stuck,
+        leaseOverlap: overlap,
+        isRetry: true,
+        session: {
+          ...createSession(),
+          attempts: 1,
+          lastViolationDigest: violationDigest(stuck),
+          lastViolationKeys: violationKeys(stuck),
+        },
+      }),
+    );
+    expect(decision.log.stalled).toBe(true);
+    expect(decision.message).toContain(overlap.manifestPath);
+    expect(decision.message).not.toContain('Spawn the');
+  });
+
+  it('charges the attempt, so a held lease cannot extend the ladder', () => {
+    // The wait is bounded by the lease (see MAX_LEASE_DEFERRALS), not by the
+    // attempt budget. Forgiving it here would let a stuck claim walk the loop
+    // forever.
+    const decision = decideGate(input({ leaseOverlap: overlap }));
+    expect(decision.nextSession.attempts).toBe(1);
+  });
+
+  it('still escalates when the ladder is spent, with a wait-first caveat', () => {
+    // The escalation is not withheld -- the budget is spent either way -- but
+    // the main agent is about to edit files a subagent may still be in.
+    const decision = decideGate(
+      input({
+        leaseOverlap: overlap,
+        session: { ...createSession(), attempts: 3 },
+      }),
+    );
+    expect(decision.outcome).toBe('escalate');
+    expect(decision.block).toBe(true);
+    expect(decision.message).toContain(overlap.manifestPath);
+    expect(decision.message).toContain('src/a.ts');
+    expect(decision.message).toContain('before editing them yourself');
+  });
+
+  it('leaves the escalation caveat out when no lease is held', () => {
+    const decision = decideGate(
+      input({ session: { ...createSession(), attempts: 3 } }),
+    );
+    expect(decision.outcome).toBe('escalate');
+    expect(decision.message).not.toContain('before editing them yourself');
+  });
+});
+
+describe('leaseWaitNote', () => {
+  it('names the holder, its fixer and the contested files', () => {
+    expect(
+      leaseWaitNote({
+        owner: 'stop:sid',
+        manifestPath: '.guardrails/state/sid.last.json',
+        fixerAgent: 'guardrail-fixer',
+        files: ['src/a.ts'],
+      }),
+    ).toBe(
+      '1 of the file(s) named here are also in .guardrails/state/sid.last.json, ' +
+        'which a guardrail-fixer is already working: src/a.ts',
+    );
+  });
+
+  it('collapses a long file list to a count, staying a pointer not a dump', () => {
+    const note = leaseWaitNote({
+      owner: 'stop:sid',
+      manifestPath: 'm.json',
+      fixerAgent: 'guardrail-fixer',
+      files: ['a.ts', 'b.ts', 'c.ts', 'd.ts', 'e.ts', 'f.ts'],
+    });
+    expect(note).toContain('6 of the file(s)');
+    expect(note).toContain('d.ts, +2 more file(s)');
+    expect(note).not.toContain('e.ts');
   });
 });
