@@ -52,6 +52,15 @@ export interface SessionState {
    * unchanged-retry check keeps working across an upgrade; and it cannot be
    * split back into keys, because the JSON quoting that makes each key
    * unambiguous does not make the `|` join unambiguous.
+   *
+   * NOT cleared when a fix loop ends. `resetAttempts` clears the counters but
+   * leaves these identities standing, so a session that went clean still
+   * carries the last block's set. That is safe because of an invariant held
+   * one level up rather than here: the delta is only computed on a RETRY
+   * (`attemptDelta` gates on `isRetry`), and the first Stop of any later turn
+   * is never a retry, so it overwrites this field on its own delegate before
+   * any retry can read it. If that gate ever moves, this field has to be
+   * cleared alongside the counters.
    */
   lastViolationKeys?: readonly string[];
   /**
