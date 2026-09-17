@@ -16,6 +16,7 @@ import type { Exec, ExecResult } from '../src/exec.js';
 import {
   appendDecision,
   loadSession,
+  saveLeases,
   saveSession,
   sessionFile,
   stateDirectory,
@@ -2601,6 +2602,37 @@ describe('gate --mode=pretooluse enforcement', () => {
     // and from the not-blocking note below it: dropping it would leave the
     // reader the findings and the policy but not the verdict.
     expect(output).toContain('violation(s)');
+  });
+
+  it('denies with a wait, not a spawn, when a Stop-rung fixer holds the file', async () => {
+    // The cross-rung collision (#76) seen from the other side: this is the
+    // surface an agent committing through Bash reads, and an unqualified
+    // "spawn the fixer" here is how the second fixer gets into the file.
+    const directory = stateDirectory(root);
+    mkdirSync(directory, { recursive: true });
+    saveLeases(directory, [
+      {
+        owner: 'stop:sid',
+        manifestPath: '.guardrails/state/sid.last.json',
+        fixerAgent: 'guardrail-fixer-thorough',
+        files: ['src/foo.ts'],
+        grantedAt: Date.now(),
+        deferrals: 0,
+      },
+    ]);
+
+    await runCommand(
+      'gate',
+      ['--mode=pretooluse'],
+      blockingPreToolUseDependencies('block'),
+    );
+
+    const reason = out.join('');
+    expect(reason).toContain('sid.last.json');
+    expect(reason).toContain('guardrail-fixer-thorough');
+    expect(reason).toContain('src/foo.ts');
+    expect(reason).toContain('commit again');
+    expect(reason).not.toContain('Spawn the');
   });
 });
 

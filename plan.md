@@ -330,30 +330,57 @@ config; and external-tool output). Two tracks:
   let the in-flight fixer land before editing.
 
 - **The commit gate and the Stop gate direct fixers independently, so the two
-  rungs can put two fixers in the same files (observed in the #69 session,
-  unfixed).** The commit gate blocked, wrote
-  `<session>-commit.last.json`, and named a fixer, which was spawned and began
-  editing. While it was still running, the turn ended, the Stop gate ran, found
-  the same nine violations, wrote them to `<session>.last.json` — a DIFFERENT
-  path — and issued its own "spawn the fixer" pointer with no mention of the
-  one in flight. The main agent declined and waited, so nothing raced this
-  time; had it complied, two fixers would have been editing one file.
+  rungs can put two fixers in the same files (observed in the #69 session; it
+  raced and did damage in a later one — #76, fixed).** The commit gate blocked,
+  wrote `<session>-commit.last.json`, and named a fixer, which was spawned and
+  began editing. While it was still running, the turn ended, the Stop gate ran,
+  found the same nine violations, wrote them to `<session>.last.json` — a
+  DIFFERENT path — and issued its own "spawn the fixer" pointer with no mention
+  of the one in flight. The main agent declined and waited, so nothing raced
+  that time; had it complied, two fixers would have been editing one file.
 
-  The existing in-flight guard closes this one firing late. It reads an
-  UNCHANGED manifest digest, and on the Stop gate's FIRST firing there is no
-  prior digest at that path to compare against — the violations are new _to
-  that manifest_, however long a fixer has been working on the identical set at
-  the commit gate's path. The guard did fire correctly on the next Stop, saying
-  "a fixer you already spawned is most likely still running — wait for it",
-  which is exactly right; it just cannot say that the first time, which is the
-  firing that names a second fixer.
+  **It raced in the dialed.run adoption and the file did not compile.** Two
+  fixers, two manifests, one file: one removed `and` and `inArray` as unused
+  imports while the other's code still used both. Each fixer was individually
+  correct about its own manifest, and nothing in the loop noticed — the main
+  agent caught it by reading the fixer's report against its own memory of the
+  file. Two further collisions the same week were self-detected by the fixer
+  rather than by the harness: one finished with zero edits after its Edit was
+  refused as stale, and one found its shared helper overwritten mid-refactor
+  and adopted the other version by luck of ordering.
 
-  So the window is one turn wide, and only across rungs. The session-level fact
-  — "a fixer this session spawned has not reported yet" — is not part of either
-  gate's input, and it is what would close it: carry the in-flight fixer in
-  session state rather than inferring it from one manifest's digest, so
-  whichever rung fires second says "wait" on its first firing rather than its
-  second.
+  The existing in-flight guard closes this one firing late, and only within a
+  rung. It reads an UNCHANGED manifest digest, and on the Stop gate's FIRST
+  firing there is no prior digest at that path to compare against — the
+  violations are new _to that manifest_, however long a fixer has been working
+  on the identical set at the commit gate's path.
+
+  **Fixed by a file-level lease** (`FixerLease` in `state.ts`, persisted to
+  `.guardrails/state/leases.json`). When a rung names a fixer it claims the
+  files that manifest's violations name; when either rung is about to block and
+  those files are already claimed by another manifest, the pointer says WAIT and
+  names the holder instead of ordering a spawn. Both rungs run the same cycle,
+  so whichever fires second is the observer — which is what makes it symmetric,
+  and what a session-state "a fixer is running" flag would not have given: a
+  lease is a claim on FILES, so two fixers in disjoint file sets still run in
+  parallel, which is the property worth keeping. Bounded twice: each lease
+  honours one deferral (`MAX_LEASE_DEFERRALS`), because the owning rung only
+  releases when it fires again and the agent may never make the commit attempt
+  that would; and a TTL clears a claim whose rung never fires at all.
+
+  This entry **subsumes** the session-state proposal it used to end with, and
+  the "one manifest per session, both rungs" option #76 suggested. That option
+  does not actually hold: the two rungs run different analyzer profiles, so
+  their violation sets — and therefore their digests — differ even over the same
+  files, and `runCommitGate` neither loads session state nor calls `decideGate`,
+  so there is no digest at that rung to compare against.
+
+  **Still open from #76** and not in this fix: the fixer prompts should re-derive
+  a dead-code or unused-import finding from the file as it stands at edit time
+  rather than trusting the manifest, since that class is exactly what a
+  concurrent edit invalidates. The gate now says so in the pointer, which
+  reaches the MAIN agent; saying it to the fixer itself belongs in
+  `guardrails-plugin/agents/`.
 
 - **Two consecutive `guardrail-fixer-thorough` runs read for minutes and wrote
   nothing (observed in the #69 session, unfixed).** First run: 13 mechanical
