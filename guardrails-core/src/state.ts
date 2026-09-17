@@ -35,6 +35,38 @@ export interface SessionState {
    * `violationDigest` for why that distinction is worth persisting.
    */
   lastViolationDigest?: string;
+  /**
+   * `violationKeys` of the same violations — the IDENTITIES behind the digest
+   * above, not merely its fingerprint (#81).
+   *
+   * The digest answers "did anything change?" and nothing finer, so a fixer
+   * that resolves three violations and introduces four reads as progress. Both
+   * observed escalations in a live adoption were exactly that: an attempt spent
+   * cleaning up after the previous attempt, charged to the budget as if the
+   * violation were hard. Keeping the identities lets the gate compute which
+   * findings are NEW since the manifest the fixer was given — see
+   * `violationDelta`.
+   *
+   * Stored alongside the digest rather than replacing it. The digest is one
+   * string and is what state written before this field carries, so the
+   * unchanged-retry check keeps working across an upgrade; and it cannot be
+   * split back into keys, because the JSON quoting that makes each key
+   * unambiguous does not make the `|` join unambiguous.
+   */
+  lastViolationKeys?: readonly string[];
+  /**
+   * How many attempts in the current fix loop were forgiven rather than
+   * charged — a fixer's own regression is not evidence that the violation is
+   * hard (#81).
+   *
+   * Persisted, and therefore bounded, deliberately: forgiveness with no ceiling
+   * is a fixer that can regress differently forever without ever reaching
+   * escalation. `isStalled` only catches a regression that repeats ITSELF
+   * (identical manifest); this counter is what terminates the changing-but-
+   * always-worse ladder. Cleared by `resetAttempts`, so each loop gets its own
+   * allowance.
+   */
+  forgivenAttempts?: number;
 }
 
 /**
@@ -43,7 +75,13 @@ Cross-session recurrence: rule-key → number of sessions it crossed in.
 export type RecurrenceCounts = Record<string, number>;
 
 export function createSession(): SessionState {
-  return { attempts: 0, escalated: false, ruleCounts: {}, corrected: [] };
+  return {
+    attempts: 0,
+    escalated: false,
+    forgivenAttempts: 0,
+    ruleCounts: {},
+    corrected: [],
+  };
 }
 
 /**
@@ -79,16 +117,92 @@ export function createSession(): SessionState {
  * here, since the value is only ever compared to itself.
  */
 export function violationDigest(violations: readonly Violation[]): string {
+  return violationKeys(violations).join('|');
+}
+
+/**
+ * The identity of one violation — file, line, rule — as a single string.
+ *
+ * `JSON.stringify` of a tuple rather than an interpolated `file:line:ruleId`
+ * for the reason `violationDigest` records: a hand-rolled join is ambiguous the
+ * moment a field contains the separator, and quoting costs nothing for a value
+ * that is only ever compared with another of its own kind.
+ */
+export function violationKey(violation: Violation): string {
+  return JSON.stringify([
+    violation.file,
+    violation.line ?? null,
+    violation.ruleId,
+  ]);
+}
+
+/**
+ * Every violation's identity, sorted — the list the digest is the join of.
+ *
+ * One definition of identity serving both: the digest answers "did anything
+ * change?", the key list answers "what exactly changed?", and deriving the
+ * first from the second is what stops the two from drifting apart.
+ *
+ * NOT de-duplicated, for the same reason the digest is not: three identical
+ * findings are three pieces of work, and resolving one of them is progress.
+ */
+export function violationKeys(violations: readonly Violation[]): string[] {
   return violations
-    .map((violation) =>
-      JSON.stringify([
-        violation.file,
-        violation.line ?? null,
-        violation.ruleId,
-      ]),
-    )
-    .toSorted((left, right) => left.localeCompare(right))
-    .join('|');
+    .map((violation) => violationKey(violation))
+    .toSorted((left, right) => left.localeCompare(right));
+}
+
+/**
+What one fix attempt actually did to the violation set (#81).
+*/
+export interface ViolationDelta {
+  /** Identities present now that were not in the manifest the fixer was given
+   * — i.e. findings that attempt created. */
+  introduced: string[];
+  /**
+  Identities that were in that manifest and are now gone.
+  */
+  resolved: string[];
+}
+
+function tally(keys: readonly string[]): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const key of keys) {
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return counts;
+}
+
+function surplus(
+  left: ReadonlyMap<string, number>,
+  right: ReadonlyMap<string, number>,
+): string[] {
+  const extra: string[] = [];
+  for (const [key, count] of left) {
+    const difference = count - (right.get(key) ?? 0);
+    extra.push(...Array.from({ length: Math.max(difference, 0) }, () => key));
+  }
+  return extra;
+}
+
+/**
+ * Compare the violation identities from the previous block with the current
+ * ones, as MULTISETS.
+ *
+ * Multisets, not sets: "three identical findings became one" is two
+ * resolutions, and a membership test would call it no change at all — the same
+ * distinction `violationKeys` preserves by not de-duplicating.
+ */
+export function violationDelta(
+  previous: readonly string[],
+  current: readonly string[],
+): ViolationDelta {
+  const before = tally(previous);
+  const after = tally(current);
+  return {
+    introduced: surplus(after, before),
+    resolved: surplus(before, after),
+  };
 }
 
 /**
@@ -115,7 +229,20 @@ export function incrementAttempt(state: SessionState): SessionState {
 }
 
 export function resetAttempts(state: SessionState): SessionState {
-  return { ...state, attempts: 0 };
+  return { ...state, attempts: 0, forgivenAttempts: 0 };
+}
+
+/**
+ * Record an attempt that was NOT charged to the budget — a fixer whose edits
+ * introduced findings its own manifest did not contain has not proved the
+ * violation hard, only that it failed to start (#81).
+ *
+ * The count is what keeps the forgiveness bounded; the gate refuses to forgive
+ * past a ceiling, so a fixer that regresses differently every time still walks
+ * the ladder to escalation.
+ */
+export function forgiveAttempt(state: SessionState): SessionState {
+  return { ...state, forgivenAttempts: (state.forgivenAttempts ?? 0) + 1 };
 }
 
 /**

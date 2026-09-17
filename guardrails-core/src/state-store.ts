@@ -83,8 +83,15 @@ export function loadSession(
   if (!isRecord(raw)) {
     return createSession();
   }
-  const { attempts, escalated, ruleCounts, corrected, lastViolationDigest } =
-    raw;
+  const {
+    attempts,
+    escalated,
+    forgivenAttempts,
+    ruleCounts,
+    corrected,
+    lastViolationDigest,
+    lastViolationKeys,
+  } = raw;
   if (
     typeof attempts !== 'number' ||
     !isRecord(ruleCounts) ||
@@ -116,6 +123,23 @@ export function loadSession(
     // in production while every in-memory unit test passed (found in review of
     // #47).
     ...(typeof lastViolationDigest === 'string' && { lastViolationDigest }),
+    // Conditionally spread for the same reason as the digest: an absent list
+    // means "no previous block to compare against", which `violationDelta`
+    // must be able to tell apart from an empty one. Entries are filtered to
+    // strings the way `corrected` is -- a tampered non-string reaching the
+    // delta would read as an identity that never existed, i.e. a resolution
+    // the fixer never made.
+    ...(Array.isArray(lastViolationKeys) && {
+      lastViolationKeys: lastViolationKeys.filter(
+        (entry) => typeof entry === 'string',
+      ),
+    }),
+    // Defaulted, not conditionally spread: unlike the two fields above, zero
+    // and absent mean the same thing here -- no attempt in this loop has been
+    // forgiven yet -- so state written before the ceiling existed reads
+    // correctly as a full allowance.
+    forgivenAttempts:
+      typeof forgivenAttempts === 'number' ? forgivenAttempts : 0,
   };
 }
 

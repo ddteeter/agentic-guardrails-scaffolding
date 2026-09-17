@@ -5,7 +5,7 @@ import {
   type GateConfig,
   type GateDecision,
 } from '../src/gate-decision.js';
-import { createSession, violationDigest } from '../src/state.js';
+import { createSession, violationDigest, violationKeys } from '../src/state.js';
 import { recurrenceKey, type Violation } from '../src/violation.js';
 
 function v(partial: Partial<Violation> & Pick<Violation, 'ruleId'>): Violation {
@@ -527,5 +527,140 @@ describe('decideGate: a retry that changed nothing', () => {
 
     expect(first.message).toMatch(/Spawn the \S+ subagent/);
     expect(first.message).not.toMatch(/unchanged/i);
+  });
+});
+
+/**
+ * A retry whose previous block reported `previous`, and whose manifest now
+ * holds `now` — the shape every regression case below is a variation of.
+ */
+function afterFixer(
+  previous: Violation[],
+  now: Violation[],
+  session: Partial<Parameters<typeof decideGate>[0]['session']> = {},
+): GateDecision {
+  return decideGate(
+    input({
+      violations: now,
+      isRetry: true,
+      session: {
+        attempts: 1,
+        escalated: false,
+        forgivenAttempts: 0,
+        ruleCounts: {},
+        corrected: [],
+        lastViolationDigest: violationDigest(previous),
+        lastViolationKeys: violationKeys(previous),
+        ...session,
+      },
+    }),
+  );
+}
+
+/**
+ * #81: the attempt budget spent one attempt per firing, unconditionally, so a
+ * fixer that broke something walked the ladder to escalation on its own mess.
+ * `lastViolationDigest` cannot see this — it answers "did anything change?" and
+ * a fixer that resolves three and introduces four has certainly changed
+ * something. Both escalations observed in a live adoption were this, not a
+ * violation that was genuinely too hard.
+ */
+describe('decideGate: a retry whose fixer introduced new violations', () => {
+  const inherited = v({ ruleId: 'a/one', file: 'src/a.ts', line: 1 });
+  const collateral = v({ ruleId: 'tsc/2322', file: 'src/b.ts', line: 7 });
+
+  it('does not charge the attempt to the budget', () => {
+    const decision = afterFixer([inherited], [inherited, collateral]);
+    expect(decision.outcome).toBe('delegate');
+    expect(decision.nextSession.attempts).toBe(1);
+    expect(decision.nextSession.forgivenAttempts).toBe(1);
+  });
+
+  it('routes to the thorough fixer immediately, whatever the attempt', () => {
+    // A fixer that damaged the tree on a non-loose, attempt-1 manifest has
+    // already shown the fast tier cannot hold this work.
+    const decision = afterFixer([inherited], [inherited, collateral]);
+    expect(decision.fixerAgent).toBe('guardrail-fixer-thorough');
+  });
+
+  it('says what the last attempt actually did, by rule', () => {
+    const decision = afterFixer([inherited], [inherited, collateral]);
+    expect(decision.message).toContain('resolved 0');
+    expect(decision.message).toContain('introduced 1');
+    expect(decision.message).toContain('tsc/2322 ×1');
+    // The breakdown names only the violation that was actually introduced
+    // (collateral) -- not `inherited`, which survived the retry unresolved.
+    // A rule-breakdown built from the whole `violations` array rather than
+    // the introduced subset would wrongly surface it here too.
+    expect(decision.message).not.toContain('a/one');
+    // Still a pointer, not a dump: the manifest is named and reading it is
+    // still forbidden, because a fixer is still the one doing the work.
+    expect(decision.message).toContain(manifestPath);
+    expect(decision.message).toContain('Do NOT read it');
+    expect(decision.message).not.toContain('src/b.ts');
+  });
+
+  it('charges the attempt when the fixer also resolved something', () => {
+    // Partial progress is progress. Only a net-damage attempt -- nothing
+    // resolved, something introduced -- is the fixer failing to start.
+    const decision = afterFixer([inherited], [collateral]);
+    expect(decision.nextSession.attempts).toBe(2);
+    expect(decision.nextSession.forgivenAttempts).toBe(0);
+    expect(decision.message).toMatch(/Spawn the \S+ subagent/);
+    expect(decision.message).not.toContain('introduced');
+  });
+
+  it('forgives at most one attempt per fix loop', () => {
+    // The loop-safety bound. `isStalled` catches a regression that repeats
+    // ITSELF; nothing else stops a fixer from breaking something DIFFERENT on
+    // every retry, so forgiveness has a ceiling and the ladder still ends.
+    const decision = afterFixer([inherited], [inherited, collateral], {
+      forgivenAttempts: 1,
+    });
+    expect(decision.nextSession.attempts).toBe(2);
+    expect(decision.nextSession.forgivenAttempts).toBe(1);
+  });
+
+  it('still escalates once the budget is genuinely spent', () => {
+    const decision = afterFixer([inherited], [inherited, collateral], {
+      attempts: 3,
+      forgivenAttempts: 1,
+    });
+    expect(decision.outcome).toBe('escalate');
+  });
+
+  it('persists the identities the next retry compares against', () => {
+    const decision = afterFixer([inherited], [inherited, collateral]);
+    expect(decision.nextSession.lastViolationKeys).toEqual(
+      violationKeys([inherited, collateral]),
+    );
+  });
+
+  it('computes no delta on a first block, which inherited nothing', () => {
+    const decision = decideGate(
+      input({ violations: [inherited, collateral], isRetry: false }),
+    );
+    expect(decision.message).toMatch(/Spawn the \S+ subagent/);
+    expect(decision.nextSession.attempts).toBe(1);
+    expect(decision.nextSession.forgivenAttempts).toBe(0);
+  });
+
+  it('computes no delta against a session that predates the identity list', () => {
+    // Backward compatibility: state written before #81 carries a digest but no
+    // identities, so the delta is unknowable and the attempt is charged as it
+    // always was.
+    const decision = decideGate(
+      input({
+        violations: [inherited, collateral],
+        isRetry: true,
+        session: {
+          attempts: 1,
+          ruleCounts: {},
+          corrected: [],
+          lastViolationDigest: violationDigest([inherited]),
+        },
+      }),
+    );
+    expect(decision.nextSession.attempts).toBe(2);
   });
 });

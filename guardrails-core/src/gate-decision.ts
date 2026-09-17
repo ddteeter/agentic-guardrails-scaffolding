@@ -13,6 +13,7 @@
 
 import {
   bumpRecurrence,
+  forgiveAttempt,
   graduationCandidates,
   incrementAttempt,
   markCorrected,
@@ -21,7 +22,11 @@ import {
   resetAttempts,
   type RecurrenceCounts,
   type SessionState,
+  violationDelta,
+  type ViolationDelta,
   violationDigest,
+  violationKey,
+  violationKeys,
 } from './state.js';
 import { hasErrors, type Violation } from './violation.js';
 
@@ -107,6 +112,85 @@ function unchangedPointer(
     `it to report, then try to stop again. Only if it has already finished and ` +
     `changed nothing should you spawn a fresh ${fixerAgent} against that path.`
   );
+}
+
+/**
+ * How many attempts one fix loop may forgive before a regression starts costing
+ * budget like any other failure.
+ *
+ * One, and bounded on purpose. Forgiveness exists so a fixer cannot walk the
+ * ladder to escalation on damage it caused itself; an unbounded version instead
+ * hands a fixer that breaks something DIFFERENT on every retry an endless loop,
+ * because `isStalled` only recognises a regression that repeats itself
+ * verbatim. With a ceiling of one, a loop fires at most `maxAttempts + 2` times
+ * whatever the fixer does.
+ */
+const MAX_FORGIVEN_ATTEMPTS = 1;
+
+/**
+ * The delegate message for a retry whose previous attempt introduced findings
+ * its own manifest did not contain (#81).
+ *
+ * The main agent currently has to work this out by reading the fixer's report
+ * against its own memory of the file. Saying it here costs two clauses, and it
+ * is the difference between "this violation class is hard" and "the last fixer
+ * broke something" — which are different problems with different next moves.
+ *
+ * It stays a POINTER: the new findings are still a fixer's work, and the
+ * manifest still holds them. What changes is that the fixer is told the new
+ * findings are the previous one's damage, so it undoes them rather than builds
+ * on them.
+ */
+function regressionPointer(
+  violations: readonly Violation[],
+  manifestPath: string,
+  fixerAgent: string,
+  regression: ViolationDelta,
+): string {
+  const introducedKeys = new Set(regression.introduced);
+  const introduced = violations.filter((violation) =>
+    introducedKeys.has(violationKey(violation)),
+  );
+  return (
+    `The last fixer resolved ${regression.resolved.length} and introduced ` +
+    `${regression.introduced.length} violation(s) that were not in the ` +
+    `manifest it was given (${ruleBreakdown(introduced)}) — its own ` +
+    `regression, not a harder problem. ${violations.length} guardrail ` +
+    `violation(s) now in ${manifestPath}. Do NOT read it. Spawn the ` +
+    `${fixerAgent} subagent, give it that path, and tell it the findings it ` +
+    `did not inherit are the previous fixer's damage: undo those rather than ` +
+    `build on them. Then try to stop again.`
+  );
+}
+
+interface DelegatePointerInput {
+  violations: readonly Violation[];
+  manifestPath: string;
+  fixerAgent: string;
+  /**
+  The manifest is identical to the previous block's.
+  */
+  isStalled: boolean;
+  /** Present only when the previous attempt was net damage — see
+   *  `regressionPointer`. */
+  regression: ViolationDelta | undefined;
+}
+
+/**
+ * Which of the three delegate messages this block gets. Ordered by how much the
+ * signal constrains the next move: an unchanged manifest means do nothing yet,
+ * a regression means spawn the thorough tier and tell it what it is looking at,
+ * and otherwise the loop proceeds normally.
+ */
+function delegatePointer(input: DelegatePointerInput): string {
+  const { violations, manifestPath, fixerAgent, regression } = input;
+  if (input.isStalled) {
+    return unchangedPointer(violations.length, manifestPath, fixerAgent);
+  }
+  if (regression !== undefined) {
+    return regressionPointer(violations, manifestPath, fixerAgent, regression);
+  }
+  return tersePointer(violations.length, manifestPath, fixerAgent);
 }
 
 /**
@@ -233,6 +317,33 @@ function withOptional(
   };
 }
 
+/**
+ * The previous attempt's delta, but ONLY when it was net damage: something
+ * introduced and nothing resolved.
+ *
+ * Partial progress is progress — a fixer that resolved three and introduced one
+ * moved the loop forward and spends its attempt like any other. The case this
+ * names is the one the budget could not see: an attempt whose entire effect was
+ * to add findings its own manifest never contained.
+ *
+ * `undefined` rather than an empty delta, so every caller reads the same
+ * question ("was this a regression?") off the same value.
+ */
+function netDamage(
+  session: SessionState,
+  violations: readonly Violation[],
+  isRetry: boolean,
+): ViolationDelta | undefined {
+  const previous = session.lastViolationKeys;
+  if (!isRetry || previous === undefined) {
+    return undefined;
+  }
+  const delta = violationDelta(previous, violationKeys(violations));
+  return delta.introduced.length > 0 && delta.resolved.length === 0
+    ? delta
+    : undefined;
+}
+
 export function decideGate(input: GateInput): GateDecision {
   const {
     violations,
@@ -277,7 +388,20 @@ export function decideGate(input: GateInput): GateDecision {
   const tallied = isRetry
     ? activeSession
     : recordViolations(activeSession, violations);
-  const bumped = incrementAttempt(tallied);
+
+  // What the PREVIOUS attempt did, not merely that it changed something (#81).
+  // Absent on a first block, and on a session written before the identities
+  // were persisted — in both cases there is nothing to have regressed from.
+  const regression = netDamage(session, violations, isRetry);
+  // A fixer that only broke things has not shown the violation is hard, so the
+  // attempt is not charged — up to `MAX_FORGIVEN_ATTEMPTS`, which is what keeps
+  // the ladder finite when the damage is different every time.
+  const isForgiven =
+    regression !== undefined &&
+    (tallied.forgivenAttempts ?? 0) < MAX_FORGIVEN_ATTEMPTS;
+  const bumped = isForgiven
+    ? forgiveAttempt(tallied)
+    : incrementAttempt(tallied);
   const attempt = bumped.attempts;
 
   const crossed = newlyCrossed(bumped, config.recurThreshold);
@@ -290,8 +414,10 @@ export function decideGate(input: GateInput): GateDecision {
   const additionalContext = buildContext(crossed, corrected, graduation);
 
   const isLoose = violations.some((violation) => config.isLoose?.(violation));
+  // A regression routes to the thorough tier immediately, whatever the attempt
+  // or the rule class: the fast tier has already damaged this tree once.
   const fixerAgent =
-    isLoose || attempt >= config.maxAttempts
+    isLoose || regression !== undefined || attempt >= config.maxAttempts
       ? config.thoroughFixer
       : config.fastFixer;
 
@@ -323,10 +449,18 @@ export function decideGate(input: GateInput): GateDecision {
     {
       outcome: 'delegate',
       block: true,
-      message: isStalled
-        ? unchangedPointer(violations.length, manifestPath, fixerAgent)
-        : tersePointer(violations.length, manifestPath, fixerAgent),
-      nextSession: { ...corrected, lastViolationDigest: digest },
+      message: delegatePointer({
+        violations,
+        manifestPath,
+        fixerAgent,
+        isStalled,
+        regression,
+      }),
+      nextSession: {
+        ...corrected,
+        lastViolationDigest: digest,
+        lastViolationKeys: violationKeys(violations),
+      },
       nextRecurrence,
     },
     { additionalContext, fixerAgent },

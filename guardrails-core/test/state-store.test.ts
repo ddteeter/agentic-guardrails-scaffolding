@@ -62,6 +62,7 @@ describe('session round-trip', () => {
     const state = {
       attempts: 2,
       escalated: false,
+      forgivenAttempts: 0,
       ruleCounts: { 'ts/no-stub': 3 },
       corrected: [],
     };
@@ -79,6 +80,7 @@ describe('session round-trip', () => {
     const state = {
       attempts: 1,
       escalated: false,
+      forgivenAttempts: 0,
       ruleCounts: {},
       corrected: [],
       lastViolationDigest: 'src/a.ts:3:eslint/no-console',
@@ -121,6 +123,86 @@ describe('session round-trip', () => {
     ).toBeUndefined();
   });
 
+  it('round-trips the violation identities the delta is computed from', () => {
+    // Same across-processes argument as the digest above, and the same failure
+    // mode if it is dropped: the introduced/resolved delta (#81) would be
+    // permanently empty in production while every in-memory unit test passed.
+    const state = {
+      attempts: 1,
+      escalated: false,
+      forgivenAttempts: 1,
+      ruleCounts: {},
+      corrected: [],
+      lastViolationDigest: '["src/a.ts",3,"eslint/no-console"]',
+      lastViolationKeys: ['["src/a.ts",3,"eslint/no-console"]'],
+    };
+    saveSession(directory, 'sid-keys', state);
+
+    expect(loadSession(directory, 'sid-keys')).toEqual(state);
+  });
+
+  it('discards violation identities that are not a list of strings', () => {
+    // Values are validated, not just shape. A tampered entry reaching the
+    // delta would be counted as a violation identity that never existed, and
+    // read as a resolution the fixer never made.
+    writeFileSync(
+      sessionFile(directory, 'sid-bad-keys'),
+      JSON.stringify({
+        attempts: 1,
+        ruleCounts: {},
+        corrected: [],
+        lastViolationKeys: 'not-an-array',
+      }),
+    );
+
+    expect(
+      loadSession(directory, 'sid-bad-keys').lastViolationKeys,
+    ).toBeUndefined();
+  });
+
+  it('keeps only the string entries of a partially corrupt identity list', () => {
+    writeFileSync(
+      sessionFile(directory, 'sid-mixed-keys'),
+      JSON.stringify({
+        attempts: 1,
+        ruleCounts: {},
+        corrected: [],
+        lastViolationKeys: ['["src/a.ts",1,"x"]', 42],
+      }),
+    );
+
+    expect(loadSession(directory, 'sid-mixed-keys').lastViolationKeys).toEqual([
+      '["src/a.ts",1,"x"]',
+    ]);
+  });
+
+  it('discards a non-number forgiven-attempt count', () => {
+    // A string here would make `count + 1` produce `"oops1"` and silently
+    // uncap the forgiveness the ceiling exists to bound.
+    writeFileSync(
+      sessionFile(directory, 'sid-bad-forgiven'),
+      JSON.stringify({
+        attempts: 1,
+        ruleCounts: {},
+        corrected: [],
+        forgivenAttempts: 'oops',
+      }),
+    );
+
+    expect(loadSession(directory, 'sid-bad-forgiven').forgivenAttempts).toBe(0);
+  });
+
+  it('loads a session written before the delta fields existed', () => {
+    writeFileSync(
+      sessionFile(directory, 'sid-pre-delta'),
+      JSON.stringify({ attempts: 2, ruleCounts: {}, corrected: [] }),
+    );
+
+    const loaded = loadSession(directory, 'sid-pre-delta');
+    expect(loaded.lastViolationKeys).toBeUndefined();
+    expect(loaded.forgivenAttempts).toBe(0);
+  });
+
   it('returns a fresh session when the file is missing', () => {
     expect(loadSession(directory, 'nope')).toEqual(createSession());
   });
@@ -144,6 +226,7 @@ describe('session round-trip', () => {
     expect(loadSession(directory, 'sid1')).toEqual({
       attempts: 1,
       escalated: false,
+      forgivenAttempts: 0,
       ruleCounts: { good: 2 },
       corrected: ['ok'],
     });
