@@ -5,7 +5,7 @@ import process from 'node:process';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { spawnExec } from '../src/exec.js';
+import { signalFromExitCode, spawnExec } from '../src/exec.js';
 
 const node = process.execPath;
 
@@ -135,5 +135,102 @@ describe('stderr capture from a real process', () => {
     ]);
     expect(result.stderr).toBe('ab');
     expect(result.stdout).toBe('OUT');
+  });
+});
+
+describe('a signal-killed run is distinguishable from a clean one', () => {
+  // Node reports a process killed by a signal as `code === null,
+  // signal === 'SIGTERM'`, and this spawn deliberately uses `shell: false`, so
+  // there is no shell to translate that into 128+N. Coalescing the null to zero
+  // made a killed analyzer — empty stdout, "exit 0" — read exactly like a clean
+  // one.
+  it('carries the signal that killed the process', async () => {
+    const result = await spawnExec(node, [
+      '-e',
+      'process.kill(process.pid, "SIGTERM")',
+    ]);
+    expect(result.signal).toBe('SIGTERM');
+  });
+
+  it('never presents a killed run as the reading a caller treats as clean', async () => {
+    const result = await spawnExec(node, [
+      '-e',
+      'process.kill(process.pid, "SIGKILL")',
+    ]);
+    // The whole fail-open in one assertion: "exit 0, nothing on stderr, no
+    // signal" is what every consumer of this seam reads as success.
+    expect(result.code === 0 && result.signal === undefined).toBe(false);
+  });
+
+  it('leaves signal absent for a process that exited on its own', async () => {
+    const result = await spawnExec(node, ['-e', 'process.exit(3)']);
+    expect(result.signal).toBeUndefined();
+    expect(result.code).toBe(3);
+  });
+
+  it('leaves signal absent for a clean run', async () => {
+    const result = await spawnExec(node, ['-e', 'process.stdout.write("ok")']);
+    expect(result.signal).toBeUndefined();
+    expect(result.code).toBe(0);
+  });
+
+  it('leaves signal absent when the binary could not be started', async () => {
+    const result = await spawnExec('guardrails-no-such-binary-xyz', []);
+    expect(result.spawnFailed).toBe(true);
+    expect(result.signal).toBeUndefined();
+  });
+});
+
+describe('signalFromExitCode', () => {
+  // A wrapper binary between guardrails and the analyzer (npx, sh, a shell
+  // script) waits on the child itself and re-reports the kill the way a shell
+  // does: 128 + the signal number. By the time that reaches this process it is
+  // an ordinary exit code with no signal attached, so the only way to recognise
+  // it is to read the number.
+  it('recognises the shell convention for a SIGTERM kill (143)', () => {
+    expect(signalFromExitCode(143)).toBe('SIGTERM');
+  });
+
+  it('recognises an OOM kill (137)', () => {
+    expect(signalFromExitCode(137)).toBe('SIGKILL');
+  });
+
+  it('recognises a Ctrl-C (130)', () => {
+    expect(signalFromExitCode(130)).toBe('SIGINT');
+  });
+
+  // The whole table, so a signal cannot quietly drop out of the list it is
+  // decoded from. The numbers are the POSIX-standard ones, which is what makes
+  // 128+N a convention rather than a per-platform accident.
+  it.each([
+    [129, 'SIGHUP'],
+    [130, 'SIGINT'],
+    [131, 'SIGQUIT'],
+    [132, 'SIGILL'],
+    [134, 'SIGABRT'],
+    [136, 'SIGFPE'],
+    [137, 'SIGKILL'],
+    [139, 'SIGSEGV'],
+    [141, 'SIGPIPE'],
+    [142, 'SIGALRM'],
+    [143, 'SIGTERM'],
+    [152, 'SIGXCPU'],
+    [153, 'SIGXFSZ'],
+  ])('decodes exit %i as %s', (code, name) => {
+    expect(signalFromExitCode(code)).toBe(name);
+  });
+
+  it('returns undefined for exit codes analyzers really use', () => {
+    // eslint exits 1 on findings and 2 on a crash; tsc uses 1/2/3; git uses
+    // 128 for "bad revision". None of these are kills, and reading them as one
+    // would replace a true diagnosis with a wrong story about timeouts.
+    expect(signalFromExitCode(0)).toBeUndefined();
+    expect(signalFromExitCode(1)).toBeUndefined();
+    expect(signalFromExitCode(2)).toBeUndefined();
+    expect(signalFromExitCode(128)).toBeUndefined();
+  });
+
+  it('returns undefined for a number above the signal range', () => {
+    expect(signalFromExitCode(255)).toBeUndefined();
   });
 });
