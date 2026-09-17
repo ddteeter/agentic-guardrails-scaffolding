@@ -261,6 +261,13 @@ const entries: DriftEntry[] = [
       'sonarjs/no-trivial-assertions',
       'sonarjs/assertions-in-tests',
       'no-restricted-imports',
+      // The behaviour-changing-fix class (BEHAVIOUR_CHANGING_FIX_RULE_NAMES).
+      // loose-rules.ts matches on the bare rule name so a namespace alias still
+      // routes; the drift assertion uses the canonical plugin id, which is what
+      // the upgrade review has to reconcile if a plugin renames the rule.
+      'unicorn/no-null',
+      '@typescript-eslint/no-unnecessary-condition',
+      '@typescript-eslint/no-unnecessary-boolean-literal-compare',
     ],
     probe: eslintRuleIds,
     hint: 'a loose rule id in guardrails-core/src/loose-rules.ts no longer exists in its plugin — reconcile after the tool upgrade',

@@ -24,11 +24,40 @@ describe('isBuiltinLoose', () => {
     expect(isBuiltinLoose('fallow/code-duplication')).toBe(true);
   });
 
+  it('classifies behaviour-changing mechanical fixes as loose', () => {
+    // Not analyzer categories -- plain lint rules whose *obvious* mechanical
+    // fix is a behaviour change. `unicorn/no-null` is the measured one: the
+    // cheap tier rewrote a `== null` guard (null AND undefined) to
+    // `=== undefined` (one of them), leaving the guard unreachable for exactly
+    // the value it existed to catch.
+    expect(isBuiltinLoose('unicorn/no-null')).toBe(true);
+    expect(isBuiltinLoose('@typescript-eslint/no-unnecessary-condition')).toBe(
+      true,
+    );
+    expect(
+      isBuiltinLoose(
+        '@typescript-eslint/no-unnecessary-boolean-literal-compare',
+      ),
+    ).toBe(true);
+  });
+
+  it('classifies behaviour-changing rules under any plugin namespace', () => {
+    // Repos alias plugin namespaces (`ts` for `@typescript-eslint`), so the
+    // class matches on the rule *name*, as the test-integrity names do.
+    expect(isBuiltinLoose('ts/no-unnecessary-condition')).toBe(true);
+  });
+
   it('leaves tight, well-pinned rules to the fast tier', () => {
     expect(isBuiltinLoose('no-console')).toBe(false);
     expect(isBuiltinLoose('@typescript-eslint/no-unused-vars')).toBe(false);
     expect(isBuiltinLoose('prettier/prettier')).toBe(false);
     expect(isBuiltinLoose('TS2322')).toBe(false);
+    // Deliberately tight: `unicorn/no-await-expression-member`'s obvious fix
+    // (bind the awaited value to a local, then read the member) preserves
+    // behaviour everywhere except a conditionally-evaluated subexpression,
+    // and its shipped autofix is a destructuring rewrite that cannot change
+    // behaviour at all. Common rule, rare failure -- not worth the tier.
+    expect(isBuiltinLoose('unicorn/no-await-expression-member')).toBe(false);
   });
 });
 
