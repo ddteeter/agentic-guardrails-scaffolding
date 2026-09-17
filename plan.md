@@ -382,6 +382,31 @@ config; and external-tool output). Two tracks:
   reaches the MAIN agent; saying it to the fixer itself belongs in
   `guardrails-plugin/agents/`.
 
+- **The main agent has no liveness signal for a fixer, so a slow one becomes a
+  collision (observed while building #76, unfixed).** A
+  `guardrail-fixer-thorough` on a four-mutant commit-rung manifest reported
+  after **~2 hours of wall clock** — 8m47s of actual tool work across 34 tool
+  uses. It answered neither the wait nor a direct "stop exploring and report
+  now" message during that window, and wrote nothing to the worktree the whole
+  time, which is indistinguishable from the zero-edit hang below.
+
+  The main agent eventually did what plan.md already records as the recovery:
+  read the manifest and fixed it by hand. The fixer then reported — and had
+  reached **exactly the same two fixes**, independently, which is a good signal
+  about the tier and a bad one about the loop: two writers converged on one file
+  set, and only the ordering kept it from being a real clobber. Its own report
+  says so ("already resolved in this worktree — apparently by a concurrent
+  process").
+
+  This is the half of #76's option 1 that the lease deliberately does **not**
+  cover. A lease is taken when a GATE names a fixer; the main agent's own edits
+  are not a gate firing, so nothing claims files on its behalf and nothing
+  warns it that a fixer holds them. Closing it needs a signal guardrails cannot
+  currently see — the host owns subagent lifecycle — so the candidates are a
+  PostToolUse check that warns when the main agent edits into a live lease, or
+  a fixer-reported heartbeat. The first is in-design and cheap; the second is
+  not ours to write.
+
 - **Two consecutive `guardrail-fixer-thorough` runs read for minutes and wrote
   nothing (observed in the #69 session, unfixed).** First run: 13 mechanical
   eslint violations in one source file and one test file, five minutes, zero
