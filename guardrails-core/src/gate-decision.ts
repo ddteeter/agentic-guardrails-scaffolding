@@ -16,6 +16,7 @@ import {
   forgiveAttempt,
   graduationCandidates,
   incrementAttempt,
+  type LeaseOverlap,
   markCorrected,
   newlyCrossed,
   recordViolations,
@@ -54,6 +55,18 @@ export interface GateInput {
   /** True when the host is retrying because this Stop hook already blocked the
    * turn. Retry cycles spend attempts but are not separate recurring mistakes. */
   isRetry?: boolean | undefined;
+  /**
+   * A live claim ANOTHER manifest holds on files this one also names (#76), or
+   * absent when there is none.
+   *
+   * Resolved by the caller, which owns the state directory, and passed in so
+   * this stays a pure function. The distinction it carries is one no digest
+   * can: `lastViolationDigest` answers "is a fixer already running on THIS
+   * manifest", and the two rungs write different manifests, so the cross-rung
+   * collision — a commit-rung fixer and a Stop-rung fixer in one file — is
+   * invisible to it. See `FixerLease`.
+   */
+  leaseOverlap?: LeaseOverlap | undefined;
 }
 
 export type GateOutcome = 'clean' | 'delegate' | 'escalate' | 'release';
@@ -211,6 +224,75 @@ function regressionPointer(
   );
 }
 
+/**
+ * How many contested files the wait note names before it stops enumerating.
+ *
+ * The same bound, for the same reason, as `MAX_NAMED_RULES`: this message
+ * exists to tell an agent to wait, and a full file list on a wide manifest is
+ * the enumeration the terse-pointer design spends a subagent to avoid.
+ */
+const MAX_NAMED_FILES = 4;
+
+function namedFiles(files: readonly string[]): string {
+  const named = files.slice(0, MAX_NAMED_FILES);
+  const remaining = files.length - named.length;
+  return remaining > 0
+    ? [...named, `+${remaining} more file(s)`].join(', ')
+    : named.join(', ');
+}
+
+/**
+ * The factual half of every "somebody else is in these files" message: who
+ * holds them, which fixer is working them, and which files they are.
+ *
+ * Shared rather than written twice because both rungs say it — the Stop gate
+ * through `leasedPointer` below, the commit gate through its own pointer in the
+ * CLI — and the two must not drift into describing the same collision
+ * differently. The INSTRUCTION differs by rung (try to stop again / commit
+ * again / do not edit them yourself) and stays at each call site.
+ */
+export function leaseWaitNote(overlap: LeaseOverlap): string {
+  return (
+    `${overlap.files.length} of the file(s) named here are also in ` +
+    `${overlap.manifestPath}, which a ${overlap.fixerAgent} is already ` +
+    `working: ${namedFiles(overlap.files)}`
+  );
+}
+
+/**
+ * The delegate message for a block whose files a fixer from ANOTHER manifest
+ * already holds (#76).
+ *
+ * The damage this replaces is recorded on the issue: two fixers, two manifests,
+ * one file; one of them removed two imports as unused while the other's code
+ * still used them. Neither was wrong about its own manifest — and that is the
+ * point. The gate had told the agent to spawn the second one.
+ *
+ * So this says the one thing that is true across both manifests: somebody is
+ * already in these files. It still blocks, still names the manifest, and still
+ * forbids reading it; what it withholds is the unconditional order to spawn,
+ * which is the sentence an agent follows literally.
+ *
+ * It also names WHY a concurrent edit is worse than a lost write for one class
+ * in particular. Whether an import is used depends on code the other fixer is
+ * writing, so a dead-code finding computed against a contested file is not a
+ * finding — and that class is precisely what the observed collision destroyed.
+ */
+function leasedPointer(
+  violations: readonly Violation[],
+  manifestPath: string,
+  overlap: LeaseOverlap,
+): string {
+  return (
+    `${violations.length} guardrail violation(s) written to ${manifestPath}, ` +
+    `but ${leaseWaitNote(overlap)}. Do NOT read either manifest, and do NOT ` +
+    `spawn a fixer yet: two fixers editing one file lose each other's work, ` +
+    `and a dead-code or unused-import finding computed against a file another ` +
+    `fixer is changing is not a finding. Wait for that ${overlap.fixerAgent} ` +
+    `to report, then try to stop again.`
+  );
+}
+
 interface DelegatePointerInput {
   violations: readonly Violation[];
   manifestPath: string;
@@ -222,16 +304,30 @@ interface DelegatePointerInput {
   /** Present only when the previous attempt was net damage — see
    *  `regressionPointer`. */
   regression: ViolationDelta | undefined;
+  /**
+  A fixer from another manifest already holds some of these files.
+  */
+  overlap: LeaseOverlap | undefined;
 }
 
 /**
- * Which of the three delegate messages this block gets. Ordered by how much the
- * signal constrains the next move: an unchanged manifest means do nothing yet,
- * a regression means spawn the thorough tier and tell it what it is looking at,
- * and otherwise the loop proceeds normally.
+ * Which of the four delegate messages this block gets. Ordered by how much the
+ * signal constrains the next move: another rung's fixer in these files means do
+ * nothing and wait for IT, an unchanged manifest means do nothing and wait for
+ * the one already spawned here, a regression means spawn the thorough tier and
+ * tell it what it is looking at, and otherwise the loop proceeds normally.
+ *
+ * The overlap outranks the stall deliberately. `unchangedPointer` ends by
+ * telling the agent to spawn a fresh fixer once the one it already spawned has
+ * finished having changed nothing — correct advice about THIS manifest, and
+ * wrong while another rung's fixer is mid-edit in the same files, because the
+ * fixer that has not moved this manifest is not the one to wait for.
  */
 function delegatePointer(input: DelegatePointerInput): string {
-  const { violations, manifestPath, fixerAgent, regression } = input;
+  const { violations, manifestPath, fixerAgent, overlap, regression } = input;
+  if (overlap !== undefined) {
+    return leasedPointer(violations, manifestPath, overlap);
+  }
   if (input.isStalled) {
     return unchangedPointer(violations.length, manifestPath, fixerAgent);
   }
@@ -309,28 +405,47 @@ function ruleBreakdown(violations: readonly Violation[]): string {
  * for a hang, and the attempt budget is spent either way. What changes is that
  * the agent is told to let the in-flight fixer land before it starts editing.
  */
-function escalationPointer(
-  violations: readonly Violation[],
-  manifestPath: string,
-  inFlightFixer?: string,
-): string {
+interface EscalationPointerInput {
+  violations: readonly Violation[];
+  manifestPath: string;
+  inFlightFixer?: string | undefined;
+  /**
+   * A fixer from another manifest holding some of these files (#76) — the
+   * cross-rung case the `isStalled` signal above cannot see, and the more
+   * dangerous one here: the main agent is being told to start editing.
+   */
+  overlap?: LeaseOverlap | undefined;
+}
+
+function escalationCaveats(input: EscalationPointerInput): string[] {
+  const caveats: string[] = [];
+  if (input.inFlightFixer !== undefined) {
+    caveats.push(
+      `NOTE: the ${input.inFlightFixer} from the last attempt may still be ` +
+        `running — the manifest has not changed since the previous block. ` +
+        `Wait for it to report before editing those files yourself; its ` +
+        `edits and yours would race.`,
+    );
+  }
+  if (input.overlap !== undefined) {
+    caveats.push(
+      `NOTE: ${leaseWaitNote(input.overlap)}. Wait for it to report before ` +
+        `editing them yourself; its edits and yours would race.`,
+    );
+  }
+  return caveats;
+}
+
+function escalationPointer(input: EscalationPointerInput): string {
+  const { violations, manifestPath } = input;
   const files = new Set(violations.map((violation) => violation.file));
-  const caveat =
-    inFlightFixer === undefined
-      ? []
-      : [
-          `NOTE: the ${inFlightFixer} from the last attempt may still be ` +
-            `running — the manifest has not changed since the previous block. ` +
-            `Wait for it to report before editing those files yourself; its ` +
-            `edits and yours would race.`,
-        ];
   return [
     `${violations.length} violation(s) survived the fix loop across ` +
       `${files.size} file(s): ${ruleBreakdown(violations)}. ` +
       `Read the manifest at ${manifestPath} and resolve them directly — ` +
       `a spent fix loop is the one point at which reading it is correct. ` +
       `Prefer the smallest targeted edit that resolves each one.`,
-    ...caveat,
+    ...escalationCaveats(input),
   ].join('\n');
 }
 
@@ -455,6 +570,7 @@ export function decideGate(input: GateInput): GateDecision {
     manifestPath,
     config,
     isRetry = false,
+    leaseOverlap,
   } = input;
 
   if (!hasErrors(violations)) {
@@ -476,7 +592,7 @@ export function decideGate(input: GateInput): GateDecision {
     return {
       outcome: 'release',
       block: false,
-      message: escalationPointer(violations, manifestPath),
+      message: escalationPointer({ violations, manifestPath }),
       nextSession: session,
       nextRecurrence: recurrence,
       log: logEntry({
@@ -543,11 +659,12 @@ export function decideGate(input: GateInput): GateDecision {
       {
         outcome: 'escalate',
         block: true,
-        message: escalationPointer(
+        message: escalationPointer({
           violations,
           manifestPath,
-          isStalled ? fixerAgent : undefined,
-        ),
+          inFlightFixer: isStalled ? fixerAgent : undefined,
+          overlap: leaseOverlap,
+        }),
         nextSession: { ...resetAttempts(corrected), escalated: true },
         nextRecurrence,
         log: logEntry({
@@ -572,6 +689,7 @@ export function decideGate(input: GateInput): GateDecision {
         fixerAgent,
         isStalled,
         regression,
+        overlap: leaseOverlap,
       }),
       nextSession: {
         ...corrected,

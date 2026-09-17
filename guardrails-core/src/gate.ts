@@ -45,14 +45,26 @@ import {
 import type { AnalyzerMode, Rung } from './verify/analyzer-policy.js';
 import {
   appendDecision,
+  loadLeases,
   loadRecurrence,
   loadSession,
   manifestFile,
+  saveLeases,
   saveRecurrence,
   saveSession,
   stateDirectory,
   writeViolations,
 } from './state-store.js';
+import {
+  findLeaseOverlap,
+  type FixerLease,
+  type LeaseOverlap,
+  pruneLeases,
+  violationFiles,
+  withDeferral,
+  withLease,
+  withoutLease,
+} from './state.js';
 import { hasErrors, type Violation } from './violation.js';
 import { parseFileList } from './verify/git.js';
 import { runVerify } from './verify/index.js';
@@ -175,9 +187,18 @@ export type CommitGateResult = CommitGateCommon &
  * auto-fixable, while surviving mutants are the most labour-intensive class in
  * the pack and were the one class with no fixer.
  */
-interface CommitDelegation {
+export interface CommitDelegation {
   manifestPath: string;
   fixerAgent: string;
+  /**
+   * A live claim another manifest holds on files this one also names (#76).
+   *
+   * Present means the pointer must ask the agent to WAIT rather than to spawn:
+   * a Stop-rung fixer is already editing some of these files, and the second
+   * fixer is how two agents come to disagree about whether an import is used.
+   * The message itself is the CLI's — this carries the fact, not the wording.
+   */
+  waitFor?: LeaseOverlap | undefined;
 }
 
 interface CommitGateCommon {
@@ -439,6 +460,88 @@ function toViolation(finding: AuditFinding): Violation {
  * two manifests are read by the same fixer, so a difference between them would
  * be a difference in what it knows.
  */
+/**
+ * One rung's file-level claim, resolved before a gate decides and settled after
+ * it (#76).
+ *
+ * Split in two because the decision sits between the halves: the OVERLAP is an
+ * input to the message (`GateInput.leaseOverlap`), and whether to claim, defer
+ * or release follows from the outcome. Both rungs run the same cycle, which is
+ * what makes the guard symmetric — whichever fires second is the observer.
+ */
+interface LeaseCycle {
+  directory: string;
+  owner: string;
+  manifestPath: string;
+  files: string[];
+  now: number;
+  /**
+  The live claims, already pruned of expired entries.
+  */
+  leases: FixerLease[];
+  overlap: LeaseOverlap | undefined;
+}
+
+function openLeaseCycle(
+  directory: string,
+  owner: string,
+  manifestPath: string,
+  violations: readonly Violation[],
+): LeaseCycle {
+  const now = Date.now();
+  const leases = pruneLeases(loadLeases(directory), now);
+  const files = violationFiles(violations);
+  return {
+    directory,
+    owner,
+    manifestPath,
+    files,
+    now,
+    leases,
+    overlap: findLeaseOverlap(leases, owner, files, now),
+  };
+}
+
+function nextLeases(
+  cycle: LeaseCycle,
+  fixerAgent: string | undefined,
+): FixerLease[] {
+  // No fixer named — the fix loop this rung owned is over (clean, escalate or
+  // release), so it stops holding its files.
+  if (fixerAgent === undefined) {
+    return withoutLease(cycle.leases, cycle.owner);
+  }
+  // A deferral names a fixer but asks for nobody to be spawned, so there is
+  // nothing to claim the files FOR; what it does is spend one of the holding
+  // lease's bounded waits, which is what stops a dead fixer deadlocking the
+  // loop (see `FixerLease.deferrals`).
+  return cycle.overlap === undefined
+    ? withLease(cycle.leases, {
+        owner: cycle.owner,
+        manifestPath: cycle.manifestPath,
+        fixerAgent,
+        files: cycle.files,
+        grantedAt: cycle.now,
+        deferrals: 0,
+      })
+    : withDeferral(cycle.leases, cycle.overlap.owner);
+}
+
+function settleLeaseCycle(
+  cycle: LeaseCycle,
+  fixerAgent: string | undefined,
+): void {
+  const next = nextLeases(cycle, fixerAgent);
+  // A repo whose gates never block must not accumulate a state file for claims
+  // that were never taken. Expired entries left on disk by this early return
+  // are inert -- every read prunes before use, and the next block rewrites the
+  // file wholesale.
+  if (next.length === 0 && cycle.leases.length === 0) {
+    return;
+  }
+  saveLeases(cycle.directory, next);
+}
+
 function forTheFixer(
   violations: readonly Violation[],
   repoRoot: string,
@@ -531,6 +634,16 @@ export async function runStopGate(
     manifestFile(directory, sessionId),
   );
 
+  // Resolved BEFORE the decision, because the overlap is one of its inputs: a
+  // commit-rung fixer already editing these files is the one fact that turns
+  // "spawn a fixer" into "wait for the one already in there" (#76).
+  const cycle = openLeaseCycle(
+    directory,
+    `stop:${sessionId}`,
+    manifestPath,
+    combined,
+  );
+
   const decision = decideGate({
     violations: combined,
     session,
@@ -538,6 +651,7 @@ export async function runStopGate(
     manifestPath,
     config,
     isRetry: options.isRetry,
+    leaseOverlap: cycle.overlap,
   });
 
   saveSession(directory, sessionId, decision.nextSession);
@@ -554,6 +668,10 @@ export async function runStopGate(
     session: sessionId,
     ...decision.log,
   });
+  // `fixerAgent` is set on exactly the outcomes that ask for a spawn, so it is
+  // the whole condition: a decision that names nobody releases this rung's
+  // claim, and one that names somebody takes or defers it.
+  settleLeaseCycle(cycle, decision.fixerAgent);
 
   if (decision.outcome === 'delegate') {
     // Snapshot the pre-fix suppression baseline once per fix loop -- this
@@ -653,17 +771,29 @@ export async function runCommitGate(
   );
   const guided = withGuidance(violations);
   const isBlocked = hasErrors(guided) || findings.length > 0;
-  if (!isBlocked) {
-    // Nothing written on a pass, deliberately: a stale manifest left behind is
-    // one the NEXT block could be read against.
-    return { violations: guided, findings, blocked: false, skippedAnalyzers };
-  }
-
   // Delegation for the commit rung (#49). The manifest carries the same shape
   // the stop rung writes -- violations plus the audit findings, guidance
   // attached -- so `guardrail-fixer` needs no second format to understand.
   const directory = stateDirectory(options.repoRoot);
   const manifestId = commitManifestId(options.sessionId);
+  const manifestPath = path.relative(
+    options.repoRoot,
+    manifestFile(directory, manifestId),
+  );
+  const owner = `commit:${manifestId}`;
+  if (!isBlocked) {
+    // Nothing written on a pass, deliberately: a stale manifest left behind is
+    // one the NEXT block could be read against. The file-level claim this rung
+    // took on its last block IS released here (#76): its fix loop is over, and
+    // a claim nobody is editing behind would make the Stop gate wait for a
+    // fixer with nothing left to do.
+    settleLeaseCycle(
+      openLeaseCycle(directory, owner, manifestPath, guided),
+      undefined,
+    );
+    return { violations: guided, findings, blocked: false, skippedAnalyzers };
+  }
+
   const combined = forTheFixer(
     [...guided, ...findings.map((finding) => toViolation(finding))],
     options.repoRoot,
@@ -680,17 +810,20 @@ export async function runCommitGate(
     ? options.config.thoroughFixer
     : options.config.fastFixer;
 
+  // The same cycle the stop gate runs, so the guard is symmetric: whichever
+  // rung fires second is the observer and is the one told to wait.
+  const cycle = openLeaseCycle(directory, owner, manifestPath, combined);
+  settleLeaseCycle(cycle, fixerAgent);
+
   return {
     violations: guided,
     findings,
     blocked: true,
     skippedAnalyzers,
     delegation: {
-      manifestPath: path.relative(
-        options.repoRoot,
-        manifestFile(directory, manifestId),
-      ),
+      manifestPath,
       fixerAgent,
+      waitFor: cycle.overlap,
     },
   };
 }

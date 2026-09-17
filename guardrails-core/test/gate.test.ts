@@ -19,8 +19,10 @@ import {
   type StopGateOptions,
 } from '../src/gate.js';
 import type { GateConfig, GateDecision } from '../src/gate-decision.js';
-import { createSession } from '../src/state.js';
+import { createSession, type FixerLease } from '../src/state.js';
 import {
+  leasesFile,
+  loadLeases,
   loadRecurrence,
   loadSession,
   readDecisions,
@@ -1164,6 +1166,16 @@ function blockingExec(): Exec {
   });
 }
 
+function leases(): FixerLease[] {
+  return loadLeases(stateDirectory(root));
+}
+
+/** The claims file as it was actually WRITTEN, before `loadLeases` filters it.
+ *  Some settle bugs are only visible here — see the release test. */
+function readLeasesFile(): unknown {
+  return JSON.parse(readFileSync(leasesFile(stateDirectory(root)), 'utf8'));
+}
+
 function blockedOptions() {
   return {
     repoRoot: root,
@@ -1288,5 +1300,177 @@ describe('runCommitGate: delegation for the laborious classes', () => {
 
     expect(result.blocked).toBe(true);
     expect(result.delegation?.manifestPath).toBeDefined();
+  });
+});
+
+/**
+ * The cross-rung collision (#76). The two rungs write different manifests and
+ * name fixers independently, so the unchanged-digest guard — which asks "is a
+ * fixer already running on THIS manifest" — never sees it. Observed as real
+ * damage: two fixers in one file, one removing imports the other's code used.
+ */
+describe('fixer leases across the two rungs', () => {
+  it('claims the files a commit-rung block hands to a fixer', async () => {
+    await runCommitGate(blockedOptions());
+
+    expect(leases()).toEqual([
+      {
+        owner: 'commit:sid-commit',
+        manifestPath: path.join('.guardrails', 'state', 'sid-commit.last.json'),
+        fixerAgent: 'guardrail-fixer',
+        // Every file the manifest names, not only the source one: the commit
+        // rung runs analyzers the stop rung does not, and each of their
+        // findings is work a fixer is about to do somewhere.
+        files: ['package.json', 'src/foo.ts'],
+        grantedAt: expect.any(Number),
+        deferrals: 0,
+      },
+    ]);
+  });
+
+  it('releases the claim when the commit gate passes', async () => {
+    // The fix loop that claim belonged to is over; holding it would make the
+    // next Stop gate wait for a fixer that has nothing left to do.
+    const clean = makeExec((line) => {
+      if (line.includes('--name-only')) return ok('');
+      if (line.includes('--others')) return ok('');
+      return ok('');
+    });
+    await runCommitGate(blockedOptions());
+    await runCommitGate({ ...blockedOptions(), exec: clean });
+
+    expect(leases()).toEqual([]);
+    // Asserted on the FILE, not only on what `loadLeases` gives back. The
+    // release is the one branch keyed on "no fixer was named", so code that
+    // skipped it would store a claim whose `fixerAgent` is undefined -- which
+    // `loadLeases` rejects on the way back in, making an in-memory assertion
+    // pass over a claim that is still sitting on disk. Only the file shows
+    // the difference.
+    expect(readLeasesFile()).toEqual([]);
+  });
+
+  it('writes no claims file at all when nothing is ever claimed', async () => {
+    // A repo whose gates pass must not accumulate state for claims that were
+    // never taken: the settle step returns early rather than writing `[]`.
+    const clean = makeExec((line) => {
+      if (line.includes('--name-only')) return ok('');
+      if (line.includes('--others')) return ok('');
+      return ok('');
+    });
+    await runStopGate(options(clean));
+
+    expect(existsSync(leasesFile(stateDirectory(root)))).toBe(false);
+  });
+
+  it('makes the Stop gate wait instead of naming a second fixer', async () => {
+    // The whole point: the commit rung's fixer is mid-edit in src/foo.ts when
+    // the turn ends and the Stop gate finds the same file.
+    await runCommitGate(blockedOptions());
+    const { decision } = await runStopGate(options(blockingExec()));
+
+    expect(decision.outcome).toBe('delegate');
+    expect(decision.block).toBe(true);
+    expect(decision.message).toContain('sid-commit.last.json');
+    expect(decision.message).toContain('src/foo.ts');
+    expect(decision.message).not.toContain('Spawn the');
+  });
+
+  it('does not claim the files it just declined to spawn a fixer into', async () => {
+    // A deferral names no fixer, so there is nothing to hold the files for --
+    // and a second claim on them would make the commit rung wait in turn.
+    await runCommitGate(blockedOptions());
+    await runStopGate(options(blockingExec()));
+
+    expect(leases().map((lease) => lease.owner)).toEqual(['commit:sid-commit']);
+  });
+
+  it('spends the wait, so a fixer that died cannot deadlock the loop', async () => {
+    // The commit rung only releases its claim when it fires again, which needs
+    // a commit ATTEMPT the agent may never make while the Stop gate blocks.
+    // The second Stop gate therefore proceeds normally.
+    await runCommitGate(blockedOptions());
+    await runStopGate(options(blockingExec()));
+    expect(leases()[0]?.deferrals).toBe(1);
+
+    const { decision } = await runStopGate(options(blockingExec()));
+    expect(decision.message).toContain('Spawn the');
+  });
+
+  it('claims the files once the Stop gate does name a fixer', async () => {
+    await runStopGate(options(blockingExec()));
+
+    expect(leases()).toEqual([
+      expect.objectContaining({
+        owner: 'stop:sid',
+        fixerAgent: 'guardrail-fixer',
+        files: ['src/foo.ts'],
+      }),
+    ]);
+  });
+
+  it('releases the Stop claim when the turn goes clean', async () => {
+    const clean = makeExec((line) => {
+      if (line.includes('--name-only')) return ok('');
+      if (line.includes('--others')) return ok('');
+      return ok('');
+    });
+    await runStopGate(options(blockingExec()));
+    await runStopGate(options(clean));
+
+    expect(leases()).toEqual([]);
+  });
+
+  it('tells the commit rung to wait for a Stop-rung fixer too', async () => {
+    // Symmetric by construction: whichever rung fires second is the observer.
+    await runStopGate(options(blockingExec()));
+    const result = await runCommitGate(blockedOptions());
+
+    expect(result.blocked).toBe(true);
+    expect(result.delegation?.waitFor).toMatchObject({
+      owner: 'stop:sid',
+      files: ['src/foo.ts'],
+    });
+  });
+
+  it('names nobody to wait for when the rungs are in different files', async () => {
+    // A lease is a claim on FILES, not a session-wide "a fixer is running"
+    // flag: two fixers in disjoint file sets are exactly the parallelism worth
+    // keeping.
+    const elsewhere = makeExec((line) => {
+      if (line.includes('--name-only')) return ok('src/other.ts');
+      if (line.includes('--others')) return ok('');
+      if (line.includes('diff')) return ok('');
+      if (line.includes('eslint'))
+        return ok(
+          JSON.stringify([
+            {
+              filePath: path.join(root, 'src/other.ts'),
+              messages: [
+                {
+                  ruleId: 'no-console',
+                  severity: 2,
+                  message: 'Unexpected console.',
+                  line: 2,
+                },
+              ],
+            },
+          ]),
+        );
+      if (line.includes('--showConfig'))
+        return ok(JSON.stringify({ files: ['src/other.ts'] }));
+      return ok('');
+    });
+    await runCommitGate(blockedOptions());
+    const { decision } = await runStopGate({
+      ...options(elsewhere),
+      sessionId: 'sid',
+    });
+
+    expect(decision.message).toContain('Spawn the');
+    expect(
+      leases()
+        .map((lease) => lease.owner)
+        .toSorted((left, right) => left.localeCompare(right)),
+    ).toEqual(['commit:sid-commit', 'stop:sid']);
   });
 });

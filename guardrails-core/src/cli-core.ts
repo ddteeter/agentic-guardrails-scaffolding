@@ -20,7 +20,13 @@ import {
   toGateConfig,
 } from './config.js';
 import type { Exec } from './exec.js';
-import { runCommitGate, runStopGate, type CommitGateOptions } from './gate.js';
+import {
+  runCommitGate,
+  runStopGate,
+  type CommitDelegation,
+  type CommitGateOptions,
+} from './gate.js';
+import { leaseWaitNote } from './gate-decision.js';
 import { findGitRoot, resolveRepoRoot } from './repo-root.js';
 import {
   formatGrantReport,
@@ -315,17 +321,33 @@ async function gateStopCommand(
  *
  * Falls back to the old counts-and-verify wording when no fixer is known, so
  * a caller without a config still gets something actionable.
+ *
+ * `waitFor` is the commit rung's half of the cross-rung collision guard (#76):
+ * when a Stop-rung fixer already holds some of these files, this surface is
+ * where the instruction to put a SECOND one in them would otherwise be given.
+ * The wording mirrors the stop gate's — same facts, this rung's next move.
  */
 function commitPointer(
   violationCount: number,
   findingCount: number,
-  delegation: { manifestPath: string; fixerAgent: string },
+  delegation: CommitDelegation,
 ): string {
-  return (
+  const counts =
     `guardrails: ${violationCount} violation(s), ` +
-    `${findingCount} added suppression(s). ` +
-    `Written to ${delegation.manifestPath}. Do NOT read it. Spawn the ` +
-    `${delegation.fixerAgent} subagent and give it that path to fix, then ` +
+    `${findingCount} added suppression(s). `;
+  if (delegation.waitFor !== undefined) {
+    return (
+      `${counts}Written to ${delegation.manifestPath}, but ` +
+      `${leaseWaitNote(delegation.waitFor)}. Do NOT read either manifest, and ` +
+      `do NOT spawn a fixer yet: two fixers editing one file lose each ` +
+      `other's work, and a dead-code or unused-import finding computed ` +
+      `against a file another fixer is changing is not a finding. Wait for ` +
+      `that ${delegation.waitFor.fixerAgent} to report, then commit again.`
+    );
+  }
+  return (
+    `${counts}Written to ${delegation.manifestPath}. Do NOT read it. Spawn ` +
+    `the ${delegation.fixerAgent} subagent and give it that path to fix, then ` +
     `commit again.`
   );
 }
