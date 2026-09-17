@@ -33,7 +33,7 @@ import path from 'node:path';
 
 import { auditDiff, findingKey, type AuditFinding } from './audit.js';
 import type { SanctionedFile, SanctionedSuppression } from './config.js';
-import type { Exec } from './exec.js';
+import type { Exec, ExecResult } from './exec.js';
 import { readTestCorpus, withCoveringTests } from './covering-tests.js';
 import { withGuidance } from './guidance.js';
 import {
@@ -278,32 +278,109 @@ function readSnapshot(file: string): Set<string> {
   }
 }
 
-async function workingDiff(options: StopGateOptions): Promise<string> {
+/**
+ * The git call that did not answer, and the signal that stopped it.
+ *
+ * Named rather than reduced to a boolean because the two facts are the whole
+ * message: which of the auditor's inputs is missing, and that the cause was a
+ * kill (an environment problem) rather than anything in this repository.
+ */
+interface UnreadableDiff {
+  /**
+  The invocation, as a command line: `git diff HEAD`.
+  */
+  command: string;
+  signal: NodeJS.Signals;
+}
+
+/**
+ * The auditor's input, or the reason there isn't one.
+ *
+ * Deliberately NOT a bare `string`: a killed git call reports exit 0 with empty
+ * stdout (see `ExecResult.signal`), so "nothing changed" and "could not look"
+ * arrived as the same empty string and `auditDiff('')` reported clean — a
+ * suppression added that turn went unaudited (#87). A union the caller has to
+ * discriminate is what makes that state impossible to read past.
+ */
+type WorkingDiff =
+  | { diff: string; unreadable?: undefined }
+  | { diff?: undefined; unreadable: UnreadableDiff };
+
+/** The unreadable outcome for a git call that was killed, or `undefined` when
+ *  it answered. Every git call feeding the auditor is checked through this:
+ *  a kill anywhere in the three narrows the audit surface silently. */
+function killedGitCall(
+  args: readonly string[],
+  result: ExecResult,
+): UnreadableDiff | undefined {
+  return result.signal === undefined
+    ? undefined
+    : { command: `git ${args.join(' ')}`, signal: result.signal };
+}
+
+const DIFF_HEAD = ['diff', 'HEAD'];
+const DIFF_CACHED = ['diff', '--cached'];
+const UNTRACKED = ['ls-files', '--others', '--exclude-standard'];
+
+async function workingDiff(options: StopGateOptions): Promise<WorkingDiff> {
   // Deliberately `git diff HEAD` (uncommitted working-tree changes), NOT the
   // baseBranch range that `verify` uses. The fixer's edits are uncommitted, so
   // this is exactly the surface the auditor must inspect. A suppression that was
   // committed in an earlier turn is already past this point — it would have been
   // audited while it was uncommitted, and the Copilot commit-gate re-checks the
   // staged diff at commit time.
-  let result = await options.exec('git', ['diff', 'HEAD'], {
+  let result = await options.exec('git', DIFF_HEAD, {
     cwd: options.repoRoot,
   });
+  let unreadable = killedGitCall(DIFF_HEAD, result);
+  if (unreadable !== undefined) {
+    return { unreadable };
+  }
+  // A kill reports code 0, so this guard never saw one: it read a killed call
+  // as a successful `git diff HEAD` and skipped the fallback too. The check
+  // above now returns before that can happen.
   if (result.code !== 0 && result.spawnFailed !== true) {
     // Unborn branch: there is no HEAD to diff, but staged content already lives
     // in the index and must still be audited before the first commit.
-    result = await options.exec('git', ['diff', '--cached'], {
+    result = await options.exec('git', DIFF_CACHED, {
       cwd: options.repoRoot,
     });
+    unreadable = killedGitCall(DIFF_CACHED, result);
+    if (unreadable !== undefined) {
+      return { unreadable };
+    }
   }
-  const untracked = await options.exec(
-    'git',
-    ['ls-files', '--others', '--exclude-standard'],
-    { cwd: options.repoRoot },
-  );
+  const untracked = await options.exec('git', UNTRACKED, {
+    cwd: options.repoRoot,
+  });
+  unreadable = killedGitCall(UNTRACKED, untracked);
+  if (unreadable !== undefined) {
+    return { unreadable };
+  }
   const addedFiles = parseFileList(untracked.stdout)
     .map((file) => untrackedFileDiff(options.repoRoot, file))
     .join('\n');
-  return `${result.stdout}\n${addedFiles}`;
+  return { diff: `${result.stdout}\n${addedFiles}` };
+}
+
+/**
+ * The block for a gate that could not read what it was meant to audit.
+ *
+ * Addressed to the MAIN agent, not to a fixer: a killed git call is not a
+ * violation in the repository and there is nothing in a manifest for a
+ * scope-locked subagent to fix. The remedy is to run the gate again, which is
+ * why nothing is written and no attempt is spent — this turn produced no
+ * verdict at all, so the fix loop's state must end it exactly as it found it.
+ */
+function unreadableDiffMessage(unreadable: UnreadableDiff): string {
+  return (
+    `Could not read the working diff: ${unreadable.command} was killed by ` +
+    `${unreadable.signal}, so the diff-auditor inspected nothing and any ` +
+    `suppression added this turn is unaudited. An empty diff is not a clean one, ` +
+    `and this gate does not end a turn on a check that never looked. A kill ` +
+    `comes from the invocation environment — a caller's timeout, a cancelled ` +
+    `job, a Ctrl-C — not from this repository. Re-run the gate.`
+  );
 }
 
 /** `git diff HEAD` omits untracked files entirely. Present each one as a
@@ -383,7 +460,24 @@ export async function runStopGate(
   const baseline = readSnapshot(snapshotPath);
 
   const diff = await workingDiff(options);
-  const present = auditDiff(diff);
+  if (diff.unreadable !== undefined) {
+    // Fail closed, before verify spawns anything: there is no audit to be had
+    // this turn. `escalate` is the outcome that blocks and speaks to the main
+    // agent with no fixer named, which is what this is — see
+    // `unreadableDiffMessage`. The session, the recurrence tally and the fix
+    // loop's baseline are all returned untouched.
+    return {
+      decision: {
+        outcome: 'escalate',
+        block: true,
+        message: unreadableDiffMessage(diff.unreadable),
+        nextSession: session,
+        nextRecurrence: recurrence,
+      },
+      auditFindings: [],
+    };
+  }
+  const present = auditDiff(diff.diff);
   // No snapshot means no fix loop is open, so there is no fixer whose work
   // this could be. See the module docstring.
   const auditFindings = isHadSnapshot

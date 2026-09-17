@@ -484,6 +484,109 @@ describe('runStopGate — a fix loop is open', () => {
   });
 });
 
+/**
+A process stopped part-way: exit 0, empty stdout, and a signal that says so.
+*/
+function killedBy(signal: NodeJS.Signals): ExecResult {
+  return { stdout: '', stderr: '', code: 0, signal };
+}
+
+/**
+Exec whose every call answers cleanly except the one git call under test.
+*/
+function execKilling(command: string, signal: NodeJS.Signals): Exec {
+  return makeExec((line) => (line === command ? killedBy(signal) : ok('')));
+}
+
+/**
+ * A `git diff HEAD` that never finished is the auditor's fail-open (#87).
+ *
+ * The auditor's whole job is to notice a suppression that appeared while a
+ * fixer had the manifest, and its only input is this diff. A killed git call
+ * reports exit 0 with empty stdout (see `ExecResult.signal`), so the gate used
+ * to hand `auditDiff` an empty string, get nothing back, and let the turn end
+ * -- byte-for-byte the same as a turn in which nothing was suppressed. "No
+ * changes" and "could not look" must not be the same answer.
+ */
+describe('runStopGate — the working diff could not be read', () => {
+  it('blocks instead of auditing the empty diff a killed `git diff HEAD` leaves', async () => {
+    // A fix loop is open, so a readable diff carrying a suppression would be
+    // reported; an unreadable one must not read as "the fixer added nothing".
+    writeSnapshot(JSON.stringify([]));
+    const { decision, auditFindings } = await runStopGate(
+      options(execKilling('git diff HEAD', 'SIGTERM')),
+    );
+    expect(decision.block).toBe(true);
+    expect(decision.outcome).toBe('escalate');
+    expect(auditFindings).toEqual([]);
+  });
+
+  it('names the git call, the signal, and what the developer should do', async () => {
+    const { decision } = await runStopGate(
+      options(execKilling('git diff HEAD', 'SIGTERM')),
+    );
+    expect(decision.message).toContain('git diff HEAD');
+    expect(decision.message).toContain('SIGTERM');
+    expect(decision.message).toContain('inspected nothing');
+    expect(decision.message).toContain('unaudited');
+    expect(decision.message).toContain('An empty diff is not a clean one');
+    expect(decision.message).toContain('invocation environment');
+    expect(decision.message).toContain('Re-run the gate.');
+  });
+
+  it('blocks when the unborn-branch fallback `git diff --cached` is killed', async () => {
+    // The fallback reads the index on a repo with no HEAD -- the first commit
+    // of an adoption is audited through this call and nothing else.
+    const exec = makeExec((line) => {
+      if (line === 'git diff HEAD')
+        return {
+          stdout: '',
+          stderr: "fatal: ambiguous argument 'HEAD'",
+          code: 128,
+        };
+      if (line === 'git diff --cached') return killedBy('SIGKILL');
+      return ok('');
+    });
+    const { decision } = await runStopGate(options(exec));
+    expect(decision.block).toBe(true);
+    expect(decision.message).toContain('git diff --cached');
+    expect(decision.message).toContain('SIGKILL');
+  });
+
+  it('blocks when the untracked-file listing is killed', async () => {
+    // `git diff HEAD` omits untracked files, so a suppression in a brand-new
+    // file is visible only through this call: losing it loses that whole half.
+    const { decision } = await runStopGate(
+      options(
+        execKilling('git ls-files --others --exclude-standard', 'SIGINT'),
+      ),
+    );
+    expect(decision.block).toBe(true);
+    expect(decision.message).toContain('git ls-files --others');
+    expect(decision.message).toContain('SIGINT');
+  });
+
+  it('leaves the open fix loop in place rather than closing it on a non-answer', async () => {
+    // The clean/escalate path deletes the baseline. Dropping it here would
+    // forgive every suppression already in the diff on the next cycle, which
+    // is exactly the state a killed call must not be able to manufacture.
+    writeSnapshot(JSON.stringify([SNEAKY_KEY]));
+    await runStopGate(options(execKilling('git diff HEAD', 'SIGTERM')));
+    expect(existsSync(snapshotPath())).toBe(true);
+  });
+
+  it('does not run verify against a diff it could not read', async () => {
+    // The block is decided before anything else spawns: there is no verdict to
+    // be had this turn, and the remedy named in the message is to re-run the
+    // whole gate, not to act on a half-run one.
+    const { exec, calls } = recordingExec((line) =>
+      line === 'git diff HEAD' ? killedBy('SIGTERM') : ok(''),
+    );
+    await runStopGate(options(exec));
+    expect(calls.map((call) => call.line)).toEqual(['git diff HEAD']);
+  });
+});
+
 describe('runStopGate mutation-hardening', () => {
   it('classifies an added suppression as NON-fixable', async () => {
     // Kills `fixable: false` -> true. A fixable suppression would be routed to
