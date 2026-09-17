@@ -397,6 +397,21 @@ function logEntry(input: LogEntryInput): GateLogEntry {
 }
 
 /**
+ * The row for a firing that produced NO VERDICT: the working diff could not be
+ * read, so nothing was audited and verify never ran.
+ *
+ * Exported because the Stop gate decides this case before `decideGate` is
+ * reached -- there is no violation set to decide over -- and #83 logs every
+ * firing, so the one outcome with nothing behind it still needs a row. Built
+ * through `logEntry` rather than spelled out, so the row's shape keeps one
+ * definition; the zero counts are honest rather than defaulted, because
+ * nothing was counted.
+ */
+export function noVerdictLogEntry(): GateLogEntry {
+  return logEntry({ outcome: 'escalate', violations: [], attempt: 0 });
+}
+
+/**
  * What the previous attempt did to the violation set, or `undefined` where
  * there is nothing to compare against — a first block, or a session written
  * before the identities were persisted.

@@ -40,6 +40,7 @@ import {
   decideGate,
   type GateConfig,
   type GateDecision,
+  noVerdictLogEntry,
 } from './gate-decision.js';
 import type { AnalyzerMode, Rung } from './verify/analyzer-policy.js';
 import {
@@ -467,6 +468,13 @@ export async function runStopGate(
     // agent with no fixer named, which is what this is — see
     // `unreadableDiffMessage`. The session, the recurrence tally and the fix
     // loop's baseline are all returned untouched.
+    const log = noVerdictLogEntry();
+    appendDecision(directory, {
+      at: new Date().toISOString(),
+      rung: 'stop',
+      session: sessionId,
+      ...log,
+    });
     return {
       decision: {
         outcome: 'escalate',
@@ -474,6 +482,7 @@ export async function runStopGate(
         message: unreadableDiffMessage(diff.unreadable),
         nextSession: session,
         nextRecurrence: recurrence,
+        log,
       },
       auditFindings: [],
     };
