@@ -25,12 +25,12 @@ analyzer costs, and the clean-baseline prerequisite.
 `guardrails-core` is delivered as a GitHub Release asset, not from npm:
 
 ```bash
-npm i -D https://github.com/ddteeter/agentic-guardrails-scaffolding/releases/download/v0.4.0/guardrails-core-0.4.0.tgz
+npm i -D https://github.com/ddteeter/agentic-guardrails-scaffolding/releases/download/v0.5.0/guardrails-core-0.5.0.tgz
 ```
 
 Each release is a pushed `v*` tag: `.github/workflows/release.yml` verifies the
 tag matches `guardrails-core`'s version, runs the tarball smoke test, and
-attaches the `.tgz`. The URL above resolves once `v0.4.0` has been through that.
+attaches the `.tgz`. The URL above resolves once `v0.5.0` has been through that.
 
 **What a URL dependency costs you, stated plainly:** no semver range, no dedupe,
 and Dependabot will not track it. Upgrading means editing the URL by hand. This
@@ -105,8 +105,9 @@ Everything is authored in strict TypeScript, compiled to pure-Node ESM
 - **Gate** (`src/gate-decision.ts`, `src/gate.ts`) — the clean/delegate/escalate
   engine + snapshot-based fixer audit, shared by the CC stop-gate and (Phase B)
   the Codex and Copilot commit gates.
-- **CLI** (`src/cli.ts`, `src/cli-core.ts`) — `verify | autofix | audit | gate |
-state | report | scope-check | session-start | session-end`.
+- **CLI** (`src/cli.ts`, `src/cli-core.ts`) — `init | gate | verify | autofix |
+audit | sanction | sanctions-check | install-hooks | state | report |
+scope-check | session-start | session-end`.
 - **Decision log** (`src/decision-log.ts`) — one appended row per gate decision
   in `.guardrails/state/decisions.jsonl`; `guardrails report` turns it into the
   delegation share, the escalation causes and the rules behind them.

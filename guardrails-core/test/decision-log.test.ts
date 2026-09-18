@@ -209,6 +209,17 @@ describe('formatDecisionReport', () => {
     expect(text).toContain('no gate decisions recorded');
   });
 
+  it('says which rungs the log actually covers, so an absent rung is not read as an idle one', () => {
+    // Only `runStopGate` appends today (#53): the commit rung writes a manifest
+    // but records no decision. A table headed by one rung, with no statement
+    // that the others never write, reads as "the commit gate decided nothing"
+    // rather than "the commit gate is not measured" -- the opposite conclusion
+    // from the same output.
+    const text = formatDecisionReport(summarizeDecisions([record()]));
+    expect(text).toContain('stop');
+    expect(text).toContain('only the stop rung records decisions');
+  });
+
   it('prints the share as a percentage alongside the raw counts', () => {
     const text = formatDecisionReport(
       summarizeDecisions([

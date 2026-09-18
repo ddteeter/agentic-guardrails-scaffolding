@@ -119,7 +119,14 @@ loose id or knip issue type no longer exists upstream. You must still review the
 `sanctionedSuppressions` (a keyed, counted grant) and `sanctionedFiles` (a whole
 file + one kind, for generated code). Never add an entry to either on your own
 initiative. Ask the developer first — using your interactive question ability,
-not a note buried in a summary — and give them what they need to decide:
+not a note buried in a summary — and give them what they need to decide.
+
+`guardrails sanction` derives that material for you (`--from=<manifest>` to work
+from the manifest a block named). It prints the entry and installs nothing,
+deliberately: the key it derives is exact — `sanctions-check` re-derives the
+count with the auditor's own lexer and fails on a mismatch, so a hand-guessed
+key is a build failure waiting to happen — while the decision stays the
+developer's. Bring them:
 
 - **What** the exemption covers (the exact `file|kind|text` key, or the
   `path` + `kind` pair).
