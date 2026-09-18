@@ -23,6 +23,7 @@ import type { Exec } from './exec.js';
 import {
   runCommitGate,
   runStopGate,
+  unreadableDiffMessage,
   type CommitDelegation,
   type CommitGateOptions,
 } from './gate.js';
@@ -368,16 +369,31 @@ async function gateCommitCommand(
 ): Promise<number> {
   const repoRoot = await commandRepoRoot(dependencies);
   const config = loadConfig(repoRoot);
-  const { violations, findings, blocked, skippedAnalyzers, delegation } =
-    await runCommitGate({
-      ...commitGateOptionsFromConfig(repoRoot, config, dependencies.exec),
-      changedScope,
-      profile,
-    });
+  const {
+    violations,
+    findings,
+    blocked,
+    skippedAnalyzers,
+    delegation,
+    unreadable,
+  } = await runCommitGate({
+    ...commitGateOptionsFromConfig(repoRoot, config, dependencies.exec),
+    changedScope,
+    profile,
+  });
   printGateDetail(dependencies, violations, findings);
   // Before the pass/block decision, because it qualifies either one: a gate
   // that blocked still checked less than the adopter thinks it did.
   warnAboutSilentSkips(dependencies, skippedAnalyzers);
+  if (unreadable !== undefined) {
+    // Deliberately ABOVE the `enforcement === 'warn'` softening below, and
+    // returning 1 unconditionally: `warn` trades a block for a report on
+    // findings the gate actually made, and this is the ABSENCE of a verdict
+    // rather than a finding. A killed diff reported as a zero exit is the
+    // fail-open this closes (#92).
+    dependencies.stderr(`guardrails: ${unreadableDiffMessage(unreadable)}\n`);
+    return 1;
+  }
   if (!blocked) {
     return 0;
   }
@@ -510,12 +526,20 @@ async function gatePreToolUseCommand(
   }
   const repoRoot = await commandRepoRoot(dependencies, input.cwd);
   const config = loadConfig(repoRoot);
-  const { violations, findings, blocked, delegation } = await runCommitGate({
-    ...commitGateOptionsFromConfig(repoRoot, config, dependencies.exec),
-    sessionId: input.sessionId,
-  });
+  const { violations, findings, blocked, delegation, unreadable } =
+    await runCommitGate({
+      ...commitGateOptionsFromConfig(repoRoot, config, dependencies.exec),
+      sessionId: input.sessionId,
+    });
   if (!blocked) {
     return; // allow (silent)
+  }
+  if (unreadable !== undefined) {
+    // Denied, never allowed-with-a-warning, and not softened by `warn`: this
+    // rung stands in front of the agent's own `git commit`, so allowing here
+    // would let a suppression reach a commit that nothing audited (#92).
+    denyPreToolUse(dependencies, unreadableDiffMessage(unreadable), dialect);
+    return;
   }
   // No `delegation === undefined` branch: `blocked` narrows the result union,
   // so the compiler already knows a block carries one. That is the point of the
@@ -835,10 +859,28 @@ async function sanctionCommand(
   return 0;
 }
 
+/**
+ * Exit code for an audit that could not read its input.
+ *
+ * Distinct from 1, which means "findings were found": a caller reading this
+ * command's exit code has to be able to tell "nothing to report" from "nothing
+ * was examined". Returning 0 for a killed `git diff` reported a clean audit of
+ * a diff nobody had seen (#92).
+ */
+const AUDIT_UNREADABLE_EXIT = 2;
+
 async function auditCommand(dependencies: CliDependencies): Promise<number> {
-  const diff = await dependencies.exec('git', ['diff', 'HEAD'], {
-    cwd: dependencies.cwd,
-  });
+  const args = ['diff', 'HEAD'];
+  const diff = await dependencies.exec('git', args, { cwd: dependencies.cwd });
+  if (diff.signal !== undefined) {
+    dependencies.stderr(
+      `guardrails: ${unreadableDiffMessage({
+        command: `git ${args.join(' ')}`,
+        signal: diff.signal,
+      })}\n`,
+    );
+    return AUDIT_UNREADABLE_EXIT;
+  }
   const findings = auditDiff(diff.stdout);
   for (const finding of findings) {
     dependencies.stderr(
