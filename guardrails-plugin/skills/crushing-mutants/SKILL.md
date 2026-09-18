@@ -185,6 +185,14 @@ below.
    also collapses a `}` / `catch {` pair and relocates a comment placed there,
    defeating the directive — such sites need `// prettier-ignore`.
 
+   Both halves of this are now **mechanically checked**: `sanctions-check` fails
+   when a granted region `disable` has no `restore` covering it (reporting the
+   range it really covers, to end of file), and when a `restore` is followed by
+   `}` / `else` / `catch` / end-of-file rather than a statement. The check exists
+   because the site is correct when written and wrong later — the formatter moves
+   the comment, or an edit moves the statement — so review is not the moment that
+   catches it.
+
 4. **Verify the directive took effect, and measure its collateral.** Re-run and
    confirm the mutant moved to `Ignored` rather than staying `Survived` — a
    directive that silently failed to attach is easy to miss. Then check what
@@ -204,6 +212,23 @@ diff-auditor treats it as one. It requires an entry in
 - the exact `file|kind|text` key,
 - the equivalence argument, or what you tried and why it cannot work,
 - what stops being checked once it is granted.
+
+Do not hand-write the key — `guardrails sanction` derives it for you. Run it
+(`--from=<manifest>` to work from a blocking manifest, or with no flag to read
+the working diff) and it prints, for every suppression that would need a grant:
+the exact key from the auditor's own lexer, the real `count`, a ready-to-paste
+`sanctionedSuppressions` entry, what stops being checked, and how many grants of
+that shape the repo already holds. It writes nothing — there is no `--apply`,
+deliberately. The entry it prints is what you take to the developer, and the
+precedent count is the number that should start that conversation rather than
+end it.
+
+The counted entry is always the proposal. Where the file's path or header
+**reads as** generated, an `ALSO CONSIDER` block offers the whole-file
+`sanctionedFiles` grant underneath it — as a question for you to answer, not a
+finding about the file. Establish that a generator really writes the file
+before preferring it; if a person maintains the file, ignore the block and take
+the counted entry.
 
 **Nothing downstream will catch a self-grant for you.** `sanctions-check`
 prints every newly-added key and exits 0 — by design, since the human reviewing

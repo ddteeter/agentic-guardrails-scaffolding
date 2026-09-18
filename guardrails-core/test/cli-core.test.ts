@@ -2,6 +2,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   utimesSync,
   writeFileSync,
@@ -2718,6 +2719,108 @@ describe('sanctions-check count drift-guard', () => {
   });
 });
 
+/** A granted Stryker region in `m.ts`, with the source written by hand so the
+ *  directives sit where the test means them to. */
+function writeMutationGrant(lines: readonly string[]): void {
+  writeFileSync(
+    path.join(root, 'guardrails.config.json'),
+    JSON.stringify({
+      sanctionedSuppressions: [
+        {
+          key: 'm.ts|mutation-suppress|// Stryker disable BlockStatement',
+          reason: 'proven equivalent',
+        },
+        {
+          key: 'm.ts|mutation-suppress|// Stryker restore BlockStatement',
+          reason: 'closes the region above',
+        },
+      ],
+    }),
+  );
+  writeFileSync(path.join(root, 'm.ts'), `${lines.join('\n')}\n`);
+}
+
+describe('sanctions-check placement guard', () => {
+  it('fails on a restore that binds to nothing, naming the fail-open', async () => {
+    // The 21-mutant bug: the restore sits after the last statement of the
+    // block, never attaches, and the disable runs to end of file — at a green
+    // mutation score, which is why nothing else catches it.
+    writeMutationGrant([
+      'export function one(): number {',
+      '  // Stryker disable BlockStatement',
+      '  const a = 1;',
+      '  return a;',
+      '  // Stryker restore BlockStatement',
+      '}',
+    ]);
+
+    const code = await runCommand(
+      'sanctions-check',
+      [],
+      dependencies({ exec: sanctionsExec('{}').exec }),
+    );
+
+    expect(code).toBe(1);
+    const printed = errors.join('');
+    expect(printed).toContain('m.ts:5');
+    expect(printed).toContain('runs to end of file');
+    expect(printed).toContain('no longer cover what they were granted for');
+  });
+
+  it('fails on a region disable with no restore, naming the range it covers', async () => {
+    writeFileSync(
+      path.join(root, 'guardrails.config.json'),
+      JSON.stringify({
+        sanctionedSuppressions: [
+          {
+            key: 'm.ts|mutation-suppress|// Stryker disable BlockStatement',
+            reason: 'proven equivalent',
+          },
+        ],
+      }),
+    );
+    writeFileSync(
+      path.join(root, 'm.ts'),
+      ['// Stryker disable BlockStatement', 'export const a = 1;', ''].join(
+        '\n',
+      ),
+    );
+
+    const code = await runCommand(
+      'sanctions-check',
+      [],
+      dependencies({ exec: sanctionsExec('{}').exec }),
+    );
+
+    expect(code).toBe(1);
+    expect(errors.join('')).toContain('covers lines 1-3, to end of file');
+  });
+
+  it('passes a correctly placed region, and still reports the grants', async () => {
+    // Paired with the failures above so a guard that always fired — or never
+    // ran — is caught rather than passing silently.
+    writeMutationGrant([
+      'export function one(): number {',
+      '  // Stryker disable BlockStatement',
+      '  const a = 1;',
+      '  // Stryker restore BlockStatement',
+      '  return a;',
+      '}',
+    ]);
+
+    const code = await runCommand(
+      'sanctions-check',
+      [],
+      dependencies({ exec: sanctionsExec('{}').exec }),
+    );
+
+    expect(code).toBe(0);
+    const printed = errors.join('');
+    expect(printed).not.toContain('no longer cover what they were granted for');
+    expect(printed).toContain('2 new diff-auditor exemption');
+  });
+});
+
 describe('out-of-repo self-check', () => {
   it('refuses to run when resolved from outside the repository', async () => {
     // Node's node_modules walk does not stop at the repo, so an install in an
@@ -2892,5 +2995,191 @@ describe('runCommand — sanctions-check with whole-file grants', () => {
     const printed = errors.join('');
     expect(printed).toContain(REQUESTED_KEY);
     expect(printed).toContain('WHOLE-FILE');
+  });
+});
+
+const SUPPRESSED_LINE = 'const parsed = raw as unknown as Report;';
+const DERIVED_KEY = `a.ts|cast-any|${SUPPRESSED_LINE}`;
+
+/** A working tree holding one suppression, plus the diff `git diff HEAD`
+ *  would report for it. */
+function writeSuppressedSource(): Exec {
+  writeFileSync(path.join(root, 'a.ts'), `${SUPPRESSED_LINE}\n`);
+  const diff = [
+    '+++ b/a.ts',
+    '@@ -0,0 +1,1 @@',
+    `+${SUPPRESSED_LINE}`,
+    '',
+  ].join('\n');
+  return () => Promise.resolve(ok(diff));
+}
+
+describe('runCommand — sanction (derive a grant, install nothing)', () => {
+  it('derives the exact key from the working diff', async () => {
+    // The argv and cwd are asserted, not just the output: a `git` invoked with
+    // no arguments, or outside the repo, would read an unrelated diff and the
+    // canned fake would hide it.
+    writeSuppressedSource();
+    const calls: { args: string[]; cwd: string | undefined }[] = [];
+    const diff = [
+      '+++ b/a.ts',
+      '@@ -0,0 +1,1 @@',
+      `+${SUPPRESSED_LINE}`,
+      '',
+    ].join('\n');
+    const exec: Exec = (_command, args, execOptions) => {
+      calls.push({ args, cwd: execOptions?.cwd });
+      return Promise.resolve(ok(diff));
+    };
+
+    expect(await runCommand('sanction', [], dependencies({ exec }))).toBe(0);
+    const printed = errors.join('');
+    expect(printed).toContain(DERIVED_KEY);
+    expect(printed).toContain('sanctionedSuppressions');
+    expect(printed).toContain('NOTHING HAS BEEN WRITTEN');
+    expect(calls).toEqual([{ args: ['diff', 'HEAD'], cwd: root }]);
+  });
+
+  it('ignores a manifest entry that is not a well-formed violation', async () => {
+    // The manifest path is agent-supplied and its contents are just a file on
+    // disk. An entry that names the right rule but is missing the fields a
+    // violation must carry is not a violation, and deriving a grant from it
+    // would present a guess as a derivation.
+    writeSuppressedSource();
+    writeFileSync(
+      path.join(root, 'violations.json'),
+      JSON.stringify([
+        { ruleId: 'guardrails/added-suppression', file: 'a.ts', line: 1 },
+      ]),
+    );
+
+    expect(
+      await runCommand(
+        'sanction',
+        ['--from=violations.json'],
+        dependencies({ exec: () => Promise.resolve(ok('')) }),
+      ),
+    ).toBe(0);
+    const printed = errors.join('');
+    expect(printed).not.toContain(DERIVED_KEY);
+    expect(printed).toContain('no suppression');
+  });
+
+  it('derives from a blocking manifest when given one', async () => {
+    // The delegation path #75 is missing: the agent is blocked with a manifest
+    // in hand, and that is what it should be able to hand to the command.
+    writeSuppressedSource();
+    const manifest = path.join(root, 'violations.json');
+    writeFileSync(
+      manifest,
+      JSON.stringify([
+        {
+          ruleId: 'guardrails/added-suppression',
+          file: 'a.ts',
+          line: 1,
+          message: 'Forbidden cast-any added during the fix loop',
+          severity: 'error',
+          fixable: false,
+          tool: 'guardrails',
+        },
+      ]),
+    );
+
+    expect(
+      await runCommand(
+        'sanction',
+        ['--from=violations.json'],
+        dependencies({
+          exec: () => Promise.reject(new Error('must not shell out')),
+        }),
+      ),
+    ).toBe(0);
+    expect(errors.join('')).toContain(DERIVED_KEY);
+  });
+
+  it('never writes the config, even when it derives an entry', async () => {
+    // The command exists BECAUSE an agent must not grant itself an exemption.
+    // An install path would be the defect, not the feature.
+    const exec = writeSuppressedSource();
+    const configPath = path.join(root, 'guardrails.config.json');
+    writeFileSync(configPath, JSON.stringify({ baseBranch: 'main' }));
+
+    await runCommand('sanction', [], dependencies({ exec }));
+
+    expect(readFileSync(configPath, 'utf8')).toBe(
+      JSON.stringify({ baseBranch: 'main' }),
+    );
+  });
+
+  it('counts existing grants of the same kind as precedent', async () => {
+    // The sentence the agent used to justify SKIPPING the ask has to be the
+    // one the command puts in front of it.
+    const exec = writeSuppressedSource();
+    writeFileSync(
+      path.join(root, 'guardrails.config.json'),
+      JSON.stringify({
+        sanctionedSuppressions: [
+          { key: 'b.ts|cast-any|const x = y as any;', reason: 'reviewed' },
+          { key: 'c.ts|cast-any|const z = q as any;', reason: 'reviewed' },
+        ],
+      }),
+    );
+
+    await runCommand('sanction', [], dependencies({ exec }));
+
+    expect(errors.join('')).toContain('number 3');
+  });
+
+  it('refuses a space-separated `--from`, rather than quietly reading the diff', async () => {
+    // `flag` only recognises `--from=<path>`. Without this, `--from x.json`
+    // parses as no flag at all and the command silently falls back to the
+    // working diff -- deriving proposals from a DIFFERENT scope than the
+    // caller asked for, with nothing to say so. A quiet wrong-mode answer is
+    // the exact failure this command exists to remove.
+    expect(
+      await runCommand(
+        'sanction',
+        ['--from', 'violations.json'],
+        dependencies({ exec: writeSuppressedSource() }),
+      ),
+    ).toBe(1);
+    const printed = errors.join('');
+    expect(printed).toContain('--from=');
+    expect(printed).not.toContain(DERIVED_KEY);
+  });
+
+  it('fails when the named manifest does not exist', async () => {
+    expect(
+      await runCommand(
+        'sanction',
+        ['--from=nope.json'],
+        dependencies({ exec: writeSuppressedSource() }),
+      ),
+    ).toBe(1);
+    expect(errors.join('')).toContain('nope.json');
+  });
+
+  it('refuses a manifest path that escapes the repository', async () => {
+    // The path is agent-supplied input, and reading outside the repo on the
+    // strength of it is the over-read the scope-lock exists to prevent.
+    expect(
+      await runCommand(
+        'sanction',
+        ['--from=../escape.json'],
+        dependencies({ exec: writeSuppressedSource() }),
+      ),
+    ).toBe(1);
+    expect(errors.join('')).toContain('outside');
+  });
+
+  it('says plainly when nothing in scope needs a grant', async () => {
+    expect(
+      await runCommand(
+        'sanction',
+        [],
+        dependencies({ exec: () => Promise.resolve(ok('')) }),
+      ),
+    ).toBe(0);
+    expect(errors.join('')).toContain('no suppression');
   });
 });

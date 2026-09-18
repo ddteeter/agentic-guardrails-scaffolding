@@ -32,10 +32,19 @@ import {
   formatGrantReport,
   newlySanctioned,
   newlySanctionedFiles,
+  type SanctionCountDrift,
   type SanctionGrant,
   sanctionCountDrift,
+  type SanctionPlacementIssue,
+  sanctionPlacementIssues,
   toMalformedViolations,
 } from './sanctions.js';
+import {
+  findingsFromManifest,
+  formatProposals,
+  proposeSanctions,
+} from './sanction-proposal.js';
+import { readJsonFile } from './json-file.js';
 import {
   type Dialect,
   formatCopilotStopOutput,
@@ -62,7 +71,7 @@ import {
   stateDirectory,
   sweepStale,
 } from './state-store.js';
-import { hasErrors, type Violation } from './violation.js';
+import { hasErrors, isViolation, type Violation } from './violation.js';
 import type { Rung } from './verify/analyzer-policy.js';
 import { runVerify, silentSkipWarning } from './verify/index.js';
 import { resolveBaseReference } from './verify/git.js';
@@ -603,6 +612,54 @@ function reportNewGrants(
   }
 }
 
+/**
+ * A declared budget that no longer matches the source. Factual, not a judgment
+ * about whether the exemption is deserved, so it blocks: an over-provisioned
+ * budget silently shrinks how much the auditor is watching.
+ */
+function reportCountDrift(
+  dependencies: CliDependencies,
+  drift: readonly SanctionCountDrift[],
+): void {
+  for (const entry of drift) {
+    dependencies.stderr(
+      `  - ${entry.key}: declared ${entry.declared}, found ${entry.actual}\n`,
+    );
+  }
+  dependencies.stderr(
+    `guardrails: ${drift.length} sanctionedSuppressions entry(ies) in ` +
+      `${CONFIG_FILE} no longer match the source. Update \`count\` to the ` +
+      `number of occurrences that remain, or drop the entry if the ` +
+      `suppression is gone.\n`,
+  );
+}
+
+/**
+ * A granted Stryker directive whose SCOPE has moved (#79).
+ *
+ * Blocks for the same reason the count guard does, and with more urgency: the
+ * over-extension case is a fail-open. An unbound `restore` lets its `disable`
+ * run to end of file, so the mutants after it are never generated and the
+ * mutation score reads clean — nothing else in the loop can notice.
+ */
+function reportPlacementIssues(
+  dependencies: CliDependencies,
+  issues: readonly SanctionPlacementIssue[],
+): void {
+  for (const issue of issues) {
+    dependencies.stderr(
+      `  - ${issue.file}:${issue.line} ${issue.text} — ${issue.detail}\n`,
+    );
+  }
+  dependencies.stderr(
+    `guardrails: ${issues.length} granted Stryker directive(s) no longer ` +
+      `cover what they were granted for. A \`restore\` only binds when a ` +
+      `statement follows it, and a \`disable\` with no binding \`restore\` ` +
+      `runs to end of file — silencing every mutant after it at a green ` +
+      `score. Move the directive, or close the region.\n`,
+  );
+}
+
 async function sanctionsCheckCommand(
   dependencies: CliDependencies,
 ): Promise<number> {
@@ -631,22 +688,21 @@ async function sanctionsCheckCommand(
   // `headFiles` is deliberately NOT passed: path grants carry no count, so
   // there is nothing for this check to verify, and that absence is what
   // removes the regeneration churn (#39).
-  const drift = sanctionCountDrift(
-    headSanctions,
-    repoSourceReader(dependencies.cwd),
-  );
+  const readSource = repoSourceReader(dependencies.cwd);
+  const drift = sanctionCountDrift(headSanctions, readSource);
   if (drift.length > 0) {
-    for (const entry of drift) {
-      dependencies.stderr(
-        `  - ${entry.key}: declared ${entry.declared}, found ${entry.actual}\n`,
-      );
-    }
-    dependencies.stderr(
-      `guardrails: ${drift.length} sanctionedSuppressions entry(ies) in ` +
-        `${CONFIG_FILE} no longer match the source. Update \`count\` to the ` +
-        `number of occurrences that remain, or drop the entry if the ` +
-        `suppression is gone.\n`,
-    );
+    reportCountDrift(dependencies, drift);
+    return 1;
+  }
+
+  // Counts prove a granted suppression still EXISTS; placement is what proves
+  // it still covers what it was granted for (#79). Checked after the count
+  // guard rather than alongside it: a stale count means the source moved under
+  // the policy file, and every placement report that follows would be noise
+  // about the same one defect.
+  const misplaced = sanctionPlacementIssues(headSanctions, readSource);
+  if (misplaced.length > 0) {
+    reportPlacementIssues(dependencies, misplaced);
     return 1;
   }
 
@@ -690,6 +746,92 @@ async function sanctionsCheckCommand(
   const grants = newlySanctioned(known, headSanctions);
   const fileGrants = newlySanctionedFiles(knownFiles, headFiles);
   reportNewGrants(dependencies, grants, fileGrants);
+  return 0;
+}
+
+/**
+ * Read a violations manifest the caller named. The path is agent-supplied
+ * input, so it is confined to the repo the same way every other path in this
+ * CLI is: reading outside it on the strength of an argument is the over-read
+ * the scope-lock exists to prevent. Returns `undefined` when the path is
+ * unusable, so the caller can fail rather than silently derive nothing.
+ */
+function readManifest(
+  dependencies: CliDependencies,
+  manifest: string,
+): Violation[] | undefined {
+  if (!isWithinRepo(dependencies.cwd, manifest)) {
+    dependencies.stderr(
+      `guardrails: ${manifest} is outside the repository; refusing to read it.\n`,
+    );
+    return undefined;
+  }
+  const { parsed } = readJsonFile(path.resolve(dependencies.cwd, manifest));
+  if (!Array.isArray(parsed)) {
+    dependencies.stderr(
+      `guardrails: no readable violations manifest at ${manifest}.\n`,
+    );
+    return undefined;
+  }
+  return parsed.filter((entry) => isViolation(entry));
+}
+
+/**
+ * `sanction`: DERIVE the grant entry each added suppression would need, and
+ * install nothing.
+ *
+ * The key is `file|kind|text` where `text` must match the auditor's lexer
+ * exactly, so a hand-written key is a guess until `sanctions-check` says
+ * otherwise — and the recorded cost of having no derivation path was an agent
+ * reverse-engineering `audit.d.ts` out of `dist/`, then editing the policy file
+ * 57 times from the main thread. There is deliberately no `--apply`: see
+ * src/sanction-proposal.ts.
+ */
+async function sanctionCommand(
+  dependencies: CliDependencies,
+  rest: string[],
+): Promise<number> {
+  // `flag` reads `--from=<path>` only, so a space-separated `--from x.json`
+  // parses as NO flag and would fall through to the working diff -- deriving
+  // proposals from a different scope than the caller asked for, silently. A
+  // quiet wrong-mode answer is the exact failure this command exists to remove.
+  // Checked on the BARE token alone rather than as "no value AND a bare
+  // --from": the compound form's first clause can never be false when the
+  // second is true, which is an equivalent mutant, and a caller who wrote both
+  // spellings is ambiguous enough to reject anyway.
+  if (rest.includes('--from')) {
+    dependencies.stderr(
+      'guardrails: --from takes its value with an equals sign: ' +
+        '`guardrails sanction --from=<manifest>`.\n',
+    );
+    return 1;
+  }
+  const manifest = flag(rest, 'from');
+  const readSource = repoSourceReader(dependencies.cwd);
+  let findings;
+  if (manifest === undefined) {
+    const diff = await dependencies.exec('git', ['diff', 'HEAD'], {
+      cwd: dependencies.cwd,
+    });
+    findings = auditDiff(diff.stdout);
+  } else {
+    const violations = readManifest(dependencies, manifest);
+    if (violations === undefined) {
+      return 1;
+    }
+    findings = findingsFromManifest(violations, readSource);
+  }
+  const { valid, files } = parseSanctionsJson(
+    readConfigText(dependencies.cwd) ?? '',
+  );
+  const proposals = proposeSanctions(findings, {
+    readSource,
+    sanctions: valid,
+    files,
+  });
+  for (const line of formatProposals(proposals)) {
+    dependencies.stderr(`${line}\n`);
+  }
   return 0;
 }
 
@@ -1042,6 +1184,9 @@ export async function runCommand(
     case 'sanctions-check': {
       return sanctionsCheckCommand(dependencies);
     }
+    case 'sanction': {
+      return sanctionCommand(dependencies, rest);
+    }
     case 'state': {
       return stateCommand(dependencies, flag(rest, 'session') ?? 'default');
     }
@@ -1072,6 +1217,7 @@ export async function runCommand(
           '  init [--plan|--apply] [--json] [--force] [--enforcement=warn|block]\n' +
           '       [--analyzers=<tool>=<off|auto|required>[,...]] [--distribution=solo|team]\n' +
           '  gate --mode=stop|commit|push|ci|pretooluse [--dialect=codex|copilot]\n' +
+          '  sanction [--from=<violations manifest>]\n' +
           '  verify | autofix | audit | sanctions-check | install-hooks\n' +
           '  state | report | scope-check | session-start | session-end\n',
       );

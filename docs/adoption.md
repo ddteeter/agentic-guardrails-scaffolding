@@ -444,6 +444,26 @@ a hand-written file added later. Its only safeguard is review, which is why
 **WHOLE-FILE exemption** heading rather than mixed in with keyed ones. Write the
 `reason` for the reviewer.
 
+**Do not hand-write either entry — derive it.** `guardrails sanction` prints,
+for every suppression that would need a grant, the exact `file|kind|text` key
+(from the auditor's own lexer, so it cannot be a guess), the real `count`, a
+ready-to-paste `sanctionedSuppressions` entry, what stops being checked, and how
+many grants of that shape the repo already holds. Take it from a blocking
+manifest with `guardrails sanction --from=<manifest>`, or from the working diff
+with no flag. It writes nothing: the entry is what you bring to a human, and
+there is no `--apply` on purpose — an agent installing its own exemption is the
+failure this whole hatch exists to make visible.
+
+**The counted entry is always the proposal.** Whether a file is generated is
+inferred from its path and its header, which is a guess — so where the file
+_reads as_ generated, the whole-file grant is printed **beneath** the counted
+entry under an `ALSO CONSIDER` heading, phrased as a question for the reader.
+The inference can offer the broader grant; it never chooses it. A wrong guess
+therefore costs a paragraph you skip past, rather than steering you toward an
+un-counted exemption that was pre-justified for you. (There is deliberately no
+config list of generated paths: `sanctionedFiles` is already the human-entered
+list, and a second list that has to agree with it fails worse than a heuristic.)
+
 ## Known limits
 
 Things worth knowing before you hit them, rather than after:
