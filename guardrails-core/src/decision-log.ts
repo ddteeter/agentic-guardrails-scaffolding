@@ -258,6 +258,23 @@ function rungLines(rung: RungSummary): string[] {
 }
 
 /**
+ * What this report does NOT measure.
+ *
+ * Only `runStopGate` appends a row today (#53): the commit rung writes a
+ * manifest and blocks, but records no decision, and the push and ci rungs run
+ * through the same commit path. A table headed by one rung, with nothing saying
+ * the others never write, invites the opposite reading of the same output --
+ * "the commit gate decided nothing" rather than "the commit gate is not
+ * measured". The share above is therefore a share of STOP-rung decisions, not
+ * of all gate firings.
+ *
+ * Delete this line the day another rung starts writing, and not before.
+ */
+const COVERAGE_CAVEAT =
+  'note: only the stop rung records decisions today (#53), so the share above ' +
+  'covers stop-rung firings only — not commit, push or ci.';
+
+/**
 Render the summary for `guardrails report`.
 */
 export function formatDecisionReport(summary: DecisionSummary): string {
@@ -274,6 +291,8 @@ export function formatDecisionReport(summary: DecisionSummary): string {
     ...summary.rungs.flatMap((rung) => [...rungLines(rung), '']),
     'most frequent rules',
     ...rules,
+    '',
+    COVERAGE_CAVEAT,
     '',
   ].join('\n');
 }

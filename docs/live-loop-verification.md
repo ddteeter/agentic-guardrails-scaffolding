@@ -127,8 +127,14 @@ accumulate across sessions.
 ## 7. Escalation and terminal release — _the main agent gets the hard case_
 
 Force a violation the fixer cannot resolve honestly for `maxAttempts` cycles.
-**Expected:** on `attempt > MAX` the gate stops hiding, blocks with the **full
-dump** (not a pointer), and hands it to the main agent (top model, full context).
+**Expected:** on `attempt > MAX` the gate hands the case to the main agent (top
+model, full context) with an **escalation pointer**: the count, the distinct
+files, and a `ruleId ×count` breakdown bounded at four names, then the manifest
+path and the statement that reading it _here_ is correct. It is deliberately
+NOT the per-violation dump it used to be (#80) — that enumeration landed in the
+main thread at exactly the moment the loop was under most strain, which is the
+context leak the terse-pointer design exists to prevent. Reading the manifest at
+this point is the one time the main agent should.
 If the main agent still cannot resolve it and tries to stop again, that retry is
 released instead of restarting the fixer ladder. The hook emits a non-blocking
 stderr warning that unresolved violations remain and the commit and CI gates
@@ -153,7 +159,7 @@ Against a clean tarball-installed disposable TypeScript repo with Claude Code
 - Stop emitted the terse exact-session manifest pointer and Claude spawned
   `guardrail-fixer-thorough`.
 - With an intentionally unavailable analyzer and `maxAttempts: 1`, the next
-  Stop emitted the full-dump escalation; the following host retry terminated
+  Stop emitted the escalation pointer; the following host retry terminated
   successfully with no further blocking Stop payload. Current builds also emit
   the non-blocking terminal-release warning described above.
 - A controlled `acceptEdits` run proved repo-local agent-frontmatter
