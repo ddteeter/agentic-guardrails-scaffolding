@@ -178,8 +178,16 @@ export interface CommitGateOptions {
  */
 export type CommitGateResult = CommitGateCommon &
   (
-    | { blocked: false; delegation?: undefined }
-    | { blocked: true; delegation: CommitDelegation }
+    | { blocked: false; delegation?: undefined; unreadable?: undefined }
+    | { blocked: true; delegation: CommitDelegation; unreadable?: undefined }
+    /**
+     * Blocked because the branch diff could not be READ, not because anything
+     * in it was wrong (#92). No fixer is named: no edit to this repository can
+     * resolve a killed git call, which is why this arm carries no delegation
+     * and why `enforcement: warn` must not soften it — `warn` softens findings,
+     * and this is the absence of a verdict rather than a finding.
+     */
+    | { blocked: true; delegation?: undefined; unreadable: UnreadableDiff }
   );
 
 /**
@@ -399,7 +407,7 @@ async function workingDiff(options: StopGateOptions): Promise<WorkingDiff> {
  * why nothing is written and no attempt is spent — this turn produced no
  * verdict at all, so the fix loop's state must end it exactly as it found it.
  */
-function unreadableDiffMessage(unreadable: UnreadableDiff): string {
+export function unreadableDiffMessage(unreadable: UnreadableDiff): string {
   return (
     `Could not read the working diff: ${unreadable.command} was killed by ` +
     `${unreadable.signal}, so the diff-auditor inspected nothing and any ` +
@@ -713,29 +721,45 @@ export async function runStopGate(
 /** Diff of the branch vs its merge-base with the base branch, so suppressions
  * inherited from the base branch are excluded. Falls back to the staged diff
  * when the merge-base can't be resolved (shallow clone / missing base). */
-async function branchDiff(options: CommitGateOptions): Promise<string> {
+async function branchDiff(options: CommitGateOptions): Promise<WorkingDiff> {
   // `origin/<branch>` is the only form that resolves in a CI checkout.
   const resolved = await resolveBaseReference(
     options.exec,
     options.repoRoot,
     options.baseBranch,
   );
-  const mergeBase = await options.exec(
-    'git',
-    ['merge-base', resolved.ref ?? options.baseBranch, 'HEAD'],
-    { cwd: options.repoRoot },
-  );
-  const sha = mergeBase.stdout.trim();
-  if (sha && mergeBase.code === 0) {
-    const diff = await options.exec('git', ['diff', sha], {
-      cwd: options.repoRoot,
-    });
-    return diff.stdout;
-  }
-  const staged = await options.exec('git', ['diff', '--cached'], {
+  const mergeBaseArguments = [
+    'merge-base',
+    resolved.ref ?? options.baseBranch,
+    'HEAD',
+  ];
+  const mergeBase = await options.exec('git', mergeBaseArguments, {
     cwd: options.repoRoot,
   });
-  return staged.stdout;
+  // Checked before the `code === 0` test below, which a kill passes: a killed
+  // child reports exit 0 (see `ExecResult.signal`), so an empty `sha` was the
+  // only thing standing between a killed merge-base and the staged fallback --
+  // luck rather than a check.
+  const killedBase = killedGitCall(mergeBaseArguments, mergeBase);
+  if (killedBase !== undefined) {
+    return { unreadable: killedBase };
+  }
+  const sha = mergeBase.stdout.trim();
+  if (sha && mergeBase.code === 0) {
+    const args = ['diff', sha];
+    const diff = await options.exec('git', args, { cwd: options.repoRoot });
+    const killed = killedGitCall(args, diff);
+    return killed === undefined
+      ? { diff: diff.stdout }
+      : { unreadable: killed };
+  }
+  const staged = await options.exec('git', DIFF_CACHED, {
+    cwd: options.repoRoot,
+  });
+  const killedStaged = killedGitCall(DIFF_CACHED, staged);
+  return killedStaged === undefined
+    ? { diff: staged.stdout }
+    : { unreadable: killedStaged };
 }
 
 /** Shared core of `gate --mode=commit`: audits the branch's cumulative diff
@@ -785,8 +809,20 @@ export async function runCommitGate(
   // `undefined` (not a string), so it can never match and grants no budget.
   // Stryker disable next-line ArrayDeclaration
   const budget = sanctionBudget(options.sanctionedSuppressions ?? []);
+  const branch = await branchDiff(options);
+  if (branch.unreadable !== undefined) {
+    // Fail closed before any manifest is written: there is no audit to be had,
+    // so there is nothing for a fixer to be pointed at.
+    return {
+      violations: withGuidance(violations),
+      findings: [],
+      blocked: true,
+      unreadable: branch.unreadable,
+      skippedAnalyzers,
+    };
+  }
   const findings = spendBudget(
-    auditDiff(await branchDiff(options)),
+    auditDiff(branch.diff),
     budget,
     options.sanctionedFiles,
   );
