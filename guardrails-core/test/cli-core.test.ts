@@ -142,6 +142,17 @@ describe('runCommand — verify', () => {
   });
 });
 
+/**
+A `git diff HEAD` that was killed: exit 0, no output, a signal.
+*/
+const killedDiffExec = (): Promise<ExecResult> =>
+  Promise.resolve({
+    stdout: '',
+    stderr: '',
+    code: 0,
+    signal: 'SIGTERM' as const,
+  });
+
 describe('runCommand — audit', () => {
   it('returns 1 when the working diff adds a suppression', async () => {
     const diff = [
@@ -152,6 +163,22 @@ describe('runCommand — audit', () => {
     const exec = () => Promise.resolve(ok(diff));
     expect(await runCommand('audit', [], dependencies({ exec }))).toBe(1);
     expect(errors.join('')).toContain('eslint-disable');
+  });
+
+  it('exits non-zero and NOT 1 when the diff was killed, so "clean" and "could not look" differ', async () => {
+    // A killed child reports exit 0 with empty stdout, so this used to return 0
+    // -- a clean audit of a diff nobody read (#92). 1 would be just as wrong
+    // here: it means "findings were found", and a caller branching on the exit
+    // code has to be able to tell the two apart.
+    const exit = await runCommand(
+      'audit',
+      [],
+      dependencies({ exec: killedDiffExec }),
+    );
+    expect(exit).not.toBe(0);
+    expect(exit).not.toBe(1);
+    expect(errors.join('')).toContain('SIGTERM');
+    expect(errors.join('')).toContain('git diff HEAD');
   });
 });
 
@@ -2634,6 +2661,108 @@ describe('gate --mode=pretooluse enforcement', () => {
     expect(reason).toContain('src/foo.ts');
     expect(reason).toContain('commit again');
     expect(reason).not.toContain('Spawn the');
+  });
+});
+
+/**
+Mock exec that returns a killed signal for merge-base, ok otherwise.
+*/
+const unreadableDiffExec: Exec = (command, args) => {
+  const line = [command, ...args].join(' ');
+  if (line.includes('merge-base')) {
+    return Promise.resolve({
+      stdout: '',
+      stderr: '',
+      code: 0,
+      signal: 'SIGTERM' as const,
+    });
+  }
+  return Promise.resolve(ok(''));
+};
+
+/** `git merge-base` killed by a signal, exit 0 and empty stdout otherwise: the
+ * unreadable-diff branch of `gate --mode=commit` and `--mode=pretooluse`
+ * (#92). `enforcement` is threaded through like `blockingCommitDependencies`,
+ * but this exercises the FAIL-CLOSED path, which is never softened by it. */
+function unreadableDiffDependencies(
+  enforcement: 'warn' | 'block',
+): CliDependencies {
+  writeFileSync(
+    path.join(root, 'guardrails.config.json'),
+    JSON.stringify({ baseBranch: 'main', enforcement }),
+  );
+  return dependencies({ exec: unreadableDiffExec });
+}
+
+/** As `unreadableDiffDependencies`, plus the preToolUse hook payload that gets
+ *  past the command's shell-tool + git-commit self-filter. */
+function unreadableDiffPreToolUseDependencies(
+  enforcement: 'warn' | 'block',
+): CliDependencies {
+  const base = unreadableDiffDependencies(enforcement);
+  return {
+    ...base,
+    readStdin: () =>
+      Promise.resolve(
+        JSON.stringify({
+          cwd: root,
+          tool_name: 'bash',
+          tool_input: { command: 'git commit -m x' },
+        }),
+      ),
+  };
+}
+
+describe('gate --mode=commit: the branch diff could not be read (#92)', () => {
+  it('exits 1 and reports the kill on stderr when enforcement is block', async () => {
+    const code = await runCommand(
+      'gate',
+      ['--mode=commit'],
+      unreadableDiffDependencies('block'),
+    );
+    expect(code).toBe(1);
+    const output = errors.join('');
+    expect(output).toContain('git merge-base');
+    expect(output).toContain('SIGTERM');
+  });
+
+  it('still exits 1 when enforcement is warn: an unreadable diff is not a finding "warn" can soften', async () => {
+    const code = await runCommand(
+      'gate',
+      ['--mode=commit'],
+      unreadableDiffDependencies('warn'),
+    );
+    expect(code).toBe(1);
+    // Contrast with `gate --mode=commit enforcement`'s "warn" case above: a
+    // real finding trades its block for this note. An unreadable diff has no
+    // verdict to trade -- it must never appear here.
+    expect(errors.join('')).not.toContain('not blocking (enforcement: warn)');
+  });
+});
+
+describe('gate --mode=pretooluse: the branch diff could not be read (#92)', () => {
+  it('denies, not allows-with-a-warning, when enforcement is block', async () => {
+    await runCommand(
+      'gate',
+      ['--mode=pretooluse'],
+      unreadableDiffPreToolUseDependencies('block'),
+    );
+    const payload = out.join('');
+    expect(payload).toContain('deny');
+    expect(payload).toContain('SIGTERM');
+  });
+
+  it('still denies when enforcement is warn: this rung is never softened (#92)', async () => {
+    await runCommand(
+      'gate',
+      ['--mode=pretooluse'],
+      unreadableDiffPreToolUseDependencies('warn'),
+    );
+    // Denied outright, never allowed-through-with-a-warning: this rung stands
+    // in front of the agent's own `git commit`, and `warn` governs only the
+    // findings a gate actually made -- not the absence of a verdict.
+    expect(out.join('')).toContain('deny');
+    expect(errors.join('')).not.toContain('not blocking (enforcement: warn)');
   });
 });
 

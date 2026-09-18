@@ -1089,6 +1089,66 @@ function commitOptions(exec: Exec) {
   return { repoRoot: root, baseBranch: 'main', exec, config };
 }
 
+describe('runCommitGate — the branch diff could not be read', () => {
+  // The same fail-open #87 closed at the Stop rung, at the rung that matters
+  // more (#92). The Stop rung's miss is caught later by commit or push; THIS
+  // is commit, push and ci -- the path carrying the "CI is authoritative"
+  // guarantee. A killed `git diff` here means a suppression introduced on the
+  // branch is never audited by anything.
+  it('blocks instead of auditing the empty diff a killed `git diff <sha>` leaves', async () => {
+    const exec = makeExec((line) => {
+      if (line.startsWith('git merge-base')) return ok('abc123');
+      if (line.startsWith('git diff abc123')) return killedBy('SIGTERM');
+      return ok('');
+    });
+    const result = await runCommitGate(commitOptions(exec));
+    expect(result.blocked).toBe(true);
+    expect(result.unreadable).toMatchObject({ signal: 'SIGTERM' });
+    expect(result.unreadable?.command).toContain('git diff abc123');
+  });
+
+  it('blocks when the merge-base fallback `git diff --cached` is killed', async () => {
+    // Shallow clone or missing base: the staged diff is the whole audit
+    // surface, so losing it loses the audit entirely.
+    const exec = makeExec((line) => {
+      if (line.startsWith('git merge-base')) return ok('');
+      if (line === 'git diff --cached') return killedBy('SIGKILL');
+      return ok('');
+    });
+    const result = await runCommitGate(commitOptions(exec));
+    expect(result.blocked).toBe(true);
+    expect(result.unreadable).toMatchObject({ signal: 'SIGKILL' });
+  });
+
+  it('names no fixer: no edit to this repository can resolve a killed git call', async () => {
+    const exec = makeExec((line) => {
+      if (line.startsWith('git merge-base')) return ok('abc123');
+      if (line.startsWith('git diff abc123')) return killedBy('SIGTERM');
+      return ok('');
+    });
+    const result = await runCommitGate(commitOptions(exec));
+    expect(result.delegation).toBeUndefined();
+  });
+
+  it('blocks when `git merge-base` itself is killed, before either diff is attempted', async () => {
+    // The three prior tests all kill a call AFTER merge-base has already
+    // resolved. `merge-base` is the FIRST git call `branchDiff` makes, and it
+    // is checked through the same `killedGitCall` helper as the other two --
+    // this pins that the check fires there too, not just on its two siblings.
+    const exec = makeExec((line) => {
+      if (line.startsWith('git merge-base')) return killedBy('SIGTERM');
+      return ok('');
+    });
+    const result = await runCommitGate(commitOptions(exec));
+    expect(result.blocked).toBe(true);
+    expect(result.unreadable).toMatchObject({ signal: 'SIGTERM' });
+    expect(result.unreadable?.command).toContain('git merge-base');
+    // The unreadable result carries no findings to spend a sanction budget
+    // against -- there was no diff to audit for any.
+    expect(result.findings).toEqual([]);
+  });
+});
+
 describe('runCommitGate: path-scoped sanctions for generated files', () => {
   it('exempts every occurrence of the granted kind, with no count to keep', async () => {
     // The whole point (#39). A keyed grant needs `count` to equal the real
