@@ -9,6 +9,10 @@ import {
   parseStrykerJson,
   unrunSurvivedMutants,
 } from '../../src/verify/stryker-adapter.js';
+import {
+  isStrykerDryRunFailure,
+  strykerFailingTests,
+} from '../../src/verify/index.js';
 
 const report = JSON.stringify({
   schemaVersion: '1.0',
@@ -769,5 +773,120 @@ describe('haveTestsChangedSinceCache', () => {
     // code keeps the reuse #59 restored, and the cache mtime does not matter
     // even when it is the unreadable sentinel.
     expect(haveTestsChangedSinceCache(UNREADABLE_CACHE_TIME, [])).toBe(false);
+  });
+});
+
+/**
+ * #105: reading the failing test names out of a dry-run failure, by
+ * indentation rather than by knowing anything about the test framework.
+ */
+describe('strykerFailingTests', () => {
+  const block = [
+    'INFO ProjectReader Found 42 file(s) to be mutated.',
+    'ERROR DryRunExecutor One or more tests failed in the initial test run:',
+    '\tfirst failing test',
+    '\t\texpected 1 to equal 0',
+    '\tsecond failing test',
+    '\t\texpected true to be false',
+    'ERROR Stryker There were failed tests in the initial test run.',
+  ].join('\n');
+
+  it('takes the names at the outermost indentation, not their messages', () => {
+    expect(strykerFailingTests(block)).toEqual([
+      'first failing test',
+      'second failing test',
+    ]);
+  });
+
+  it('stops at the next top-level log line', () => {
+    expect(strykerFailingTests(block)).not.toContain(
+      'ERROR Stryker There were failed tests in the initial test run.',
+    );
+  });
+
+  it('keeps collecting across a blank line inside a failure message', () => {
+    // Found in review of #105. `indentWidth('')` is 0, so a loop that breaks on
+    // "indentation 0" stops at an EMPTY line as readily as at stryker's next
+    // log entry — and assertion diffs (chai deep-equal, vitest `toEqual`)
+    // routinely embed blank lines. Every test after the first such message
+    // would silently drop out, and the "(N more.)" tally would undercount with
+    // it, since that count comes from the already-truncated list.
+    const withBlankLine = [
+      'ERROR DryRunExecutor One or more tests failed in the initial test run:',
+      '\tfirst failing test',
+      '\t\texpected the following to match:',
+      '',
+      // Whitespace-only at the TEST-NAME indent, not empty. `line === ''`
+      // would not catch it, so it would be collected as if it were a name and
+      // come back as an empty string in the list.
+      '\t',
+      '\t\t- { a: 1 }',
+      '\t\t+ { a: 2 }',
+      '\tsecond failing test',
+      '\t\texpected true to be false',
+      'ERROR Stryker There were failed tests in the initial test run.',
+    ].join('\n');
+    expect(strykerFailingTests(withBlankLine)).toEqual([
+      'first failing test',
+      'second failing test',
+    ]);
+  });
+
+  it('reads space indentation as readily as tabs', () => {
+    // Stryker's indent character is not something this should depend on.
+    const spaced = [
+      'ERROR DryRunExecutor One or more tests failed in the initial test run:',
+      '  a failing test',
+      '    expected 1 to equal 0',
+    ].join('\n');
+    expect(strykerFailingTests(spaced)).toEqual(['a failing test']);
+  });
+
+  it('is empty when the marker never appears', () => {
+    expect(
+      strykerFailingTests('ERROR Stryker something else entirely'),
+    ).toEqual([]);
+  });
+
+  it('reads nothing out of indented output that carries no marker', () => {
+    // `findIndex` answers -1 for no marker, and `slice(-1 + 1)` is `slice(0)`
+    // — the whole output — so without the no-marker guard this returns
+    // whatever happens to be indented at the top as if those were failing
+    // test names. The indentation has to come FIRST to show it: the scan
+    // breaks at the first unindented line, so any fixture that opens with a
+    // log line yields `[]` either way and cannot tell the guard from its
+    // absence.
+    const leadingIndent = [
+      '\tat someFunction (src/a.ts:1:1)',
+      '\tat another (src/b.ts:2:2)',
+      'ERROR Stryker something else entirely',
+    ].join('\n');
+    expect(strykerFailingTests(leadingIndent)).toEqual([]);
+  });
+
+  it('is empty when the marker is the last thing said', () => {
+    // A truncated log still has to answer, and answer with nothing rather
+    // than with a slice of whatever followed.
+    expect(
+      strykerFailingTests(
+        'ERROR DryRunExecutor One or more tests failed in the initial test run:',
+      ),
+    ).toEqual([]);
+  });
+});
+
+describe('isStrykerDryRunFailure', () => {
+  it('recognises stryker saying the initial run was red', () => {
+    expect(
+      isStrykerDryRunFailure(
+        'ERROR Stryker There were failed tests in the initial test run.',
+      ),
+    ).toBe(true);
+  });
+
+  it('does not fire on an ordinary stryker error', () => {
+    expect(isStrykerDryRunFailure('ERROR Stryker Unexpected flag --nope')).toBe(
+      false,
+    );
   });
 });

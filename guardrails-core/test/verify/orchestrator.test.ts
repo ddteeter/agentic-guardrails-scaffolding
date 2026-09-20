@@ -4638,3 +4638,350 @@ describe('runVerify sanction integrity', () => {
     ).toBe(true);
   });
 });
+
+/**
+ * #105: a failed Stryker DRY RUN is not the same failure as a crash, a bad
+ * flag, or a version mismatch, and it must not report as one.
+ *
+ * The distinction is the one the mutation gate exists to make. A crash is the
+ * operator's to fix before the gate can run at all; a red dry run means the
+ * gate ran correctly and the SUITE is the problem — frequently a flake rather
+ * than a defect. Conflated, an agent cannot tell "your code got worse" from "a
+ * test is unreliable".
+ */
+describe('stryker dry-run failure', () => {
+  // Stryker's real shape: 13 config warnings, THEN the verdict. Taking the
+  // head of this is why the actionable line never reached anyone.
+  const dryRunOutput = [
+    'WARN OptionsValidator Unknown stryker config option "//".',
+    'WARN OptionsValidator Unknown stryker config option "//testRunner".',
+    'WARN OptionsValidator Unknown stryker config option "//coverageAnalysis".',
+    'WARN OptionsValidator Unknown stryker config option "//thresholds".',
+    'WARN OptionsValidator Unknown stryker config option "//concurrency".',
+    'WARN OptionsValidator Unknown stryker config option "//mutate".',
+    'INFO ProjectReader Found 42 of 100 file(s) to be mutated.',
+    'ERROR DryRunExecutor One or more tests failed in the initial test run:',
+    '\treview claims expire holds the row for exactly the lease',
+    '\t\texpected { released: 1 } to strictly equal { released: +0 }',
+    '\tsafety gate rejects an unsigned payload',
+    '\t\texpected true to be false',
+    'ERROR Stryker There were failed tests in the initial test run.',
+    'ConfigError: There were failed tests in the initial test run.',
+  ].join('\n');
+
+  const STRYKER_RUN =
+    'stryker run --incremental --reporters json --mutate src/foo.ts,src/new.ts';
+
+  const strykerFails = (stdout: string): Record<string, ExecResult> => ({
+    [STRYKER_RUN]: { stdout, stderr: '', code: 1 },
+  });
+
+  it('reports its own violation, not the generic analyzer failure', async () => {
+    const { exec } = fakeExec(strykerFails(dryRunOutput));
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      profile: 'commit',
+      readFile: () => Promise.reject(new Error('no report')),
+    });
+    const ids = violations.map((violation) => violation.ruleId);
+    expect(ids).toContain('guardrails/stryker-dry-run-failed');
+    expect(ids).not.toContain('guardrails/analyzer-failed');
+  });
+
+  it('names the tests that failed', async () => {
+    // The one actionable fact, and the one that used to be truncated away.
+    const { exec } = fakeExec(strykerFails(dryRunOutput));
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      profile: 'commit',
+      readFile: () => Promise.reject(new Error('no report')),
+    });
+    const dryRun = violations.find(
+      (violation) => violation.ruleId === 'guardrails/stryker-dry-run-failed',
+    );
+    expect(dryRun?.message).toContain(
+      'review claims expire holds the row for exactly the lease',
+    );
+    expect(dryRun?.message).toContain(
+      'safety gate rejects an unsigned payload',
+    );
+  });
+
+  it('does not quote the config warnings that precede the verdict', async () => {
+    const { exec } = fakeExec(strykerFails(dryRunOutput));
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      profile: 'commit',
+      readFile: () => Promise.reject(new Error('no report')),
+    });
+    const dryRun = violations.find(
+      (violation) => violation.ruleId === 'guardrails/stryker-dry-run-failed',
+    );
+    expect(dryRun?.message).not.toContain('OptionsValidator');
+  });
+
+  it('says the suite is red rather than guessing at the config', async () => {
+    const { exec } = fakeExec(strykerFails(dryRunOutput));
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      profile: 'commit',
+      readFile: () => Promise.reject(new Error('no report')),
+    });
+    const dryRun = violations.find(
+      (violation) => violation.ruleId === 'guardrails/stryker-dry-run-failed',
+    );
+    expect(dryRun?.message).not.toContain('a bad config');
+  });
+
+  it('reads the marker on stderr as well as stdout', async () => {
+    const { exec } = fakeExec({
+      [STRYKER_RUN]: { stdout: '', stderr: dryRunOutput, code: 1 },
+    });
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      profile: 'commit',
+      readFile: () => Promise.reject(new Error('no report')),
+    });
+    expect(violations.map((violation) => violation.ruleId)).toContain(
+      'guardrails/stryker-dry-run-failed',
+    );
+  });
+
+  it('still reports the generic failure when the marker is absent', async () => {
+    // A real crash must keep its own message; this must not swallow every
+    // non-zero stryker exit.
+    const { exec } = fakeExec({
+      [STRYKER_RUN]: {
+        stdout: 'ERROR Stryker Unexpected flag --nope',
+        stderr: '',
+        code: 1,
+      },
+    });
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      profile: 'commit',
+      readFile: () => Promise.reject(new Error('no report')),
+    });
+    const ids = violations.map((violation) => violation.ruleId);
+    expect(ids).toContain('guardrails/analyzer-failed');
+    expect(ids).not.toContain('guardrails/stryker-dry-run-failed');
+  });
+
+  it('still reports a killed run as a kill, not a dry-run failure', async () => {
+    // A kill outranks this: an interrupted stryker may have printed the dry-run
+    // marker on its way out, and a kill points at the environment.
+    const { exec } = fakeExec({
+      [STRYKER_RUN]: {
+        stdout: dryRunOutput,
+        stderr: '',
+        code: 1,
+        signal: 'SIGTERM' as const,
+      },
+    });
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      profile: 'commit',
+      readFile: () => Promise.reject(new Error('no report')),
+    });
+    const ids = violations.map((violation) => violation.ruleId);
+    expect(ids).toContain('guardrails/analyzer-failed');
+    expect(ids).not.toContain('guardrails/stryker-dry-run-failed');
+  });
+});
+
+/**
+ * #105, second half: when the generic failure message IS the right one, it
+ * should quote the part of the output that says what went wrong — not the
+ * first five lines, which for a chatty tool are its warm-up.
+ */
+describe('analyzer-failed output detail', () => {
+  it('quotes from the first error marker rather than the head', async () => {
+    const { exec } = fakeExec({
+      'knip --reporter json': {
+        stdout: [
+          'WARN preamble one',
+          'WARN preamble two',
+          'WARN preamble three',
+          'WARN preamble four',
+          'WARN preamble five',
+          'ERROR the actual diagnosis',
+        ].join('\n'),
+        stderr: '',
+        code: 2,
+      },
+    });
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      profile: 'commit',
+    });
+    const failed = violations.find(
+      (violation) =>
+        violation.ruleId === 'guardrails/analyzer-failed' &&
+        violation.message.startsWith('knip'),
+    );
+    expect(failed?.message).toContain('the actual diagnosis');
+  });
+
+  it('keeps taking the head when nothing looks like an error marker', async () => {
+    // The eslint case the head-lines budget was built for: a decorative banner
+    // with the actionable sentence a few lines down and no marker anywhere.
+    const { exec } = fakeExec({
+      'knip --reporter json': {
+        stdout: [
+          'Oops! Something went wrong! :(',
+          '',
+          'knip could not find a configuration file.',
+        ].join('\n'),
+        stderr: '',
+        code: 2,
+      },
+    });
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      profile: 'commit',
+    });
+    const failed = violations.find(
+      (violation) =>
+        violation.ruleId === 'guardrails/analyzer-failed' &&
+        violation.message.startsWith('knip'),
+    );
+    expect(failed?.message).toContain('could not find a configuration file');
+  });
+});
+
+/**
+ * #105: the error-marker window, pinned from both sides. The marker is
+ * deliberately a convention ("a line that says error or fail") rather than any
+ * tool's wording, so each half gets a case and a line with neither falls back
+ * to the head.
+ */
+const knipFailure = async (stdout: string): Promise<string | undefined> => {
+  const { exec } = fakeExec({
+    'knip --reporter json': { stdout, stderr: '', code: 2 },
+  });
+  const { violations } = await runVerify({
+    repoRoot: '/repo',
+    baseBranch: 'main',
+    exec,
+    profile: 'commit',
+  });
+  return violations.find(
+    (violation) =>
+      violation.ruleId === 'guardrails/analyzer-failed' &&
+      violation.message.startsWith('knip'),
+  )?.message;
+};
+
+describe('error-marker detection', () => {
+  it.each([
+    ['error', 'ERROR the diagnosis'],
+    ['fail', 'FAILED the diagnosis'],
+  ])('starts the window at a line matching %s', async (_label, marker) => {
+    const message = await knipFailure(
+      ['noise one', 'noise two', 'noise three', marker].join('\n'),
+    );
+    expect(message).toContain('the diagnosis');
+    expect(message).not.toContain('noise one');
+  });
+
+  it('falls back to the head when no line matches either', async () => {
+    const message = await knipFailure(
+      ['first line', 'second line', 'third line'].join('\n'),
+    );
+    expect(message).toContain('first line');
+  });
+
+  it('keeps the head when the tool led with the marker', async () => {
+    // `-1` (no marker) and `0` (led with it) are the same start, which is why
+    // the implementation is a max rather than a branch.
+    const message = await knipFailure(
+      ['ERROR right up front', 'then the detail'].join('\n'),
+    );
+    expect(message).toContain('ERROR right up front');
+    expect(message).toContain('then the detail');
+  });
+});
+
+/**
+ * #105: what the dry-run violation says about WHICH tests failed — the one
+ * fact the generic message truncated away, so each shape of it is pinned.
+ */
+const named = (count: number): string[] =>
+  Array.from({ length: count }, (_unused, index) => `\ttest number ${index}`);
+
+describe('stryker dry-run failing-test list', () => {
+  const STRYKER_RUN_LINE =
+    'stryker run --incremental --reporters json --mutate src/foo.ts,src/new.ts';
+
+  const dryRunWith = async (
+    lines: string[],
+  ): Promise<Violation | undefined> => {
+    const { exec } = fakeExec({
+      [STRYKER_RUN_LINE]: {
+        stdout: [
+          'ERROR DryRunExecutor One or more tests failed in the initial test run:',
+          ...lines,
+          'ERROR Stryker There were failed tests in the initial test run.',
+        ].join('\n'),
+        stderr: '',
+        code: 1,
+      },
+    });
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      profile: 'commit',
+      readFile: () => Promise.reject(new Error('no report')),
+    });
+    return violations.find(
+      (violation) => violation.ruleId === 'guardrails/stryker-dry-run-failed',
+    );
+  };
+
+  it('says so plainly when stryker named no tests', async () => {
+    const violation = await dryRunWith([]);
+    expect(violation?.message).toContain('did not name them');
+  });
+
+  it('lists every name when there are five or fewer', async () => {
+    const violation = await dryRunWith(named(5));
+    expect(violation?.message).toContain('test number 4');
+    expect(violation?.message).not.toContain('more.)');
+  });
+
+  it('counts the remainder when there are more than five', async () => {
+    const violation = await dryRunWith(named(7));
+    expect(violation?.message).toContain('test number 4');
+    expect(violation?.message).not.toContain('test number 5');
+    expect(violation?.message).toContain('(2 more.)');
+  });
+
+  it('is a blocking, non-fixable violation', async () => {
+    // Nothing about a red suite belongs to the silent autofix class.
+    const violation = await dryRunWith(named(1));
+    expect(violation).toMatchObject({
+      severity: 'error',
+      fixable: false,
+      tool: 'guardrails',
+    });
+  });
+});
