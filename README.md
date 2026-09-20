@@ -102,6 +102,9 @@ Everything is authored in strict TypeScript, compiled to pure-Node ESM
 - **Diff-auditor** (`src/audit.ts`) — rejects newly-added
   `eslint-disable`/`@ts-ignore`/`as any`/`.skip`/`@Disabled`/`@SuppressWarnings`.
 - **verify orchestrator** (`src/verify/`) — diff-scoping + eslint/tsc adapters.
+  The diff base is resolved per branch — `--base <ref>`, else the pull request's
+  base via `gh`, else `baseBranch` — so a stacked branch does not re-verify its
+  parent's whole diff. Every fallback widens the scope; none narrows it.
 - **Gate** (`src/gate-decision.ts`, `src/gate.ts`) — the clean/delegate/escalate
   engine + snapshot-based fixer audit, shared by the CC stop-gate and (Phase B)
   the Codex and Copilot commit gates.
