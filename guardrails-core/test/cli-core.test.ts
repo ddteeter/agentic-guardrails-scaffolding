@@ -2113,6 +2113,16 @@ describe('sanctioned suppressions reach the commit gate', () => {
         ],
       }),
     );
+    // The granted suppression has to EXIST in the source the key names. The
+    // sanction-integrity check (#103) now runs on this rung, and a grant whose
+    // file holds zero occurrences of it is drift -- the deleted-file case --
+    // so a fixture that faked the diff without writing the file was declaring
+    // a budget of 1 against a source of 0.
+    mkdirSync(path.join(root, 'src'), { recursive: true });
+    writeFileSync(
+      path.join(root, 'src', 'a.ts'),
+      '// eslint-disable-next-line\nfoo();\n',
+    );
     const exec = gitExec({
       'merge-base': 'BASESHA\n',
       'diff BASESHA': [
@@ -2251,6 +2261,25 @@ const REVIEWED = { key: REVIEWED_KEY, reason: 'proven equivalent' };
 const REQUESTED = { key: REQUESTED_KEY, reason: 'newly requested' };
 
 describe('runCommand — sanctions-check (CI approval-visibility gate)', () => {
+  it('passes in a repo that has no policy file at all', async () => {
+    // Raised in review of #103. Before this PR the command read
+    // `readConfigText(cwd) ?? ''` and handed that to `parseSanctionsJson`,
+    // where `JSON.parse('')` throws and comes back as
+    // `malformed: ['config is not valid JSON']` — so an un-scaffolded repo
+    // failed this check on every CI run. `sanctionIntegrity` defaults to
+    // `'{}'` instead, and this pins that at the CLI boundary rather than only
+    // at the unit one: `init` seeds the file today, which is exactly the kind
+    // of "unreachable in practice" that stops being true later.
+    expect(
+      await runCommand(
+        'sanctions-check',
+        [],
+        dependencies({ exec: sanctionsExec('').exec }),
+      ),
+    ).toBe(0);
+    expect(errors.join('')).not.toContain('malformed');
+  });
+
   it('passes when the branch adds no new exemption', async () => {
     writeRepoConfig([REVIEWED]);
     const base = JSON.stringify({ sanctionedSuppressions: [REVIEWED] });

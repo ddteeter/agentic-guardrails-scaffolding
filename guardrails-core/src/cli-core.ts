@@ -4,7 +4,6 @@
  * `cli.ts` is a thin bootstrap that supplies the real dependencies.
  */
 
-import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -12,6 +11,7 @@ import { auditDiff, type AuditFinding } from './audit.js';
 import { runAutofix } from './autofix.js';
 import { formatDecisionReport, summarizeDecisions } from './decision-log.js';
 import {
+  CONFIG_FILE_NAME,
   loadConfig,
   type RepoConfig,
   type SanctionedFile,
@@ -29,15 +29,15 @@ import {
 } from './gate.js';
 import { leaseWaitNote } from './gate-decision.js';
 import { findGitRoot, resolveRepoRoot } from './repo-root.js';
+import { repoSourceReader } from './repo-source.js';
 import {
   formatGrantReport,
   newlySanctioned,
   newlySanctionedFiles,
   type SanctionCountDrift,
   type SanctionGrant,
-  sanctionCountDrift,
+  sanctionIntegrity,
   type SanctionPlacementIssue,
-  sanctionPlacementIssues,
   toMalformedViolations,
 } from './sanctions.js';
 import {
@@ -568,7 +568,7 @@ async function gatePreToolUseCommand(
   dependencies.stdout(JSON.stringify(formatPreToolUseDeny(reason, dialect)));
 }
 
-const CONFIG_FILE = 'guardrails.config.json';
+const CONFIG_FILE = CONFIG_FILE_NAME;
 
 /** `sanctions-check`: CI approval-visibility gate for the diff-auditor's escape
  * hatch. It can only FAIL on a malformed `sanctionedSuppressions` entry in the
@@ -579,20 +579,6 @@ const CONFIG_FILE = 'guardrails.config.json';
  * constitutes its approval. The gate itself (`runCommitGate`) is what enforces
  * reality: an occurrence beyond the declared count still blocks the commit
  * regardless of what this check reports. See src/sanctions.ts. */
-/** Reads a repo-relative source file for the count drift-guard. A key that
- *  escapes the repo (`../`) reads as absent rather than reaching outside it:
- *  the policy file is checked-in text, but it is still input. */
-function repoSourceReader(
-  repoRoot: string,
-): (file: string) => string | undefined {
-  return (file) => {
-    const full = path.join(repoRoot, file);
-    return isWithinRepo(repoRoot, file) && existsSync(full)
-      ? readFileSync(full, 'utf8')
-      : undefined;
-  };
-}
-
 /**
  * Print the exemptions this branch introduces, for the reviewer whose merge IS
  * the approval.
@@ -694,46 +680,35 @@ function reportPlacementIssues(
 async function sanctionsCheckCommand(
   dependencies: CliDependencies,
 ): Promise<number> {
-  const headText = readConfigText(dependencies.cwd) ?? '';
-  const {
-    valid: headSanctions,
-    files: headFiles,
-    malformed,
-  } = parseSanctionsJson(headText);
-  if (malformed.length > 0) {
+  const headText = readConfigText(dependencies.cwd);
+  const { valid: headSanctions, files: headFiles } = parseSanctionsJson(
+    headText ?? '',
+  );
+  const readSource = repoSourceReader(dependencies.cwd);
+  // The three FACTUAL failures, in one precedence, shared with the local rungs
+  // (#103). Each is rendered here with its own remediation paragraph; the rungs
+  // render the same result as manifest violations. What must never differ
+  // between them is the ORDER -- a stale count means the source moved under the
+  // policy file, and every placement report that follows would be noise about
+  // the same one defect -- so the order lives in `sanctionIntegrity`, once.
+  const integrity = sanctionIntegrity(headText, readSource);
+  if (integrity.kind === 'malformed') {
     printViolations(
       dependencies,
-      toMalformedViolations(malformed, CONFIG_FILE),
+      toMalformedViolations(integrity.entries, CONFIG_FILE),
     );
     dependencies.stderr(
-      `guardrails: ${malformed.length} malformed sanction entry(ies) in ` +
+      `guardrails: ${integrity.entries.length} malformed sanction entry(ies) in ` +
         `${CONFIG_FILE} — fix before merging.\n`,
     );
     return 1;
   }
-
-  // Declared budgets must still match the source. Like `malformed`, this is a
-  // FACTUAL error rather than a judgment about whether an exemption is
-  // deserved, so it blocks -- an over-provisioned budget silently shrinks how
-  // much the auditor is watching.
-  // `headFiles` is deliberately NOT passed: path grants carry no count, so
-  // there is nothing for this check to verify, and that absence is what
-  // removes the regeneration churn (#39).
-  const readSource = repoSourceReader(dependencies.cwd);
-  const drift = sanctionCountDrift(headSanctions, readSource);
-  if (drift.length > 0) {
-    reportCountDrift(dependencies, drift);
+  if (integrity.kind === 'drift') {
+    reportCountDrift(dependencies, integrity.entries);
     return 1;
   }
-
-  // Counts prove a granted suppression still EXISTS; placement is what proves
-  // it still covers what it was granted for (#79). Checked after the count
-  // guard rather than alongside it: a stale count means the source moved under
-  // the policy file, and every placement report that follows would be noise
-  // about the same one defect.
-  const misplaced = sanctionPlacementIssues(headSanctions, readSource);
-  if (misplaced.length > 0) {
-    reportPlacementIssues(dependencies, misplaced);
+  if (integrity.kind === 'placement') {
+    reportPlacementIssues(dependencies, integrity.entries);
     return 1;
   }
 

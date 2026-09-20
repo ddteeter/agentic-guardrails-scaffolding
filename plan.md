@@ -1246,9 +1246,13 @@ diff-auditor, so granting one is itself controlled.
   a key or a non-blank justification is dropped, so an unjustified exemption
   simply does not apply and the gate keeps blocking. A bare key is unreviewable:
   a reviewer cannot tell a proven-equivalent mutant from "the agent got stuck".
-- **`guardrails sanctions-check` (CI-only) is the enforcement.** It compares the
-  sanction **key set** against the branch's merge-base and fails on any newly-
-  requested exemption, so approval is a human reviewing and merging the PR.
+- **`guardrails sanctions-check` is the APPROVAL enforcement, and it is CI-only.**
+  It compares the sanction **key set** against the branch's merge-base and
+  reports any newly-requested exemption, so approval is a human reviewing and
+  merging the PR. Its **integrity** half — malformed entries, stale counts,
+  misplaced directives — is NOT CI-only as of #103: it is file reads with no git
+  in it, so `verify` and all three gate rungs run it and a drifted count blocks
+  where it was introduced rather than an hour downstream in CI.
   Enforced in CI rather than at the commit gate deliberately: the PR is where
   sign-off actually happens, and local work stays unblocked. Comparing keys (not
   diff lines) keeps it precise — reformatting, rewording a `reason`, or REMOVING
