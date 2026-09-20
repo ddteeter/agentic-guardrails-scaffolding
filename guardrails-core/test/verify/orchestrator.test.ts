@@ -4549,6 +4549,97 @@ describe('runVerify: the dupes analyzer', () => {
 });
 
 /**
+ * #103: the sanction-integrity check runs on every local rung, because it is
+ * file reads and costs milliseconds. Before this, a count that no longer
+ * matched the source passed the commit gate, passed the push gate, and failed
+ * in CI over an hour later — and the commit gate cannot catch it by design, as
+ * `spendBudget` measures a key's occurrences in the branch DIFF while the
+ * drift is in the FILE total.
+ */
+const sanctionReadSource =
+  (contents: Record<string, string>) =>
+  (file: string): string | undefined =>
+    contents[file];
+
+describe('runVerify sanction integrity', () => {
+  const DISABLE = '// Stryker disable next-line ConditionalExpression';
+  const key = `src/a.ts|mutation-suppress|${DISABLE}`;
+
+  it('reports a declared count that no longer matches the source', async () => {
+    const { exec } = fakeExec();
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      readSource: sanctionReadSource({
+        'guardrails.config.json': JSON.stringify({
+          sanctionedSuppressions: [{ key, reason: 'r', count: 1 }],
+        }),
+        'src/a.ts': `${DISABLE}\nfoo();\n${DISABLE}\nbar();`,
+      }),
+    });
+    const drift = violations.find(
+      (v) => v.ruleId === 'guardrails/sanction-count-drift',
+    );
+    expect(drift?.file).toBe('guardrails.config.json');
+    expect(drift?.message).toContain('declared 1, found 2');
+  });
+
+  it('stays silent when the counts match', async () => {
+    const { exec } = fakeExec();
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      readSource: sanctionReadSource({
+        'guardrails.config.json': JSON.stringify({
+          sanctionedSuppressions: [{ key, reason: 'r', count: 1 }],
+        }),
+        'src/a.ts': `${DISABLE}\nfoo();`,
+      }),
+    });
+    expect(
+      violations.some((v) => v.ruleId.startsWith('guardrails/sanction-')),
+    ).toBe(false);
+  });
+
+  it('stays silent when the repo has no config at all', async () => {
+    const { exec } = fakeExec();
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      readSource: sanctionReadSource({}),
+    });
+    expect(violations.some((v) => v.ruleId.startsWith('guardrails/'))).toBe(
+      false,
+    );
+  });
+
+  it('runs at the staged scope too, where the commit rung reads it', async () => {
+    // The commit rung passes `changedScope: 'staged'`. The drift is a property
+    // of the checked-in policy file, not of the change set, so it must not
+    // depend on which scope asked.
+    const { exec } = fakeExec();
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      changedScope: 'staged',
+      readSource: sanctionReadSource({
+        'guardrails.config.json': JSON.stringify({
+          sanctionedSuppressions: [{ key, reason: 'r', count: 1 }],
+        }),
+        'src/a.ts': `${DISABLE}\nfoo();\n${DISABLE}\nbar();`,
+      }),
+    });
+    expect(
+      violations.some((v) => v.ruleId === 'guardrails/sanction-count-drift'),
+    ).toBe(true);
+  });
+});
+
+/**
  * #105: a failed Stryker DRY RUN is not the same failure as a crash, a bad
  * flag, or a version mismatch, and it must not report as one.
  *

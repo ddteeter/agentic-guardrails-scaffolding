@@ -11,7 +11,8 @@
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 
-import { isRecord, pickAnalyzers } from '../config.js';
+import { pickAnalyzers } from '../config.js';
+import { isRecord } from '../is-record.js';
 import type { Exec } from '../exec.js';
 import { readJsonFile } from '../json-file.js';
 import { resolveRepoRoot } from '../repo-root.js';
