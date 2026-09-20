@@ -804,6 +804,34 @@ describe('strykerFailingTests', () => {
     );
   });
 
+  it('keeps collecting across a blank line inside a failure message', () => {
+    // Found in review of #105. `indentWidth('')` is 0, so a loop that breaks on
+    // "indentation 0" stops at an EMPTY line as readily as at stryker's next
+    // log entry — and assertion diffs (chai deep-equal, vitest `toEqual`)
+    // routinely embed blank lines. Every test after the first such message
+    // would silently drop out, and the "(N more.)" tally would undercount with
+    // it, since that count comes from the already-truncated list.
+    const withBlankLine = [
+      'ERROR DryRunExecutor One or more tests failed in the initial test run:',
+      '\tfirst failing test',
+      '\t\texpected the following to match:',
+      '',
+      // Whitespace-only at the TEST-NAME indent, not empty. `line === ''`
+      // would not catch it, so it would be collected as if it were a name and
+      // come back as an empty string in the list.
+      '\t',
+      '\t\t- { a: 1 }',
+      '\t\t+ { a: 2 }',
+      '\tsecond failing test',
+      '\t\texpected true to be false',
+      'ERROR Stryker There were failed tests in the initial test run.',
+    ].join('\n');
+    expect(strykerFailingTests(withBlankLine)).toEqual([
+      'first failing test',
+      'second failing test',
+    ]);
+  });
+
   it('reads space indentation as readily as tabs', () => {
     // Stryker's indent character is not something this should depend on.
     const spaced = [

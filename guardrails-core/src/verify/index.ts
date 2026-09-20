@@ -859,6 +859,15 @@ export function strykerFailingTests(output: string): string[] {
   const following = lines.slice(start + 1);
   const block: string[] = [];
   for (const line of following) {
+    // A BLANK line is not the end of the block. `indentWidth('')` is 0, so a
+    // plain "indentation 0 ends it" rule stops at an empty line as readily as
+    // at stryker's next log entry — and assertion diffs (chai deep-equal,
+    // vitest `toEqual`) routinely embed blank lines inside one failure's
+    // message. Every test after such a message would silently drop out, and
+    // the "(N more.)" tally with it, since that count comes from this list.
+    if (line.trim() === '') {
+      continue;
+    }
     if (indentWidth(line) === 0) {
       break;
     }
