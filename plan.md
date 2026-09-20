@@ -307,6 +307,25 @@ config; and external-tool output). Two tracks:
     escape hatch, not the laundering cast). Full investigation:
     `docs/superpowers/specs/2026-07-21-phase-c-boundary-cast-rule-design.md`.
 
+## Base ref resolution is per-branch (#104, shipped)
+
+`merge-base(baseBranch, HEAD)..HEAD` with a single repo-wide `baseBranch` makes
+a stacked branch re-verify its parent's whole diff. Resolution is now
+`--base` → the PR's base via `gh` → `config.baseBranch`, memoised per branch in
+`.guardrails/state/base-refs.json` so the Stop rung costs at most one host call
+per branch per hour.
+
+`@{u}` was proposed and rejected: for a pushed branch it is `origin/<the same
+branch>`, so the merge-base is the branch's own tip and the scope collapses to
+unpushed commits — a fail-open of exactly the kind this package exists to
+prevent. Every fallback path here widens the scope; none narrows it.
+
+**Still open from that issue** — there is no first-class way to ask for a
+_file-scoped_ run, so an agent that wants one reaches for `npx stryker run
+--mutate` directly and bypasses whatever lock the push rung takes. The reporter
+left orphaned `workerd` processes doing exactly that. A scope flag on
+`verify`/`gate` would make the safe path and the fast path the same path.
+
 ## Roadmap: fixer-loop hardening (from the dogfooding live proof)
 
 - **The gate could hand work to the main agent while its own fixer was still
@@ -1246,9 +1265,13 @@ diff-auditor, so granting one is itself controlled.
   a key or a non-blank justification is dropped, so an unjustified exemption
   simply does not apply and the gate keeps blocking. A bare key is unreviewable:
   a reviewer cannot tell a proven-equivalent mutant from "the agent got stuck".
-- **`guardrails sanctions-check` (CI-only) is the enforcement.** It compares the
-  sanction **key set** against the branch's merge-base and fails on any newly-
-  requested exemption, so approval is a human reviewing and merging the PR.
+- **`guardrails sanctions-check` is the APPROVAL enforcement, and it is CI-only.**
+  It compares the sanction **key set** against the branch's merge-base and
+  reports any newly-requested exemption, so approval is a human reviewing and
+  merging the PR. Its **integrity** half — malformed entries, stale counts,
+  misplaced directives — is NOT CI-only as of #103: it is file reads with no git
+  in it, so `verify` and all three gate rungs run it and a drifted count blocks
+  where it was introduced rather than an hour downstream in CI.
   Enforced in CI rather than at the commit gate deliberately: the PR is where
   sign-off actually happens, and local work stays unblocked. Comparing keys (not
   diff lines) keeps it precise — reformatting, rewording a `reason`, or REMOVING

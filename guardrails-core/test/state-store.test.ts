@@ -1,5 +1,6 @@
 import {
   appendFileSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   rmSync,
@@ -15,6 +16,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createSession, type FixerLease } from '../src/state.js';
 import {
   appendDecision,
+  baseReferenceCache,
   decisionsFile,
   deleteSession,
   leasesFile,
@@ -518,5 +520,142 @@ describe('fixer leases', () => {
 
     expect(sweepStale(directory, 1000, Date.now())).toEqual([]);
     expect(loadLeases(directory)).toEqual([lease]);
+  });
+});
+
+/**
+ * #104: the resolved base ref is remembered per branch so the Stop rung, which
+ * runs every turn, costs at most one host call per branch per TTL.
+ */
+describe('baseReferenceCache', () => {
+  it('round-trips an entry through the state directory', () => {
+    const repoRoot = mkdtempSync(path.join(tmpdir(), 'guardrails-base-ref-'));
+    const cache = baseReferenceCache(repoRoot);
+    expect(cache.read()).toEqual({});
+    cache.write('feature/child', { base: 'feature/parent', at: 42 });
+    expect(baseReferenceCache(repoRoot).read()).toEqual({
+      'feature/child': { base: 'feature/parent', at: 42 },
+    });
+  });
+
+  it('remembers a MISS as a null base', () => {
+    // A branch with no pull request must not pay a round-trip once a turn to
+    // rediscover that it still has none.
+    const repoRoot = mkdtempSync(path.join(tmpdir(), 'guardrails-base-ref-'));
+    baseReferenceCache(repoRoot).write('solo', { base: null, at: 7 });
+    expect(baseReferenceCache(repoRoot).read()).toEqual({
+      solo: { base: null, at: 7 },
+    });
+  });
+
+  it('degrades to empty on a corrupt file rather than throwing', () => {
+    const repoRoot = mkdtempSync(path.join(tmpdir(), 'guardrails-base-ref-'));
+    const directory = path.join(repoRoot, '.guardrails', 'state');
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(path.join(directory, 'base-refs.json'), '{ not json');
+    expect(baseReferenceCache(repoRoot).read()).toEqual({});
+  });
+
+  it.each([
+    ['a non-object entry', 'not an object'],
+    ['a numeric base', { base: 5, at: 1 }],
+    ['a non-numeric timestamp', { base: 'main', at: 'soon' }],
+    ['a missing timestamp', { base: 'main' }],
+    ['an array', [{ base: 'main', at: 1 }]],
+  ])('rejects %s', (_label, entry) => {
+    // Each clause of the entry guard gets its own rejection: a guard that is
+    // only ever shown well-formed input plus one catch-all is a guard nobody
+    // has pinned.
+    const repoRoot = mkdtempSync(path.join(tmpdir(), 'guardrails-base-ref-'));
+    const directory = path.join(repoRoot, '.guardrails', 'state');
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(
+      path.join(directory, 'base-refs.json'),
+      JSON.stringify({ suspect: entry }),
+    );
+    expect(baseReferenceCache(repoRoot).read()).toEqual({});
+  });
+
+  it('keeps a null base, which is a remembered MISS and not a malformed one', () => {
+    const repoRoot = mkdtempSync(path.join(tmpdir(), 'guardrails-base-ref-'));
+    const directory = path.join(repoRoot, '.guardrails', 'state');
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(
+      path.join(directory, 'base-refs.json'),
+      JSON.stringify({ solo: { base: null, at: 3 } }),
+    );
+    expect(baseReferenceCache(repoRoot).read()).toEqual({
+      solo: { base: null, at: 3 },
+    });
+  });
+
+  it('preserves entries for other branches when writing one', () => {
+    const repoRoot = mkdtempSync(path.join(tmpdir(), 'guardrails-base-ref-'));
+    const cache = baseReferenceCache(repoRoot);
+    cache.write('first', { base: 'main', at: 1 });
+    cache.write('second', { base: 'feature/parent', at: 2 });
+    expect(baseReferenceCache(repoRoot).read()).toEqual({
+      first: { base: 'main', at: 1 },
+      second: { base: 'feature/parent', at: 2 },
+    });
+  });
+
+  it('drops individual entries that are not well formed', () => {
+    // Same reasoning as the lease store: one tampered entry must not discard
+    // every remembered base and send every branch back to the host.
+    const repoRoot = mkdtempSync(path.join(tmpdir(), 'guardrails-base-ref-'));
+    const directory = path.join(repoRoot, '.guardrails', 'state');
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(
+      path.join(directory, 'base-refs.json'),
+      JSON.stringify({
+        good: { base: 'main', at: 1 },
+        bad: { base: 5, at: 'soon' },
+        alsoBad: 'not an object',
+      }),
+    );
+    expect(baseReferenceCache(repoRoot).read()).toEqual({
+      good: { base: 'main', at: 1 },
+    });
+  });
+});
+
+describe('baseReferenceCache write containment', () => {
+  it('writes nothing when the repo root is an existing FILE', () => {
+    // Not the same case as a missing path, and the one an existence check
+    // lets through: `mkdirSync(..., { recursive: true })` throws ENOTDIR on an
+    // ancestor segment that is a file, and nothing between the memo and the
+    // gate's caller catches it — so the stop rung would abort with a generic
+    // error on every turn. Found in review of #104.
+    const notARepo = path.join(
+      mkdtempSync(path.join(tmpdir(), 'guardrails-base-ref-')),
+      'a-file',
+    );
+    writeFileSync(notARepo, 'not a directory\n');
+    expect(() => {
+      baseReferenceCache(notARepo).write('feature/child', {
+        base: 'main',
+        at: 1,
+      });
+    }).not.toThrow();
+    expect(baseReferenceCache(notARepo).read()).toEqual({});
+  });
+
+  it('writes nothing when the repo root is not a directory', () => {
+    // The memo is an optimisation, so "could not write" is a complete answer.
+    // Without this, `mkdirSync(..., { recursive: true })` fabricates the whole
+    // tree from whatever string arrived as the repo root — which is exactly
+    // what happened in this suite, leaving directories named after an eslint
+    // JSON report in the working tree.
+    const notARepo = path.join(
+      mkdtempSync(path.join(tmpdir(), 'guardrails-base-ref-')),
+      'no-such-root',
+    );
+    baseReferenceCache(notARepo).write('feature/child', {
+      base: 'main',
+      at: 1,
+    });
+    expect(existsSync(notARepo)).toBe(false);
+    expect(baseReferenceCache(notARepo).read()).toEqual({});
   });
 });

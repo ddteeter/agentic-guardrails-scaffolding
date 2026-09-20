@@ -4,14 +4,15 @@
  * `cli.ts` is a thin bootstrap that supplies the real dependencies.
  */
 
-import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { auditDiff, type AuditFinding } from './audit.js';
+import { type EffectiveBase, resolveEffectiveBase } from './base-reference.js';
 import { runAutofix } from './autofix.js';
 import { formatDecisionReport, summarizeDecisions } from './decision-log.js';
 import {
+  CONFIG_FILE_NAME,
   loadConfig,
   type RepoConfig,
   type SanctionedFile,
@@ -29,15 +30,15 @@ import {
 } from './gate.js';
 import { leaseWaitNote } from './gate-decision.js';
 import { findGitRoot, resolveRepoRoot } from './repo-root.js';
+import { repoSourceReader } from './repo-source.js';
 import {
   formatGrantReport,
   newlySanctioned,
   newlySanctionedFiles,
   type SanctionCountDrift,
   type SanctionGrant,
-  sanctionCountDrift,
+  sanctionIntegrity,
   type SanctionPlacementIssue,
-  sanctionPlacementIssues,
   toMalformedViolations,
 } from './sanctions.js';
 import {
@@ -72,6 +73,7 @@ import {
 import { initCommand } from './scaffold/init.js';
 import { collectManifestScope, isPathAllowed, isWithinRepo } from './scope.js';
 import {
+  baseReferenceCache,
   deleteSession,
   loadRecurrence,
   loadSession,
@@ -123,6 +125,7 @@ function commitGateOptionsFromConfig(
   repoRoot: string,
   config: RepoConfig,
   exec: Exec,
+  baseBranch: string = config.baseBranch,
 ): Pick<
   CommitGateOptions,
   | 'repoRoot'
@@ -137,7 +140,7 @@ function commitGateOptionsFromConfig(
 > {
   return {
     repoRoot,
-    baseBranch: config.baseBranch,
+    baseBranch,
     exec,
     resolveBin: binResolver(repoRoot),
     sanctionedSuppressions: config.sanctionedSuppressions,
@@ -207,12 +210,82 @@ function commandRepoRoot(
   return resolveRepoRoot(dependencies.exec, hookCwd ?? dependencies.cwd);
 }
 
-async function verifyCommand(dependencies: CliDependencies): Promise<number> {
+/**
+ * Which ref this run verifies against, and a line saying so when it is not the
+ * configured default (#104).
+ *
+ * Silent fallback, visible resolution. Every failure path inside
+ * `resolveEffectiveBase` lands on `config.baseBranch`, which is WIDER than a
+ * pull request's base -- so a wrong answer costs time, never coverage, and is
+ * not worth a message on a rung that runs every turn. A base that is NOT the
+ * configured one is worth a message, because it is the difference between a
+ * 30-second run and a 30-minute one, and nobody should have to guess which
+ * they are getting.
+ */
+async function resolveBase(
+  dependencies: CliDependencies,
+  repoRoot: string,
+  config: RepoConfig,
+  explicit?: string,
+): Promise<EffectiveBase> {
+  return resolveEffectiveBase({
+    exec: dependencies.exec,
+    repoRoot,
+    configBase: config.baseBranch,
+    // Straight through, not conditionally spread -- see `EffectiveBaseOptions`.
+    explicit,
+    cache: baseReferenceCache(repoRoot),
+  });
+}
+
+/**
+ * The resolved base, plus a line saying so when it is not the configured one
+ * (#104).
+ *
+ * Silent fallback, visible resolution. Every failure path inside
+ * `resolveEffectiveBase` lands on `config.baseBranch`, which is WIDER than a
+ * pull request's base -- so a wrong answer costs time, never coverage, and is
+ * not worth a message. A base that is NOT the configured one IS worth one,
+ * because it is the difference between a 30-second run and one you kill at 30
+ * minutes, and nobody should have to guess which they are getting.
+ *
+ * The hook rungs (stop, pretooluse) call `resolveBase` directly instead: they
+ * answer a hook with a JSON decision, and an advisory line on stderr is noise
+ * in a channel nobody asked to read.
+ */
+async function reportedBase(
+  dependencies: CliDependencies,
+  repoRoot: string,
+  config: RepoConfig,
+  rest: string[],
+): Promise<EffectiveBase> {
+  const resolved = await resolveBase(
+    dependencies,
+    repoRoot,
+    config,
+    flag(rest, 'base'),
+  );
+  if (resolved.base !== config.baseBranch) {
+    const why =
+      resolved.source === 'flag' ? '--base' : "this branch's pull request";
+    dependencies.stderr(
+      `guardrails: verifying against ${resolved.base} (${why}), not the ` +
+        `configured ${config.baseBranch}.\n`,
+    );
+  }
+  return resolved;
+}
+
+async function verifyCommand(
+  dependencies: CliDependencies,
+  rest: string[],
+): Promise<number> {
   const repoRoot = await commandRepoRoot(dependencies);
   const config = loadConfig(repoRoot);
+  const base = await reportedBase(dependencies, repoRoot, config, rest);
   const { violations, skippedAnalyzers } = await runVerify({
     repoRoot,
-    baseBranch: config.baseBranch,
+    baseBranch: base.base,
     exec: dependencies.exec,
     profile: 'ci',
     resolveBin: binResolver(repoRoot),
@@ -290,10 +363,13 @@ async function gateStopCommand(
   const { input, repoRoot } = await hookContext(dependencies);
   const sessionId = input.sessionId ?? 'default';
   const config = loadConfig(repoRoot);
+  // Quiet, and cached: this runs on every turn, so it must cost at most one
+  // host call per branch per TTL and must not add a line to the hook channel.
+  const base = await resolveBase(dependencies, repoRoot, config);
   const { decision } = await runStopGate({
     repoRoot,
     sessionId,
-    baseBranch: config.baseBranch,
+    baseBranch: base.base,
     exec: dependencies.exec,
     config: toGateConfig(config),
     resolveBin: binResolver(repoRoot),
@@ -372,10 +448,12 @@ function commitPointer(
 async function gateCommitCommand(
   dependencies: CliDependencies,
   changedScope: 'branch' | 'staged',
-  profile: Rung = 'commit',
+  profile: Rung,
+  rest: string[],
 ): Promise<number> {
   const repoRoot = await commandRepoRoot(dependencies);
   const config = loadConfig(repoRoot);
+  const base = await reportedBase(dependencies, repoRoot, config, rest);
   const {
     violations,
     findings,
@@ -384,7 +462,12 @@ async function gateCommitCommand(
     delegation,
     unreadable,
   } = await runCommitGate({
-    ...commitGateOptionsFromConfig(repoRoot, config, dependencies.exec),
+    ...commitGateOptionsFromConfig(
+      repoRoot,
+      config,
+      dependencies.exec,
+      base.base,
+    ),
     changedScope,
     profile,
   });
@@ -533,9 +616,16 @@ async function gatePreToolUseCommand(
   }
   const repoRoot = await commandRepoRoot(dependencies, input.cwd);
   const config = loadConfig(repoRoot);
+  // Quiet: this rung answers a hook with a JSON decision.
+  const base = await resolveBase(dependencies, repoRoot, config);
   const { violations, findings, blocked, delegation, unreadable } =
     await runCommitGate({
-      ...commitGateOptionsFromConfig(repoRoot, config, dependencies.exec),
+      ...commitGateOptionsFromConfig(
+        repoRoot,
+        config,
+        dependencies.exec,
+        base.base,
+      ),
       sessionId: input.sessionId,
     });
   if (!blocked) {
@@ -568,7 +658,7 @@ async function gatePreToolUseCommand(
   dependencies.stdout(JSON.stringify(formatPreToolUseDeny(reason, dialect)));
 }
 
-const CONFIG_FILE = 'guardrails.config.json';
+const CONFIG_FILE = CONFIG_FILE_NAME;
 
 /** `sanctions-check`: CI approval-visibility gate for the diff-auditor's escape
  * hatch. It can only FAIL on a malformed `sanctionedSuppressions` entry in the
@@ -579,20 +669,6 @@ const CONFIG_FILE = 'guardrails.config.json';
  * constitutes its approval. The gate itself (`runCommitGate`) is what enforces
  * reality: an occurrence beyond the declared count still blocks the commit
  * regardless of what this check reports. See src/sanctions.ts. */
-/** Reads a repo-relative source file for the count drift-guard. A key that
- *  escapes the repo (`../`) reads as absent rather than reaching outside it:
- *  the policy file is checked-in text, but it is still input. */
-function repoSourceReader(
-  repoRoot: string,
-): (file: string) => string | undefined {
-  return (file) => {
-    const full = path.join(repoRoot, file);
-    return isWithinRepo(repoRoot, file) && existsSync(full)
-      ? readFileSync(full, 'utf8')
-      : undefined;
-  };
-}
-
 /**
  * Print the exemptions this branch introduces, for the reviewer whose merge IS
  * the approval.
@@ -694,46 +770,35 @@ function reportPlacementIssues(
 async function sanctionsCheckCommand(
   dependencies: CliDependencies,
 ): Promise<number> {
-  const headText = readConfigText(dependencies.cwd) ?? '';
-  const {
-    valid: headSanctions,
-    files: headFiles,
-    malformed,
-  } = parseSanctionsJson(headText);
-  if (malformed.length > 0) {
+  const headText = readConfigText(dependencies.cwd);
+  const { valid: headSanctions, files: headFiles } = parseSanctionsJson(
+    headText ?? '',
+  );
+  const readSource = repoSourceReader(dependencies.cwd);
+  // The three FACTUAL failures, in one precedence, shared with the local rungs
+  // (#103). Each is rendered here with its own remediation paragraph; the rungs
+  // render the same result as manifest violations. What must never differ
+  // between them is the ORDER -- a stale count means the source moved under the
+  // policy file, and every placement report that follows would be noise about
+  // the same one defect -- so the order lives in `sanctionIntegrity`, once.
+  const integrity = sanctionIntegrity(headText, readSource);
+  if (integrity.kind === 'malformed') {
     printViolations(
       dependencies,
-      toMalformedViolations(malformed, CONFIG_FILE),
+      toMalformedViolations(integrity.entries, CONFIG_FILE),
     );
     dependencies.stderr(
-      `guardrails: ${malformed.length} malformed sanction entry(ies) in ` +
+      `guardrails: ${integrity.entries.length} malformed sanction entry(ies) in ` +
         `${CONFIG_FILE} — fix before merging.\n`,
     );
     return 1;
   }
-
-  // Declared budgets must still match the source. Like `malformed`, this is a
-  // FACTUAL error rather than a judgment about whether an exemption is
-  // deserved, so it blocks -- an over-provisioned budget silently shrinks how
-  // much the auditor is watching.
-  // `headFiles` is deliberately NOT passed: path grants carry no count, so
-  // there is nothing for this check to verify, and that absence is what
-  // removes the regeneration churn (#39).
-  const readSource = repoSourceReader(dependencies.cwd);
-  const drift = sanctionCountDrift(headSanctions, readSource);
-  if (drift.length > 0) {
-    reportCountDrift(dependencies, drift);
+  if (integrity.kind === 'drift') {
+    reportCountDrift(dependencies, integrity.entries);
     return 1;
   }
-
-  // Counts prove a granted suppression still EXISTS; placement is what proves
-  // it still covers what it was granted for (#79). Checked after the count
-  // guard rather than alongside it: a stale count means the source moved under
-  // the policy file, and every placement report that follows would be noise
-  // about the same one defect.
-  const misplaced = sanctionPlacementIssues(headSanctions, readSource);
-  if (misplaced.length > 0) {
-    reportPlacementIssues(dependencies, misplaced);
+  if (integrity.kind === 'placement') {
+    reportPlacementIssues(dependencies, integrity.entries);
     return 1;
   }
 
@@ -1251,7 +1316,7 @@ export async function runCommand(
   }
   switch (command) {
     case 'verify': {
-      return verifyCommand(dependencies);
+      return verifyCommand(dependencies, rest);
     }
     case 'autofix': {
       return autofixCommand(dependencies);
@@ -1259,7 +1324,7 @@ export async function runCommand(
     case 'gate': {
       const mode = flag(rest, 'mode');
       if (mode === 'commit') {
-        return gateCommitCommand(dependencies, 'staged');
+        return gateCommitCommand(dependencies, 'staged', 'commit', rest);
       }
       // Same checks, branch-wide scope: `push` is the local rung that catches
       // what a staged-scope commit cannot, and `ci` is its authoritative twin.
@@ -1267,10 +1332,10 @@ export async function runCommand(
       // an analyzer a consumer moved to `push` must run there, and `ci` sits
       // above it so `verify`'s twin never checks less (#61).
       if (mode === 'push') {
-        return gateCommitCommand(dependencies, 'branch', 'push');
+        return gateCommitCommand(dependencies, 'branch', 'push', rest);
       }
       if (mode === 'ci') {
-        return gateCommitCommand(dependencies, 'branch', 'ci');
+        return gateCommitCommand(dependencies, 'branch', 'ci', rest);
       }
       if (mode === 'pretooluse') {
         await gatePreToolUseCommand(dependencies, resolveDialect(rest));
@@ -1318,8 +1383,10 @@ export async function runCommand(
           '  init [--plan|--apply] [--json] [--force] [--enforcement=warn|block]\n' +
           '       [--analyzers=<tool>=<off|auto|required>[,...]] [--distribution=solo|team]\n' +
           '  gate --mode=stop|commit|push|ci|pretooluse [--dialect=codex|copilot]\n' +
+          '       [--base=<ref>]\n' +
+          '  verify [--base=<ref>]\n' +
           '  sanction [--from=<violations manifest>]\n' +
-          '  verify | autofix | audit | sanctions-check | install-hooks\n' +
+          '  autofix | audit | sanctions-check | install-hooks\n' +
           '  state | report | scope-check | session-start | session-end\n',
       );
       return 1;

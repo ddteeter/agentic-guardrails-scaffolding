@@ -281,6 +281,37 @@ check with `tsc --build --noEmit`, so referenced projects are part of the gate.
 If TypeScript cannot produce a readable resolved configuration, verification
 fails closed rather than treating an unknown input set as clean.
 
+### Stacked branches: `--base`
+
+Every diff-scoped analyzer sees `merge-base(<base>, HEAD)..HEAD`, and `<base>`
+is resolved per branch rather than per repo:
+
+1. `--base <ref>`, on `verify` and on any `gate --mode=`, when you say so;
+2. the branch's pull request base, read from `gh` when it can answer;
+3. the configured `baseBranch`.
+
+This matters on a **stacked** branch — one whose PR targets another open PR.
+Scoped to `main`, its range carries the parent branch's entire diff too, so
+every analyzer re-runs over work that is already verified and already green in
+the parent's own PR. Stryker's cost is dominated by a fixed per-invocation dry
+run, so this is the difference between a half-minute run and one you kill at
+half an hour.
+
+The fallback is **silent but never narrowing**. No `gh`, no auth, no PR, a
+detached HEAD, an unparseable answer — all land on the configured base, which is
+_wider_ than the PR base, so a wrong answer costs time and never coverage. The
+resolution itself is **not** silent: when the base is not the configured one,
+`verify` and the developer-facing gate rungs say which ref they used and why.
+
+The upstream tracking branch (`@{u}`) is deliberately not one of the sources.
+For a pushed branch it is `origin/<that same branch>`, so the merge-base is the
+branch's own tip and the scope collapses to unpushed commits — on a branch that
+is pushed and current, to nothing at all. Fast because it checks nothing.
+
+Cost is bounded by a per-branch memo in `.guardrails/state/base-refs.json`: one
+`gh` call per branch per hour, misses included, because the Stop rung runs on
+every turn.
+
 **Do not trim `fetch-depth` on the shipped CI workflow.**
 `.github/workflows/guardrails.yml` checks out with `fetch-depth: 0` on
 purpose: `gate --mode=ci`'s diff-auditor and sanction budget diff against
@@ -426,9 +457,18 @@ write the suppression?**
 ```
 
 Use `sanctionedSuppressions` for hand-written code. Its `count` must equal the
-real occurrence count, and `guardrails sanctions-check` re-derives that number
-with the auditor's own lexer and **fails on a mismatch** — which is right, since
-a stale count silently over-provisions how much the auditor stops watching.
+real occurrence count, which is re-derived with the auditor's own lexer and
+**fails on a mismatch** — which is right, since a stale count silently
+over-provisions how much the auditor stops watching.
+
+That re-derivation runs on **every rung** — `verify`, and the commit, push and
+CI gates — not only in CI. It reads files and nothing else, so it costs
+milliseconds, and the point is where the failure lands: copying a granted
+suppression onto a sibling line is a natural edit (the reasoning genuinely
+carries over), and the commit gate cannot catch it, because it measures a key's
+occurrences in the **diff** against the budget while the drift is in the
+**file** total. Before this, that combination passed every local check and
+failed in CI over an hour later.
 
 Use `sanctionedFiles` for generated code, where that same discipline becomes a
 chore nobody can satisfy: the count changes on every regeneration, and pinning

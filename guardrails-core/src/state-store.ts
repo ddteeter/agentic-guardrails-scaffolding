@@ -18,6 +18,10 @@ import {
 } from 'node:fs';
 import path from 'node:path';
 
+import type {
+  BaseReferenceCache,
+  BaseReferenceEntry,
+} from './base-reference.js';
 import { type DecisionRecord, isDecisionRecord } from './decision-log.js';
 import {
   createSession,
@@ -42,6 +46,85 @@ export function manifestFile(directory: string, sessionId: string): string {
 
 export function recurrenceFile(directory: string): string {
   return path.join(directory, 'recurrence.json');
+}
+
+/** Is this path a directory that exists?
+ *
+ *  `throwIfNoEntry: false` rather than a try/catch: a missing path answers
+ *  `undefined` instead of throwing, so the "not there" and "not a directory"
+ *  cases fall out of one expression. A catch here would carry an unkillable
+ *  mutant — emptying it reaches the implicit `undefined` return, which is
+ *  falsy exactly like the `false` it would have returned — and this is a
+ *  guard, so it should not need a suppression to prove it works. */
+function isDirectory(candidate: string): boolean {
+  return statSync(candidate, { throwIfNoEntry: false })?.isDirectory() === true;
+}
+
+function baseReferenceFile(directory: string): string {
+  return path.join(directory, 'base-refs.json');
+}
+
+/**
+One remembered base entry, validated on the way out of the file.
+*/
+function isBaseReferenceEntry(value: unknown): value is BaseReferenceEntry {
+  return (
+    isRecord(value) &&
+    (value.base === null || typeof value.base === 'string') &&
+    typeof value.at === 'number'
+  );
+}
+
+/**
+ * The per-branch base-ref memo (#104), for `repoRoot`.
+ *
+ * Entries are validated one at a time, for the same reason the lease store
+ * does it: one tampered entry must not discard every remembered base and send
+ * every branch back to the host on its next turn. A missing or corrupt file
+ * reads as no memory at all, which costs one host call and nothing else.
+ *
+ * **The write is skipped when `repoRoot` is not a directory.** Not merely when
+ * it does not exist: a `repoRoot` that resolves to a regular FILE passes an
+ * existence check, and `writeJson`'s `mkdirSync(..., { recursive: true })`
+ * then throws `ENOTDIR` on an ancestor segment. Nothing between here and
+ * `resolveEffectiveBase`'s caller catches that, so the stop and pretooluse
+ * rungs — whose whole contract is to answer a hook quietly — would abort with
+ * a generic error on every turn. A memo must not be able to do that. Unlike the
+ * violations manifest or the lease file — where the state IS the product and
+ * creating its directory is the job — this is an optimisation, and "could not
+ * write" is a complete answer. The guard is not hypothetical: `repoRoot`
+ * comes from `git rev-parse --show-toplevel`, and a caller whose git does not
+ * answer with a real path (a test fake, a wrapper, a corrupted checkout) would
+ * otherwise have `mkdirSync(..., { recursive: true })` fabricate the whole
+ * tree from whatever string it got. That happened here, in this repo's own
+ * suite, and left directories named after an eslint JSON report in the working
+ * tree.
+ */
+export function baseReferenceCache(repoRoot: string): BaseReferenceCache {
+  const directory = stateDirectory(repoRoot);
+  return {
+    read: () => {
+      const raw = readJson(baseReferenceFile(directory));
+      if (!isRecord(raw)) {
+        return {};
+      }
+      const entries: Record<string, BaseReferenceEntry> = {};
+      for (const [branch, entry] of Object.entries(raw)) {
+        if (isBaseReferenceEntry(entry)) {
+          entries[branch] = entry;
+        }
+      }
+      return entries;
+    },
+    write: (branch, entry) => {
+      if (!isDirectory(repoRoot)) {
+        return;
+      }
+      const raw = readJson(baseReferenceFile(directory));
+      const existing = isRecord(raw) ? raw : {};
+      writeJson(baseReferenceFile(directory), { ...existing, [branch]: entry });
+    },
+  };
 }
 
 /**
