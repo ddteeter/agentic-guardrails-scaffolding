@@ -36,18 +36,59 @@ block — instead of as a wall of `no-coverage` mutants. If you are looking at
 `no-coverage` violations, the project has claimed that file. Cover it; do not
 reach for a negation to make it stop.
 
+## When stryker will not start at all
+
+`guardrails/stryker-dry-run-failed` is not a mutation finding and not a
+misconfiguration. It means one or more tests failed in stryker's **initial**
+run, before a single mutant was tested — so the suite is red on its own terms
+and there is no mutation verdict to act on.
+
+Run the suite directly; it reproduces the failure far faster than stryker will.
+The violation names the failing tests. Re-running is also a legitimate first
+response here, and only here: a dry run is the one analyzer failure where a
+flaky test, rather than a defect, is a common cause.
+
 ## The loop
 
-1. **Scope the run to the file you are working on.** A whole-repo run is minutes;
-   one file is seconds. `npx stryker run --mutate '<path>' --reporters json`,
+1. **Clear the last report, then scope the run to the files you are working on.**
+   A whole-repo run is minutes; a few files is seconds.
+
+   ```sh
+   rm -rf reports/mutation
+   npx stryker run --mutate "src/a.ts,src/b.ts" --reporters json
+   ```
+
    then read `reports/mutation/mutation.json`.
+
+   **`--mutate` takes a comma-separated file list**, not just one path. On a
+   real paydown that is the difference between ~30 seconds and 20-odd minutes,
+   and it is not obvious from the flag's name.
+
+   **The `rm -rf` is not housekeeping — do it first, every time.** Stryker's
+   report path is fixed, gitignored and persists across runs, and a hand-rolled
+   `npx stryker run` does not clear it. The gate's own invocation deletes the
+   report before it runs for exactly this reason; your invocation has no such
+   protection. So if your scoped run crashes, is killed, or never reaches its
+   reporter, `reports/mutation/mutation.json` still holds **the previous run's**
+   results — a wider file set, quoting source you have since edited — and
+   nothing marks it as stale. An hour spent killing mutants that no longer
+   exist is the normal outcome.
+
+   A second, quieter version of the same trap: the gate passes `--incremental`
+   on every run, so `reports/stryker-incremental.json` exists even in a repo
+   that never set `incremental` itself. If your `stryker.conf.json` _does_ set
+   `incremental: true`, your hand-rolled run will read that cache and merge
+   verdicts from a different file set into your report. Delete it too when a
+   scoped run's results look wider than the scope you asked for.
+
 2. **Classify every survivor** as killable or equivalent (below). Most are
    killable. Expect roughly **1 in 5** to be equivalent — if you are proving
    equivalence far more often than that, you are giving up too early.
 3. **Kill the killable ones**, re-run, repeat until zero.
 4. **Only then** consider an exemption for what is left.
 
-Delete `reports/` and `.stryker-tmp/` when you are done.
+Delete `reports/` and `.stryker-tmp/` when you are done, too — but the run that
+matters is the one you cleared _before_.
 
 ## Is it killable or equivalent?
 

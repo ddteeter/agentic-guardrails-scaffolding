@@ -24,6 +24,7 @@ import {
   writeViolations,
 } from '../src/state-store.js';
 import type { Violation } from '../src/violation.js';
+import { checksum as scaffoldChecksum } from '../src/scaffold/manifest.js';
 
 let root: string;
 let out: string[];
@@ -3464,5 +3465,65 @@ describe('verify --base', () => {
       (call) => call.command === 'git' && call.args.includes('--name-only'),
     );
     expect(diff?.args).toContain('main');
+  });
+});
+
+/**
+ * #106: `session-start` says when the vendored guidance has rotted.
+ *
+ * `init --plan` always computed this; nothing ran it, so a repo could run
+ * six-week-old guidance while `src/guidance.ts` pointed its agents at that
+ * exact file.
+ */
+describe('session-start guidance staleness', () => {
+  const guidancePath = 'docs/guardrails/crushing-mutants.md';
+
+  const scaffoldedAs = (content: string): void => {
+    mkdirSync(path.join(root, '.guardrails'), { recursive: true });
+    writeFileSync(
+      path.join(root, '.guardrails', 'scaffold.json'),
+      JSON.stringify({
+        guardrailsVersion: '0.1.0',
+        files: { [guidancePath]: scaffoldChecksum(content) },
+      }),
+    );
+    mkdirSync(path.join(root, 'docs', 'guardrails'), { recursive: true });
+    writeFileSync(path.join(root, guidancePath), content);
+  };
+
+  it('warns that an unmodified vendored doc is behind the package', async () => {
+    scaffoldedAs('guidance as it was written at 0.1.0\n');
+    expect(await runCommand('session-start', [], dependencies({}))).toBe(0);
+    const said = out.join('') + errors.join('');
+    expect(said).toContain(guidancePath);
+    expect(said).toContain('init --apply');
+  });
+
+  it('warns that an edited vendored doc will never be upgraded again', async () => {
+    // The sharper half, and the one with no other warning anywhere: a single
+    // edit opts the file out permanently.
+    scaffoldedAs('guidance as it was written at 0.1.0\n');
+    writeFileSync(path.join(root, guidancePath), 'edited by a helpful agent\n');
+    expect(await runCommand('session-start', [], dependencies({}))).toBe(0);
+    const said = out.join('') + errors.join('');
+    expect(said).toContain(guidancePath);
+  });
+
+  it('says nothing in a repo that never scaffolded guidance', async () => {
+    // The common case, on every session. It must not grow a line.
+    expect(await runCommand('session-start', [], dependencies({}))).toBe(0);
+    expect(out.join('') + errors.join('')).toBe('');
+  });
+
+  it('still sweeps stale state when it has something to say', async () => {
+    // The warning is additive; it must not displace what this rung is for.
+    scaffoldedAs('guidance as it was written at 0.1.0\n');
+    const stateDirectory = path.join(root, '.guardrails', 'state');
+    mkdirSync(stateDirectory, { recursive: true });
+    const stale = path.join(stateDirectory, 'ancient.json');
+    writeFileSync(stale, '{}');
+    utimesSync(stale, new Date(0), new Date(0));
+    await runCommand('session-start', [], dependencies({}));
+    expect(existsSync(stale)).toBe(false);
   });
 });

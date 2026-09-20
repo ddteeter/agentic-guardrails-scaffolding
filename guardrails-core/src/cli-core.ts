@@ -59,6 +59,13 @@ import {
 } from './hook-io.js';
 import { detect } from './scaffold/detect.js';
 import {
+  claudeSkillEntries,
+  guidanceEntries,
+  guidanceRoot,
+} from './scaffold/templates.js';
+import { parseManifest, MANIFEST_PATH } from './scaffold/manifest.js';
+import { staleArtifacts } from './scaffold/staleness.js';
+import {
   foreignHooksPath,
   foreignHooksPathWarning,
   HOOKS_DIRECTORY,
@@ -1246,6 +1253,57 @@ function outsideRepoMessage(dependencies: CliDependencies): string | undefined {
   );
 }
 
+/**
+ * Warn when the vendored guidance has rotted (#106).
+ *
+ * `src/guidance.ts` points violations at the consumer's COPY of a guidance doc
+ * rather than at `node_modules`, so a copy left behind by an upgrade is a doc
+ * the tool actively sends agents to read while it is out of date. `init --plan`
+ * has always detected this; nothing ran it, which is why an adopting repo sat
+ * 49 lines behind for six weeks.
+ *
+ * On `session-start` because that is the cheapest rung that fires often enough
+ * to matter: the check is a checksum over files already on disk, with no
+ * `detect()` and no spawn, and once a session is the right cadence for
+ * something that changes only when the package is upgraded.
+ *
+ * Both classes are reported, and the drifted one is not a lesser case: an
+ * edited file is excluded from every future upgrade, permanently and silently,
+ * and this is the only place that is ever said out loud.
+ */
+function warnAboutStaleGuidance(
+  dependencies: CliDependencies,
+  repoRoot: string,
+): void {
+  const readSource = repoSourceReader(repoRoot);
+  const manifest = parseManifest(
+    readJsonFile(path.join(repoRoot, MANIFEST_PATH)).parsed,
+  );
+  const shipped = [
+    ...guidanceEntries(guidanceRoot()),
+    ...claudeSkillEntries(guidanceRoot()),
+  ];
+  const { updatable, drifted } = staleArtifacts(shipped, manifest, readSource);
+  if (updatable.length > 0) {
+    dependencies.stderr(
+      `guardrails: ${updatable.length} scaffolded file(s) are behind the ` +
+        `installed version and unmodified locally — ` +
+        `${updatable.join(', ')}. Run \`npx guardrails-core init --apply\` ` +
+        `to upgrade them. Violations point agents at these copies, so a stale ` +
+        `one is guidance the tool is actively recommending.\n`,
+    );
+  }
+  if (drifted.length > 0) {
+    dependencies.stderr(
+      `guardrails: ${drifted.length} scaffolded file(s) were edited after ` +
+        `scaffolding — ${drifted.join(', ')}. \`init\` will leave them alone ` +
+        `from now on, so they will not receive upstream improvements. If the ` +
+        `edit is worth keeping, keep it; if it was accidental, restore it with ` +
+        `\`npx guardrails-core init --apply --force\`.\n`,
+    );
+  }
+}
+
 export async function runCommand(
   command: string | undefined,
   rest: string[],
@@ -1307,6 +1365,7 @@ export async function runCommand(
     }
     case 'session-start': {
       sweepStale(stateDirectory(dependencies.cwd), SESSION_TTL_MS, Date.now());
+      warnAboutStaleGuidance(dependencies, dependencies.cwd);
       return 0;
     }
     case 'session-end': {
