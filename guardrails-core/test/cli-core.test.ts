@@ -2112,6 +2112,16 @@ describe('sanctioned suppressions reach the commit gate', () => {
         ],
       }),
     );
+    // The granted suppression has to EXIST in the source the key names. The
+    // sanction-integrity check (#103) now runs on this rung, and a grant whose
+    // file holds zero occurrences of it is drift -- the deleted-file case --
+    // so a fixture that faked the diff without writing the file was declaring
+    // a budget of 1 against a source of 0.
+    mkdirSync(path.join(root, 'src'), { recursive: true });
+    writeFileSync(
+      path.join(root, 'src', 'a.ts'),
+      '// eslint-disable-next-line\nfoo();\n',
+    );
     const exec = gitExec({
       'merge-base': 'BASESHA\n',
       'diff BASESHA': [

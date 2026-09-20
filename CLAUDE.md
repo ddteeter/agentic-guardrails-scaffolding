@@ -138,11 +138,23 @@ If they approve, put the argument they accepted into `reason` — that text is w
 a PR reviewer reads later, so write it for them, not for yourself.
 
 For a `sanctionedSuppressions` entry, `count` must equal how many times that
-exact suppression appears in that file. `sanctions-check` re-derives the real
-number with the auditor's own lexer and **fails** on any mismatch, so a stale
-entry left behind by a refactor is a build failure rather than a silently
-over-provisioned budget. When you delete a suppressed line, update or remove its
-entry in the same change.
+exact suppression appears in that file. The count is re-derived with the
+auditor's own lexer and **fails** on any mismatch, so a stale entry left behind
+by a refactor is a failure rather than a silently over-provisioned budget. When
+you delete a suppressed line, update or remove its entry in the same change.
+
+That re-derivation now runs on **every rung**, not only in CI (#103). It is file
+reads — no git, no base revision, no analyzer spawn — so `verify` and all three
+gate rungs carry it, and a drifted count blocks at the Stop or commit boundary
+that introduced it instead of surfacing in CI an hour later. Note what the
+commit gate alone cannot see, and why this is separate from it: `spendBudget`
+measures a key's occurrences in the branch **diff** against its budget, so
+copying a granted directive onto a sibling line spends 1 of a budget of 5 and
+passes. The drift check measures occurrences in the **source file**, which is
+where 6-against-5 shows up. Both violations are filed against
+`guardrails.config.json`, which the fixer scope-lock denies by construction —
+re-budgeting a grant is the developer's decision, so it reaches you, and you ask
+before touching it.
 
 **`sanctionedFiles` is for GENERATED code only, and is the broader grant.** It
 covers every occurrence of one kind in one file, forever, with no count and

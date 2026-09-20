@@ -49,8 +49,11 @@ import {
 } from 'node:fs/promises';
 import path from 'node:path';
 
+import { CONFIG_FILE_NAME } from '../config.js';
 import { type Exec, type ExecResult, signalFromExitCode } from '../exec.js';
 import { parseJsonText, readJsonFile } from '../json-file.js';
+import { repoSourceReader } from '../repo-source.js';
+import { sanctionIntegrity, toIntegrityViolations } from '../sanctions.js';
 import type { Violation } from '../violation.js';
 import { loadWorkspaceResolver, withPackages } from '../workspaces.js';
 import {
@@ -111,6 +114,12 @@ export interface VerifyOptions {
    * nothing escapes — see the design doc's "Cadence rungs" section.
    */
   changedScope?: 'branch' | 'staged';
+  /**
+   * Repo-relative text reader for the sanction-integrity check (#103): the
+   * policy file and the sources its keys name. Defaults to `repoSourceReader`;
+   * injected in tests.
+   */
+  readSource?: (file: string) => string | undefined;
   /** File reader seam (stryker writes its JSON report to disk, not stdout).
    *  Defaults to node:fs/promises readFile; injected in tests. */
   readFile?: (filePath: string) => Promise<string>;
@@ -1935,6 +1944,15 @@ export async function runVerify(options: VerifyOptions): Promise<VerifyResult> {
       readJsonFile(path.join(options.repoRoot, 'package.json')).parsed,
     );
   violations.push(...unknownAnalyzerViolations(analyzers));
+  // The sanction-integrity check (#103). File reads only -- no git, no base
+  // revision, no analyzer spawn -- so it runs on EVERY rung that reaches this
+  // function (Stop, commit, push, ci and `npm run verify` alike) rather than
+  // only in CI, where a stale count used to surface an hour downstream. It is
+  // deliberately not gated on `files.length`: the drift is a property of the
+  // checked-in policy file, not of this run's change set.
+  const readSource = options.readSource ?? repoSourceReader(options.repoRoot);
+  const integrity = sanctionIntegrity(readSource(CONFIG_FILE_NAME), readSource);
+  violations.push(...toIntegrityViolations(integrity, CONFIG_FILE_NAME));
 
   const selected = selectAnalyzers(
     analyzers,
