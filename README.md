@@ -25,12 +25,12 @@ analyzer costs, and the clean-baseline prerequisite.
 `guardrails-core` is delivered as a GitHub Release asset, not from npm:
 
 ```bash
-npm i -D https://github.com/ddteeter/agentic-guardrails-scaffolding/releases/download/v0.5.0/guardrails-core-0.5.0.tgz
+npm i -D https://github.com/ddteeter/agentic-guardrails-scaffolding/releases/download/v0.6.0/guardrails-core-0.6.0.tgz
 ```
 
 Each release is a pushed `v*` tag: `.github/workflows/release.yml` verifies the
 tag matches `guardrails-core`'s version, runs the tarball smoke test, and
-attaches the `.tgz`. The URL above resolves once `v0.5.0` has been through that.
+attaches the `.tgz`. The URL above resolves once `v0.6.0` has been through that.
 
 **What a URL dependency costs you, stated plainly:** no semver range, no dedupe,
 and Dependabot will not track it. Upgrading means editing the URL by hand. This
@@ -102,6 +102,9 @@ Everything is authored in strict TypeScript, compiled to pure-Node ESM
 - **Diff-auditor** (`src/audit.ts`) — rejects newly-added
   `eslint-disable`/`@ts-ignore`/`as any`/`.skip`/`@Disabled`/`@SuppressWarnings`.
 - **verify orchestrator** (`src/verify/`) — diff-scoping + eslint/tsc adapters.
+  The diff base is resolved per branch — `--base <ref>`, else the pull request's
+  base via `gh`, else `baseBranch` — so a stacked branch does not re-verify its
+  parent's whole diff. Every fallback widens the scope; none narrows it.
 - **Gate** (`src/gate-decision.ts`, `src/gate.ts`) — the clean/delegate/escalate
   engine + snapshot-based fixer audit, shared by the CC stop-gate and (Phase B)
   the Codex and Copilot commit gates.
