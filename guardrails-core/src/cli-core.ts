@@ -9,6 +9,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { auditDiff, type AuditFinding } from './audit.js';
+import { type EffectiveBase, resolveEffectiveBase } from './base-reference.js';
 import { runAutofix } from './autofix.js';
 import { formatDecisionReport, summarizeDecisions } from './decision-log.js';
 import {
@@ -65,6 +66,7 @@ import {
 import { initCommand } from './scaffold/init.js';
 import { collectManifestScope, isPathAllowed, isWithinRepo } from './scope.js';
 import {
+  baseReferenceCache,
   deleteSession,
   loadRecurrence,
   loadSession,
@@ -116,6 +118,7 @@ function commitGateOptionsFromConfig(
   repoRoot: string,
   config: RepoConfig,
   exec: Exec,
+  baseBranch: string = config.baseBranch,
 ): Pick<
   CommitGateOptions,
   | 'repoRoot'
@@ -130,7 +133,7 @@ function commitGateOptionsFromConfig(
 > {
   return {
     repoRoot,
-    baseBranch: config.baseBranch,
+    baseBranch,
     exec,
     resolveBin: binResolver(repoRoot),
     sanctionedSuppressions: config.sanctionedSuppressions,
@@ -200,12 +203,82 @@ function commandRepoRoot(
   return resolveRepoRoot(dependencies.exec, hookCwd ?? dependencies.cwd);
 }
 
-async function verifyCommand(dependencies: CliDependencies): Promise<number> {
+/**
+ * Which ref this run verifies against, and a line saying so when it is not the
+ * configured default (#104).
+ *
+ * Silent fallback, visible resolution. Every failure path inside
+ * `resolveEffectiveBase` lands on `config.baseBranch`, which is WIDER than a
+ * pull request's base -- so a wrong answer costs time, never coverage, and is
+ * not worth a message on a rung that runs every turn. A base that is NOT the
+ * configured one is worth a message, because it is the difference between a
+ * 30-second run and a 30-minute one, and nobody should have to guess which
+ * they are getting.
+ */
+async function resolveBase(
+  dependencies: CliDependencies,
+  repoRoot: string,
+  config: RepoConfig,
+  explicit?: string,
+): Promise<EffectiveBase> {
+  return resolveEffectiveBase({
+    exec: dependencies.exec,
+    repoRoot,
+    configBase: config.baseBranch,
+    // Straight through, not conditionally spread -- see `EffectiveBaseOptions`.
+    explicit,
+    cache: baseReferenceCache(repoRoot),
+  });
+}
+
+/**
+ * The resolved base, plus a line saying so when it is not the configured one
+ * (#104).
+ *
+ * Silent fallback, visible resolution. Every failure path inside
+ * `resolveEffectiveBase` lands on `config.baseBranch`, which is WIDER than a
+ * pull request's base -- so a wrong answer costs time, never coverage, and is
+ * not worth a message. A base that is NOT the configured one IS worth one,
+ * because it is the difference between a 30-second run and one you kill at 30
+ * minutes, and nobody should have to guess which they are getting.
+ *
+ * The hook rungs (stop, pretooluse) call `resolveBase` directly instead: they
+ * answer a hook with a JSON decision, and an advisory line on stderr is noise
+ * in a channel nobody asked to read.
+ */
+async function reportedBase(
+  dependencies: CliDependencies,
+  repoRoot: string,
+  config: RepoConfig,
+  rest: string[],
+): Promise<EffectiveBase> {
+  const resolved = await resolveBase(
+    dependencies,
+    repoRoot,
+    config,
+    flag(rest, 'base'),
+  );
+  if (resolved.base !== config.baseBranch) {
+    const why =
+      resolved.source === 'flag' ? '--base' : "this branch's pull request";
+    dependencies.stderr(
+      `guardrails: verifying against ${resolved.base} (${why}), not the ` +
+        `configured ${config.baseBranch}.\n`,
+    );
+  }
+  return resolved;
+}
+
+async function verifyCommand(
+  dependencies: CliDependencies,
+  rest: string[],
+): Promise<number> {
   const repoRoot = await commandRepoRoot(dependencies);
   const config = loadConfig(repoRoot);
+  const base = await reportedBase(dependencies, repoRoot, config, rest);
   const { violations, skippedAnalyzers } = await runVerify({
     repoRoot,
-    baseBranch: config.baseBranch,
+    baseBranch: base.base,
     exec: dependencies.exec,
     profile: 'ci',
     resolveBin: binResolver(repoRoot),
@@ -283,10 +356,13 @@ async function gateStopCommand(
   const { input, repoRoot } = await hookContext(dependencies);
   const sessionId = input.sessionId ?? 'default';
   const config = loadConfig(repoRoot);
+  // Quiet, and cached: this runs on every turn, so it must cost at most one
+  // host call per branch per TTL and must not add a line to the hook channel.
+  const base = await resolveBase(dependencies, repoRoot, config);
   const { decision } = await runStopGate({
     repoRoot,
     sessionId,
-    baseBranch: config.baseBranch,
+    baseBranch: base.base,
     exec: dependencies.exec,
     config: toGateConfig(config),
     resolveBin: binResolver(repoRoot),
@@ -365,10 +441,12 @@ function commitPointer(
 async function gateCommitCommand(
   dependencies: CliDependencies,
   changedScope: 'branch' | 'staged',
-  profile: Rung = 'commit',
+  profile: Rung,
+  rest: string[],
 ): Promise<number> {
   const repoRoot = await commandRepoRoot(dependencies);
   const config = loadConfig(repoRoot);
+  const base = await reportedBase(dependencies, repoRoot, config, rest);
   const {
     violations,
     findings,
@@ -377,7 +455,12 @@ async function gateCommitCommand(
     delegation,
     unreadable,
   } = await runCommitGate({
-    ...commitGateOptionsFromConfig(repoRoot, config, dependencies.exec),
+    ...commitGateOptionsFromConfig(
+      repoRoot,
+      config,
+      dependencies.exec,
+      base.base,
+    ),
     changedScope,
     profile,
   });
@@ -526,9 +609,16 @@ async function gatePreToolUseCommand(
   }
   const repoRoot = await commandRepoRoot(dependencies, input.cwd);
   const config = loadConfig(repoRoot);
+  // Quiet: this rung answers a hook with a JSON decision.
+  const base = await resolveBase(dependencies, repoRoot, config);
   const { violations, findings, blocked, delegation, unreadable } =
     await runCommitGate({
-      ...commitGateOptionsFromConfig(repoRoot, config, dependencies.exec),
+      ...commitGateOptionsFromConfig(
+        repoRoot,
+        config,
+        dependencies.exec,
+        base.base,
+      ),
       sessionId: input.sessionId,
     });
   if (!blocked) {
@@ -1193,7 +1283,7 @@ export async function runCommand(
   }
   switch (command) {
     case 'verify': {
-      return verifyCommand(dependencies);
+      return verifyCommand(dependencies, rest);
     }
     case 'autofix': {
       return autofixCommand(dependencies);
@@ -1201,7 +1291,7 @@ export async function runCommand(
     case 'gate': {
       const mode = flag(rest, 'mode');
       if (mode === 'commit') {
-        return gateCommitCommand(dependencies, 'staged');
+        return gateCommitCommand(dependencies, 'staged', 'commit', rest);
       }
       // Same checks, branch-wide scope: `push` is the local rung that catches
       // what a staged-scope commit cannot, and `ci` is its authoritative twin.
@@ -1209,10 +1299,10 @@ export async function runCommand(
       // an analyzer a consumer moved to `push` must run there, and `ci` sits
       // above it so `verify`'s twin never checks less (#61).
       if (mode === 'push') {
-        return gateCommitCommand(dependencies, 'branch', 'push');
+        return gateCommitCommand(dependencies, 'branch', 'push', rest);
       }
       if (mode === 'ci') {
-        return gateCommitCommand(dependencies, 'branch', 'ci');
+        return gateCommitCommand(dependencies, 'branch', 'ci', rest);
       }
       if (mode === 'pretooluse') {
         await gatePreToolUseCommand(dependencies, resolveDialect(rest));
@@ -1259,8 +1349,10 @@ export async function runCommand(
           '  init [--plan|--apply] [--json] [--force] [--enforcement=warn|block]\n' +
           '       [--analyzers=<tool>=<off|auto|required>[,...]] [--distribution=solo|team]\n' +
           '  gate --mode=stop|commit|push|ci|pretooluse [--dialect=codex|copilot]\n' +
+          '       [--base=<ref>]\n' +
+          '  verify [--base=<ref>]\n' +
           '  sanction [--from=<violations manifest>]\n' +
-          '  verify | autofix | audit | sanctions-check | install-hooks\n' +
+          '  autofix | audit | sanctions-check | install-hooks\n' +
           '  state | report | scope-check | session-start | session-end\n',
       );
       return 1;

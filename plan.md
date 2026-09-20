@@ -307,6 +307,25 @@ config; and external-tool output). Two tracks:
     escape hatch, not the laundering cast). Full investigation:
     `docs/superpowers/specs/2026-07-21-phase-c-boundary-cast-rule-design.md`.
 
+## Base ref resolution is per-branch (#104, shipped)
+
+`merge-base(baseBranch, HEAD)..HEAD` with a single repo-wide `baseBranch` makes
+a stacked branch re-verify its parent's whole diff. Resolution is now
+`--base` → the PR's base via `gh` → `config.baseBranch`, memoised per branch in
+`.guardrails/state/base-refs.json` so the Stop rung costs at most one host call
+per branch per hour.
+
+`@{u}` was proposed and rejected: for a pushed branch it is `origin/<the same
+branch>`, so the merge-base is the branch's own tip and the scope collapses to
+unpushed commits — a fail-open of exactly the kind this package exists to
+prevent. Every fallback path here widens the scope; none narrows it.
+
+**Still open from that issue** — there is no first-class way to ask for a
+_file-scoped_ run, so an agent that wants one reaches for `npx stryker run
+--mutate` directly and bypasses whatever lock the push rung takes. The reporter
+left orphaned `workerd` processes doing exactly that. A scope flag on
+`verify`/`gate` would make the safe path and the fast path the same path.
+
 ## Roadmap: fixer-loop hardening (from the dogfooding live proof)
 
 - **The gate could hand work to the main agent while its own fixer was still

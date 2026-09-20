@@ -944,6 +944,7 @@ describe('runCommand — unknown', () => {
     '--enforcement=warn|block',
     '--analyzers=',
     '--distribution=solo|team',
+    '--base=<ref>',
   ])('names %s', async (flag) => {
     await runCommand('bogus', [], dependencies());
     expect(errors.join('')).toContain(flag);
@@ -3310,5 +3311,129 @@ describe('runCommand — sanction (derive a grant, install nothing)', () => {
       ),
     ).toBe(0);
     expect(errors.join('')).toContain('no suppression');
+  });
+});
+
+/**
+ * #104: which ref a branch is verified against, per branch rather than per
+ * repo. A stacked branch verified against `main` re-runs every analyzer over
+ * its parent's whole diff — work that is already verified and already green in
+ * the parent's own pull request.
+ */
+const silentExec: Exec = () =>
+  Promise.resolve({ stdout: '', stderr: '', code: 0 });
+
+/**
+A repo on `feature/child` whose pull request targets `target`.
+*/
+const ghAnswering =
+  (target: string): Exec =>
+  (command, args) => {
+    if (command === 'git' && args.includes('--abbrev-ref')) {
+      return Promise.resolve({
+        stdout: 'feature/child\n',
+        stderr: '',
+        code: 0,
+      });
+    }
+    if (command === 'gh') {
+      return Promise.resolve({
+        stdout: JSON.stringify({ baseRefName: target }),
+        stderr: '',
+        code: 0,
+      });
+    }
+    return Promise.resolve({ stdout: '', stderr: '', code: 0 });
+  };
+
+const ghAnswersParent = ghAnswering('feature/parent');
+const ghAnswersMain = ghAnswering('main');
+
+describe('verify --base', () => {
+  it('scopes the diff to an explicit --base', async () => {
+    const calls: { command: string; args: string[] }[] = [];
+    const exec: Exec = (command, args) => {
+      calls.push({ command, args });
+      return Promise.resolve({ stdout: '', stderr: '', code: 0 });
+    };
+    await runCommand(
+      'verify',
+      ['--base=feature/parent'],
+      dependencies({ exec }),
+    );
+    const diff = calls.find(
+      (call) => call.command === 'git' && call.args.includes('--name-only'),
+    );
+    expect(diff?.args).toContain('feature/parent');
+  });
+
+  it('says which base it used when it is not the configured one', async () => {
+    // Silent FALLBACK, visible RESOLUTION: a run that takes 30s on one branch
+    // and 30 minutes on another has to be explicable without guessing.
+    await runCommand(
+      'verify',
+      ['--base=feature/parent'],
+      dependencies({ exec: silentExec }),
+    );
+    expect(errors.join('')).toContain('feature/parent');
+  });
+
+  it('stays quiet when the configured base is what answered', async () => {
+    // The common case, on every rung, every turn. It must not grow a line.
+    await runCommand('verify', [], dependencies({ exec: silentExec }));
+    expect(errors.join('')).not.toContain('verifying against');
+  });
+
+  it('names the pull request as the reason when gh answered', async () => {
+    // The two wordings are one mutation apart, and the whole point of the line
+    // is telling the reader WHICH source narrowed their run.
+    await runCommand('verify', [], dependencies({ exec: ghAnswersParent }));
+    expect(errors.join('')).toContain("this branch's pull request");
+    expect(errors.join('')).not.toContain('--base');
+  });
+
+  it('names --base as the reason when the flag answered', async () => {
+    await runCommand(
+      'verify',
+      ['--base=feature/parent'],
+      dependencies({ exec: silentExec }),
+    );
+    expect(errors.join('')).toContain('--base');
+    expect(errors.join('')).not.toContain('pull request');
+  });
+
+  it('stays quiet when the pull request base IS the configured base', async () => {
+    // Resolved from the host, but identical to the config: nothing has
+    // changed about this run, so there is nothing to report.
+    await runCommand('verify', [], dependencies({ exec: ghAnswersMain }));
+    expect(errors.join('')).not.toContain('verifying against');
+  });
+
+  it('falls back to the configured base when gh cannot answer', async () => {
+    const calls: { command: string; args: string[] }[] = [];
+    const exec: Exec = (command, args) => {
+      calls.push({ command, args });
+      if (command === 'git' && args.includes('--abbrev-ref')) {
+        return Promise.resolve({
+          stdout: 'feature/child\n',
+          stderr: '',
+          code: 0,
+        });
+      }
+      if (command === 'gh') {
+        return Promise.resolve({
+          stdout: '',
+          stderr: '',
+          code: 1,
+          spawnFailed: true as const,
+        });
+      }
+      return Promise.resolve({ stdout: '', stderr: '', code: 0 });
+    };
+    await runCommand('verify', [], dependencies({ exec }));
+    const diff = calls.find(
+      (call) => call.command === 'git' && call.args.includes('--name-only'),
+    );
+    expect(diff?.args).toContain('main');
   });
 });
