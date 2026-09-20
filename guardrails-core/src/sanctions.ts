@@ -5,8 +5,8 @@
  * against the branch's merge-base: a key absent from the base entirely, or one
  * whose total count increased, is a new grant this branch introduces.
  *
- * It is deliberately enforced in **CI**, and deliberately never fails on a new
- * grant — the PR is where a human actually signs off, so merging the PR *is*
+ * The APPROVAL half is deliberately enforced in **CI**, and deliberately never
+ * fails on a new grant — the PR is where a human actually signs off, so merging the PR *is*
  * the approval, and a required check that failed on every legitimate approval
  * would deadlock the very merge that constitutes it. The check can only fail
  * on a MALFORMED entry (see `config.ts`'s `SanctionParseResult`); a new grant
@@ -14,6 +14,10 @@
  * gate itself (`runCommitGate` in `gate.ts`) is what enforces reality: an
  * occurrence beyond the declared `count` still blocks the commit regardless of
  * what this check says.
+ *
+ * The INTEGRITY half — malformed entries, stale counts, misplaced directives —
+ * is not CI-only and must not be: see `sanctionIntegrity` at the foot of this
+ * file, which every local rung runs (#103).
  *
  * An `approvedBy` provenance field was built and then removed on purpose. Local
  * git identity is writable by whatever is running — and is frequently a bot or a
@@ -28,7 +32,11 @@
  */
 
 import { type AuditFinding, auditSource, findingKey } from './audit.js';
-import type { SanctionedFile, SanctionedSuppression } from './config.js';
+import {
+  parseSanctionsJson,
+  type SanctionedFile,
+  type SanctionedSuppression,
+} from './config.js';
 import type { Violation } from './violation.js';
 
 /**
@@ -561,4 +569,114 @@ export function sanctionPlacementIssues(
     );
   }
   return issues;
+}
+
+/**
+ * The INTEGRITY half of `sanctions-check` (#103), as one result.
+ *
+ * `sanctions-check` does two unrelated jobs. One reports the exemptions this
+ * branch introduces, for the reviewer whose merge IS the approval — it needs a
+ * merge-base, it never fails, and it belongs in CI. The other decides three
+ * FACTUAL questions about the head config alone: are the entries well-formed,
+ * do the declared counts still match the source, and do the granted directives
+ * still cover what they were granted for. That half needs no git, no network
+ * and no base revision — it is file reads — and it was reachable only from CI
+ * anyway, so a count drift cost a full CI run to discover (measured at 1h9m
+ * against the 86ms the check itself takes).
+ *
+ * Note what the commit gate does NOT catch, which is why this is not already
+ * covered: `spendBudget` measures a key's occurrences in the BRANCH DIFF
+ * against its budget, so copying a granted directive onto a sibling line spends
+ * 1 of a budget of 5 and passes. `sanctionCountDrift` measures occurrences in
+ * the SOURCE FILE, which is where 6-against-5 shows up. The two ask different
+ * questions on purpose; only this one sees the total.
+ *
+ * Returned as a discriminated union rather than a violation list because the
+ * two callers render it differently and must not drift on the ORDER: the CI
+ * command prints each class with its own remediation paragraph, and the local
+ * rungs turn it into manifest violations. Precedence lives here, once.
+ */
+export type SanctionIntegrity =
+  | { kind: 'ok' }
+  | { kind: 'malformed'; entries: readonly string[] }
+  | { kind: 'drift'; entries: readonly SanctionCountDrift[] }
+  | { kind: 'placement'; entries: readonly SanctionPlacementIssue[] };
+
+export function sanctionIntegrity(
+  configText: string | undefined,
+  readSource: (file: string) => string | undefined,
+): SanctionIntegrity {
+  // An absent config is the common case on every rung, and it is not an error:
+  // a repo that grants no exemptions has nothing here to be wrong.
+  const { valid, malformed } = parseSanctionsJson(configText ?? '{}');
+  if (malformed.length > 0) {
+    return { kind: 'malformed', entries: malformed };
+  }
+  // `files` is deliberately not passed to either check below: a path grant
+  // carries no count, so there is nothing to verify, and that absence is what
+  // removes the regeneration churn (#39).
+  const drift = sanctionCountDrift(valid, readSource);
+  if (drift.length > 0) {
+    return { kind: 'drift', entries: drift };
+  }
+  // After the count guard, not alongside it: a stale count means the source
+  // moved under the policy file, and every placement report that follows would
+  // be noise about the same one defect.
+  const misplaced = sanctionPlacementIssues(valid, readSource);
+  return misplaced.length > 0
+    ? { kind: 'placement', entries: misplaced }
+    : { kind: 'ok' };
+}
+
+/**
+ * Render an integrity failure as manifest violations, for the local rungs.
+ *
+ * Every one is filed against the POLICY file rather than the source. The edit
+ * that resolves a drift is a decision about the grant — bump the count, or
+ * remove the suppression the grant was covering — and naming `src/a.ts` would
+ * point the reader at the half of the pair that is very possibly correct. It
+ * also means the fixer scope-lock denies the whole manifest by construction
+ * (`guardrails.config.json` is in `DENIED_FILE_NAMES`), which is the intended
+ * outcome: granting and re-budgeting an exemption is the owner's decision, not
+ * a fixer's, and never a main agent's without asking.
+ *
+ * `fixable: false` throughout — none of these belong to the silent autofix
+ * class, and a mechanical edit to a policy file is precisely what must not
+ * happen here.
+ */
+export function toIntegrityViolations(
+  integrity: SanctionIntegrity,
+  configPath: string,
+): Violation[] {
+  if (integrity.kind === 'malformed') {
+    return toMalformedViolations(integrity.entries, configPath);
+  }
+  if (integrity.kind === 'drift') {
+    return integrity.entries.map((entry) => ({
+      ruleId: 'guardrails/sanction-count-drift',
+      file: configPath,
+      message:
+        `Sanctioned suppression ${entry.key}: declared ${entry.declared}, ` +
+        `found ${entry.actual}. Either the suppression is gone and the entry ` +
+        `should go with it, or a new occurrence was added that nobody has ` +
+        `approved — the count is not a number to raise until it passes.`,
+      severity: 'error' as const,
+      fixable: false,
+      tool: 'guardrails',
+    }));
+  }
+  if (integrity.kind === 'placement') {
+    return integrity.entries.map((entry) => ({
+      ruleId: 'guardrails/sanction-placement',
+      file: configPath,
+      message:
+        `Granted Stryker directive at ${entry.file}:${entry.line} ` +
+        `(${entry.text}) no longer covers what it was granted for: ` +
+        `${entry.detail}.`,
+      severity: 'error' as const,
+      fixable: false,
+      tool: 'guardrails',
+    }));
+  }
+  return [];
 }

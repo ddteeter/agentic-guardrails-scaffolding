@@ -382,7 +382,13 @@ function pickStringArray(value: unknown): string[] {
     : [];
 }
 
-export function isRecord(value: unknown): value is Record<string, unknown> {
+/** Module-local on purpose. The shared `is-record.ts` is what other modules
+ *  import; this copy stays unexported because it carries a sanctioned mutation
+ *  suppression whose equivalence argument is about THIS file's `pick*`
+ *  fallbacks, and because exporting a second `isRecord` into the graph is an
+ *  ambiguity the dead-code analyzer reports (it surfaced when `verify/` grew an
+ *  edge to this module in #103). */
+function isRecord(value: unknown): value is Record<string, unknown> {
   // Equivalent mutant on the `typeof value === 'object'` half: a primitive that
   // slips through is still read field-by-field with `pick*` fallbacks, so every
   // field lands on its default — the same result as rejecting the value here.
@@ -509,7 +515,9 @@ function pickNumber(value: unknown, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
 }
 
-const CONFIG_FILE_NAME = 'guardrails.config.json';
+/** The policy file's name, exported so the modules that read it, name it in a
+ *  message, or file a violation against it cannot drift on the spelling. */
+export const CONFIG_FILE_NAME = 'guardrails.config.json';
 
 /**
  * Read `guardrails.config.json` TEXT off disk, or `undefined` if it is
