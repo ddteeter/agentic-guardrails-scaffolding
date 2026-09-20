@@ -209,12 +209,42 @@ const OUTPUT_DETAIL_CHARS = 500;
  * reading". Only the character cap is shared, because that is the limit that
  * actually protects the manifest from a runaway tool.
  */
+/**
+ * A line that reads like a tool announcing a failure, in any of the shapes the
+ * pack's analyzers actually use.
+ *
+ * Generic on purpose. Recognising `Oops! Something went wrong!` would hardcode
+ * one tool's copy -- the coupling this file's guidance calls out by name --
+ * but "a line that says ERROR, error:, or FAIL" is a convention rather than a
+ * product's wording, and a tool that stops using it degrades to the head,
+ * which is the behaviour before this existed.
+ */
+const ERROR_MARKER = /\b(error|fail)/i;
+
+/**
+ * The lines worth quoting: the window starting at the first error marker, or
+ * the head when there is no marker at all.
+ *
+ * Taking the head is the wrong end for a tool whose preamble is warnings and
+ * whose verdict is last (#105). Stryker emits one `WARN OptionsValidator
+ * Unknown stryker config option` per commented key, and a consumer using
+ * `//`-prefixed keys as JSON comments -- a common, harmless idiom -- gets 13
+ * of them before anything else. The five lines that survived were
+ * deterministically those warnings, and the failing test name, twenty lines
+ * down, was never reported.
+ */
 function headLines(text: string): string[] {
-  return text
+  const lines = text
     .split('\n')
     .map((line) => line.trim())
-    .filter((line) => line.length > 0)
-    .slice(0, OUTPUT_DETAIL_LINES);
+    .filter((line) => line.length > 0);
+  const marker = lines.findIndex((line) => ERROR_MARKER.test(line));
+  // `-1` (no marker) and `0` (the tool led with it) both mean "start at the
+  // top", which is why this is a max rather than a branch.
+  return lines.slice(
+    Math.max(marker, 0),
+    Math.max(marker, 0) + OUTPUT_DETAIL_LINES,
+  );
 }
 
 function outputDetail(stderr: string, stdout: string): string | undefined {
@@ -776,6 +806,152 @@ function strykerUnrunMutantsViolation(count: number): Violation {
     fixable: false,
     tool: 'guardrails',
   };
+}
+
+/**
+ * Stryker's own words for "your suite is red", and the line that introduces
+ * the test names.
+ *
+ * Both are stable strings rather than copy this repo invents, and the fallback
+ * if either changes is the generic `analyzer-failed` message -- i.e. today's
+ * behaviour -- so an upgrade that reworded them degrades rather than breaks.
+ * That is the same trade `isZeroMutantRun`'s banner pattern makes.
+ */
+const STRYKER_DRY_RUN_FAILED =
+  'There were failed tests in the initial test run';
+const STRYKER_DRY_RUN_TESTS =
+  'One or more tests failed in the initial test run';
+
+/** How many failing test names a dry-run report quotes before it stops. A red
+ *  suite can be red in hundreds of places, and the manifest is not the place
+ *  to list them -- the first few name the module to start in, which is the
+ *  thing the generic message failed to provide. */
+const DRY_RUN_TEST_NAMES = 5;
+
+export function isStrykerDryRunFailure(output: string): boolean {
+  return output.includes(STRYKER_DRY_RUN_FAILED);
+}
+
+/**
+ * The failing test NAMES from a dry-run failure, in the order stryker listed
+ * them.
+ *
+ * Stryker prints the names one tab in and each failure message two tabs in,
+ * under the `DryRunExecutor` line, until the next top-level log line. Reading
+ * by indentation rather than by matching the message text is what keeps this
+ * from having to know anything about the test framework underneath.
+ */
+function indentWidth(line: string): number {
+  return line.length - line.trimStart().length;
+}
+
+export function strykerFailingTests(output: string): string[] {
+  const lines = output.split('\n');
+  const start = lines.findIndex((line) => line.includes(STRYKER_DRY_RUN_TESTS));
+  if (start === -1) {
+    return [];
+  }
+  // Every indented line after the marker, up to stryker's next top-level log
+  // entry. Read by INDENTATION rather than by matching the failure text, which
+  // is what keeps this from having to know anything about the test framework
+  // underneath: stryker prints each test name one level in and each failure
+  // message one level further.
+  const following = lines.slice(start + 1);
+  const block: string[] = [];
+  for (const line of following) {
+    if (indentWidth(line) === 0) {
+      break;
+    }
+    block.push(line);
+  }
+  // No empty-block guard, deliberately. `Math.min()` of nothing is `Infinity`,
+  // which no line's indentation can equal, so the filter below already yields
+  // `[]` for an empty block -- a guard here would change no output for any
+  // input, which is an unkillable mutant rather than a safeguard.
+  const outermost = Math.min(...block.map((line) => indentWidth(line)));
+  return block
+    .filter((line) => indentWidth(line) === outermost)
+    .map((line) => line.trim());
+}
+
+/**
+ * The suite was red before a single mutant was tested (#105).
+ *
+ * Categorically different from every other `analyzer-failed` cause, which is
+ * why it does not share their rule id. A crash, a bad flag or a version
+ * mismatch are the operator's to fix before the gate can run at all; a red dry
+ * run means the gate ran CORRECTLY and the suite is the problem -- frequently
+ * a flake rather than a defect. Conflated, an agent cannot tell "your code got
+ * worse" from "a test is unreliable", which is the distinction the whole
+ * mutation gate exists to make.
+ *
+ * The failing test names are the entire point. Before this, the generic
+ * message's `output:` detail took the HEAD of stryker's output, which for any
+ * consumer using `//`-prefixed JSON keys as comments is a wall of
+ * `WARN OptionsValidator` lines -- so the operator was told "a bad config, a
+ * crash, an unexpected flag" and shown config warnings, when what had happened
+ * was a failing test twenty lines further down.
+ */
+/** What the violation says about WHICH tests failed. Built in statements
+ *  rather than nested ternaries so each branch is one thing a test can pin. */
+function failingTestsSentence(failingTests: readonly string[]): string {
+  if (failingTests.length === 0) {
+    return (
+      ' Stryker did not name them in a shape this adapter could read; run ' +
+      'the suite directly to see the failures.'
+    );
+  }
+  const quoted = failingTests.slice(0, DRY_RUN_TEST_NAMES);
+  const names = quoted.map((name) => `"${name}"`).join('; ');
+  const remaining = failingTests.length - quoted.length;
+  if (remaining === 0) {
+    return ` The suite reported: ${names}.`;
+  }
+  return ` The suite reported: ${names}. (${remaining} more.)`;
+}
+
+function strykerDryRunFailedViolation(
+  failingTests: readonly string[],
+): Violation {
+  return {
+    ruleId: 'guardrails/stryker-dry-run-failed',
+    file: 'package.json',
+    message:
+      `stryker could not start: one or more tests failed in its INITIAL test ` +
+      `run, so no mutant was ever tested and the mutation gate has no ` +
+      `verdict. This is not a guardrails or stryker misconfiguration — the ` +
+      `test suite is red on its own terms, and running it directly will ` +
+      `reproduce it faster than stryker will.` +
+      failingTestsSentence(failingTests) +
+      ` Re-running is a legitimate first response here: a dry run is the one ` +
+      `analyzer failure where a flaky test, not a defect, is a common cause.`,
+    severity: 'error',
+    fixable: false,
+    tool: 'guardrails',
+  };
+}
+
+/**
+ * What a non-zero stryker exit means, once a report and a kill have both been
+ * ruled out. Extracted from `runStryker` because it is the part that grows:
+ * each new recognisable failure is one more branch, and the orchestrator is
+ * already the longest function in the package (`fallow health` said so when
+ * the dry-run case pushed it past the cyclomatic threshold).
+ *
+ * `[]` means "vacuously clean": nothing to mutate is not a failure, even
+ * though the runner threw on its way to discovering it.
+ */
+function strykerExitFailure(run: FailedRun): Violation[] {
+  const output = `${run.stdout}\n${run.stderr}`;
+  if (isZeroMutantRun(output)) {
+    return [];
+  }
+  // Ahead of the generic failure because it is a different KIND of failure,
+  // not a better message for the same one (#105).
+  if (isStrykerDryRunFailure(output)) {
+    return [strykerDryRunFailedViolation(strykerFailingTests(output))];
+  }
+  return [analyzerFailedViolation('stryker', run)];
 }
 
 function strykerReportMissingViolation(reportPath: string): Violation {
@@ -1546,13 +1722,7 @@ async function runStryker(
     return [...outOfScope, analyzerFailedViolation('stryker', result)];
   }
   if (result.code !== 0) {
-    // Outcome 2: nothing to mutate is vacuously clean, even though the runner
-    // threw on its way to discovering that.
-    if (isZeroMutantRun(`${result.stdout}\n${result.stderr}`)) {
-      return outOfScope;
-    }
-    // Outcome 3.
-    return [...outOfScope, analyzerFailedViolation('stryker', result)];
+    return [...outOfScope, ...strykerExitFailure(result)];
   }
   return [...outOfScope, strykerReportMissingViolation(reportPath)];
 }
