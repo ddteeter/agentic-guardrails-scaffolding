@@ -621,6 +621,26 @@ describe('baseReferenceCache', () => {
 });
 
 describe('baseReferenceCache write containment', () => {
+  it('writes nothing when the repo root is an existing FILE', () => {
+    // Not the same case as a missing path, and the one an existence check
+    // lets through: `mkdirSync(..., { recursive: true })` throws ENOTDIR on an
+    // ancestor segment that is a file, and nothing between the memo and the
+    // gate's caller catches it — so the stop rung would abort with a generic
+    // error on every turn. Found in review of #104.
+    const notARepo = path.join(
+      mkdtempSync(path.join(tmpdir(), 'guardrails-base-ref-')),
+      'a-file',
+    );
+    writeFileSync(notARepo, 'not a directory\n');
+    expect(() => {
+      baseReferenceCache(notARepo).write('feature/child', {
+        base: 'main',
+        at: 1,
+      });
+    }).not.toThrow();
+    expect(baseReferenceCache(notARepo).read()).toEqual({});
+  });
+
   it('writes nothing when the repo root is not a directory', () => {
     // The memo is an optimisation, so "could not write" is a complete answer.
     // Without this, `mkdirSync(..., { recursive: true })` fabricates the whole

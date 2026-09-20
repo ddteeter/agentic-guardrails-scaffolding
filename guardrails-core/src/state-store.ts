@@ -9,7 +9,6 @@
 
 import {
   appendFileSync,
-  existsSync,
   mkdirSync,
   readdirSync,
   readFileSync,
@@ -49,6 +48,18 @@ export function recurrenceFile(directory: string): string {
   return path.join(directory, 'recurrence.json');
 }
 
+/** Is this path a directory that exists?
+ *
+ *  `throwIfNoEntry: false` rather than a try/catch: a missing path answers
+ *  `undefined` instead of throwing, so the "not there" and "not a directory"
+ *  cases fall out of one expression. A catch here would carry an unkillable
+ *  mutant — emptying it reaches the implicit `undefined` return, which is
+ *  falsy exactly like the `false` it would have returned — and this is a
+ *  guard, so it should not need a suppression to prove it works. */
+function isDirectory(candidate: string): boolean {
+  return statSync(candidate, { throwIfNoEntry: false })?.isDirectory() === true;
+}
+
 function baseReferenceFile(directory: string): string {
   return path.join(directory, 'base-refs.json');
 }
@@ -72,7 +83,13 @@ function isBaseReferenceEntry(value: unknown): value is BaseReferenceEntry {
  * every branch back to the host on its next turn. A missing or corrupt file
  * reads as no memory at all, which costs one host call and nothing else.
  *
- * **The write is skipped when `repoRoot` is not a directory.** Unlike the
+ * **The write is skipped when `repoRoot` is not a directory.** Not merely when
+ * it does not exist: a `repoRoot` that resolves to a regular FILE passes an
+ * existence check, and `writeJson`'s `mkdirSync(..., { recursive: true })`
+ * then throws `ENOTDIR` on an ancestor segment. Nothing between here and
+ * `resolveEffectiveBase`'s caller catches that, so the stop and pretooluse
+ * rungs — whose whole contract is to answer a hook quietly — would abort with
+ * a generic error on every turn. A memo must not be able to do that. Unlike the
  * violations manifest or the lease file — where the state IS the product and
  * creating its directory is the job — this is an optimisation, and "could not
  * write" is a complete answer. The guard is not hypothetical: `repoRoot`
@@ -100,7 +117,7 @@ export function baseReferenceCache(repoRoot: string): BaseReferenceCache {
       return entries;
     },
     write: (branch, entry) => {
-      if (!existsSync(repoRoot)) {
+      if (!isDirectory(repoRoot)) {
         return;
       }
       const raw = readJson(baseReferenceFile(directory));
