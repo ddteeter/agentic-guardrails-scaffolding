@@ -457,9 +457,18 @@ write the suppression?**
 ```
 
 Use `sanctionedSuppressions` for hand-written code. Its `count` must equal the
-real occurrence count, and `guardrails sanctions-check` re-derives that number
-with the auditor's own lexer and **fails on a mismatch** — which is right, since
-a stale count silently over-provisions how much the auditor stops watching.
+real occurrence count, which is re-derived with the auditor's own lexer and
+**fails on a mismatch** — which is right, since a stale count silently
+over-provisions how much the auditor stops watching.
+
+That re-derivation runs on **every rung** — `verify`, and the commit, push and
+CI gates — not only in CI. It reads files and nothing else, so it costs
+milliseconds, and the point is where the failure lands: copying a granted
+suppression onto a sibling line is a natural edit (the reasoning genuinely
+carries over), and the commit gate cannot catch it, because it measures a key's
+occurrences in the **diff** against the budget while the drift is in the
+**file** total. Before this, that combination passed every local check and
+failed in CI over an hour later.
 
 Use `sanctionedFiles` for generated code, where that same discipline becomes a
 chore nobody can satisfy: the count changes on every regeneration, and pinning

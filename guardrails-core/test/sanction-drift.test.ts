@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
 import { auditSource, findingKey } from '../src/audit.js';
-import { sanctionCountDrift } from '../src/sanctions.js';
+import {
+  sanctionCountDrift,
+  sanctionIntegrity,
+  toIntegrityViolations,
+} from '../src/sanctions.js';
 
 const DISABLE = '// Stryker disable next-line ConditionalExpression';
 // A strict PREFIX of the directive above. Counting by substring rather than by
@@ -144,5 +148,151 @@ describe('sanctionCountDrift — several keys in one file', () => {
       { key: first, declared: 2, actual: 1 },
       { key: second, declared: 3, actual: 1 },
     ]);
+  });
+});
+
+/**
+ * #103: the integrity half of `sanctions-check` — the three FACTUAL failures
+ * (malformed, count drift, misplaced directive) — has to be reachable from the
+ * local rungs, where it costs milliseconds, rather than only from CI, where the
+ * reporter discovered a count drift 1h9m after committing it.
+ *
+ * Precedence is asserted rather than assumed: a stale count means the source
+ * moved under the policy file, and every placement report that follows is noise
+ * about the same one defect. `sanctionsCheckCommand` already ordered them that
+ * way; pulling the order into one function is what stops the two callers
+ * drifting apart.
+ */
+describe('sanctionIntegrity', () => {
+  const key = `src/a.ts|mutation-suppress|${DISABLE}`;
+
+  it('is ok when the config is absent entirely', () => {
+    // The overwhelmingly common case, and the one every rung pays for: a repo
+    // with no sanctions must cost nothing and report nothing.
+    expect(sanctionIntegrity(undefined, read({}))).toEqual({ kind: 'ok' });
+  });
+
+  it('is ok when every declared count matches the source', () => {
+    expect(
+      sanctionIntegrity(
+        JSON.stringify({
+          sanctionedSuppressions: [{ key, reason: 'r', count: 1 }],
+        }),
+        read({ 'src/a.ts': `${DISABLE}\nfoo();` }),
+      ),
+    ).toEqual({ kind: 'ok' });
+  });
+
+  it('reports a count that no longer matches the source', () => {
+    // The reporter's exact case: a sibling line copied the granted directive,
+    // so the file holds 2 where the policy still declares 1.
+    const integrity = sanctionIntegrity(
+      JSON.stringify({
+        sanctionedSuppressions: [{ key, reason: 'r', count: 1 }],
+      }),
+      read({ 'src/a.ts': `${DISABLE}\nfoo();\n${DISABLE}\nbar();` }),
+    );
+    expect(integrity).toEqual({
+      kind: 'drift',
+      entries: [{ key, declared: 1, actual: 2 }],
+    });
+  });
+
+  it('reports malformed entries ahead of any count drift', () => {
+    const integrity = sanctionIntegrity(
+      JSON.stringify({
+        sanctionedSuppressions: [{ key, count: 1 }],
+      }),
+      read({ 'src/a.ts': `${DISABLE}\nfoo();\n${DISABLE}\nbar();` }),
+    );
+    expect(integrity.kind).toBe('malformed');
+  });
+
+  it('reports drift ahead of placement, so one defect reads as one finding', () => {
+    // Both are true here: the count is stale AND the region disable never
+    // closes. Only the count is reported.
+    const region = '// Stryker disable ConditionalExpression';
+    const regionKey = `src/a.ts|mutation-suppress|${region}`;
+    const integrity = sanctionIntegrity(
+      JSON.stringify({
+        sanctionedSuppressions: [{ key: regionKey, reason: 'r', count: 2 }],
+      }),
+      read({ 'src/a.ts': `${region}\nfoo();` }),
+    );
+    expect(integrity.kind).toBe('drift');
+  });
+
+  it('reports a region disable that never closes', () => {
+    const region = '// Stryker disable ConditionalExpression';
+    const regionKey = `src/a.ts|mutation-suppress|${region}`;
+    const integrity = sanctionIntegrity(
+      JSON.stringify({
+        sanctionedSuppressions: [{ key: regionKey, reason: 'r', count: 1 }],
+      }),
+      read({ 'src/a.ts': `${region}\nfoo();` }),
+    );
+    expect(integrity.kind).toBe('placement');
+  });
+});
+
+describe('toIntegrityViolations', () => {
+  const key = `src/a.ts|mutation-suppress|${DISABLE}`;
+
+  it('is empty for an ok result', () => {
+    expect(
+      toIntegrityViolations({ kind: 'ok' }, 'guardrails.config.json'),
+    ).toEqual([]);
+  });
+
+  it('names the policy file, not the source file', () => {
+    // The edit that resolves this is a decision about the GRANT -- bump the
+    // count, or remove the suppression. Filing it against `src/a.ts` would
+    // point the reader at the half of the pair that may well be correct.
+    const [violation] = toIntegrityViolations(
+      { kind: 'drift', entries: [{ key, declared: 1, actual: 2 }] },
+      'guardrails.config.json',
+    );
+    expect(violation).toMatchObject({
+      ruleId: 'guardrails/sanction-count-drift',
+      file: 'guardrails.config.json',
+      severity: 'error',
+      fixable: false,
+      tool: 'guardrails',
+    });
+    expect(violation?.message).toContain('declared 1, found 2');
+    expect(violation?.message).toContain(key);
+  });
+
+  it('carries a placement issue with its source line', () => {
+    const [violation] = toIntegrityViolations(
+      {
+        kind: 'placement',
+        entries: [
+          {
+            file: 'src/a.ts',
+            line: 3,
+            text: '// Stryker disable ConditionalExpression',
+            detail: 'never closed',
+            problem: 'unclosed-disable',
+          },
+        ],
+      },
+      'guardrails.config.json',
+    );
+    expect(violation).toMatchObject({
+      ruleId: 'guardrails/sanction-placement',
+      file: 'guardrails.config.json',
+      severity: 'error',
+      fixable: false,
+    });
+    expect(violation?.message).toContain('src/a.ts:3');
+  });
+
+  it('renders a malformed entry through the existing violation shape', () => {
+    const [violation] = toIntegrityViolations(
+      { kind: 'malformed', entries: ['entry 1: missing reason'] },
+      'guardrails.config.json',
+    );
+    expect(violation?.ruleId).toBe('guardrails/malformed-sanction');
   });
 });
