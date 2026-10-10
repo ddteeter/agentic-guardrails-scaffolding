@@ -380,18 +380,33 @@ left orphaned `workerd` processes doing exactly that. A scope flag on
     twice. That is the same shape as the end-to-end suite's earlier 122-file
     incident. The fingerprint tests now set a `GIT_DIR` trap, and the
     end-to-end exec pins cwd-less calls to its temp repo.
-  - **Still open from the same audit:** Codex now sends `agent_id` on
-    PreToolUse for subagents (codex main), which the lock could use to
-    narrow. The push rung has no wall-clock budget: one Stryker dry-run loop
-    held a machine lock for 4h. Fixers still cannot verify their own work
-    (#93); every fixer in this build said so. Reusing a still-running fixer
-    for a same-tier re-block (Claude Code's agent messaging) could save it
-    re-reading files, but the hook cannot see fixer liveness. Also from this
-    build: the Stop gate honours a commit-rung fixer's lease for one firing
-    only, then says "spawn the fixer". With a thorough fixer still running,
-    that second firing would have put two fixers in one file. It was not
-    followed, but the bound is tight for a fixer that outlives one Stop
-    cycle.
+  - **Followed up in the next PR:**
+    - **The Stop gate gave up on a running fixer after one wait.** A lease
+      now carries `lastSeenAt`, which the scope-check hook stamps whenever the
+      host attributes a tool call to a fixer type. A lease whose fixer was
+      seen in the last five minutes keeps being honoured past the one-wait
+      bound, still capped by the 30-minute TTL. Copilot never attributes
+      `preToolUse` calls, so it keeps the one-wait bound.
+    - **Codex identity.** Codex has sent `agent_id`/`agent_type` on
+      `PreToolUse` for thread-spawned subagents since `openai/codex#22882`.
+      Sibling subagents now narrow on it. The main thread narrows once a fixer
+      in the same session has carried the field: before that, a missing
+      `agent_id` cannot be told apart from an older Codex's fixer.
+    - **The "4h push lock" was not a hang, and a wall-clock budget would
+      have blocked real work.** Re-traced in dialed.run's transcripts, the
+      2026-10-07 run (PR #158) was a 7h38m Stryker run at load ~90, with
+      several worktrees mutating at once. It ended with five real survivors;
+      the next push passed and the PR merged. Of 105 timed pushes, 50 ran
+      over 30 minutes and 30 over an hour, all explained by diff size,
+      queueing or CPU starvation. The one true hang (2026-09-18) sat at 0% CPU
+      with no progress. The lock in question is dialed.run's own pre-push
+      `lockf`, not guardrails-core's. So no wall-clock budget. The follow-up,
+      if any, is stall detection: no mutant progress for N minutes.
+  - **Still open from the same audit:** Fixers still cannot verify their own
+    work (#93); every fixer in this build said so. Reusing a still-running
+    fixer for a same-tier re-block (Claude Code's agent messaging) could save
+    it re-reading files; the lease heartbeat now gives the hook the liveness
+    signal that idea lacked.
   - **Live checks after the restart (step 8 of
     `docs/live-loop-verification.md`, run as headless `claude -p` sessions in
     throwaway worktrees):**
@@ -1975,7 +1990,11 @@ worth fixing or documenting before an outside adopter meets them:
   tell me", never as "not a fixer", and those two surfaces keep the
   session-scoped lock — the conservative direction, since Codex has no
   per-agent tool allowlist to fall back on. When `openai/codex#16226` lands,
-  Codex joins the narrow tier with no design change here.
+  Codex joins the narrow tier with no design change here. (Update: Codex
+  shipped `agent_id`/`agent_type` on `PreToolUse` for subagents in
+  `openai/codex#22882` while #16226 stayed open. Siblings now narrow on it;
+  the main thread narrows once a fixer in the session has shown the field,
+  because absence alone cannot tell it from an older Codex's fixer.)
 - **Commit-rung mutation testing scaled with the branch diff — fixed.** Stryker
   mutated every production file changed since the merge-base, so commits got
   slower the longer a branch ran (several exceeded ten minutes on this branch
