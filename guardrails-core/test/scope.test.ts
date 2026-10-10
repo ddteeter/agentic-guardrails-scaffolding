@@ -1,4 +1,10 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -6,9 +12,10 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   collectManifestScope,
-  isPathAllowed,
+  collectSessionScope,
   isWithinRepo,
 } from '../src/scope.js';
+import { LEASE_TTL_MS } from '../src/state.js';
 import { stateDirectory, writeViolations } from '../src/state-store.js';
 import type { Violation } from '../src/violation.js';
 
@@ -190,26 +197,6 @@ describe('collectManifestScope', () => {
   });
 });
 
-describe('isPathAllowed', () => {
-  const files = new Set(['src/a.ts']);
-
-  it('allows a listed file given as an absolute path', () => {
-    expect(isPathAllowed(files, '/repo', '/repo/src/a.ts')).toBe(true);
-  });
-
-  it('allows a listed file given as a repo-relative path', () => {
-    expect(isPathAllowed(files, '/repo', 'src/a.ts')).toBe(true);
-  });
-
-  it('denies a file not in the manifest', () => {
-    expect(isPathAllowed(files, '/repo', '/repo/src/b.ts')).toBe(false);
-  });
-
-  it('normalizes the candidate so a `..` segment does not cause a false denial', () => {
-    expect(isPathAllowed(files, '/repo', 'src/nested/../a.ts')).toBe(true);
-  });
-});
-
 describe('isWithinRepo', () => {
   it('accepts paths inside the repo, including node_modules', () => {
     expect(isWithinRepo('/repo', '/repo/src/a.ts')).toBe(true);
@@ -235,5 +222,140 @@ describe('collectManifestScope normalization', () => {
   it('stores normalized manifest paths', () => {
     writeActiveViolations('s1', [v('src/nested/../a.ts')]);
     expect(collectManifestScope(directory).files.has('src/a.ts')).toBe(true);
+  });
+});
+
+describe('collectManifestScope across rungs (commit-rung fixers)', () => {
+  it('treats the session commit-rung manifest as active once marked', () => {
+    // The commit gate delegates to a fixer too (#49). Before this, only the
+    // stop rung's `<session>.last.json` could activate the lock, so a fixer
+    // spawned from a commit block could edit anything -- guardrails.config.json
+    // included.
+    writeActiveViolations('s1-commit', [v('src/a.ts')]);
+    const scope = collectManifestScope(directory, 's1');
+    expect(scope.active).toBe(true);
+    expect([...scope.files]).toEqual(['src/a.ts']);
+  });
+
+  it('unions the stop and commit manifests of one session', () => {
+    writeActiveViolations('s1', [v('src/a.ts')]);
+    writeActiveViolations('s1-commit', [v('src/b.ts')]);
+    expect(
+      [...collectManifestScope(directory, 's1').files].toSorted((a, b) =>
+        a.localeCompare(b),
+      ),
+    ).toEqual(['src/a.ts', 'src/b.ts']);
+  });
+
+  it('ignores an unmarked commit-rung manifest', () => {
+    writeViolations(directory, 's1-commit', [v('src/a.ts')]);
+    expect(collectManifestScope(directory, 's1').active).toBe(false);
+  });
+
+  it('does not treat an arbitrary suffix as a rung of the session', () => {
+    writeActiveViolations('s1-other', [v('src/a.ts')]);
+    expect(collectManifestScope(directory, 's1').active).toBe(false);
+  });
+
+  it('expires a commit-rung marker older than the lease TTL', () => {
+    // On hosts that cannot name the calling agent (Codex, Copilot) an active
+    // marker confines the whole session, so one left by an abandoned commit
+    // must not outlive the fixer it was written for.
+    writeActiveViolations('s1-commit', [v('src/a.ts')]);
+    const marker = path.join(directory, 's1-commit.pre-fix.json');
+    const now = Date.now();
+    const old = (now - LEASE_TTL_MS - 1000) / 1000;
+    utimesSync(marker, old, old);
+    expect(collectManifestScope(directory, 's1', now).active).toBe(false);
+  });
+
+  it('expires a commit-rung marker exactly at the lease TTL, not after it', () => {
+    writeActiveViolations('s1-commit', [v('src/a.ts')]);
+    const marker = path.join(directory, 's1-commit.pre-fix.json');
+    const written = 1_700_000_000;
+    utimesSync(marker, written, written);
+    const at = written * 1000 + LEASE_TTL_MS;
+    expect(collectManifestScope(directory, 's1', at).active).toBe(false);
+    expect(collectManifestScope(directory, 's1', at - 1000).active).toBe(true);
+  });
+
+  it('ignores a stray file that only looks like a manifest by length', () => {
+    // Without the suffix filter, `s1.stray.txt` loses its last ten characters
+    // and reads as session `s1`, whose marker below would open the loop.
+    activate('s1');
+    writeFileSync(path.join(directory, 's1.stray.txt'), '[]');
+    expect(collectManifestScope(directory, 's1').active).toBe(false);
+  });
+
+  it('keeps a fresh commit-rung marker active', () => {
+    writeActiveViolations('s1-commit', [v('src/a.ts')]);
+    expect(collectManifestScope(directory, 's1', Date.now()).active).toBe(true);
+  });
+
+  it('never expires the stop-rung marker, which every stop refreshes or clears', () => {
+    writeActiveViolations('s1', [v('src/a.ts')]);
+    const marker = path.join(directory, 's1.pre-fix.json');
+    const now = Date.now();
+    const old = (now - LEASE_TTL_MS - 1000) / 1000;
+    utimesSync(marker, old, old);
+    expect(collectManifestScope(directory, 's1', now).active).toBe(true);
+  });
+});
+
+function activateIn(repoRoot: string, id: string, files: string[]): void {
+  const state = stateDirectory(repoRoot);
+  writeViolations(
+    state,
+    id,
+    files.map((file) => v(file)),
+  );
+  writeFileSync(path.join(state, `${id}.pre-fix.json`), '[]');
+}
+
+describe('collectSessionScope (several checkouts)', () => {
+  let nested: string;
+
+  beforeEach(() => {
+    nested = path.join(root, '.claude', 'worktrees', 'agent-1');
+    mkdirSync(stateDirectory(nested), { recursive: true });
+  });
+
+  it('is inactive when no root holds an active manifest', () => {
+    const scope = collectSessionScope([root, nested], 's1', Date.now());
+    expect(scope.active).toBe(false);
+  });
+
+  it('confines to a nested worktree manifest from a parent cwd', () => {
+    // A fixer spawned by a lane agent can run with the PARENT checkout as its
+    // cwd while the manifest it was handed lives in the lane's worktree.
+    activateIn(nested, 's1-commit', ['src/a.ts']);
+    const scope = collectSessionScope([root, nested], 's1', Date.now());
+    expect(scope.active).toBe(true);
+    expect(scope.allowsEdit(path.join(nested, 'src/a.ts'))).toBe(true);
+    expect(scope.allowsEdit(path.join(nested, 'guardrails.config.json'))).toBe(
+      false,
+    );
+    expect(scope.allowsEdit(path.join(root, 'src/a.ts'))).toBe(false);
+  });
+
+  it('reads within the first root or any active root, nowhere else', () => {
+    activateIn(nested, 's1', ['src/a.ts']);
+    const scope = collectSessionScope([root, nested], 's1', Date.now());
+    expect(scope.allowsRead(path.join(root, 'README.md'))).toBe(true);
+    expect(scope.allowsRead(path.join(nested, 'src/b.ts'))).toBe(true);
+    expect(scope.allowsRead('/home/u/.claude/projects/x/memory/y.md')).toBe(
+      false,
+    );
+  });
+
+  it('does not let a target root without a manifest widen the read scope', () => {
+    const elsewhere = mkdtempSync(path.join(tmpdir(), 'guardrails-other-'));
+    try {
+      activateIn(root, 's1', ['src/a.ts']);
+      const scope = collectSessionScope([root, elsewhere], 's1', Date.now());
+      expect(scope.allowsRead(path.join(elsewhere, 'secret.ts'))).toBe(false);
+    } finally {
+      rmSync(elsewhere, { recursive: true, force: true });
+    }
   });
 });

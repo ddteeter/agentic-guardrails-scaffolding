@@ -848,6 +848,8 @@ export async function runCommitGate(
       openLeaseCycle(directory, owner, manifestPath, guided),
       undefined,
     );
+    // And the scope-lock loop it opened, for the same reason.
+    rmSync(snapshotFile(directory, manifestId), { force: true });
     return { violations: guided, findings, blocked: false, skippedAnalyzers };
   }
 
@@ -856,6 +858,15 @@ export async function runCommitGate(
     options.repoRoot,
   );
   writeViolations(directory, manifestId, combined);
+  // Open a scope-lock loop for the fixer this block is about to name. Without
+  // the marker the lock never engaged at this rung, and a commit-rung fixer
+  // could edit anything -- guardrails.config.json included. Only for an
+  // agent's commit (a hook payload carries the session): a developer's commit
+  // through `.githooks/pre-commit` spawns no fixer, and a loop opened there
+  // would confine whichever session next ran without one.
+  if (options.sessionId !== undefined) {
+    writeFileSync(snapshotFile(directory, manifestId), '[]');
+  }
 
   // Routed by the SAME loose-class rule the stop gate uses, rather than a
   // second policy: the commit-rung analyzers (knip, dependency-cruiser,

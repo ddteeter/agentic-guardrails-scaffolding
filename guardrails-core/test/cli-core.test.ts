@@ -3527,3 +3527,51 @@ describe('session-start guidance staleness', () => {
     expect(existsSync(stale)).toBe(false);
   });
 });
+
+function fixerEdit(filePath: string, cwd = root): string {
+  return JSON.stringify({
+    session_id: 'sid',
+    cwd,
+    tool_name: 'Edit',
+    tool_input: { file_path: filePath },
+    agent_id: 'fixer',
+    agent_type: 'guardrail-fixer',
+  });
+}
+
+describe('scope-check across rungs and nested worktrees', () => {
+  it('locks a commit-rung fixer to its manifest', async () => {
+    // Reproduced against the built CLI before the fix: with only a commit-rung
+    // manifest present, a fixer's edit to guardrails.config.json was allowed.
+    writeActiveViolations('sid-commit', [violation('src/allowed.ts')]);
+
+    const output = await runScopeCheck(
+      fixerEdit(path.join(root, 'guardrails.config.json')),
+    );
+
+    expect(output).toContain('deny');
+  });
+
+  it('locks a fixer whose cwd is the parent checkout but whose manifest is in a nested worktree', async () => {
+    // Claude Code puts subagent worktrees under .claude/worktrees/ INSIDE the
+    // project; a lane agent's fixer can run with the parent as its cwd.
+    mkdirSync(path.join(root, '.git'));
+    const nested = path.join(root, '.claude', 'worktrees', 'agent-1');
+    mkdirSync(nested, { recursive: true });
+    writeFileSync(path.join(nested, '.git'), 'gitdir: elsewhere\n');
+    const state = stateDirectory(nested);
+    writeViolations(state, 'sid-commit', [violation('src/allowed.ts')]);
+    writeFileSync(path.join(state, 'sid-commit.pre-fix.json'), '[]');
+
+    const denied = await runScopeCheck(
+      fixerEdit(path.join(nested, 'src/other.ts')),
+    );
+    expect(denied).toContain('deny');
+
+    out = [];
+    const allowed = await runScopeCheck(
+      fixerEdit(path.join(nested, 'src/allowed.ts')),
+    );
+    expect(allowed).toBe('');
+  });
+});

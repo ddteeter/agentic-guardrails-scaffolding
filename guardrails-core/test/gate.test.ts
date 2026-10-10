@@ -2,6 +2,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -19,6 +20,7 @@ import {
   type StopGateOptions,
 } from '../src/gate.js';
 import type { GateConfig, GateDecision } from '../src/gate-decision.js';
+import { collectManifestScope } from '../src/scope.js';
 import { createSession, type FixerLease } from '../src/state.js';
 import {
   leasesFile,
@@ -1281,6 +1283,40 @@ describe('runCommitGate: delegation for the laborious classes', () => {
     expect(
       readViolations(stateDirectory(root), 'sid-commit').length,
     ).toBeGreaterThan(0);
+  });
+
+  it('opens a scope-lock loop for the fixer it names', async () => {
+    // Without a loop marker the scope-lock never engaged for a commit-rung
+    // fixer, which could then edit anything -- guardrails.config.json included.
+    await runCommitGate(blockedOptions());
+
+    const scope = collectManifestScope(stateDirectory(root), 'sid');
+    expect(scope.active).toBe(true);
+    expect([...scope.files]).toEqual(['src/foo.ts']);
+  });
+
+  it('opens no loop for a commit with no session (a git hook, not an agent)', async () => {
+    const { sessionId: _unused, ...options } = blockedOptions();
+    await runCommitGate(options);
+
+    const markers = readdirSync(stateDirectory(root)).filter((name) =>
+      name.endsWith('.pre-fix.json'),
+    );
+    expect(markers).toEqual([]);
+  });
+
+  it('closes the loop once the next commit passes', async () => {
+    await runCommitGate(blockedOptions());
+    const clean = makeExec((line) => {
+      if (line.includes('--name-only')) return ok('');
+      if (line.includes('--others')) return ok('');
+      return ok('');
+    });
+    await runCommitGate({ ...blockedOptions(), exec: clean });
+
+    expect(collectManifestScope(stateDirectory(root), 'sid').active).toBe(
+      false,
+    );
   });
 
   it('writes nothing and names nobody when the gate passes', async () => {

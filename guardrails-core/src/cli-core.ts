@@ -71,7 +71,7 @@ import {
   HOOKS_DIRECTORY,
 } from './scaffold/hooks-path.js';
 import { initCommand } from './scaffold/init.js';
-import { collectManifestScope, isPathAllowed, isWithinRepo } from './scope.js';
+import { collectSessionScope, isWithinRepo } from './scope.js';
 import {
   baseReferenceCache,
   deleteSession,
@@ -1083,7 +1083,22 @@ async function scopeCheckCommand(
   dialect: Dialect,
 ): Promise<void> {
   const { input, repoRoot } = await hookContext(dependencies);
-  const scope = collectManifestScope(stateDirectory(repoRoot), input.sessionId);
+  // Each path as the payload named it (for the message) and resolved (for
+  // the checks).
+  const targets = hookFilePaths(input).map((file) => ({
+    file,
+    absolute: path.resolve(repoRoot, file),
+  }));
+  // The cwd's checkout, plus the checkout each target sits in: a fixer can run
+  // from the parent while its manifest and files live in a nested worktree.
+  const targetRoots = targets
+    .map((target) => findGitRoot(target.absolute))
+    .filter((found) => found !== undefined);
+  const scope = collectSessionScope(
+    [repoRoot, ...targetRoots],
+    input.sessionId,
+    Date.now(),
+  );
   // Every branch below is a FIXER lock, so a caller the host tells us is not
   // the fixer is left alone entirely.
   const isConfined = scope.active && isFixerCaller(input, dialect);
@@ -1106,7 +1121,7 @@ async function scopeCheckCommand(
   // No empty-list guard: both branches below reduce to "no path violates the
   // scope" over an empty list, so an early return would only add a branch that
   // no test can distinguish.
-  const filePaths = hookFilePaths(input);
+  //
   // Read: the fixer may read anything WITHIN the repo (manifest, edited files,
   // even node_modules rule sources — that in-repo exploration is how the
   // thorough tier diagnoses subtle rules), but nothing OUTSIDE it (e.g. the
@@ -1119,7 +1134,9 @@ async function scopeCheckCommand(
   // read-lock permanent for every session in every repo that scaffolds
   // guardrails -- a false positive that reached the main agent, not the fixer.
   if (isConfined && isReadTool(input.toolName)) {
-    const outside = filePaths.find((file) => !isWithinRepo(repoRoot, file));
+    const outside = targets.find(
+      (target) => !scope.allowsRead(target.absolute),
+    )?.file;
     if (outside !== undefined) {
       denyPreToolUse(
         dependencies,
@@ -1138,9 +1155,9 @@ async function scopeCheckCommand(
   // fixer IS running, and reading that as "no fixer" would hand it the whole
   // repo. Such a fixer has nothing it may legitimately edit, so every write is
   // denied and the attempt escalates to the main agent.
-  const denied = filePaths.find(
-    (file) => !isPathAllowed(scope.files, repoRoot, file),
-  );
+  const denied = targets.find(
+    (target) => !scope.allowsEdit(target.absolute),
+  )?.file;
   if (isConfined && denied !== undefined) {
     denyPreToolUse(
       dependencies,
