@@ -1718,6 +1718,36 @@ async function untrustedInstallCommand(
   return 1;
 }
 
+/**
+ * `gate --mode=...`: one rung per mode. Split out of `runCommand`, whose
+ * switch had crossed the complexity threshold once the hook modes gained
+ * their own deciding wrapper.
+ */
+function gateCommand(
+  dependencies: CliDependencies,
+  rest: string[],
+): Promise<number> {
+  const mode = flag(rest, 'mode');
+  if (mode === 'commit') {
+    return gateCommitCommand(dependencies, 'staged', 'commit', rest);
+  }
+  // Same checks, branch-wide scope: `push` is the local rung that catches
+  // what a staged-scope commit cannot, and `ci` is its authoritative twin.
+  // `push` and `ci` share the branch-wide scope but are DISTINCT rungs:
+  // an analyzer a consumer moved to `push` must run there, and `ci` sits
+  // above it so `verify`'s twin never checks less (#61).
+  if (mode === 'push') {
+    return gateCommitCommand(dependencies, 'branch', 'push', rest);
+  }
+  if (mode === 'ci') {
+    return gateCommitCommand(dependencies, 'branch', 'ci', rest);
+  }
+  if (mode === 'pretooluse') {
+    return decidingHook(dependencies, 'pretooluse', resolveDialect(rest));
+  }
+  return decidingHook(dependencies, 'stop', resolveDialect(rest));
+}
+
 export async function runCommand(
   command: string | undefined,
   rest: string[],
@@ -1737,25 +1767,7 @@ export async function runCommand(
       return autofixCommand(dependencies);
     }
     case 'gate': {
-      const mode = flag(rest, 'mode');
-      if (mode === 'commit') {
-        return gateCommitCommand(dependencies, 'staged', 'commit', rest);
-      }
-      // Same checks, branch-wide scope: `push` is the local rung that catches
-      // what a staged-scope commit cannot, and `ci` is its authoritative twin.
-      // `push` and `ci` share the branch-wide scope but are DISTINCT rungs:
-      // an analyzer a consumer moved to `push` must run there, and `ci` sits
-      // above it so `verify`'s twin never checks less (#61).
-      if (mode === 'push') {
-        return gateCommitCommand(dependencies, 'branch', 'push', rest);
-      }
-      if (mode === 'ci') {
-        return gateCommitCommand(dependencies, 'branch', 'ci', rest);
-      }
-      if (mode === 'pretooluse') {
-        return decidingHook(dependencies, 'pretooluse', resolveDialect(rest));
-      }
-      return decidingHook(dependencies, 'stop', resolveDialect(rest));
+      return gateCommand(dependencies, rest);
     }
     case 'audit': {
       return auditCommand(dependencies);
