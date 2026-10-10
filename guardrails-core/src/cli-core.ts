@@ -1274,6 +1274,29 @@ function recordFixerHeartbeat(
   }
 }
 
+/**
+ * Whether the scope-lock applies to this caller, given an open fix loop --
+ * and, as a side effect, the bookkeeping that caller's identity proves: a
+ * Codex `agent_id` settles how to read its absence for the rest of the
+ * session, and a fixer's call is its heartbeat.
+ */
+function isConfinedCaller(
+  input: HookInput,
+  dialect: Dialect,
+  repoRoot: string,
+  roots: readonly string[],
+  now: number,
+): boolean {
+  const sessionId = input.sessionId ?? 'default';
+  if (isReportedFixer(input)) {
+    recordFixerHeartbeat(roots, sessionId, now);
+  }
+  return isFixerCaller(
+    input,
+    isAbsenceMainThread(input, dialect, stateDirectory(repoRoot), sessionId),
+  );
+}
+
 async function scopeCheckCommand(
   dependencies: CliDependencies,
   dialect: Dialect,
@@ -1293,18 +1316,10 @@ async function scopeCheckCommand(
   const now = Date.now();
   const roots = [repoRoot, ...targetRoots];
   const scope = collectSessionScope(roots, input.sessionId, now);
-  const sessionId = input.sessionId ?? 'default';
   // Every branch below is a FIXER lock, so a caller the host tells us is not
   // the fixer is left alone entirely.
   const isConfined =
-    scope.active &&
-    isFixerCaller(
-      input,
-      isAbsenceMainThread(input, dialect, stateDirectory(repoRoot), sessionId),
-    );
-  if (scope.active && isReportedFixer(input)) {
-    recordFixerHeartbeat(roots, sessionId, now);
-  }
+    scope.active && isConfinedCaller(input, dialect, repoRoot, roots, now);
   // Codex custom agents do not expose a per-agent tool allowlist. While a
   // fixer manifest is active, the repo-level hook therefore enforces the same
   // no-shell/no-MCP boundary that Claude and Copilot express declaratively.
