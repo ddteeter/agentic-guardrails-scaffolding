@@ -370,6 +370,17 @@ export interface FixerLease {
    * and then gets out of the way.
    */
   deferrals: number;
+  /**
+   * Epoch ms the lease's fixer was last seen making a tool call, when the host
+   * can tell us (see `withHeartbeat`). Absent until it is.
+   *
+   * `deferrals` alone cannot tell a dead fixer from a slow one, so it bounds
+   * both at one wait -- and a thorough fixer that outlives one Stop cycle was
+   * then given up on while it still held the files, inviting a second fixer
+   * into them. A recent heartbeat is positive evidence the holder is alive,
+   * which is the one thing that justifies another wait.
+   */
+  lastSeenAt?: number;
 }
 
 /**
@@ -411,6 +422,23 @@ export const LEASE_TTL_MS = 30 * 60 * 1000;
  */
 export const MAX_LEASE_DEFERRALS = 1;
 
+/**
+ * How long a fixer may go without a tool call and still count as working.
+ *
+ * Generous on purpose: the cost of over-waiting is one more "wait for it"
+ * round trip, and the cost of under-waiting is two fixers in one file. A
+ * thorough fixer reasoning between edits is the slow case this has to cover.
+ */
+export const FIXER_IDLE_MS = 5 * 60 * 1000;
+
+/**
+ * How stale a heartbeat must be before a fixer's tool call restamps it. A
+ * fixer makes dozens of calls, and each restamp is a read-modify-write of
+ * `leases.json` racing the gates that own it; far inside `FIXER_IDLE_MS` is
+ * fresh enough.
+ */
+export const FIXER_HEARTBEAT_REFRESH_MS = 30 * 1000;
+
 function isStringArray(value: unknown): value is string[] {
   return (
     Array.isArray(value) && value.every((entry) => typeof entry === 'string')
@@ -433,12 +461,20 @@ export function isFixerLease(value: unknown): value is FixerLease {
     typeof value.fixerAgent === 'string' &&
     isStringArray(value.files) &&
     typeof value.grantedAt === 'number' &&
-    typeof value.deferrals === 'number'
+    typeof value.deferrals === 'number' &&
+    (value.lastSeenAt === undefined || typeof value.lastSeenAt === 'number')
   );
 }
 
 function isExpired(lease: FixerLease, now: number): boolean {
   return now - lease.grantedAt >= LEASE_TTL_MS;
+}
+
+function isFixerSeenWorking(lease: FixerLease, now: number): boolean {
+  // Never seen reads as seen infinitely long ago. Written without an
+  // `!== undefined` guard because `now - undefined` is NaN, which already
+  // compares false: the guard would be a branch no input can distinguish.
+  return now - (lease.lastSeenAt ?? -Infinity) < FIXER_IDLE_MS;
 }
 
 function intersect(
@@ -475,7 +511,8 @@ export function findLeaseOverlap(
       (lease) =>
         lease.owner !== owner &&
         !isExpired(lease, now) &&
-        lease.deferrals < MAX_LEASE_DEFERRALS,
+        (lease.deferrals < MAX_LEASE_DEFERRALS ||
+          isFixerSeenWorking(lease, now)),
     )
     .map((lease) => ({
       owner: lease.owner,
@@ -522,6 +559,34 @@ export function withoutLease(
   owner: string,
 ): FixerLease[] {
   return leases.filter((lease) => lease.owner !== owner);
+}
+
+/**
+ * Mark every lease `sessionId` owns as having a fixer seen working at `now`.
+ *
+ * Called from the scope-check hook, on a tool call the host attributes to a
+ * fixer. That call cannot say which of the session's manifests the fixer was
+ * given, so both rungs' leases are stamped: either way some fixer of this
+ * session is alive, and that is what a waiting gate needs to know. Owners are
+ * `<rung>:<manifest id>`, and a manifest id is the session id or
+ * `<session>-<rung>`.
+ */
+export function withHeartbeat(
+  leases: readonly FixerLease[],
+  sessionId: string,
+  now: number,
+): FixerLease[] {
+  return leases.map((lease) => {
+    const manifestId = lease.owner.slice(lease.owner.indexOf(':') + 1);
+    const isOwned =
+      manifestId === sessionId || manifestId.startsWith(`${sessionId}-`);
+    const isStale =
+      lease.lastSeenAt === undefined ||
+      now - lease.lastSeenAt >= FIXER_HEARTBEAT_REFRESH_MS;
+    // The SAME object when nothing changes, so a caller can tell whether
+    // there is anything to write.
+    return isOwned && isStale ? { ...lease, lastSeenAt: now } : lease;
+  });
 }
 
 /**

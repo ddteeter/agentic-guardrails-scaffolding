@@ -3,6 +3,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   symlinkSync,
   utimesSync,
@@ -19,7 +20,9 @@ import {
   baseReferenceCache,
   decisionsFile,
   deleteSession,
+  isAgentIdentityReported,
   leasesFile,
+  markAgentIdentityReported,
   loadCleanTree,
   loadLeases,
   loadRecurrence,
@@ -324,6 +327,47 @@ describe('deleteSession', () => {
     deleteSession(directory, 'sid1');
     expect(loadSession(directory, 'sid1')).toEqual(createSession());
     expect(readViolations(directory, 'sid1')).toEqual([]);
+  });
+});
+
+describe('agent identity marker', () => {
+  it('is per session and starts unset', () => {
+    expect(isAgentIdentityReported(directory, 'sid1')).toBe(false);
+    markAgentIdentityReported(directory, 'sid1');
+    expect(isAgentIdentityReported(directory, 'sid1')).toBe(true);
+    expect(isAgentIdentityReported(directory, 'sid2')).toBe(false);
+  });
+
+  it('writes a reported marker the file itself records', () => {
+    markAgentIdentityReported(directory, 'sid1');
+    expect(
+      JSON.parse(
+        readFileSync(path.join(directory, 'sid1.identity.json'), 'utf8'),
+      ),
+    ).toEqual({ reported: true });
+  });
+
+  it('creates the state directory when it does not exist yet', () => {
+    rmSync(directory, { recursive: true, force: true });
+    markAgentIdentityReported(directory, 'sid1');
+    expect(isAgentIdentityReported(directory, 'sid1')).toBe(true);
+  });
+
+  it('goes with the session on deleteSession', () => {
+    markAgentIdentityReported(directory, 'sid1');
+    deleteSession(directory, 'sid1');
+    expect(isAgentIdentityReported(directory, 'sid1')).toBe(false);
+  });
+
+  it('is swept when stale without being reported as a deleted session', () => {
+    const now = 1_000_000_000_000;
+    const dayMs = 86_400_000;
+    markAgentIdentityReported(directory, 'old');
+    const marker = path.join(directory, 'old.identity.json');
+    const oldTime = new Date(now - 2 * dayMs);
+    utimesSync(marker, oldTime, oldTime);
+    expect(sweepStale(directory, dayMs, now)).toEqual([]);
+    expect(isAgentIdentityReported(directory, 'old')).toBe(false);
   });
 });
 

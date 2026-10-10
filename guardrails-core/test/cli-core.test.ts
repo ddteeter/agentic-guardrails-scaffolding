@@ -4,6 +4,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  statSync,
   utimesSync,
   writeFileSync,
 } from 'node:fs';
@@ -17,6 +18,9 @@ import { type CliDependencies, runCommand } from '../src/cli-core.js';
 import type { Exec, ExecResult } from '../src/exec.js';
 import {
   appendDecision,
+  isAgentIdentityReported,
+  leasesFile,
+  loadLeases,
   loadSession,
   saveLeases,
   saveSession,
@@ -1424,6 +1428,42 @@ function failingVerifyExec(): Exec {
   };
 }
 
+function codexEdit(agent: Record<string, string> = {}): string {
+  return JSON.stringify({
+    cwd: root,
+    session_id: 'sid',
+    tool_name: 'apply_patch',
+    tool_input: {
+      command: [
+        '*** Begin Patch',
+        '*** Update File: src/other.ts',
+        '*** End Patch',
+      ].join('\n'),
+    },
+    ...agent,
+  });
+}
+
+async function runCodexScopeCheck(stdin: string): Promise<string> {
+  out.length = 0;
+  await runCommand(
+    'scope-check',
+    ['--dialect=codex'],
+    dependencies({ readStdin: () => Promise.resolve(stdin) }),
+  );
+  return out.join('');
+}
+
+function claudeEdit(agent: Record<string, string>): string {
+  return JSON.stringify({
+    cwd: root,
+    session_id: 'sid',
+    tool_name: 'Edit',
+    tool_input: { file_path: path.join(root, 'src/a.ts') },
+    ...agent,
+  });
+}
+
 describe('scope-check trigger conditions', () => {
   it('denies a multi-file Codex patch when any path is outside the manifest', async () => {
     writeActiveViolations('default', [violation('src/allowed.ts')]);
@@ -1438,8 +1478,9 @@ describe('scope-check trigger conditions', () => {
       tool_name: 'apply_patch',
       tool_input: { command },
     });
-    // Codex reports no agent identity at all (openai/codex#16226), so the
-    // session-scoped lock is what confines its fixer.
+    // No agent fields, and this session has never shown any: on Codex that
+    // is indistinguishable from an older Codex's fixer, so the
+    // session-scoped lock is what confines it.
     await runCommand(
       'scope-check',
       ['--dialect=codex'],
@@ -1585,10 +1626,10 @@ describe('scope-check trigger conditions', () => {
   });
 
   it('falls back to session scope when the host reports no identity', async () => {
-    // Codex reports no agent fields at all (openai/codex#16226), and Copilot's
-    // preToolUse reports none either. Those surfaces must not silently lose
-    // the lock -- Codex especially, which has no per-agent tool allowlist to
-    // fall back on.
+    // A Codex call with no agent fields, in a session that has never shown
+    // any, could be an older Codex's fixer; Copilot's preToolUse reports none
+    // either. Those surfaces must not silently lose the lock -- Codex
+    // especially, which has no per-agent tool allowlist to fall back on.
     writeActiveViolations('default', [violation('src/a.ts')]);
     const stdin = JSON.stringify({
       cwd: root,
@@ -1603,6 +1644,183 @@ describe('scope-check trigger conditions', () => {
       ),
     ).toBe(0);
     expect(out.join('')).toContain('scope-lock');
+  });
+
+  it('does not confine a Codex sibling subagent, which reports its own type', async () => {
+    // Codex has sent agent_id/agent_type on PreToolUse for thread-spawned
+    // subagents since openai/codex#22882, so a non-fixer type is as positive
+    // an identification there as it is on Claude.
+    writeActiveViolations('sid', [violation('src/a.ts')]);
+    expect(
+      await runCodexScopeCheck(
+        codexEdit({ agent_id: 'thread-2', agent_type: 'explorer' }),
+      ),
+    ).toBe('');
+  });
+
+  it('confines a Codex fixer that reports its identity', async () => {
+    writeActiveViolations('sid', [violation('src/a.ts')]);
+    expect(
+      await runCodexScopeCheck(
+        codexEdit({ agent_id: 'thread-2', agent_type: 'guardrail-fixer' }),
+      ),
+    ).toContain('src/other.ts');
+  });
+
+  it('frees the Codex main thread once this session has shown it reports identity', async () => {
+    // A Codex main thread sends no agent fields, and neither did ANY Codex
+    // call before #22882 -- the payloads are identical, so absence alone
+    // cannot tell the main thread from an old Codex's fixer. A fixer call that
+    // DID carry agent_id settles it for the session: this Codex reports
+    // identity, so a later call without it is the main thread.
+    writeActiveViolations('sid', [violation('src/a.ts')]);
+    expect(await runCodexScopeCheck(codexEdit())).toContain('src/other.ts');
+    await runCodexScopeCheck(
+      codexEdit({ agent_id: 'thread-2', agent_type: 'guardrail-fixer' }),
+    );
+    expect(await runCodexScopeCheck(codexEdit())).toBe('');
+  });
+
+  it('does not learn identity from a different session', async () => {
+    writeActiveViolations('sid', [violation('src/a.ts')]);
+    await runCodexScopeCheck(
+      JSON.stringify({
+        ...(JSON.parse(
+          codexEdit({ agent_id: 'thread-2', agent_type: 'guardrail-fixer' }),
+        ) as Record<string, unknown>),
+        session_id: 'other',
+      }),
+    );
+    expect(await runCodexScopeCheck(codexEdit())).toContain('src/other.ts');
+  });
+
+  describe('fixer heartbeat', () => {
+    const lease = {
+      owner: 'commit:sid-commit',
+      manifestPath: '.guardrails/state/sid-commit.last.json',
+      fixerAgent: 'guardrail-fixer-thorough',
+      files: ['src/a.ts'],
+      grantedAt: Date.now(),
+      deferrals: 1,
+    };
+
+    it('stamps the session lease when a fixer makes a tool call', async () => {
+      // The Stop gate gave up on a running fixer after one wait, because
+      // nothing told it the fixer was still alive. The fixer's own tool calls
+      // pass through here, so this is where liveness is visible.
+      writeActiveViolations('sid', [violation('src/a.ts')]);
+      saveLeases(stateDirectory(root), [lease]);
+      const before = Date.now();
+      await runScopeCheck(
+        claudeEdit({
+          agent_id: 'fixer',
+          agent_type: 'guardrail-fixer-thorough',
+        }),
+      );
+      const [stamped] = loadLeases(stateDirectory(root));
+      expect(stamped?.lastSeenAt).toBeGreaterThanOrEqual(before);
+    });
+
+    it('does not stamp it for the main thread or a sibling', async () => {
+      // A heartbeat from anything but the fixer would keep a dead fixer's
+      // lease looking alive, and the Stop gate would wait on it forever.
+      writeActiveViolations('sid', [violation('src/a.ts')]);
+      saveLeases(stateDirectory(root), [lease]);
+      await runScopeCheck(claudeEdit({}));
+      await runScopeCheck(
+        claudeEdit({ agent_id: 'sib', agent_type: 'general-purpose' }),
+      );
+      expect(loadLeases(stateDirectory(root))).toEqual([lease]);
+    });
+
+    it('does not stamp it for a subagent of unreported type', async () => {
+      // Confined, because unknown is not "not the fixer" -- but not evidence
+      // the fixer is alive either.
+      writeActiveViolations('sid', [violation('src/a.ts')]);
+      saveLeases(stateDirectory(root), [lease]);
+      await runScopeCheck(claudeEdit({ agent_id: 'mystery' }));
+      expect(loadLeases(stateDirectory(root))).toEqual([lease]);
+    });
+
+    it('does not stamp it for a fixer type that carries no agent_id', async () => {
+      // A type with no id is not a positive attribution to a subagent.
+      writeActiveViolations('sid', [violation('src/a.ts')]);
+      saveLeases(stateDirectory(root), [lease]);
+      await runScopeCheck(claudeEdit({ agent_type: 'guardrail-fixer' }));
+      expect(loadLeases(stateDirectory(root))).toEqual([lease]);
+    });
+
+    it('stamps the session lease and leaves another session lease alone', async () => {
+      writeActiveViolations('sid', [violation('src/a.ts')]);
+      const other = { ...lease, owner: 'commit:other-commit' };
+      saveLeases(stateDirectory(root), [other, lease]);
+      await runScopeCheck(
+        claudeEdit({ agent_id: 'fixer', agent_type: 'guardrail-fixer' }),
+      );
+      const [first, second] = loadLeases(stateDirectory(root));
+      expect(first).toEqual(other);
+      expect(second?.lastSeenAt).toBeDefined();
+    });
+
+    it('writes no leases file when the session holds no lease', async () => {
+      writeActiveViolations('sid', [violation('src/a.ts')]);
+      await runScopeCheck(
+        claudeEdit({ agent_id: 'fixer', agent_type: 'guardrail-fixer' }),
+      );
+      expect(existsSync(leasesFile(stateDirectory(root)))).toBe(false);
+    });
+
+    it('does not rewrite the leases file when the stamp is still fresh', async () => {
+      writeActiveViolations('sid', [violation('src/a.ts')]);
+      saveLeases(stateDirectory(root), [{ ...lease, lastSeenAt: Date.now() }]);
+      const file = leasesFile(stateDirectory(root));
+      const past = new Date(Date.now() - 3_600_000);
+      utimesSync(file, past, past);
+      const before = statSync(file).mtimeMs;
+      await runScopeCheck(
+        claudeEdit({ agent_id: 'fixer', agent_type: 'guardrail-fixer' }),
+      );
+      expect(statSync(file).mtimeMs).toBe(before);
+    });
+  });
+
+  describe('agent identity learning', () => {
+    it('does not learn identity from a Codex call that carries none', async () => {
+      writeActiveViolations('sid', [violation('src/a.ts')]);
+      expect(await runCodexScopeCheck(codexEdit())).toContain('src/other.ts');
+      expect(isAgentIdentityReported(stateDirectory(root), 'sid')).toBe(false);
+      expect(await runCodexScopeCheck(codexEdit())).toContain('src/other.ts');
+    });
+
+    it('does not rewrite the marker once identity is known', async () => {
+      writeActiveViolations('sid', [violation('src/a.ts')]);
+      const agent = { agent_id: 'thread-2', agent_type: 'guardrail-fixer' };
+      await runCodexScopeCheck(codexEdit(agent));
+      const marker = path.join(stateDirectory(root), 'sid.identity.json');
+      const past = new Date(Date.now() - 3_600_000);
+      utimesSync(marker, past, past);
+      const before = statSync(marker).mtimeMs;
+      await runCodexScopeCheck(codexEdit(agent));
+      expect(statSync(marker).mtimeMs).toBe(before);
+    });
+
+    it('never records identity on a dialect that is neither claude nor codex', async () => {
+      writeActiveViolations('sid', [violation('src/a.ts')]);
+      await runCommand(
+        'scope-check',
+        ['--dialect=copilot'],
+        dependencies({
+          readStdin: () =>
+            Promise.resolve(
+              codexEdit({
+                agent_id: 'thread-2',
+                agent_type: 'guardrail-fixer',
+              }),
+            ),
+        }),
+      );
+      expect(isAgentIdentityReported(stateDirectory(root), 'sid')).toBe(false);
+    });
   });
 
   it('does not deny a fixer tool call that names no tool at all', async () => {
