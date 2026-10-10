@@ -3700,3 +3700,233 @@ describe('scope-check refuses a fixer edit that adds a suppression (#77)', () =>
     expect(output).toContain('deny');
   });
 });
+
+/**
+ * Dependencies for a CLI resolved from an ANCESTOR's node_modules -- the
+ * nested-worktree case: Claude Code puts subagent worktrees under
+ * .claude/worktrees/ inside the project, a fresh worktree has no install, and
+ * Node's resolution walks up to the parent checkout's copy.
+ */
+function ancestorInstall(stdin = ''): CliDependencies {
+  mkdirSync(path.join(root, '.git'), { recursive: true });
+  return dependencies({
+    selfPath: path.join(
+      path.dirname(root),
+      'node_modules',
+      'guardrails-core',
+      'dist',
+      'cli.mjs',
+    ),
+    readStdin: () => Promise.resolve(stdin),
+  });
+}
+
+function shellStdin(command: string, extra: Record<string, unknown> = {}) {
+  return JSON.stringify({
+    cwd: root,
+    tool_name: 'Bash',
+    tool_input: { command },
+    ...extra,
+  });
+}
+
+describe('an untrusted install never fails open, and never denies everything', () => {
+  it('denies a git write with the install remedy', async () => {
+    // Exit 1 here used to be NON-blocking on Claude Code and Codex: the commit
+    // went through ungated -- `--no-verify` included -- in every worktree
+    // without its own node_modules.
+    const code = await runCommand(
+      'gate',
+      ['--mode=pretooluse'],
+      ancestorInstall(shellStdin('git commit -m x')),
+    );
+
+    expect(code).toBe(0);
+    const output = out.join('');
+    expect(output).toContain('deny');
+    expect(output).toContain('not installed');
+    expect(output).toContain('npm ci');
+  });
+
+  it('denies in the Copilot shape on the copilot dialect', async () => {
+    await runCommand(
+      'gate',
+      ['--mode=pretooluse', '--dialect=copilot'],
+      ancestorInstall(
+        JSON.stringify({
+          cwd: root,
+          toolName: 'bash',
+          toolArgs: { command: 'git push' },
+        }),
+      ),
+    );
+
+    expect(JSON.parse(out.join(''))).toMatchObject({
+      permissionDecision: 'deny',
+    });
+  });
+
+  it('lets every other shell command through, silently', async () => {
+    // On Copilot a non-zero pre-tool exit is a DENY, so exit 1 here used to
+    // block every command -- including the `npm ci` that would fix it.
+    const code = await runCommand(
+      'gate',
+      ['--mode=pretooluse'],
+      ancestorInstall(shellStdin('npm ci')),
+    );
+
+    expect(code).toBe(0);
+    expect(out.join('')).toBe('');
+    expect(errors.join('')).toBe('');
+  });
+
+  it('blocks the stop with the install remedy', async () => {
+    const code = await runCommand(
+      'gate',
+      ['--mode=stop'],
+      ancestorInstall(JSON.stringify({ cwd: root })),
+    );
+
+    expect(code).toBe(0);
+    const decision = JSON.parse(out.join('')) as Record<string, unknown>;
+    expect(decision.decision).toBe('block');
+    expect(String(decision.reason)).toContain('not installed');
+  });
+
+  it('releases a stop it has already blocked once, saying why', async () => {
+    // Blocking again would only spend the host's continuation cap on a
+    // checkout the agent may be unable to install into.
+    await runCommand(
+      'gate',
+      ['--mode=stop'],
+      ancestorInstall(JSON.stringify({ cwd: root, stop_hook_active: true })),
+    );
+
+    expect(out.join('')).toBe('');
+    expect(errors.join('')).toContain('not installed');
+  });
+
+  it('names the checkout root, not the subdirectory it ran from', async () => {
+    const nested = path.join(root, 'packages', 'app');
+    mkdirSync(nested, { recursive: true });
+
+    await runCommand('gate', ['--mode=stop'], {
+      ...ancestorInstall(JSON.stringify({ cwd: nested })),
+      cwd: nested,
+    });
+
+    const decision = JSON.parse(out.join('')) as Record<string, unknown>;
+    expect(String(decision.reason)).toContain(`(${root})`);
+    expect(String(decision.reason)).toContain(`npm ci\` in ${root},`);
+  });
+
+  it.each([
+    ['verify', []],
+    ['verify', ['--mode=stop']],
+    ['verify', ['--mode=pretooluse']],
+    ['gate', []],
+    ['gate', ['--mode=commit']],
+  ])(
+    'keeps exit 1 and the outside-repo message for %s %j',
+    async (command, rest) => {
+      const code = await runCommand(
+        command,
+        rest,
+        ancestorInstall(shellStdin('git commit -m x')),
+      );
+
+      expect(code).toBe(1);
+      expect(out.join('')).toBe('');
+      expect(errors.join('')).not.toBe('');
+    },
+  );
+
+  it.each(['autofix', 'session-start', 'session-end'])(
+    'treats %s as a silent no-op',
+    async (command) => {
+      const code = await runCommand(
+        command,
+        [],
+        ancestorInstall(JSON.stringify({ cwd: root })),
+      );
+
+      expect(code).toBe(0);
+      expect(errors.join('')).toBe('');
+    },
+  );
+
+  it('still enforces the scope-lock, which reads only state files', async () => {
+    const dependenciesForFixer = ancestorInstall(
+      JSON.stringify({
+        session_id: 'sid',
+        cwd: root,
+        tool_name: 'Edit',
+        tool_input: { file_path: path.join(root, 'src/elsewhere.ts') },
+        agent_id: 'fixer',
+        agent_type: 'guardrail-fixer',
+      }),
+    );
+    writeActiveViolations('sid', [violation('src/a.ts')]);
+
+    await runCommand('scope-check', [], dependenciesForFixer);
+
+    expect(out.join('')).toContain('deny');
+  });
+});
+
+const exploding: Exec = () => Promise.reject(new Error('git exploded'));
+
+describe('a gate that throws still decides', () => {
+  /**
+   * Claude Code and Codex treat a crashed hook as non-blocking, so before this
+   * a bug in the gate was a silent pass. The decision is made explicitly
+   * instead, carrying the error so the cause is visible.
+   */
+  it('denies the git write it could not check', async () => {
+    const code = await runCommand(
+      'gate',
+      ['--mode=pretooluse'],
+      dependencies({
+        exec: exploding,
+        readStdin: () => Promise.resolve(shellStdin('git commit -m x')),
+      }),
+    );
+
+    expect(code).toBe(0);
+    const output = out.join('');
+    expect(output).toContain('deny');
+    expect(output).toContain('git exploded');
+  });
+
+  it('blocks the stop it could not check', async () => {
+    await runCommand(
+      'gate',
+      ['--mode=stop'],
+      dependencies({
+        exec: exploding,
+        readStdin: () => Promise.resolve(JSON.stringify({ cwd: root })),
+      }),
+    );
+
+    const decision = JSON.parse(out.join('')) as Record<string, unknown>;
+    expect(decision.decision).toBe('block');
+    expect(String(decision.reason)).toContain('git exploded');
+  });
+
+  it('releases a stop it already blocked once, saying why', async () => {
+    await runCommand(
+      'gate',
+      ['--mode=stop'],
+      dependencies({
+        exec: exploding,
+        readStdin: () =>
+          Promise.resolve(
+            JSON.stringify({ cwd: root, stop_hook_active: true }),
+          ),
+      }),
+    );
+
+    expect(out.join('')).toBe('');
+    expect(errors.join('')).toContain('git exploded');
+  });
+});

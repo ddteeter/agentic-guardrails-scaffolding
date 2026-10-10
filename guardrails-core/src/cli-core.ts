@@ -594,6 +594,24 @@ const GIT_WRITE = new RegExp(
   `${COMMAND_START}git${GIT_GLOBAL_OPTIONS}[ \t]+(?:commit|push)\\b`,
 );
 
+/**
+ * Is this hook call a shell tool running a git write (commit or push)? The
+ * only calls the pretooluse gate has an opinion about.
+ */
+function isShellGitWrite(input: HookInput): boolean {
+  return (
+    // Equivalent mutants on the two `!== undefined` clauses: forcing either
+    // true still answers false, because the regex test on the very next line
+    // stringifies `undefined` to "undefined", which matches neither pattern.
+    // Stryker disable next-line ConditionalExpression
+    input.toolName !== undefined &&
+    SHELL_TOOLS.test(input.toolName) &&
+    // Stryker disable next-line ConditionalExpression
+    input.command !== undefined &&
+    GIT_WRITE.test(input.command)
+  );
+}
+
 /** `gate --mode=pretooluse`: the Copilot commit/push gate. Self-filters on the
  * shell-tool + git-commit/push command shape rather than relying on hook
  * matcher config, because VS Code's Copilot hook host ignores matchers — the
@@ -603,17 +621,7 @@ async function gatePreToolUseCommand(
   dialect: Dialect,
 ): Promise<void> {
   const input = parseHookInput(await dependencies.readStdin());
-  if (
-    // Equivalent mutants on the two `=== undefined` clauses: bypassing either
-    // still returns early, because the regex test on the very next line
-    // stringifies `undefined` to "undefined", which matches neither pattern.
-    // Stryker disable next-line ConditionalExpression
-    input.toolName === undefined ||
-    !SHELL_TOOLS.test(input.toolName) ||
-    // Stryker disable next-line ConditionalExpression
-    input.command === undefined ||
-    !GIT_WRITE.test(input.command)
-  ) {
+  if (!isShellGitWrite(input)) {
     return; // allow (silent)
   }
   const repoRoot = await commandRepoRoot(dependencies, input.cwd);
@@ -1367,15 +1375,149 @@ function warnAboutStaleGuidance(
   }
 }
 
+/**
+ * Deny this call if it is a git write; let anything else through. The one
+ * shape of refusal every host honours on a pre-tool hook.
+ */
+function denyGitWrite(
+  dependencies: CliDependencies,
+  input: HookInput,
+  reason: string,
+  dialect: Dialect,
+): void {
+  if (isShellGitWrite(input)) {
+    denyPreToolUse(dependencies, reason, dialect);
+  }
+}
+
+/**
+ * Block the stop once with `reason`; on the host's retry, release with the
+ * reason on stderr instead. Blocking again would only spend the host's
+ * continuation cap (eight on Claude Code and Copilot) on a condition the agent
+ * may be unable to change.
+ */
+function blockStopOnce(
+  dependencies: CliDependencies,
+  input: HookInput,
+  reason: string,
+): void {
+  if (input.stopHookActive === true) {
+    dependencies.stderr(`${reason}\n`);
+    return;
+  }
+  dependencies.stdout(JSON.stringify({ decision: 'block', reason }));
+}
+
+/**
+ * Run a hook-mode gate so that it always DECIDES.
+ *
+ * Claude Code and Codex treat a hook that crashes as non-blocking, so before
+ * this a bug in the gate -- or a git that could not be spawned -- was a silent
+ * pass. Stdin is read once here so the payload is still in hand when the gate
+ * throws, and the refusal carries the error so the cause is visible.
+ */
+async function decidingHook(
+  dependencies: CliDependencies,
+  mode: 'pretooluse' | 'stop',
+  dialect: Dialect,
+): Promise<number> {
+  const stdin = await dependencies.readStdin();
+  const replayed = { ...dependencies, readStdin: () => Promise.resolve(stdin) };
+  try {
+    await (mode === 'pretooluse'
+      ? gatePreToolUseCommand(replayed, dialect)
+      : gateStopCommand(replayed, dialect));
+  } catch (error: unknown) {
+    const input = parseHookInput(stdin);
+    const reason =
+      `guardrails: the ${mode} gate failed before it could decide ` +
+      `(${String(error)}), so this was not checked.`;
+    if (mode === 'pretooluse') {
+      denyGitWrite(dependencies, input, reason, dialect);
+    } else {
+      blockStopOnce(dependencies, input, reason);
+    }
+  }
+  return 0;
+}
+
+/**
+ * Hook commands that only maintain state or tidy formatting: with no trusted
+ * install there is nothing useful for them to do, and nothing to enforce.
+ */
+const SILENT_HOOK_COMMANDS: ReadonlySet<string | undefined> = new Set([
+  'autofix',
+  'session-start',
+  'session-end',
+]);
+
+/**
+The remedy every hook-mode refusal carries.
+*/
+function installRemedy(dependencies: CliDependencies): string {
+  const checkout = findGitRoot(dependencies.cwd) ?? dependencies.cwd;
+  return (
+    `guardrails: guardrails-core is not installed in this checkout ` +
+    `(${checkout}) -- the copy that ran belongs to an enclosing directory, ` +
+    `which is what a fresh worktree nested inside another checkout resolves ` +
+    `to. Run \`npm ci\` in ${checkout}, then retry.`
+  );
+}
+
+/**
+ * A CLI resolved from outside the repository it is guarding: from an
+ * ancestor's node_modules (a nested worktree with no install of its own), or a
+ * linked install.
+ *
+ * Exit 1 used to answer every command, and the hosts read that two ways:
+ * Claude Code and Codex treat it as a NON-blocking error, so every gate was
+ * silently skipped -- a commit with the hook-skipping flag went through
+ * ungated -- while Copilot treats a non-zero pre-tool exit as a DENY, so it
+ * blocked every tool call, including the install that would have fixed it.
+ * The one block every host honours is an explicit decision on stdout, so the
+ * hook modes answer with one, on exactly the actions they guard, and stay out
+ * of the way otherwise. Direct commands (verify, the git-hook rungs, CI) keep
+ * exit 1, which already blocks there.
+ */
+async function untrustedInstallCommand(
+  command: string | undefined,
+  rest: string[],
+  dependencies: CliDependencies,
+  outside: string,
+): Promise<number> {
+  const mode = flag(rest, 'mode');
+  if (command === 'gate' && mode === 'pretooluse') {
+    const input = parseHookInput(await dependencies.readStdin());
+    denyGitWrite(
+      dependencies,
+      input,
+      installRemedy(dependencies),
+      resolveDialect(rest),
+    );
+    return 0;
+  }
+  if (command === 'gate' && mode === 'stop') {
+    const input = parseHookInput(await dependencies.readStdin());
+    blockStopOnce(dependencies, input, installRemedy(dependencies));
+    return 0;
+  }
+  if (SILENT_HOOK_COMMANDS.has(command)) {
+    return 0;
+  }
+  dependencies.stderr(outside);
+  return 1;
+}
+
 export async function runCommand(
   command: string | undefined,
   rest: string[],
   dependencies: CliDependencies,
 ): Promise<number> {
   const outside = outsideRepoMessage(dependencies);
-  if (outside !== undefined) {
-    dependencies.stderr(outside);
-    return 1;
+  // scope-check runs whatever copy resolved: it reads only state files, and
+  // enforcing the lock with an ancestor's copy beats not enforcing it.
+  if (outside !== undefined && command !== 'scope-check') {
+    return untrustedInstallCommand(command, rest, dependencies, outside);
   }
   switch (command) {
     case 'verify': {
@@ -1401,10 +1543,9 @@ export async function runCommand(
         return gateCommitCommand(dependencies, 'branch', 'ci', rest);
       }
       if (mode === 'pretooluse') {
-        await gatePreToolUseCommand(dependencies, resolveDialect(rest));
-        return 0;
+        return decidingHook(dependencies, 'pretooluse', resolveDialect(rest));
       }
-      return gateStopCommand(dependencies, resolveDialect(rest));
+      return decidingHook(dependencies, 'stop', resolveDialect(rest));
     }
     case 'audit': {
       return auditCommand(dependencies);
