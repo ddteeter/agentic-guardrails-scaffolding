@@ -18,7 +18,7 @@ import path from 'node:path';
 
 import { readJsonFile } from './json-file.js';
 import { parseWorkspaceGlob, type ParsedGlob } from './workspace-glob.js';
-import type { Violation } from './violation.js';
+import { type Violation, withDerived } from './violation.js';
 
 export type PackageResolver = (file: string) => string | undefined;
 
@@ -138,11 +138,7 @@ export function withPackages(
   violations: readonly Violation[],
   resolve: PackageResolver,
 ): Violation[] {
-  return violations.map((violation) => {
-    if (violation.package !== undefined) {
-      return violation;
-    }
-    const owner = resolve(violation.file);
-    return owner === undefined ? violation : { ...violation, package: owner };
-  });
+  return withDerived(violations, 'package', (violation) =>
+    resolve(violation.file),
+  );
 }
