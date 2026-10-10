@@ -14,7 +14,14 @@
 # UNLESS core.hooksPath already points at another hooks directory, which they
 # will not overwrite. In that case call the line below from the pre-push hook
 # you already have, and this file stays inert.
-node "./node_modules/guardrails-core/dist/cli.mjs" gate --mode=push || {
+cli="./node_modules/guardrails-core/dist/cli.mjs"
+# See .githooks/pre-commit: an uninstalled checkout is said as such, and still
+# blocks.
+[ -f "$cli" ] || {
+  echo "guardrails: push blocked — guardrails-core is not installed in this checkout. Run 'npm ci' here, then push again." >&2
+  exit 1
+}
+node "$cli" gate --mode=push || {
   echo "guardrails: push blocked — resolve violations or run 'guardrails verify'." >&2
   exit 1
 }

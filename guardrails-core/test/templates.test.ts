@@ -5,7 +5,9 @@
  * hooks never got written — which looks like a working install right up until
  * the loop does not fire. These assertions are the contract.
  */
-import { existsSync, readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { describe, expect, it } from 'vitest';
@@ -200,6 +202,33 @@ describe('consumer templates', () => {
     expect(hook).not.toContain('.husky');
     expect(hook).not.toContain('This repo');
   });
+
+  it.each(['pre-commit', 'pre-push'])(
+    'ships a %s hook that says so when guardrails-core is not installed',
+    (name) => {
+      // A fresh worktree has no node_modules. The hook used to report that as
+      // "commit blocked — resolve violations", which sent agents hunting for
+      // violations that did not exist. It must still block (exit 1): a gate
+      // that cannot run is not a gate that passed.
+      const checkout = mkdtempSync(path.join(tmpdir(), 'guardrails-githook-'));
+      try {
+        const result = spawnSync(
+          'sh',
+          [path.join(templates, 'githooks', name)],
+          {
+            cwd: checkout,
+            encoding: 'utf8',
+          },
+        );
+        expect(result.status).toBe(1);
+        expect(result.stderr).toContain('not installed');
+        expect(result.stderr).toContain('npm ci');
+        expect(result.stderr).not.toContain('resolve violations');
+      } finally {
+        rmSync(checkout, { recursive: true, force: true });
+      }
+    },
+  );
 
   it('ships a CI workflow that runs the ci gate plus sanctions-check', () => {
     // `--mode=ci`, not `--mode=commit`: the commit rung scopes to STAGED

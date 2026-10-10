@@ -8,7 +8,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node -e \"import('guardrails-core/cli')\" guardrails autofix"
+            "command": "node -e \"import('guardrails-core/cli')\" guardrails autofix",
+            "timeoutSec": 120
           }
         ]
       }
@@ -19,7 +20,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node -e \"import('guardrails-core/cli')\" guardrails gate --mode=pretooluse --dialect=copilot"
+            "command": "node -e \"import('guardrails-core/cli')\" guardrails gate --mode=pretooluse --dialect=copilot",
+            "timeoutSec": 300
           }
         ]
       },
@@ -28,7 +30,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node -e \"import('guardrails-core/cli')\" guardrails scope-check --dialect=copilot"
+            "command": "node -e \"import('guardrails-core/cli')\" guardrails scope-check --dialect=copilot",
+            "timeoutSec": 300
           }
         ]
       }
@@ -38,7 +41,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node -e \"import('guardrails-core/cli')\" guardrails gate --mode=stop --dialect=copilot"
+            "command": "node -e \"import('guardrails-core/cli')\" guardrails gate --mode=stop --dialect=copilot",
+            "timeoutSec": 300
           }
         ]
       }
