@@ -328,6 +328,71 @@ left orphaned `workerd` processes doing exactly that. A scope flag on
 
 ## Roadmap: fixer-loop hardening (from the dogfooding live proof)
 
+- **The dialed.run transcript audit (2026-09-25 → 10-09) found fail-open paths
+  that only appear with parallel agents in nested worktrees (fixed; plan:
+  `docs/superpowers/plans/2026-10-09-worktree-fail-closed.md`).** One
+  coordinator session and ~190 subagents, mostly in `.claude/worktrees/*`
+  checkouts. Each finding was verified against the code, the transcripts, or a
+  live probe of the host before it was fixed:
+  - **A commit-rung fixer was never scope-locked.** The lock recognised only
+    the stop rung's `<session>.last.json` plus its marker. The commit gate
+    (#49) wrote `<session>-commit.last.json` and no marker, so a commit-rung
+    fixer could edit `guardrails.config.json`, and one did. The commit gate
+    now opens a marker for an agent's commit. The lock unions every open loop
+    of the session and expires a rung marker after the lease TTL (on Codex
+    and Copilot a live marker confines the whole session). It reads scope
+    from the target file's checkout as well as the cwd's.
+  - **Dogfooding that lock found its own gap:** a fixer handed surviving
+    mutants could not edit the tests that would kill them, because mutants
+    are filed against the source file. A violation's `relatedTests` are now
+    editable.
+  - **A CLI resolved from an ancestor's `node_modules` exited 1 for every
+    command.** Claude and Codex treat exit 1 as non-blocking, so every gate
+    was silently skipped, including on a `git commit --no-verify` that went
+    through. Copilot treats a non-zero pre-tool exit as a deny, so there it
+    denied every tool call. About 1,000 occurrences across ~45 agents. Hook
+    modes now answer with an explicit decision.
+  - **The Stop gate verified whichever checkout the shell last `cd`'d into.**
+    A live probe showed the Stop payload's `cwd` follows `cd` while
+    `CLAUDE_PROJECT_DIR` stays at the session root (and is the worktree under
+    `claude --worktree`). About 150 coordinator Stop runs verified lane
+    worktrees, and their fixers edited files other agents were mid-way
+    through. Codex and Copilot expose no project root, so they keep cwd.
+  - **Timeouts fail open on every host, and Copilot's default is 30s.** Our
+    Copilot wiring set no `timeoutSec`, so any commit gate slower than half a
+    minute was skipped. Gate modes now also carry their own deadline below
+    the host timeout and stop their analyzers when it expires.
+  - **The Stop gate re-verified idle turns.** That was ~750 runs at a 26s
+    median in one session, with 583 of 586 logged decisions clean. An
+    unchanged tree (a temp-index `write-tree` fingerprint) now skips verify,
+    and the decision log marks those rows `cached`.
+  - **Fixers kept adding suppressions (#77).** The scope-lock now refuses an
+    edit that adds one, with the reporting route in the message.
+  - **The PreToolUse git-write matcher read quoted heredoc bodies as
+    commands.** A backtick counts as a command separator, so a script or a
+    commit message quoting `` `git commit` `` ran the commit gate. Hit three
+    times while building this fix. Quoted heredoc bodies are now stripped
+    before matching; unquoted ones, which do expand, are kept.
+  - **Building it surfaced a test-isolation hazard.** The Stop gate now
+    issues a writing git call (`git add -A` into a private index). A Stryker
+    mutant dropping that call's options ran it from the sandbox, which sits
+    inside this repo, and staged the whole working tree into the real index
+    twice. That is the same shape as the end-to-end suite's earlier 122-file
+    incident. The fingerprint tests now set a `GIT_DIR` trap, and the
+    end-to-end exec pins cwd-less calls to its temp repo.
+  - **Still open from the same audit:** Codex now sends `agent_id` on
+    PreToolUse for subagents (codex main), which the lock could use to
+    narrow. The push rung has no wall-clock budget: one Stryker dry-run loop
+    held a machine lock for 4h. Fixers still cannot verify their own work
+    (#93); every fixer in this build said so. Reusing a still-running fixer
+    for a same-tier re-block (Claude Code's agent messaging) could save it
+    re-reading files, but the hook cannot see fixer liveness. Also from this
+    build: the Stop gate honours a commit-rung fixer's lease for one firing
+    only, then says "spawn the fixer". With a thorough fixer still running,
+    that second firing would have put two fixers in one file. It was not
+    followed, but the bound is tight for a fixer that outlives one Stop
+    cycle.
+
 - **The gate could hand work to the main agent while its own fixer was still
   editing (fixed).** Observed in the #61 session. When the manifest is UNCHANGED
   the Stop gate says "a fixer you already spawned is most likely still running —
