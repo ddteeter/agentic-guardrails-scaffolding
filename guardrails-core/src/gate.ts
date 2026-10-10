@@ -76,6 +76,7 @@ import {
 import { parseFileList } from './verify/git.js';
 import { runVerify } from './verify/index.js';
 import { loadWorkspaceResolver, withPackages } from './workspaces.js';
+import { repoSourceReader } from './repo-source.js';
 import { resolveBaseReference } from './verify/git.js';
 
 export interface StopGateOptions {
@@ -579,8 +580,10 @@ function forTheFixer(
   repoRoot: string,
 ): Violation[] {
   const attributed = withPackages(violations, loadWorkspaceResolver(repoRoot));
-  return withCoveringTests(withGuidance(attributed), () =>
-    readTestCorpus(repoRoot),
+  return withCoveringTests(
+    withGuidance(attributed),
+    () => readTestCorpus(repoRoot),
+    repoSourceReader(repoRoot),
   );
 }
 

@@ -402,11 +402,15 @@ left orphaned `workerd` processes doing exactly that. A scope flag on
     - Stop runs launched at the repo root that `cd` into a worktree logged
       at the root.
     - Idle Stops logged `cached: true`.
-    - Gap found: a fixer cannot create the test a brand-new, untested file
-      needs, because `relatedTests` only lists existing importers. So
-      `knip/files` plus `stryker/no-coverage` on new code always escalates.
-      A follow-up could allow creating `test/<name>.test.ts` for a manifest
-      file.
+    - Gap found: `relatedTests` listed only DIRECT importers, so a fixer
+      locked to its manifest could not reach the tests of an extracted helper.
+      Those are exercised through the parent module's tests, and extraction
+      is the fix fixers reach for on a duplication finding. Fixed:
+      `relatedTests` now falls back to tests one import away (test → module →
+      file) when no test imports the file directly. A brand-new file with no
+      test anywhere still escalates to the main agent. That is deliberate,
+      because the agent that wrote the code knows what its first test should
+      assert, and under TDD it should not happen.
   - **A second sandbox escape, through the environment.** Hooks run with
     CLAUDE_PROJECT_DIR set, and the commit gate runs stryker from a hook. A
     mutant that dropped `sessionCwd`'s injected env made the stop-gate tests
