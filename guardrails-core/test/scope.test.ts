@@ -359,3 +359,32 @@ describe('collectSessionScope (several checkouts)', () => {
     }
   });
 });
+
+describe('collectManifestScope — tests the manifest names', () => {
+  it('makes a violation’s related tests editable', () => {
+    // A surviving mutant is filed against the SOURCE file, but it is killed
+    // by strengthening a test. Once the lock engaged at the commit rung, a
+    // fixer handed mutants could edit nothing that would kill them -- found
+    // dogfooding this very change.
+    writeActiveViolations('s1-commit', [
+      {
+        ...v('src/a.ts', 'stryker/survived'),
+        relatedTests: ['test/a.test.ts'],
+      },
+    ]);
+    expect(
+      [...collectManifestScope(directory, 's1').files].toSorted((a, b) =>
+        a.localeCompare(b),
+      ),
+    ).toEqual(['src/a.ts', 'test/a.test.ts']);
+  });
+
+  it('still never makes a denied file editable through relatedTests', () => {
+    writeActiveViolations('s1', [
+      { ...v('src/a.ts'), relatedTests: ['package.json'] },
+    ]);
+    expect([...collectManifestScope(directory, 's1').files]).toEqual([
+      'src/a.ts',
+    ]);
+  });
+});

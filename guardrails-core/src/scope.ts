@@ -190,8 +190,15 @@ export function collectManifestScope(
     const manifested = readManifest(
       path.join(directory, `${id}${MANIFEST_SUFFIX}`),
     );
-    for (const violation of manifested) {
-      const file = path.normalize(violation.file);
+    // A violation's related tests are editable too: a surviving mutant is
+    // filed against the source file but killed by strengthening a test, and
+    // the manifest names those tests precisely so the fixer can find them.
+    const named = manifested.flatMap((violation) => [
+      violation.file,
+      ...(violation.relatedTests ?? []),
+    ]);
+    for (const candidate of named) {
+      const file = path.normalize(candidate);
       if (!isDeniedFile(file)) {
         files.add(file);
       }
