@@ -6,6 +6,7 @@
 
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
+import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
 import { auditDiff, type AuditFinding } from './audit.js';
@@ -103,6 +104,12 @@ export interface CliDependencies {
    * fully covered.
    */
   selfPath?: string;
+  /**
+   * The process environment, injected for the same reason as `selfPath`: so
+   * the session-root lookup (`sessionCwd`) has a seam. Falls back to
+   * `process.env`, read here rather than in the logic-free `cli.ts`.
+   */
+  env?: NodeJS.ProcessEnv;
   stdout: (text: string) => void;
   stderr: (text: string) => void;
 }
@@ -358,11 +365,48 @@ async function autofixCommand(dependencies: CliDependencies): Promise<number> {
   return 0;
 }
 
+/**
+ * Where a SESSION-scoped rung (stop, session-start, session-end) should look
+ * for its repository: the session's root, not wherever the shell last went.
+ *
+ * A hook payload's `cwd` follows the agent's shell. Probed live on Claude
+ * Code: after a `cd` into a nested worktree the Stop payload named the
+ * worktree, while CLAUDE_PROJECT_DIR still named the launch root -- and under
+ * `claude --worktree` CLAUDE_PROJECT_DIR is the worktree itself, so it is the
+ * session's own root in both cases. In the dialed.run adoption an
+ * orchestrating session's Stop gate verified -- and sent fixers into -- lane
+ * worktrees other agents were mid-way through, about 150 times.
+ *
+ * Only for Claude Code's main thread: a subagent (`agent_id` present) works in
+ * its own checkout, and Codex and Copilot expose no project root at all, so
+ * they keep the payload cwd. A CLAUDE_PROJECT_DIR outside any repository (a
+ * session launched in a home directory) is ignored rather than verified.
+ * Tool-scoped rungs never use this: a lane agent's commit gate must check the
+ * lane's worktree.
+ */
+function sessionCwd(
+  dependencies: CliDependencies,
+  input: HookInput,
+  dialect: Dialect,
+): string | undefined {
+  const projectDirectory = (dependencies.env ?? process.env).CLAUDE_PROJECT_DIR;
+  const isSessionRoot =
+    dialect === 'claude' &&
+    input.agentId === undefined &&
+    projectDirectory !== undefined &&
+    findGitRoot(projectDirectory) !== undefined;
+  return isSessionRoot ? projectDirectory : input.cwd;
+}
+
 async function gateStopCommand(
   dependencies: CliDependencies,
   dialect: Dialect,
 ): Promise<number> {
-  const { input, repoRoot } = await hookContext(dependencies);
+  const input = parseHookInput(await dependencies.readStdin());
+  const repoRoot = await commandRepoRoot(
+    dependencies,
+    sessionCwd(dependencies, input, dialect),
+  );
   const sessionId = input.sessionId ?? 'default';
   const config = loadConfig(repoRoot);
   // Quiet, and cached: this runs on every turn, so it must cost at most one
@@ -1228,10 +1272,11 @@ async function sessionEndCommand(
 ): Promise<number> {
   const input = parseHookInput(await dependencies.readStdin());
   const sessionId = input.sessionId ?? 'default';
-  deleteSession(
-    stateDirectory(await commandRepoRoot(dependencies, input.cwd)),
-    sessionId,
+  const repoRoot = await commandRepoRoot(
+    dependencies,
+    sessionCwd(dependencies, input, 'claude'),
   );
+  deleteSession(stateDirectory(repoRoot), sessionId);
   return 0;
 }
 

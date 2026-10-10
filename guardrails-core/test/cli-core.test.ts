@@ -60,6 +60,9 @@ function dependencies(over: Partial<CliDependencies> = {}): CliDependencies {
     stderr: (text) => {
       errors.push(text);
     },
+    // Explicitly empty: a developer running the suite from inside a Claude
+    // Code session must not have CLAUDE_PROJECT_DIR re-root every hook test.
+    env: {},
     ...over,
   };
 }
@@ -3928,5 +3931,100 @@ describe('a gate that throws still decides', () => {
 
     expect(out.join('')).toBe('');
     expect(errors.join('')).toContain('git exploded');
+  });
+});
+
+function hasDecisionsIn(checkout: string): boolean {
+  return existsSync(path.join(stateDirectory(checkout), 'decisions.jsonl'));
+}
+
+describe('session-scoped rungs anchor on the session root (CLAUDE_PROJECT_DIR)', () => {
+  /**
+   * The Stop payload's `cwd` follows the agent's shell: probed live, after a
+   * `cd` into a nested worktree the payload named the worktree while
+   * CLAUDE_PROJECT_DIR still named the launch root. In the dialed.run adoption
+   * about 150 coordinator Stop runs verified -- and sent fixers into -- lane
+   * worktrees other agents were mid-way through.
+   */
+  let nested: string;
+
+  beforeEach(() => {
+    mkdirSync(path.join(root, '.git'));
+    nested = path.join(root, '.claude', 'worktrees', 'lane');
+    mkdirSync(nested, { recursive: true });
+    writeFileSync(path.join(nested, '.git'), 'gitdir: elsewhere\n');
+  });
+
+  function stopFrom(
+    payload: Record<string, unknown>,
+    rest: string[] = ['--mode=stop'],
+  ): Promise<number> {
+    return runCommand(
+      'gate',
+      rest,
+      dependencies({
+        env: { CLAUDE_PROJECT_DIR: root },
+        readStdin: () =>
+          Promise.resolve(JSON.stringify({ cwd: nested, ...payload })),
+      }),
+    );
+  }
+
+  it('verifies the session root, not the worktree the shell wandered into', async () => {
+    await stopFrom({});
+
+    expect(hasDecisionsIn(root)).toBe(true);
+    expect(hasDecisionsIn(nested)).toBe(false);
+  });
+
+  it('keeps the payload cwd on hosts that do not set the variable', async () => {
+    // Codex and Copilot expose no project root; a stray CLAUDE_PROJECT_DIR in
+    // their environment must not be read as theirs.
+    await stopFrom({}, ['--mode=stop', '--dialect=codex']);
+
+    expect(hasDecisionsIn(nested)).toBe(true);
+    expect(hasDecisionsIn(root)).toBe(false);
+  });
+
+  it('keeps the payload cwd for a subagent, which runs in its own worktree', async () => {
+    await stopFrom({ agent_id: 'lane', agent_type: 'general-purpose' });
+
+    expect(hasDecisionsIn(nested)).toBe(true);
+  });
+
+  it('ignores a CLAUDE_PROJECT_DIR that is not inside a repository', async () => {
+    const elsewhere = mkdtempSync(path.join(tmpdir(), 'guardrails-not-repo-'));
+    try {
+      await runCommand(
+        'gate',
+        ['--mode=stop'],
+        dependencies({
+          env: { CLAUDE_PROJECT_DIR: elsewhere },
+          readStdin: () => Promise.resolve(JSON.stringify({ cwd: nested })),
+        }),
+      );
+      expect(hasDecisionsIn(nested)).toBe(true);
+    } finally {
+      rmSync(elsewhere, { recursive: true, force: true });
+    }
+  });
+
+  it('ends the session at the session root', async () => {
+    saveSession(
+      stateDirectory(root),
+      'sid',
+      loadSession(stateDirectory(root), 'sid'),
+    );
+    await runCommand(
+      'session-end',
+      [],
+      dependencies({
+        env: { CLAUDE_PROJECT_DIR: root },
+        readStdin: () =>
+          Promise.resolve(JSON.stringify({ session_id: 'sid', cwd: nested })),
+      }),
+    );
+
+    expect(existsSync(sessionFile(stateDirectory(root), 'sid'))).toBe(false);
   });
 });
