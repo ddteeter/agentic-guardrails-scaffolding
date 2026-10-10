@@ -4,6 +4,7 @@
  * `cli.ts` is a thin bootstrap that supplies the real dependencies.
  */
 
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -11,6 +12,7 @@ import { auditDiff, type AuditFinding } from './audit.js';
 import { type EffectiveBase, resolveEffectiveBase } from './base-reference.js';
 import { runAutofix } from './autofix.js';
 import { formatDecisionReport, summarizeDecisions } from './decision-log.js';
+import { addedSuppressions } from './edit-suppressions.js';
 import {
   CONFIG_FILE_NAME,
   loadConfig,
@@ -1166,7 +1168,51 @@ async function scopeCheckCommand(
         `package.json or guardrails.config.json.`,
       dialect,
     );
+    return;
   }
+  if (isConfined) {
+    refuseAddedSuppressions(dependencies, input, repoRoot, dialect);
+  }
+}
+
+/**
+ * The text a file holds now, or nothing if it does not exist yet -- the
+ * "before" of a whole-file write.
+ */
+function currentText(file: string): string {
+  return existsSync(file) ? readFileSync(file, 'utf8') : '';
+}
+
+/**
+ * Deny a fixer edit that ADDS a suppression (#77), before it lands rather than
+ * one rework cycle later at the next gate. The message carries the route the
+ * contract asks for instead, because "you were caught" is not an instruction.
+ */
+function refuseAddedSuppressions(
+  dependencies: CliDependencies,
+  input: HookInput,
+  repoRoot: string,
+  dialect: Dialect,
+): void {
+  const proposed = (input.edits ?? []).map((edit) => ({
+    file: edit.file,
+    before: edit.before ?? currentText(path.resolve(repoRoot, edit.file)),
+    after: edit.after,
+  }));
+  const [first, ...rest] = addedSuppressions(proposed);
+  if (first === undefined) {
+    return;
+  }
+  const more = rest.length > 0 ? ` and ${rest.length} more` : '';
+  denyPreToolUse(
+    dependencies,
+    `Fixer suppression-lock: this edit adds ${first.kind} ` +
+      `(\`${first.text}\` in ${first.file})${more}. A fixer never ` +
+      `suppresses. If the violation cannot be fixed honestly, leave the code ` +
+      `as it is and report it as unfixable with your reason; the main agent ` +
+      `decides whether it earns a grant.`,
+    dialect,
+  );
 }
 
 async function sessionEndCommand(

@@ -3575,3 +3575,128 @@ describe('scope-check across rungs and nested worktrees', () => {
     expect(allowed).toBe('');
   });
 });
+
+const FIXER_IDENTITY: Readonly<Record<string, string>> = {
+  agent_id: 'fixer',
+  agent_type: 'guardrail-fixer',
+};
+
+function listed(): string {
+  return path.join(root, 'src/a.ts');
+}
+
+function editStdin(
+  toolInput: Record<string, unknown>,
+  identity: Readonly<Record<string, string>> = FIXER_IDENTITY,
+  toolName = 'Edit',
+): string {
+  return JSON.stringify({
+    session_id: 'sid',
+    cwd: root,
+    tool_name: toolName,
+    tool_input: toolInput,
+    ...identity,
+  });
+}
+
+describe('scope-check refuses a fixer edit that adds a suppression (#77)', () => {
+  beforeEach(() => {
+    writeActiveViolations('sid', [violation('src/a.ts')]);
+  });
+
+  it('denies an Edit that adds a directive, naming the honest route', async () => {
+    const output = await runScopeCheck(
+      editStdin({
+        file_path: listed(),
+        old_string: 'const a = 1;',
+        new_string: '// eslint-disable-next-line\nconst a = 1;',
+      }),
+    );
+    expect(output).toContain('deny');
+    expect(output).toContain('eslint-disable');
+    expect(output).toContain('report');
+    expect(output).not.toContain('more');
+  });
+
+  it('counts the further suppressions an edit adds', async () => {
+    const output = await runScopeCheck(
+      editStdin({
+        file_path: listed(),
+        old_string: 'const a = 1;',
+        new_string: '// eslint-disable-next-line\n// @ts-ignore\nconst a = 1;',
+      }),
+    );
+    expect(output).toContain('and 1 more');
+  });
+
+  it('allows an Edit that only carries an existing directive', async () => {
+    const directive = '// fallow-ignore-next-line code-duplication';
+    const output = await runScopeCheck(
+      editStdin({
+        file_path: listed(),
+        old_string: `${directive}\nexport function a() {}`,
+        new_string: `${directive}\nexport function a() { return 1; }`,
+      }),
+    );
+    expect(output).toBe('');
+  });
+
+  it('leaves the main thread alone', async () => {
+    const output = await runScopeCheck(
+      editStdin(
+        {
+          file_path: listed(),
+          old_string: 'f(x);',
+          new_string: 'f(x as any);',
+        },
+        {},
+      ),
+    );
+    expect(output).toBe('');
+  });
+
+  it('compares a Write against the file on disk', async () => {
+    mkdirSync(path.join(root, 'src'), { recursive: true });
+    writeFileSync(
+      listed(),
+      '// @ts-expect-error legacy\nconst a: number = "x";\n',
+    );
+
+    const kept = await runScopeCheck(
+      editStdin(
+        {
+          file_path: listed(),
+          content: '// @ts-expect-error legacy\nconst a: number = "y";\n',
+        },
+        undefined,
+        'Write',
+      ),
+    );
+    expect(kept).toBe('');
+
+    out = [];
+    const added = await runScopeCheck(
+      editStdin(
+        {
+          file_path: listed(),
+          content:
+            '// @ts-expect-error legacy\nconst a: number = "y";\n// @ts-ignore\nconst b: number = "z";\n',
+        },
+        undefined,
+        'Write',
+      ),
+    );
+    expect(added).toContain('deny');
+  });
+
+  it('treats a Write to a new file as adding everything in it', async () => {
+    const output = await runScopeCheck(
+      editStdin(
+        { file_path: listed(), content: "it.skip('x', () => {});\n" },
+        undefined,
+        'Write',
+      ),
+    );
+    expect(output).toContain('deny');
+  });
+});
