@@ -5,7 +5,11 @@ import process from 'node:process';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { signalFromExitCode, spawnExec } from '../src/exec.js';
+import {
+  signalFromExitCode,
+  spawnExec,
+  terminateChildren,
+} from '../src/exec.js';
 
 const node = process.execPath;
 
@@ -232,5 +236,30 @@ describe('signalFromExitCode', () => {
 
   it('returns undefined for a number above the signal range', () => {
     expect(signalFromExitCode(255)).toBeUndefined();
+  });
+});
+
+describe('terminateChildren', () => {
+  it('signals every child still running and reports how many', async () => {
+    // The hook deadline's half of the job: a gate that gives up before the
+    // host's timeout must not leave tsc or stryker running behind it. In the
+    // field, abandoned gates kept analysers alive for up to 20 minutes and held
+    // a machine-wide lock while they did.
+    const running = spawnExec(node, ['-e', 'setInterval(() => {}, 1000)']);
+    const count = terminateChildren();
+    const result = await running;
+
+    expect(count).toBe(1);
+    expect(result.signal).toBe('SIGTERM');
+  });
+
+  it('forgets a child once it has exited', async () => {
+    await spawnExec(node, ['-e', 'process.exit(0)']);
+    expect(terminateChildren()).toBe(0);
+  });
+
+  it('forgets a child that could not be started', async () => {
+    await spawnExec('definitely-not-a-real-binary-xyz', []);
+    expect(terminateChildren()).toBe(0);
   });
 });

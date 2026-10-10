@@ -4,7 +4,7 @@
  * `spawnExec` is used by the CLI. Pure Node `child_process` — no bash.
  */
 
-import { spawn } from 'node:child_process';
+import { type ChildProcess, spawn } from 'node:child_process';
 import { constants as osConstants } from 'node:os';
 
 export interface ExecResult {
@@ -90,6 +90,33 @@ export type Exec = (
   options?: { cwd?: string; env?: NodeJS.ProcessEnv },
 ) => Promise<ExecResult>;
 
+/**
+ * Every child `spawnExec` started that has not yet finished.
+ *
+ * Module state, deliberately: the CLI is one short-lived process per hook call,
+ * and the deadline that needs this (`cli-core`'s hook deadline) has no other
+ * handle on processes started several adapters deep.
+ */
+const live = new Set<ChildProcess>();
+
+/**
+ * Send `SIGTERM` to every child still running, and say how many there were.
+ *
+ * A hook that stops waiting must also stop the work: every host treats a hook
+ * timeout as fail-open, and a gate abandoned that way kept tsc or stryker
+ * running for up to twenty minutes in the field, holding a machine-wide lock
+ * the next gate then queued behind. Direct children only -- the analysers we
+ * spawn are resolved to their own binaries, not wrapped in a shell, and each
+ * one cleans up its own workers on SIGTERM.
+ */
+export function terminateChildren(): number {
+  const count = live.size;
+  for (const child of live) {
+    child.kill('SIGTERM');
+  }
+  return count;
+}
+
 export const spawnExec: Exec = (command, args, options) =>
   new Promise((resolve) => {
     const child = spawn(command, args, {
@@ -101,6 +128,7 @@ export const spawnExec: Exec = (command, args, options) =>
       ...(options?.env !== undefined && { env: options.env }),
       shell: false,
     });
+    live.add(child);
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', (chunk: Buffer) => {
@@ -110,6 +138,7 @@ export const spawnExec: Exec = (command, args, options) =>
       stderr += chunk.toString();
     });
     child.on('error', (error: Error) => {
+      live.delete(child);
       resolve({
         stdout,
         stderr: `${stderr}${error.message}`,
@@ -118,6 +147,7 @@ export const spawnExec: Exec = (command, args, options) =>
       });
     });
     child.on('close', (code, signal) => {
+      live.delete(child);
       // `code ?? 0` is kept, but it is no longer the only thing a caller has to
       // go on: a kill sets `code` to null and `signal` to the name, so the
       // coalesced zero is now accompanied by the evidence that contradicts it.

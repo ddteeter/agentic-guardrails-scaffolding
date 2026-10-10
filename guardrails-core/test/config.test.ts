@@ -648,3 +648,27 @@ describe('sanctionedFiles', () => {
     expect(parseSanctionsJson('{"sanctionedFiles":"nope"}').files).toEqual([]);
   });
 });
+
+describe('hookDeadlineSeconds', () => {
+  it('defaults below the 300-second hook timeout every template sets', () => {
+    // Every host treats a hook timeout as fail-OPEN, so the gate has to decide
+    // before the host gives up on it.
+    expect(defaultConfig().hookDeadlineSeconds).toBe(240);
+  });
+
+  it('reads a positive number', () => {
+    writeFileSync(
+      path.join(root, 'guardrails.config.json'),
+      JSON.stringify({ hookDeadlineSeconds: 500 }),
+    );
+    expect(loadConfig(root).hookDeadlineSeconds).toBe(500);
+  });
+
+  it.each([0, -5, 'soon'])('ignores %s and keeps the default', (value) => {
+    writeFileSync(
+      path.join(root, 'guardrails.config.json'),
+      JSON.stringify({ hookDeadlineSeconds: value }),
+    );
+    expect(loadConfig(root).hookDeadlineSeconds).toBe(240);
+  });
+});

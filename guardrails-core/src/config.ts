@@ -180,6 +180,18 @@ export interface RepoConfig {
    * See `pickEnforcement`.
    */
   enforcement: 'warn' | 'block';
+  /**
+   * How long a hook-driven gate (`gate --mode=stop|pretooluse`) may run before
+   * it stops its analyzers and decides on what it has.
+   *
+   * Every host treats a hook TIMEOUT as fail-open -- Claude Code, Codex and
+   * Copilot all let the tool through, or the turn end -- so a gate that is
+   * still running when the host gives up has decided nothing. Finishing first
+   * is the only way to fail closed. Keep it below the hook `timeout` in the
+   * host wiring (300 in every template guardrails scaffolds); a consumer who
+   * raises one raises both.
+   */
+  hookDeadlineSeconds: number;
   /** Copilot model id for the fast/thorough fixer .agent.md (the tier ladder on
    * Copilot). Unset → omit `model` so the agent loads on Copilot's default. */
   copilotFastModel?: string;
@@ -201,6 +213,7 @@ export function defaultConfig(): RepoConfig {
     sanctionedFiles: [],
     distribution: 'solo',
     enforcement: 'warn',
+    hookDeadlineSeconds: 240,
   };
 }
 
@@ -515,6 +528,14 @@ function pickNumber(value: unknown, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
 }
 
+/**
+A finite number above zero, else the fallback.
+*/
+function pickPositive(value: unknown, fallback: number): number {
+  const number = pickNumber(value, fallback);
+  return number > 0 ? number : fallback;
+}
+
 /** The policy file's name, exported so the modules that read it, name it in a
  *  message, or file a violation against it cannot drift on the spelling. */
 export const CONFIG_FILE_NAME = 'guardrails.config.json';
@@ -572,6 +593,10 @@ export function loadConfig(repoRoot: string): RepoConfig {
       'team',
     ]),
     enforcement: pickEnforcement(raw.enforcement, defaults.enforcement),
+    hookDeadlineSeconds: pickPositive(
+      raw.hookDeadlineSeconds,
+      defaults.hookDeadlineSeconds,
+    ),
     ...(typeof raw.copilotFastModel === 'string' && {
       copilotFastModel: raw.copilotFastModel,
     }),

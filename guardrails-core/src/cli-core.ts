@@ -23,7 +23,7 @@ import {
   readConfigText,
   toGateConfig,
 } from './config.js';
-import type { Exec } from './exec.js';
+import { type Exec, terminateChildren } from './exec.js';
 import {
   runCommitGate,
   runStopGate,
@@ -110,6 +110,17 @@ export interface CliDependencies {
    * `process.env`, read here rather than in the logic-free `cli.ts`.
    */
   env?: NodeJS.ProcessEnv;
+  /**
+   * Stop every analyzer still running; defaults to `terminateChildren`. A seam
+   * for the hook deadline, whose real effect is on processes a test cannot
+   * afford to start.
+   */
+  terminate?: () => number;
+  /**
+   * End the process; defaults to `process.exit`. The hook deadline's way out of
+   * a gate that is still pending.
+   */
+  exit?: (code: number) => void;
   stdout: (text: string) => void;
   stderr: (text: string) => void;
 }
@@ -1454,12 +1465,67 @@ function blockStopOnce(
 }
 
 /**
- * Run a hook-mode gate so that it always DECIDES.
+What a gate run came to: nothing to report, or the error it threw.
+*/
+async function settled(run: Promise<unknown>): Promise<{ failure?: string }> {
+  try {
+    await run;
+    return {};
+  } catch (error: unknown) {
+    return { failure: String(error) };
+  }
+}
+
+/**
+ * Give up on a gate that ran out of time: stop its analyzers, decide on what
+ * is known, and end the process before the abandoned gate can write anything.
  *
- * Claude Code and Codex treat a hook that crashes as non-blocking, so before
- * this a bug in the gate -- or a git that could not be spawned -- was a silent
- * pass. Stdin is read once here so the payload is still in hand when the gate
- * throws, and the refusal carries the error so the cause is visible.
+ * Exits synchronously, straight after the decision is written: the gate is
+ * still pending, and the analyzers dying under SIGTERM would hand it a round of
+ * "analyzer failed" results to record as this turn's violations if the event
+ * loop got another turn. The decision is a few hundred bytes, which a pipe
+ * takes in one write.
+ */
+function abandonGate(
+  dependencies: CliDependencies,
+  input: HookInput,
+  mode: 'pretooluse' | 'stop',
+  dialect: Dialect,
+  seconds: number,
+): void {
+  if (mode === 'pretooluse') {
+    denyGitWrite(
+      dependencies,
+      input,
+      `guardrails: the commit gate did not finish within ${seconds}s, so ` +
+        `this git command was not checked. Something else is likely loading ` +
+        `the machine (another gate, a test run); retry when it is quieter.`,
+      dialect,
+    );
+  } else {
+    dependencies.stderr(
+      `guardrails: the stop gate did not finish within ${seconds}s, so this ` +
+        `turn was not checked. The commit and push gates still apply.\n`,
+    );
+  }
+  (dependencies.terminate ?? terminateChildren)();
+  (dependencies.exit ?? ((code: number) => process.exit(code)))(0);
+}
+
+/**
+ * Run a hook-mode gate so that it always DECIDES -- when it crashes, and when
+ * it runs out of time.
+ *
+ * Claude Code and Codex treat a hook that crashes as non-blocking, so a bug in
+ * the gate -- or a git that could not be spawned -- was a silent pass. And
+ * every host treats a hook TIMEOUT as fail-open, so a gate still running when
+ * the host gave up on it had decided nothing; in the field such gates ran on
+ * for up to twenty minutes, analyzers and all. The gate therefore gets its own
+ * deadline (`hookDeadlineSeconds`, below the host timeout), and output from a
+ * gate abandoned at that deadline is dropped so it cannot contradict the
+ * decision already given.
+ *
+ * Stdin is read once here so the payload is still in hand on either path.
  */
 async function decidingHook(
   dependencies: CliDependencies,
@@ -1467,16 +1533,49 @@ async function decidingHook(
   dialect: Dialect,
 ): Promise<number> {
   const stdin = await dependencies.readStdin();
-  const replayed = { ...dependencies, readStdin: () => Promise.resolve(stdin) };
-  try {
-    await (mode === 'pretooluse'
+  const input = parseHookInput(stdin);
+  const where =
+    (mode === 'stop' ? sessionCwd(dependencies, input, dialect) : input.cwd) ??
+    dependencies.cwd;
+  const seconds = loadConfig(findGitRoot(where) ?? where).hookDeadlineSeconds;
+  let isAbandoned = false;
+  const unlessAbandoned =
+    (write: (text: string) => void) =>
+    (text: string): void => {
+      if (!isAbandoned) {
+        write(text);
+      }
+    };
+  const replayed: CliDependencies = {
+    ...dependencies,
+    readStdin: () => Promise.resolve(stdin),
+    stdout: unlessAbandoned(dependencies.stdout),
+    stderr: unlessAbandoned(dependencies.stderr),
+  };
+  // Settles, never rejects: a gate that throws AFTER the deadline must not
+  // surface as an unhandled rejection.
+  const gate = settled(
+    mode === 'pretooluse'
       ? gatePreToolUseCommand(replayed, dialect)
-      : gateStopCommand(replayed, dialect));
-  } catch (error: unknown) {
-    const input = parseHookInput(stdin);
+      : gateStopCommand(replayed, dialect),
+  );
+  let timer: NodeJS.Timeout | undefined;
+  const deadline = new Promise<'expired'>((resolve) => {
+    timer = setTimeout(() => {
+      resolve('expired');
+    }, seconds * 1000);
+  });
+  const outcome = await Promise.race([gate, deadline]);
+  clearTimeout(timer);
+  if (outcome === 'expired') {
+    isAbandoned = true;
+    abandonGate(dependencies, input, mode, dialect, seconds);
+    return 0;
+  }
+  if (outcome.failure !== undefined) {
     const reason =
       `guardrails: the ${mode} gate failed before it could decide ` +
-      `(${String(error)}), so this was not checked.`;
+      `(${outcome.failure}), so this was not checked.`;
     if (mode === 'pretooluse') {
       denyGitWrite(dependencies, input, reason, dialect);
     } else {

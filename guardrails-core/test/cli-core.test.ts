@@ -9,8 +9,9 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import process from 'node:process';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { type CliDependencies, runCommand } from '../src/cli-core.js';
 import type { Exec, ExecResult } from '../src/exec.js';
@@ -4026,5 +4027,219 @@ describe('session-scoped rungs anchor on the session root (CLAUDE_PROJECT_DIR)',
     );
 
     expect(existsSync(sessionFile(stateDirectory(root), 'sid'))).toBe(false);
+  });
+});
+
+/**
+An exec that answers only after any test has long finished.
+*/
+const hanging: Exec = () =>
+  new Promise<ExecResult>((resolve) => {
+    setTimeout(() => {
+      resolve(ok(''));
+    }, 60_000).unref();
+  });
+
+describe('hook gates finish before the host gives up on them', () => {
+  /**
+   * Every host treats a hook timeout as fail-open, so a gate still running
+   * when the host's timeout fires has decided nothing -- and in the field such
+   * gates ran on for up to twenty minutes, analyzers and all. The CLI now
+   * keeps its own, shorter deadline.
+   */
+
+  let terminated: number;
+  let exitCodes: number[];
+
+  beforeEach(() => {
+    terminated = 0;
+    exitCodes = [];
+    mkdirSync(path.join(root, '.git'));
+    writeFileSync(
+      path.join(root, 'guardrails.config.json'),
+      JSON.stringify({ hookDeadlineSeconds: 0.05 }),
+    );
+  });
+
+  function deadlined(
+    stdin: string,
+    exec: Exec = hanging,
+    env: NodeJS.ProcessEnv = {},
+  ): CliDependencies {
+    return dependencies({
+      exec,
+      env,
+      readStdin: () => Promise.resolve(stdin),
+      terminate: () => {
+        terminated += 1;
+        return 0;
+      },
+      exit: (code) => {
+        exitCodes.push(code);
+      },
+    });
+  }
+
+  it('denies a git write it could not finish checking, and stops its analyzers', async () => {
+    await runCommand(
+      'gate',
+      ['--mode=pretooluse'],
+      deadlined(shellStdin('git commit -m x')),
+    );
+
+    const output = out.join('');
+    expect(output).toContain('deny');
+    expect(output).toContain('did not finish');
+    expect(terminated).toBe(1);
+    expect(exitCodes).toEqual([0]);
+  });
+
+  it('lets a stop end when the gate runs out of time, saying so', async () => {
+    await runCommand(
+      'gate',
+      ['--mode=stop'],
+      deadlined(JSON.stringify({ cwd: root })),
+    );
+
+    expect(out.join('')).toBe('');
+    expect(errors.join('')).toContain('did not finish');
+    expect(terminated).toBe(1);
+  });
+
+  it('drops anything the abandoned gate prints afterwards', async () => {
+    // The gate keeps running until the analyzers die; a block it reaches then
+    // must not follow the decision already given.
+    // The analyzers are held until after the abandonment, then answer with a
+    // finding that WOULD block the stop if it were allowed to print.
+    const eslint = JSON.stringify([
+      {
+        filePath: path.join(root, 'src/foo.ts'),
+        messages: [
+          { ruleId: 'no-console', severity: 2, message: 'x', line: 1 },
+        ],
+      },
+    ]);
+    const { promise: held, resolve: release } =
+      Promise.withResolvers<undefined>();
+    const late: Exec = async (command, args) => {
+      await held;
+      const line = [command, ...args].join(' ');
+      if (line.includes('--name-only')) return ok('src/foo.ts');
+      if (line.includes('HEAD')) return ok('');
+      if (line.includes('eslint')) return ok(eslint);
+      return ok('');
+    };
+    await runCommand(
+      'gate',
+      ['--mode=stop'],
+      deadlined(JSON.stringify({ session_id: 'sid', cwd: root }), late),
+    );
+    expect(exitCodes).toEqual([0]);
+    release(undefined);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    expect(out.join('')).toBe('');
+    expect(errors.join('')).not.toContain('releasing');
+  });
+
+  it('ends the process itself when no exit is injected', async () => {
+    const exits: unknown[] = [];
+    const spy = vi.spyOn(process, 'exit').mockImplementation((code) => {
+      exits.push(code);
+      throw new Error('process.exit called');
+    });
+    try {
+      await expect(
+        runCommand(
+          'gate',
+          ['--mode=stop'],
+          dependencies({
+            exec: hanging,
+            readStdin: () => Promise.resolve(JSON.stringify({ cwd: root })),
+            terminate: () => 0,
+          }),
+        ),
+      ).rejects.toThrow('process.exit called');
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(exits).toEqual([0]);
+  });
+
+  it('reads the deadline from the repository root, not the directory it ran in', async () => {
+    mkdirSync(path.join(root, 'src'));
+
+    await runCommand(
+      'gate',
+      ['--mode=stop'],
+      deadlined(JSON.stringify({ cwd: path.join(root, 'src') })),
+    );
+
+    expect(terminated).toBe(1);
+  });
+
+  describe('which directory names the repository', () => {
+    let elsewhere: string;
+
+    beforeEach(() => {
+      elsewhere = mkdtempSync(path.join(tmpdir(), 'guardrails-cli-else-'));
+      mkdirSync(path.join(elsewhere, '.git'));
+    });
+
+    afterEach(() => {
+      rmSync(elsewhere, { recursive: true, force: true });
+    });
+
+    it('a stop follows the session root over the payload cwd', async () => {
+      await runCommand(
+        'gate',
+        ['--mode=stop'],
+        deadlined(JSON.stringify({ cwd: elsewhere }), hanging, {
+          CLAUDE_PROJECT_DIR: root,
+        }),
+      );
+
+      expect(terminated).toBe(1);
+    });
+
+    it('a tool-scoped gate follows the payload cwd over the session root', async () => {
+      await runCommand(
+        'gate',
+        ['--mode=pretooluse'],
+        deadlined(shellStdin('git commit -m x'), hanging, {
+          CLAUDE_PROJECT_DIR: elsewhere,
+        }),
+      );
+
+      expect(terminated).toBe(1);
+    });
+  });
+
+  it('cancels its deadline timer once the gate has finished', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      await runCommand(
+        'gate',
+        ['--mode=stop'],
+        deadlined(JSON.stringify({ cwd: root }), () => Promise.resolve(ok(''))),
+      );
+
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('leaves a gate that finishes in time alone', async () => {
+    await runCommand(
+      'gate',
+      ['--mode=stop'],
+      deadlined(JSON.stringify({ cwd: root }), () => Promise.resolve(ok(''))),
+    );
+
+    expect(terminated).toBe(0);
+    expect(exitCodes).toEqual([]);
+    expect(errors.join('')).not.toContain('did not finish');
   });
 });
