@@ -24,6 +24,12 @@ function record(partial: Partial<DecisionRecord> = {}): DecisionRecord {
 }
 
 describe('isDecisionRecord', () => {
+  it('accepts a cached flag, and only a boolean one', () => {
+    expect(isDecisionRecord(record({ cached: true }))).toBe(true);
+    expect(isDecisionRecord(record({ cached: false }))).toBe(true);
+    expect(isDecisionRecord({ ...record(), cached: 'yes' })).toBe(false);
+  });
+
   it('accepts a well-formed row', () => {
     expect(isDecisionRecord(record())).toBe(true);
   });

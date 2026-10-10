@@ -45,16 +45,19 @@ import {
 import type { AnalyzerMode, Rung } from './verify/analyzer-policy.js';
 import {
   appendDecision,
+  loadCleanTree,
   loadLeases,
   loadRecurrence,
   loadSession,
   manifestFile,
+  saveCleanTree,
   saveLeases,
   saveRecurrence,
   saveSession,
   stateDirectory,
   writeViolations,
 } from './state-store.js';
+import { treeFingerprint } from './tree-fingerprint.js';
 import {
   findLeaseOverlap,
   type FixerLease,
@@ -646,7 +649,16 @@ export async function runStopGate(
     // mutant suppressed costs a sanction that has to be justified forever.
     analyzerRungs: options.analyzerRungs,
   };
-  const { violations } = await runVerify(verifyOptions);
+  // No open loop is the precondition: a fixer mid-flight has to have its
+  // progress measured, never assumed from an earlier clean turn.
+  const fingerprint = isHadSnapshot
+    ? undefined
+    : await treeFingerprint(exec, repoRoot, baseBranch);
+  const isUnchanged =
+    fingerprint !== undefined && loadCleanTree(directory) === fingerprint;
+  const { violations } = isUnchanged
+    ? { violations: [] }
+    : await runVerify(verifyOptions);
   // Guidance rides on the violation so it reaches the fixer through the
   // manifest — the one channel every runtime reads. `runVerify`'s violations
   // are already attributed; `withPackages` is idempotent, so re-applying is a
@@ -696,7 +708,11 @@ export async function runStopGate(
     rung: 'stop',
     session: sessionId,
     ...decision.log,
+    ...(isUnchanged && { cached: true }),
   });
+  if (fingerprint !== undefined && decision.outcome === 'clean') {
+    saveCleanTree(directory, fingerprint);
+  }
   // `fixerAgent` is set on exactly the outcomes that ask for a spawn, so it is
   // the whole condition: a decision that names nobody releases this rung's
   // claim, and one that names somebody takes or defers it.

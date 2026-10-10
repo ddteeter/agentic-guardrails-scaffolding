@@ -44,6 +44,28 @@ export function manifestFile(directory: string, sessionId: string): string {
   return path.join(directory, `${sessionId}.last.json`);
 }
 
+const CLEAN_TREE_FILE = 'clean-tree.json';
+
+/**
+ * The fingerprint of the last tree a Stop gate verified clean (see
+ * `tree-fingerprint.ts`). Repo-level rather than per-session: verify is a
+ * function of the tree, not of who is asking.
+ */
+function cleanTreeFile(directory: string): string {
+  return path.join(directory, CLEAN_TREE_FILE);
+}
+
+export function loadCleanTree(directory: string): string | undefined {
+  const raw = readJson(cleanTreeFile(directory));
+  return isRecord(raw) && typeof raw.fingerprint === 'string'
+    ? raw.fingerprint
+    : undefined;
+}
+
+export function saveCleanTree(directory: string, fingerprint: string): void {
+  writeJson(cleanTreeFile(directory), { fingerprint });
+}
+
 export function recurrenceFile(directory: string): string {
   return path.join(directory, 'recurrence.json');
 }
@@ -383,6 +405,7 @@ export function readDecisions(directory: string): DecisionRecord[] {
 const SHARED_STATE_FILES: ReadonlySet<string> = new Set([
   'recurrence.json',
   'leases.json',
+  CLEAN_TREE_FILE,
 ]);
 
 /**

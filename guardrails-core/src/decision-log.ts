@@ -63,6 +63,12 @@ export interface DecisionRecord extends GateLogEntry {
    * the log covers.
    */
   session: string;
+  /**
+   * The Stop gate skipped verify because the tree matched the last clean one.
+   * Absent on every other row, so a log written before this existed reads the
+   * same.
+   */
+  cached?: boolean;
 }
 
 function isNumberRecord(value: unknown): boolean {
@@ -95,7 +101,8 @@ export function isDecisionRecord(value: unknown): value is DecisionRecord {
     isNumberRecord(value.rules) &&
     typeof value.introduced === 'number' &&
     typeof value.resolved === 'number' &&
-    typeof value.stalled === 'boolean'
+    typeof value.stalled === 'boolean' &&
+    (value.cached === undefined || typeof value.cached === 'boolean')
   );
 }
 
