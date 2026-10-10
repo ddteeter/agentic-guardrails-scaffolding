@@ -1286,6 +1286,17 @@ describe('runCommitGate: delegation for the laborious classes', () => {
     ).toBeGreaterThan(0);
   });
 
+  it('names the manifest for the rung that wrote it', async () => {
+    // The push rung used to write `commit-commit.last.json`, which sent
+    // agents reading a push block to a file named for the other rung.
+    const { sessionId: _unused, ...options } = blockedOptions();
+    const result = await runCommitGate({ ...options, profile: 'push' });
+
+    expect(result.delegation?.manifestPath).toContain(
+      'nosession-push.last.json',
+    );
+  });
+
   it('opens a scope-lock loop for the fixer it names', async () => {
     // Without a loop marker the scope-lock never engaged for a commit-rung
     // fixer, which could then edit anything -- guardrails.config.json included.

@@ -296,6 +296,22 @@ async function reportedBase(
   return resolved;
 }
 
+/**
+ * The one-line verdict, with warnings counted apart from errors: a
+ * non-blocking advisory printed as "1 violation(s)." beside a zero exit sent
+ * agents looking for a failure that was not there.
+ */
+function verdictLine(violations: readonly Violation[]): string {
+  if (violations.length === 0) {
+    return 'clean (0 violations).';
+  }
+  const errorCount = violations.filter(
+    (violation) => violation.severity === 'error',
+  ).length;
+  const warningCount = violations.length - errorCount;
+  return `${errorCount} error(s), ${warningCount} warning(s).`;
+}
+
 async function verifyCommand(
   dependencies: CliDependencies,
   rest: string[],
@@ -313,11 +329,7 @@ async function verifyCommand(
     analyzerRungs: config.analyzerRungs,
   });
   printViolations(dependencies, violations);
-  dependencies.stderr(
-    violations.length === 0
-      ? 'guardrails: clean (0 violations).\n'
-      : `guardrails: ${violations.length} violation(s).\n`,
-  );
+  dependencies.stderr(`guardrails: ${verdictLine(violations)}\n`);
   warnAboutSilentSkips(dependencies, skippedAnalyzers);
   return hasErrors(violations) ? 1 : 0;
 }
@@ -650,6 +662,60 @@ const GIT_WRITE = new RegExp(
 );
 
 /**
+ * A heredoc opener: `<<WORD`, `<<-WORD`, or a quoted delimiter (`<<'WORD'`,
+ * `<<"WORD"`, `<<\WORD`). Not a here-string: `<<<` is excluded on both sides.
+ * Groups: 1 the `-` that lets the terminator be tab-indented, 2-4 a QUOTED
+ * delimiter, 5 an unquoted one.
+ */
+const HEREDOC_OPENER =
+  /(?<!<)<<(?!<)(-?)[ \t]*(?:'([^'\n]+)'|"([^"\n]+)"|\\(\w+)|(\w+))/g;
+
+/**
+ * The command with the bodies of its QUOTED heredocs removed.
+ *
+ * A quoted heredoc is literal text -- the shell expands nothing inside it --
+ * yet its backticks used to count as command separators, so a script or a
+ * commit message that merely quoted a git write in backticks ran the commit
+ * gate. Unquoted heredocs DO expand `$(...)` and backticks, so their bodies are
+ * kept. Every opener on a line queues its body in order, quoted or not, so an
+ * unquoted body is never mistaken for a quoted one's.
+ *
+ * Fails toward gating: if any body is left unterminated the command is
+ * returned untouched, because a wrong guess here must cost a spurious gate
+ * run, never a missed commit.
+ */
+function withoutQuotedHeredocBodies(command: string): string {
+  const lines = command.split('\n');
+  const dropped = new Set<number>();
+  const pending: { word: string; isIndented: boolean; isQuoted: boolean }[] =
+    [];
+  for (const [index, line] of lines.entries()) {
+    const [body] = pending;
+    if (body === undefined) {
+      for (const opener of line.matchAll(HEREDOC_OPENER)) {
+        const [, dash, single, double, escaped, bare] = opener;
+        const quoted = single ?? double ?? escaped;
+        pending.push({
+          word: quoted ?? bare ?? '',
+          isIndented: dash === '-',
+          isQuoted: quoted !== undefined,
+        });
+      }
+      continue;
+    }
+    const candidate = body.isIndented ? line.replace(/^\t+/, '') : line;
+    if (candidate === body.word) {
+      pending.shift();
+    } else if (body.isQuoted) {
+      dropped.add(index);
+    }
+  }
+  return pending.length === 0
+    ? lines.filter((_line, index) => !dropped.has(index)).join('\n')
+    : command;
+}
+
+/**
  * Is this hook call a shell tool running a git write (commit or push)? The
  * only calls the pretooluse gate has an opinion about.
  */
@@ -663,7 +729,7 @@ function isShellGitWrite(input: HookInput): boolean {
     SHELL_TOOLS.test(input.toolName) &&
     // Stryker disable next-line ConditionalExpression
     input.command !== undefined &&
-    GIT_WRITE.test(input.command)
+    GIT_WRITE.test(withoutQuotedHeredocBodies(input.command))
   );
 }
 

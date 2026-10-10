@@ -781,7 +781,7 @@ describe('runCommand — gate pretooluse (copilot commit/push gate)', () => {
       dependencies({ exec, readStdin: () => Promise.resolve(stdin) }),
     );
 
-    expect(denyReason(JSON.parse(out.join('')))).toContain('commit-commit');
+    expect(denyReason(JSON.parse(out.join('')))).toContain('nosession-commit');
   });
 
   it('stays silent for a non-git shell command', async () => {
@@ -1166,6 +1166,33 @@ describe('pretooluse gate trigger conditions', () => {
     ).toBe('');
   });
 
+  it('does not read a QUOTED heredoc body as commands', async () => {
+    // A quoted heredoc (`<<'EOF'`, `<<"EOF"`, `<<\EOF`) is literal text: the
+    // shell runs nothing inside it. Its backticks used to count as command
+    // separators, so a script or a commit message that merely quoted
+    // `git commit` in backticks ran the commit gate -- three times while this
+    // very fix was being built.
+    for (const command of [
+      "cat > notes.md <<'EOF'\nRun `git commit` when ready.\nEOF",
+      "python3 - <<'EOF'\nprint('x')  # then `git push`\nEOF",
+      'cat <<"EOF"\n`git commit -m x`\nEOF',
+      'cat <<\\EOF\n$(git push)\nEOF',
+      "cat <<-'EOF'\n\t`git commit`\n\tEOF",
+      "a <<'ONE' && b <<'TWO'\n`git commit`\nONE\n`git push`\nTWO",
+      // Every leading tab of a `<<-` terminator is stripped, not just one.
+      "cat <<-'EOF'\n\t`git commit`\n\t\tEOF",
+      // An unquoted heredoc closes at its own full delimiter, so the quoted
+      // one queued after it is still stripped.
+      "cat <<EOF && cat <<'TWO'\nplain\nEOF\n`git commit`\nTWO",
+    ]) {
+      out.length = 0;
+      expect(
+        await runPreToolUse(preToolUseStdin('bash', command)),
+        `should not gate: ${JSON.stringify(command)}`,
+      ).toBe('');
+    }
+  });
+
   it('cannot be made to backtrack catastrophically by a run of flags', async () => {
     // ReDoS regression. The first version of the global-option run was
     // `(?:-[cC][ \t]+[^ \t]+|-[^ \t]+)*`, whose two alternatives could tile the
@@ -1223,6 +1250,20 @@ describe('pretooluse gate trigger conditions', () => {
       // linear time for a false negative; it does not.
       'git -c http.extraHeader=-x commit -m y',
       'git -c a=-1 -c b=-2 push',
+      // An UNQUOTED heredoc expands command substitutions, so its body runs.
+      'cat <<EOF\n`git commit -m x`\nEOF',
+      // A quoted heredoc ends at its delimiter; what follows is a command.
+      "cat > notes.md <<'EOF'\nnotes\nEOF\ngit commit -m x",
+      // A delimiter that never arrives leaves nothing stripped: being wrong
+      // here must cost a spurious gate run, never a missed commit.
+      "cat <<'EOF'\nnotes\ngit commit -m x",
+      // Only `<<-` lets the terminator be tab-indented; a plain `<<'EOF'`
+      // body is not closed by "\tEOF", so it stays unterminated.
+      "cat <<'EOF'\n`git commit`\n\tEOF",
+      // Tabs are stripped only from the line's START, never from its middle.
+      "cat <<-'EOF'\n`git commit`\nE\tOF",
+      // An unquoted heredoc's body runs, even beside a quoted one.
+      "a <<ONE && b <<'TWO'\n`git commit`\nONE\n`git push`\nTWO",
     ]) {
       out.length = 0;
       expect(
@@ -1314,6 +1355,21 @@ async function runScopeCheck(stdin: string): Promise<string> {
     dependencies({ readStdin: () => Promise.resolve(stdin) }),
   );
   return out.join('');
+}
+
+/**
+An exec whose eslint run reports the given JSON and whose changed-file list is
+just src/foo.ts, so verify's outcome is decided by the eslint messages alone.
+*/
+function eslintReportExec(eslint: string): Exec {
+  return (command, args) => {
+    const line = [command, ...args].join(' ');
+    if (line.includes('--name-only')) return Promise.resolve(ok('src/foo.ts'));
+    if (line.includes('eslint')) return Promise.resolve(ok(eslint));
+    if (line.includes('--showConfig'))
+      return Promise.resolve(ok(JSON.stringify({ files: ['src/foo.ts'] })));
+    return Promise.resolve(ok(''));
+  };
 }
 
 /**
@@ -1639,9 +1695,56 @@ describe('verify and audit exit codes', () => {
     await runCommand('verify', [], dependencies({ exec: failingVerifyExec() }));
     // A count, not a specific number: the fixture supplies no stryker report,
     // so the fail-closed check correctly adds an analyzer-failed violation too.
-    expect(errors.join('')).toContain(' violation(s).');
-    expect(errors.join('')).not.toContain('0 violation(s).');
+    expect(errors.join('')).toContain(' error(s), ');
+    expect(errors.join('')).not.toContain(' 0 error(s)');
     expect(errors.join('')).not.toContain('clean (0 violations)');
+  });
+
+  it('counts warnings apart from errors, so an advisory does not read as a failure', async () => {
+    // A non-blocking advisory (stryker-out-of-scope, an eslint warning) was
+    // printed as "1 violation(s)." next to an exit code of 0, and agents went
+    // looking for what had failed.
+    const eslint = JSON.stringify([
+      {
+        filePath: path.join(root, 'src/foo.ts'),
+        messages: [
+          { ruleId: 'no-console', severity: 1, message: 'x', line: 1 },
+        ],
+      },
+    ]);
+    const exec = eslintReportExec(eslint);
+    writeFileSync(
+      path.join(root, 'guardrails.config.json'),
+      JSON.stringify({ analyzers: { stryker: 'off' } }),
+    );
+
+    const code = await runCommand('verify', [], dependencies({ exec }));
+
+    expect(code).toBe(0);
+    expect(errors.join('')).toContain('0 error(s), 1 warning(s).');
+  });
+
+  it('counts errors and warnings separately when both are present', async () => {
+    // One error plus one warning: the warning count must be total minus errors
+    // (1), not total plus errors (3).
+    const eslint = JSON.stringify([
+      {
+        filePath: path.join(root, 'src/foo.ts'),
+        messages: [
+          { ruleId: 'no-console', severity: 2, message: 'x', line: 1 },
+          { ruleId: 'no-alert', severity: 1, message: 'y', line: 2 },
+        ],
+      },
+    ]);
+    const exec = eslintReportExec(eslint);
+    writeFileSync(
+      path.join(root, 'guardrails.config.json'),
+      JSON.stringify({ analyzers: { stryker: 'off' } }),
+    );
+
+    await runCommand('verify', [], dependencies({ exec }));
+
+    expect(errors.join('')).toContain('1 error(s), 1 warning(s).');
   });
 
   it('warns that an enabled analyzer was silently skipped, on the very run that reports clean', async () => {

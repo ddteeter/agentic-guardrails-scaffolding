@@ -792,10 +792,11 @@ async function branchDiff(options: CommitGateOptions): Promise<WorkingDiff> {
  * needs no teaching.
  *
  * `.husky/pre-commit` runs with no hook payload and therefore no session, so
- * the fallback is fixed.
+ * the fallback is fixed. The suffix names the RUNG, so a push block's manifest
+ * is not filed under `-commit` (the scope-lock knows all three suffixes).
  */
-function commitManifestId(sessionId: string | undefined): string {
-  return `${sessionId ?? 'commit'}-commit`;
+function commitManifestId(sessionId: string | undefined, rung: Rung): string {
+  return `${sessionId ?? 'nosession'}-${rung}`;
 }
 
 export async function runCommitGate(
@@ -848,7 +849,10 @@ export async function runCommitGate(
   // the stop rung writes -- violations plus the audit findings, guidance
   // attached -- so `guardrail-fixer` needs no second format to understand.
   const directory = stateDirectory(options.repoRoot);
-  const manifestId = commitManifestId(options.sessionId);
+  const manifestId = commitManifestId(
+    options.sessionId,
+    options.profile ?? 'commit',
+  );
   const manifestPath = path.relative(
     options.repoRoot,
     manifestFile(directory, manifestId),
