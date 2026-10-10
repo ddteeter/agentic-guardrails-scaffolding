@@ -27,6 +27,21 @@ import {
 import type { Violation } from '../src/violation.js';
 import { checksum as scaffoldChecksum } from '../src/scaffold/manifest.js';
 
+/**
+ * Close the inheritance channel for CLAUDE_PROJECT_DIR, at module scope,
+ * before anything runs.
+ *
+ * `sessionCwd` reads it through `dependencies.env ?? process.env`, and every
+ * test injects an empty `env`. But the commit gate runs stryker from INSIDE a
+ * Claude Code hook, whose environment carries CLAUDE_PROJECT_DIR pointing at the
+ * real checkout. Stryker's workers inherit it, so a mutant that drops the
+ * injected env made the stop-gate tests below verify -- and write fixture state
+ * into -- the developer's real repository. That happened seven times while this
+ * was being built, and once in a worktree a live check was running in. Scrubbing
+ * it here holds because stryker never mutates test files.
+ */
+delete process.env.CLAUDE_PROJECT_DIR;
+
 let root: string;
 let out: string[];
 let errors: string[];

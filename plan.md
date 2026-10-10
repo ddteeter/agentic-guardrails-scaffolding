@@ -392,6 +392,28 @@ left orphaned `workerd` processes doing exactly that. A scope flag on
     that second firing would have put two fixers in one file. It was not
     followed, but the bound is tight for a fixer that outlives one Stop
     cycle.
+  - **Live checks after the restart (step 8 of
+    `docs/live-loop-verification.md`, run as headless `claude -p` sessions in
+    throwaway worktrees):**
+    - In a worktree with no install, a commit was denied with the remedy and
+      the Stop was blocked once. The agent ran `npm ci`, and its retried
+      commit then passed a real gate.
+    - A commit-rung fixer was scope-locked (its new test file was denied).
+    - Stop runs launched at the repo root that `cd` into a worktree logged
+      at the root.
+    - Idle Stops logged `cached: true`.
+    - Gap found: a fixer cannot create the test a brand-new, untested file
+      needs, because `relatedTests` only lists existing importers. So
+      `knip/files` plus `stryker/no-coverage` on new code always escalates.
+      A follow-up could allow creating `test/<name>.test.ts` for a manifest
+      file.
+  - **A second sandbox escape, through the environment.** Hooks run with
+    CLAUDE_PROJECT_DIR set, and the commit gate runs stryker from a hook. A
+    mutant that dropped `sessionCwd`'s injected env made the stop-gate tests
+    verify the developer's real checkout and write fixture-session state into
+    it: seven times in this build, and once in a live-check worktree. The test
+    module now scrubs CLAUDE_PROJECT_DIR at module scope. A control run
+    without the scrub wrote state into a canary repo; with it, nothing did.
 
 - **The gate could hand work to the main agent while its own fixer was still
   editing (fixed).** Observed in the #61 session. When the manifest is UNCHANGED
