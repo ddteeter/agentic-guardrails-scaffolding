@@ -386,7 +386,12 @@ left orphaned `workerd` processes doing exactly that. A scope flag on
       host attributes a tool call to a fixer type. A lease whose fixer was
       seen in the last five minutes keeps being honoured past the one-wait
       bound, still capped by the 30-minute TTL. Copilot never attributes
-      `preToolUse` calls, so it keeps the one-wait bound.
+      `preToolUse` calls, so it keeps the one-wait bound. Live-checked in a
+      fresh Claude Code session (2026-10-10): the Stop gate took the lease at
+      19:46:31 and the fixer's first tool call stamped `lastSeenAt` at
+      19:46:37; main-thread calls in between did not. The multi-wait path
+      itself was not reproduced live (it needs a slow fixer racing a second
+      Stop), so it rests on the unit tests.
     - **Codex identity.** Codex has sent `agent_id`/`agent_type` on
       `PreToolUse` for thread-spawned subagents since `openai/codex#22882`.
       Sibling subagents now narrow on it. The main thread narrows once a fixer
