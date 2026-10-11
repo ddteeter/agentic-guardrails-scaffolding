@@ -4,13 +4,16 @@
  * `cli.ts` is a thin bootstrap that supplies the real dependencies.
  */
 
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
+import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
 import { auditDiff, type AuditFinding } from './audit.js';
 import { type EffectiveBase, resolveEffectiveBase } from './base-reference.js';
 import { runAutofix } from './autofix.js';
 import { formatDecisionReport, summarizeDecisions } from './decision-log.js';
+import { addedSuppressions } from './edit-suppressions.js';
 import {
   CONFIG_FILE_NAME,
   loadConfig,
@@ -20,7 +23,7 @@ import {
   readConfigText,
   toGateConfig,
 } from './config.js';
-import type { Exec } from './exec.js';
+import { type Exec, terminateChildren } from './exec.js';
 import {
   runCommitGate,
   runStopGate,
@@ -71,7 +74,7 @@ import {
   HOOKS_DIRECTORY,
 } from './scaffold/hooks-path.js';
 import { initCommand } from './scaffold/init.js';
-import { collectManifestScope, isPathAllowed, isWithinRepo } from './scope.js';
+import { collectSessionScope, isWithinRepo } from './scope.js';
 import {
   baseReferenceCache,
   deleteSession,
@@ -101,6 +104,23 @@ export interface CliDependencies {
    * fully covered.
    */
   selfPath?: string;
+  /**
+   * The process environment, injected for the same reason as `selfPath`: so
+   * the session-root lookup (`sessionCwd`) has a seam. Falls back to
+   * `process.env`, read here rather than in the logic-free `cli.ts`.
+   */
+  env?: NodeJS.ProcessEnv;
+  /**
+   * Stop every analyzer still running; defaults to `terminateChildren`. A seam
+   * for the hook deadline, whose real effect is on processes a test cannot
+   * afford to start.
+   */
+  terminate?: () => number;
+  /**
+   * End the process; defaults to `process.exit`. The hook deadline's way out of
+   * a gate that is still pending.
+   */
+  exit?: (code: number) => void;
   stdout: (text: string) => void;
   stderr: (text: string) => void;
 }
@@ -276,6 +296,22 @@ async function reportedBase(
   return resolved;
 }
 
+/**
+ * The one-line verdict, with warnings counted apart from errors: a
+ * non-blocking advisory printed as "1 violation(s)." beside a zero exit sent
+ * agents looking for a failure that was not there.
+ */
+function verdictLine(violations: readonly Violation[]): string {
+  if (violations.length === 0) {
+    return 'clean (0 violations).';
+  }
+  const errorCount = violations.filter(
+    (violation) => violation.severity === 'error',
+  ).length;
+  const warningCount = violations.length - errorCount;
+  return `${errorCount} error(s), ${warningCount} warning(s).`;
+}
+
 async function verifyCommand(
   dependencies: CliDependencies,
   rest: string[],
@@ -293,11 +329,7 @@ async function verifyCommand(
     analyzerRungs: config.analyzerRungs,
   });
   printViolations(dependencies, violations);
-  dependencies.stderr(
-    violations.length === 0
-      ? 'guardrails: clean (0 violations).\n'
-      : `guardrails: ${violations.length} violation(s).\n`,
-  );
+  dependencies.stderr(`guardrails: ${verdictLine(violations)}\n`);
   warnAboutSilentSkips(dependencies, skippedAnalyzers);
   return hasErrors(violations) ? 1 : 0;
 }
@@ -356,11 +388,48 @@ async function autofixCommand(dependencies: CliDependencies): Promise<number> {
   return 0;
 }
 
+/**
+ * Where a SESSION-scoped rung (stop, session-start, session-end) should look
+ * for its repository: the session's root, not wherever the shell last went.
+ *
+ * A hook payload's `cwd` follows the agent's shell. Probed live on Claude
+ * Code: after a `cd` into a nested worktree the Stop payload named the
+ * worktree, while CLAUDE_PROJECT_DIR still named the launch root -- and under
+ * `claude --worktree` CLAUDE_PROJECT_DIR is the worktree itself, so it is the
+ * session's own root in both cases. In the dialed.run adoption an
+ * orchestrating session's Stop gate verified -- and sent fixers into -- lane
+ * worktrees other agents were mid-way through, about 150 times.
+ *
+ * Only for Claude Code's main thread: a subagent (`agent_id` present) works in
+ * its own checkout, and Codex and Copilot expose no project root at all, so
+ * they keep the payload cwd. A CLAUDE_PROJECT_DIR outside any repository (a
+ * session launched in a home directory) is ignored rather than verified.
+ * Tool-scoped rungs never use this: a lane agent's commit gate must check the
+ * lane's worktree.
+ */
+function sessionCwd(
+  dependencies: CliDependencies,
+  input: HookInput,
+  dialect: Dialect,
+): string | undefined {
+  const projectDirectory = (dependencies.env ?? process.env).CLAUDE_PROJECT_DIR;
+  const isSessionRoot =
+    dialect === 'claude' &&
+    input.agentId === undefined &&
+    projectDirectory !== undefined &&
+    findGitRoot(projectDirectory) !== undefined;
+  return isSessionRoot ? projectDirectory : input.cwd;
+}
+
 async function gateStopCommand(
   dependencies: CliDependencies,
   dialect: Dialect,
 ): Promise<number> {
-  const { input, repoRoot } = await hookContext(dependencies);
+  const input = parseHookInput(await dependencies.readStdin());
+  const repoRoot = await commandRepoRoot(
+    dependencies,
+    sessionCwd(dependencies, input, dialect),
+  );
   const sessionId = input.sessionId ?? 'default';
   const config = loadConfig(repoRoot);
   // Quiet, and cached: this runs on every turn, so it must cost at most one
@@ -592,6 +661,78 @@ const GIT_WRITE = new RegExp(
   `${COMMAND_START}git${GIT_GLOBAL_OPTIONS}[ \t]+(?:commit|push)\\b`,
 );
 
+/**
+ * A heredoc opener: `<<WORD`, `<<-WORD`, or a quoted delimiter (`<<'WORD'`,
+ * `<<"WORD"`, `<<\WORD`). Not a here-string: `<<<` is excluded on both sides.
+ * Groups: 1 the `-` that lets the terminator be tab-indented, 2-4 a QUOTED
+ * delimiter, 5 an unquoted one.
+ */
+const HEREDOC_OPENER =
+  /(?<!<)<<(?!<)(-?)[ \t]*(?:'([^'\n]+)'|"([^"\n]+)"|\\(\w+)|(\w+))/g;
+
+/**
+ * The command with the bodies of its QUOTED heredocs removed.
+ *
+ * A quoted heredoc is literal text -- the shell expands nothing inside it --
+ * yet its backticks used to count as command separators, so a script or a
+ * commit message that merely quoted a git write in backticks ran the commit
+ * gate. Unquoted heredocs DO expand `$(...)` and backticks, so their bodies are
+ * kept. Every opener on a line queues its body in order, quoted or not, so an
+ * unquoted body is never mistaken for a quoted one's.
+ *
+ * Fails toward gating: if any body is left unterminated the command is
+ * returned untouched, because a wrong guess here must cost a spurious gate
+ * run, never a missed commit.
+ */
+function withoutQuotedHeredocBodies(command: string): string {
+  const lines = command.split('\n');
+  const dropped = new Set<number>();
+  const pending: { word: string; isIndented: boolean; isQuoted: boolean }[] =
+    [];
+  for (const [index, line] of lines.entries()) {
+    const [body] = pending;
+    if (body === undefined) {
+      for (const opener of line.matchAll(HEREDOC_OPENER)) {
+        const [, dash, single, double, escaped, bare] = opener;
+        const quoted = single ?? double ?? escaped;
+        pending.push({
+          word: quoted ?? bare ?? '',
+          isIndented: dash === '-',
+          isQuoted: quoted !== undefined,
+        });
+      }
+      continue;
+    }
+    const candidate = body.isIndented ? line.replace(/^\t+/, '') : line;
+    if (candidate === body.word) {
+      pending.shift();
+    } else if (body.isQuoted) {
+      dropped.add(index);
+    }
+  }
+  return pending.length === 0
+    ? lines.filter((_line, index) => !dropped.has(index)).join('\n')
+    : command;
+}
+
+/**
+ * Is this hook call a shell tool running a git write (commit or push)? The
+ * only calls the pretooluse gate has an opinion about.
+ */
+function isShellGitWrite(input: HookInput): boolean {
+  return (
+    // Equivalent mutants on the two `!== undefined` clauses: forcing either
+    // true still answers false, because the regex test on the very next line
+    // stringifies `undefined` to "undefined", which matches neither pattern.
+    // Stryker disable next-line ConditionalExpression
+    input.toolName !== undefined &&
+    SHELL_TOOLS.test(input.toolName) &&
+    // Stryker disable next-line ConditionalExpression
+    input.command !== undefined &&
+    GIT_WRITE.test(withoutQuotedHeredocBodies(input.command))
+  );
+}
+
 /** `gate --mode=pretooluse`: the Copilot commit/push gate. Self-filters on the
  * shell-tool + git-commit/push command shape rather than relying on hook
  * matcher config, because VS Code's Copilot hook host ignores matchers — the
@@ -601,17 +742,7 @@ async function gatePreToolUseCommand(
   dialect: Dialect,
 ): Promise<void> {
   const input = parseHookInput(await dependencies.readStdin());
-  if (
-    // Equivalent mutants on the two `=== undefined` clauses: bypassing either
-    // still returns early, because the regex test on the very next line
-    // stringifies `undefined` to "undefined", which matches neither pattern.
-    // Stryker disable next-line ConditionalExpression
-    input.toolName === undefined ||
-    !SHELL_TOOLS.test(input.toolName) ||
-    // Stryker disable next-line ConditionalExpression
-    input.command === undefined ||
-    !GIT_WRITE.test(input.command)
-  ) {
+  if (!isShellGitWrite(input)) {
     return; // allow (silent)
   }
   const repoRoot = await commandRepoRoot(dependencies, input.cwd);
@@ -1083,7 +1214,22 @@ async function scopeCheckCommand(
   dialect: Dialect,
 ): Promise<void> {
   const { input, repoRoot } = await hookContext(dependencies);
-  const scope = collectManifestScope(stateDirectory(repoRoot), input.sessionId);
+  // Each path as the payload named it (for the message) and resolved (for
+  // the checks).
+  const targets = hookFilePaths(input).map((file) => ({
+    file,
+    absolute: path.resolve(repoRoot, file),
+  }));
+  // The cwd's checkout, plus the checkout each target sits in: a fixer can run
+  // from the parent while its manifest and files live in a nested worktree.
+  const targetRoots = targets
+    .map((target) => findGitRoot(target.absolute))
+    .filter((found) => found !== undefined);
+  const scope = collectSessionScope(
+    [repoRoot, ...targetRoots],
+    input.sessionId,
+    Date.now(),
+  );
   // Every branch below is a FIXER lock, so a caller the host tells us is not
   // the fixer is left alone entirely.
   const isConfined = scope.active && isFixerCaller(input, dialect);
@@ -1106,7 +1252,7 @@ async function scopeCheckCommand(
   // No empty-list guard: both branches below reduce to "no path violates the
   // scope" over an empty list, so an early return would only add a branch that
   // no test can distinguish.
-  const filePaths = hookFilePaths(input);
+  //
   // Read: the fixer may read anything WITHIN the repo (manifest, edited files,
   // even node_modules rule sources — that in-repo exploration is how the
   // thorough tier diagnoses subtle rules), but nothing OUTSIDE it (e.g. the
@@ -1119,7 +1265,9 @@ async function scopeCheckCommand(
   // read-lock permanent for every session in every repo that scaffolds
   // guardrails -- a false positive that reached the main agent, not the fixer.
   if (isConfined && isReadTool(input.toolName)) {
-    const outside = filePaths.find((file) => !isWithinRepo(repoRoot, file));
+    const outside = targets.find(
+      (target) => !scope.allowsRead(target.absolute),
+    )?.file;
     if (outside !== undefined) {
       denyPreToolUse(
         dependencies,
@@ -1138,9 +1286,9 @@ async function scopeCheckCommand(
   // fixer IS running, and reading that as "no fixer" would hand it the whole
   // repo. Such a fixer has nothing it may legitimately edit, so every write is
   // denied and the attempt escalates to the main agent.
-  const denied = filePaths.find(
-    (file) => !isPathAllowed(scope.files, repoRoot, file),
-  );
+  const denied = targets.find(
+    (target) => !scope.allowsEdit(target.absolute),
+  )?.file;
   if (isConfined && denied !== undefined) {
     denyPreToolUse(
       dependencies,
@@ -1149,7 +1297,51 @@ async function scopeCheckCommand(
         `package.json or guardrails.config.json.`,
       dialect,
     );
+    return;
   }
+  if (isConfined) {
+    refuseAddedSuppressions(dependencies, input, repoRoot, dialect);
+  }
+}
+
+/**
+ * The text a file holds now, or nothing if it does not exist yet -- the
+ * "before" of a whole-file write.
+ */
+function currentText(file: string): string {
+  return existsSync(file) ? readFileSync(file, 'utf8') : '';
+}
+
+/**
+ * Deny a fixer edit that ADDS a suppression (#77), before it lands rather than
+ * one rework cycle later at the next gate. The message carries the route the
+ * contract asks for instead, because "you were caught" is not an instruction.
+ */
+function refuseAddedSuppressions(
+  dependencies: CliDependencies,
+  input: HookInput,
+  repoRoot: string,
+  dialect: Dialect,
+): void {
+  const proposed = (input.edits ?? []).map((edit) => ({
+    file: edit.file,
+    before: edit.before ?? currentText(path.resolve(repoRoot, edit.file)),
+    after: edit.after,
+  }));
+  const [first, ...rest] = addedSuppressions(proposed);
+  if (first === undefined) {
+    return;
+  }
+  const more = rest.length > 0 ? ` and ${rest.length} more` : '';
+  denyPreToolUse(
+    dependencies,
+    `Fixer suppression-lock: this edit adds ${first.kind} ` +
+      `(\`${first.text}\` in ${first.file})${more}. A fixer never ` +
+      `suppresses. If the violation cannot be fixed honestly, leave the code ` +
+      `as it is and report it as unfixable with your reason; the main agent ` +
+      `decides whether it earns a grant.`,
+    dialect,
+  );
 }
 
 async function sessionEndCommand(
@@ -1157,10 +1349,11 @@ async function sessionEndCommand(
 ): Promise<number> {
   const input = parseHookInput(await dependencies.readStdin());
   const sessionId = input.sessionId ?? 'default';
-  deleteSession(
-    stateDirectory(await commandRepoRoot(dependencies, input.cwd)),
-    sessionId,
+  const repoRoot = await commandRepoRoot(
+    dependencies,
+    sessionCwd(dependencies, input, 'claude'),
   );
+  deleteSession(stateDirectory(repoRoot), sessionId);
   return 0;
 }
 
@@ -1304,15 +1497,267 @@ function warnAboutStaleGuidance(
   }
 }
 
+/**
+ * Deny this call if it is a git write; let anything else through. The one
+ * shape of refusal every host honours on a pre-tool hook.
+ */
+function denyGitWrite(
+  dependencies: CliDependencies,
+  input: HookInput,
+  reason: string,
+  dialect: Dialect,
+): void {
+  if (isShellGitWrite(input)) {
+    denyPreToolUse(dependencies, reason, dialect);
+  }
+}
+
+/**
+ * Block the stop once with `reason`; on the host's retry, release with the
+ * reason on stderr instead. Blocking again would only spend the host's
+ * continuation cap (eight on Claude Code and Copilot) on a condition the agent
+ * may be unable to change.
+ */
+function blockStopOnce(
+  dependencies: CliDependencies,
+  input: HookInput,
+  reason: string,
+): void {
+  if (input.stopHookActive === true) {
+    dependencies.stderr(`${reason}\n`);
+    return;
+  }
+  dependencies.stdout(JSON.stringify({ decision: 'block', reason }));
+}
+
+/**
+What a gate run came to: nothing to report, or the error it threw.
+*/
+async function settled(run: Promise<unknown>): Promise<{ failure?: string }> {
+  try {
+    await run;
+    return {};
+  } catch (error: unknown) {
+    return { failure: String(error) };
+  }
+}
+
+/**
+ * Give up on a gate that ran out of time: stop its analyzers, decide on what
+ * is known, and end the process before the abandoned gate can write anything.
+ *
+ * Exits synchronously, straight after the decision is written: the gate is
+ * still pending, and the analyzers dying under SIGTERM would hand it a round of
+ * "analyzer failed" results to record as this turn's violations if the event
+ * loop got another turn. The decision is a few hundred bytes, which a pipe
+ * takes in one write.
+ */
+function abandonGate(
+  dependencies: CliDependencies,
+  input: HookInput,
+  mode: 'pretooluse' | 'stop',
+  dialect: Dialect,
+  seconds: number,
+): void {
+  if (mode === 'pretooluse') {
+    denyGitWrite(
+      dependencies,
+      input,
+      `guardrails: the commit gate did not finish within ${seconds}s, so ` +
+        `this git command was not checked. Something else is likely loading ` +
+        `the machine (another gate, a test run); retry when it is quieter.`,
+      dialect,
+    );
+  } else {
+    dependencies.stderr(
+      `guardrails: the stop gate did not finish within ${seconds}s, so this ` +
+        `turn was not checked. The commit and push gates still apply.\n`,
+    );
+  }
+  (dependencies.terminate ?? terminateChildren)();
+  (dependencies.exit ?? ((code: number) => process.exit(code)))(0);
+}
+
+/**
+ * Run a hook-mode gate so that it always DECIDES -- when it crashes, and when
+ * it runs out of time.
+ *
+ * Claude Code and Codex treat a hook that crashes as non-blocking, so a bug in
+ * the gate -- or a git that could not be spawned -- was a silent pass. And
+ * every host treats a hook TIMEOUT as fail-open, so a gate still running when
+ * the host gave up on it had decided nothing; in the field such gates ran on
+ * for up to twenty minutes, analyzers and all. The gate therefore gets its own
+ * deadline (`hookDeadlineSeconds`, below the host timeout), and output from a
+ * gate abandoned at that deadline is dropped so it cannot contradict the
+ * decision already given.
+ *
+ * Stdin is read once here so the payload is still in hand on either path.
+ */
+async function decidingHook(
+  dependencies: CliDependencies,
+  mode: 'pretooluse' | 'stop',
+  dialect: Dialect,
+): Promise<number> {
+  const stdin = await dependencies.readStdin();
+  const input = parseHookInput(stdin);
+  const where =
+    (mode === 'stop' ? sessionCwd(dependencies, input, dialect) : input.cwd) ??
+    dependencies.cwd;
+  const seconds = loadConfig(findGitRoot(where) ?? where).hookDeadlineSeconds;
+  let isAbandoned = false;
+  const unlessAbandoned =
+    (write: (text: string) => void) =>
+    (text: string): void => {
+      if (!isAbandoned) {
+        write(text);
+      }
+    };
+  const replayed: CliDependencies = {
+    ...dependencies,
+    readStdin: () => Promise.resolve(stdin),
+    stdout: unlessAbandoned(dependencies.stdout),
+    stderr: unlessAbandoned(dependencies.stderr),
+  };
+  // Settles, never rejects: a gate that throws AFTER the deadline must not
+  // surface as an unhandled rejection.
+  const gate = settled(
+    mode === 'pretooluse'
+      ? gatePreToolUseCommand(replayed, dialect)
+      : gateStopCommand(replayed, dialect),
+  );
+  let timer: NodeJS.Timeout | undefined;
+  const deadline = new Promise<'expired'>((resolve) => {
+    timer = setTimeout(() => {
+      resolve('expired');
+    }, seconds * 1000);
+  });
+  const outcome = await Promise.race([gate, deadline]);
+  clearTimeout(timer);
+  if (outcome === 'expired') {
+    isAbandoned = true;
+    abandonGate(dependencies, input, mode, dialect, seconds);
+    return 0;
+  }
+  if (outcome.failure !== undefined) {
+    const reason =
+      `guardrails: the ${mode} gate failed before it could decide ` +
+      `(${outcome.failure}), so this was not checked.`;
+    if (mode === 'pretooluse') {
+      denyGitWrite(dependencies, input, reason, dialect);
+    } else {
+      blockStopOnce(dependencies, input, reason);
+    }
+  }
+  return 0;
+}
+
+/**
+ * Hook commands that only maintain state or tidy formatting: with no trusted
+ * install there is nothing useful for them to do, and nothing to enforce.
+ */
+const SILENT_HOOK_COMMANDS: ReadonlySet<string | undefined> = new Set([
+  'autofix',
+  'session-start',
+  'session-end',
+]);
+
+/**
+The remedy every hook-mode refusal carries.
+*/
+function installRemedy(dependencies: CliDependencies): string {
+  const checkout = findGitRoot(dependencies.cwd) ?? dependencies.cwd;
+  return (
+    `guardrails: guardrails-core is not installed in this checkout ` +
+    `(${checkout}) -- the copy that ran belongs to an enclosing directory, ` +
+    `which is what a fresh worktree nested inside another checkout resolves ` +
+    `to. Run \`npm ci\` in ${checkout}, then retry.`
+  );
+}
+
+/**
+ * A CLI resolved from outside the repository it is guarding: from an
+ * ancestor's node_modules (a nested worktree with no install of its own), or a
+ * linked install.
+ *
+ * Exit 1 used to answer every command, and the hosts read that two ways:
+ * Claude Code and Codex treat it as a NON-blocking error, so every gate was
+ * silently skipped -- a commit with the hook-skipping flag went through
+ * ungated -- while Copilot treats a non-zero pre-tool exit as a DENY, so it
+ * blocked every tool call, including the install that would have fixed it.
+ * The one block every host honours is an explicit decision on stdout, so the
+ * hook modes answer with one, on exactly the actions they guard, and stay out
+ * of the way otherwise. Direct commands (verify, the git-hook rungs, CI) keep
+ * exit 1, which already blocks there.
+ */
+async function untrustedInstallCommand(
+  command: string | undefined,
+  rest: string[],
+  dependencies: CliDependencies,
+  outside: string,
+): Promise<number> {
+  const mode = flag(rest, 'mode');
+  if (command === 'gate' && mode === 'pretooluse') {
+    const input = parseHookInput(await dependencies.readStdin());
+    denyGitWrite(
+      dependencies,
+      input,
+      installRemedy(dependencies),
+      resolveDialect(rest),
+    );
+    return 0;
+  }
+  if (command === 'gate' && mode === 'stop') {
+    const input = parseHookInput(await dependencies.readStdin());
+    blockStopOnce(dependencies, input, installRemedy(dependencies));
+    return 0;
+  }
+  if (SILENT_HOOK_COMMANDS.has(command)) {
+    return 0;
+  }
+  dependencies.stderr(outside);
+  return 1;
+}
+
+/**
+ * `gate --mode=...`: one rung per mode. Split out of `runCommand`, whose
+ * switch had crossed the complexity threshold once the hook modes gained
+ * their own deciding wrapper.
+ */
+function gateCommand(
+  dependencies: CliDependencies,
+  rest: string[],
+): Promise<number> {
+  const mode = flag(rest, 'mode');
+  if (mode === 'commit') {
+    return gateCommitCommand(dependencies, 'staged', 'commit', rest);
+  }
+  // Same checks, branch-wide scope: `push` is the local rung that catches
+  // what a staged-scope commit cannot, and `ci` is its authoritative twin.
+  // `push` and `ci` share the branch-wide scope but are DISTINCT rungs:
+  // an analyzer a consumer moved to `push` must run there, and `ci` sits
+  // above it so `verify`'s twin never checks less (#61).
+  if (mode === 'push') {
+    return gateCommitCommand(dependencies, 'branch', 'push', rest);
+  }
+  if (mode === 'ci') {
+    return gateCommitCommand(dependencies, 'branch', 'ci', rest);
+  }
+  if (mode === 'pretooluse') {
+    return decidingHook(dependencies, 'pretooluse', resolveDialect(rest));
+  }
+  return decidingHook(dependencies, 'stop', resolveDialect(rest));
+}
+
 export async function runCommand(
   command: string | undefined,
   rest: string[],
   dependencies: CliDependencies,
 ): Promise<number> {
   const outside = outsideRepoMessage(dependencies);
-  if (outside !== undefined) {
-    dependencies.stderr(outside);
-    return 1;
+  // scope-check runs whatever copy resolved: it reads only state files, and
+  // enforcing the lock with an ancestor's copy beats not enforcing it.
+  if (outside !== undefined && command !== 'scope-check') {
+    return untrustedInstallCommand(command, rest, dependencies, outside);
   }
   switch (command) {
     case 'verify': {
@@ -1322,26 +1767,7 @@ export async function runCommand(
       return autofixCommand(dependencies);
     }
     case 'gate': {
-      const mode = flag(rest, 'mode');
-      if (mode === 'commit') {
-        return gateCommitCommand(dependencies, 'staged', 'commit', rest);
-      }
-      // Same checks, branch-wide scope: `push` is the local rung that catches
-      // what a staged-scope commit cannot, and `ci` is its authoritative twin.
-      // `push` and `ci` share the branch-wide scope but are DISTINCT rungs:
-      // an analyzer a consumer moved to `push` must run there, and `ci` sits
-      // above it so `verify`'s twin never checks less (#61).
-      if (mode === 'push') {
-        return gateCommitCommand(dependencies, 'branch', 'push', rest);
-      }
-      if (mode === 'ci') {
-        return gateCommitCommand(dependencies, 'branch', 'ci', rest);
-      }
-      if (mode === 'pretooluse') {
-        await gatePreToolUseCommand(dependencies, resolveDialect(rest));
-        return 0;
-      }
-      return gateStopCommand(dependencies, resolveDialect(rest));
+      return gateCommand(dependencies, rest);
     }
     case 'audit': {
       return auditCommand(dependencies);

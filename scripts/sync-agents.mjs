@@ -139,6 +139,23 @@ if (skillList.length > 0) {
 
 // Replace only the marked block, so hand-written Copilot instructions around it
 // survive a rebuild.
+/**
+ * Write `block` between the `start`/`end` markers of `file`, keeping
+ * everything outside them -- the repository's own instructions survive. A file
+ * without both markers gets the block appended; a missing file starts as
+ * `emptyFile`.
+ */
+function mergeMarkedBlock(file, [start, end], block, emptyFile) {
+  const existing = existsSync(file) ? readFileSync(file, 'utf8') : emptyFile;
+  const startAt = existing.indexOf(start);
+  const endAt = existing.indexOf(end);
+  const merged =
+    startAt === -1 || endAt === -1
+      ? `${existing.trimEnd()}\n\n${block}\n`
+      : `${existing.slice(0, startAt)}${block}${existing.slice(endAt + end.length)}`;
+  writeFileSync(file, merged);
+}
+
 const START = '<!-- guardrails:skills:start -->';
 const END = '<!-- guardrails:skills:end -->';
 const index = [
@@ -155,16 +172,12 @@ const index = [
   '',
   END,
 ].join('\n');
-const existing = existsSync(copilotInstructions)
-  ? readFileSync(copilotInstructions, 'utf8')
-  : `# Copilot instructions\n\n${START}\n${END}\n`;
-const startAt = existing.indexOf(START);
-const endAt = existing.indexOf(END);
-const merged =
-  startAt === -1 || endAt === -1
-    ? `${existing.trimEnd()}\n\n${index}\n`
-    : `${existing.slice(0, startAt)}${index}${existing.slice(endAt + END.length)}`;
-writeFileSync(copilotInstructions, merged);
+mergeMarkedBlock(
+  copilotInstructions,
+  [START, END],
+  index,
+  `# Copilot instructions\n\n${START}\n${END}\n`,
+);
 
 // AGENTS.md is shared across agent hosts. Keep only this marker-delimited
 // index under guardrails ownership so a repository's own instructions survive.
@@ -189,16 +202,12 @@ const agentsIndex = [
   AGENTS_END,
 ].join('\n');
 const agentsInstructions = path.join(root, 'AGENTS.md');
-const existingAgents = existsSync(agentsInstructions)
-  ? readFileSync(agentsInstructions, 'utf8')
-  : `${AGENTS_START}\n${AGENTS_END}\n`;
-const agentsStartAt = existingAgents.indexOf(AGENTS_START);
-const agentsEndAt = existingAgents.indexOf(AGENTS_END);
-const mergedAgents =
-  agentsStartAt === -1 || agentsEndAt === -1
-    ? `${existingAgents.trimEnd()}\n\n${agentsIndex}\n`
-    : `${existingAgents.slice(0, agentsStartAt)}${agentsIndex}${existingAgents.slice(agentsEndAt + AGENTS_END.length)}`;
-writeFileSync(agentsInstructions, mergedAgents);
+mergeMarkedBlock(
+  agentsInstructions,
+  [AGENTS_START, AGENTS_END],
+  agentsIndex,
+  `${AGENTS_START}\n${AGENTS_END}\n`,
+);
 console.log(
   `synced ${skillList.length} skill doc(s): guardrails-plugin/skills → docs/guardrails + guardrails-core/guidance + .github/copilot-instructions.md`,
 );
@@ -274,10 +283,24 @@ function frontmatterField(fm, key) {
   return m ? m[1].trim() : undefined;
 }
 
-function toCopilotAgent(source) {
+/**
+ * Split a plugin agent file into its frontmatter and body. The body loses ALL
+ * leading newlines -- see toCopilotAgent for why one is not enough.
+ */
+function parseAgentSource(source) {
   const parts = source.split(/^---$/m);
   // parts[0] = '' , parts[1] = frontmatter , parts.slice(2) = body
   const fm = parts[1];
+  return {
+    fm,
+    body: parts.slice(2).join('---').replace(/^\n+/, ''),
+    name: frontmatterField(fm, 'name'),
+    description: frontmatterField(fm, 'description'),
+  };
+}
+
+function toCopilotAgent(source) {
+  const { fm, body, name, description } = parseAgentSource(source);
   // Strip ALL leading newlines (not just one): the source has a blank line
   // after its closing frontmatter `---`, and `lines.push('---', '', body, '')`
   // below already inserts the single separator blank line. Stripping only one
@@ -285,9 +308,6 @@ function toCopilotAgent(source) {
   // by lint-staged at commit) collapses away — making the raw `npm run build`
   // output permanently disagree with the committed, prettier-clean file and
   // fail the CI drift-guard on every run.
-  const body = parts.slice(2).join('---').replace(/^\n+/, '');
-  const name = frontmatterField(fm, 'name');
-  const description = frontmatterField(fm, 'description');
   const model = MODEL_FOR[frontmatterField(fm, 'model')];
   const lines = ['---', `name: ${name}`, `description: ${description}`];
   lines.push(`tools: [${COPILOT_TOOLS.join(', ')}]`);
@@ -298,11 +318,9 @@ function toCopilotAgent(source) {
 }
 
 function toCodexAgent(source) {
-  const parts = source.split(/^---$/m);
-  const fm = parts[1];
-  const body = parts.slice(2).join('---').replace(/^\n+/, '').trimEnd();
-  const name = frontmatterField(fm, 'name');
-  const description = frontmatterField(fm, 'description');
+  const parsed = parseAgentSource(source);
+  const { fm, name, description } = parsed;
+  const body = parsed.body.trimEnd();
   const shape = CODEX_SHAPE_FOR[frontmatterField(fm, 'model')];
   const lines = [
     `name = ${JSON.stringify(name)}`,

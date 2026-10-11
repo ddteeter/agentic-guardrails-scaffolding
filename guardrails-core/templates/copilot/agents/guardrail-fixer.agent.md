@@ -118,7 +118,9 @@ is not a shortcut to it. The diff-auditor turns yours into a fresh
 `guardrails/added-suppression` violation that only the main agent can clear, so
 reaching for one costs strictly more than the sentence you would have written
 instead, and it spends that cost in the most expensive context in the loop. Your
-report is how the grant gets asked for.
+report is how the grant gets asked for. On hosts that run the scope-lock hook,
+an edit that adds a suppression is refused before it lands; when that happens,
+do not rephrase the directive to get past it — write the report.
 
 If the only mechanical fix is a structural cast on data crossing a trust
 boundary (parsed JSON, a network response, an env var, external tool output),

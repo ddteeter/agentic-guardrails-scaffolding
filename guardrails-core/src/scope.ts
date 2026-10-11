@@ -19,10 +19,12 @@
  * write, not disengage the lock.
  */
 
-import { readdirSync } from 'node:fs';
+import { readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 
 import { readJsonFile } from './json-file.js';
+import { LEASE_TTL_MS } from './state.js';
+import { stateDirectory } from './state-store.js';
 import { isViolation, type Violation } from './violation.js';
 
 /**
@@ -77,6 +79,49 @@ const MANIFEST_SUFFIX = '.last.json';
 const ACTIVE_SUFFIX = '.pre-fix.json';
 
 /**
+ * The rung suffixes a gate appends to the session id when it writes its own
+ * manifest (`<session>-commit.last.json`). The stop rung writes the bare
+ * `<session>.last.json`.
+ *
+ * Spelled out rather than matched as "anything after a hyphen": session ids are
+ * UUIDs, which are full of hyphens, so a loose suffix match would let a
+ * manifest named for one session's rung read as belonging to another.
+ */
+const RUNG_SUFFIXES: readonly string[] = ['commit', 'push', 'ci'];
+
+function isSessionManifest(id: string, sessionId: string): boolean {
+  return (
+    id === sessionId ||
+    RUNG_SUFFIXES.some((rung) => id === `${sessionId}-${rung}`)
+  );
+}
+
+function isRungManifest(id: string): boolean {
+  return RUNG_SUFFIXES.some((rung) => id.endsWith(`-${rung}`));
+}
+
+/**
+ * Is this manifest's fix loop still open?
+ *
+ * Its marker has to exist. A RUNG marker must also be younger than the lease
+ * TTL, because nothing else would ever clear it: the stop rung's marker is
+ * refreshed or removed by the very next Stop, but a commit-rung marker is only
+ * cleared by the next commit attempt that passes, which an agent may never make.
+ * On Codex and Copilot, which cannot say which agent is calling, a live marker
+ * confines the WHOLE session, so a marker that outlived its fixer would lock the
+ * main agent to a handful of files for days.
+ */
+function isLoopOpen(directory: string, id: string, now: number): boolean {
+  const marker = statSync(path.join(directory, `${id}${ACTIVE_SUFFIX}`), {
+    throwIfNoEntry: false,
+  });
+  if (marker === undefined) {
+    return false;
+  }
+  return !isRungManifest(id) || now - marker.mtimeMs < LEASE_TTL_MS;
+}
+
+/**
  * The violations recorded in ONE manifest, read by that manifest's own path.
  * Reading the entry the loop inspected — rather than rebuilding a path from a
  * session id sliced back out of its name — is what makes the suffix filter
@@ -92,9 +137,33 @@ function readManifest(file: string): Violation[] {
     : [];
 }
 
+/**
+ * Which open manifests the caller's session owns: with no session id, one open
+ * manifest is unambiguous and several select none.
+ */
+function selectManifests(
+  open: readonly string[],
+  sessionId: string | undefined,
+): readonly string[] {
+  if (sessionId === undefined) {
+    return open.length === 1 ? open : [];
+  }
+  return open.filter((id) => isSessionManifest(id, sessionId));
+}
+
+/**
+ * The fixer's editable surface in one state directory.
+ *
+ * With a session id, every open loop of THAT session counts -- its stop
+ * manifest and any rung manifest (`<session>-commit`) -- and their files are
+ * unioned: they are the same session's work, and a fixer handed either one is
+ * a fixer of this session. Without a session id, one open manifest is
+ * unambiguous and several fail closed with an empty active scope, as before.
+ */
 export function collectManifestScope(
   directory: string,
   sessionId?: string,
+  now: number = Date.now(),
 ): ManifestScope {
   let entries: string[];
   try {
@@ -102,40 +171,98 @@ export function collectManifestScope(
   } catch {
     return { files: new Set(), active: false };
   }
-  const entrySet = new Set(entries);
-  const manifests = entries.filter(
-    (name) =>
-      name.endsWith(MANIFEST_SUFFIX) &&
-      entrySet.has(`${name.slice(0, -MANIFEST_SUFFIX.length)}${ACTIVE_SUFFIX}`),
-  );
-  let selected: string | undefined;
-  if (sessionId === undefined) {
-    if (manifests.length === 1) {
-      selected = manifests[0];
-    }
-  } else {
-    selected = manifests.find(
-      (name) => name === `${sessionId}${MANIFEST_SUFFIX}`,
-    );
-  }
-  if (selected === undefined) {
+  const open = entries
+    .filter((name) => name.endsWith(MANIFEST_SUFFIX))
+    .map((name) => name.slice(0, -MANIFEST_SUFFIX.length))
+    .filter((id) => isLoopOpen(directory, id, now));
+  const selected = selectManifests(open, sessionId);
+  if (selected.length === 0) {
     // Several manifests with no session id are ambiguous, not additive. An
     // empty active scope denies every edit and cannot inherit permissions from
     // a crashed or concurrently-running session.
     return {
       files: new Set(),
-      active: sessionId === undefined && manifests.length > 0,
+      active: sessionId === undefined && open.length > 0,
     };
   }
   const files = new Set<string>();
-  const manifested = readManifest(path.join(directory, selected));
-  for (const violation of manifested) {
-    const file = path.normalize(violation.file);
-    if (!isDeniedFile(file)) {
-      files.add(file);
+  for (const id of selected) {
+    const manifested = readManifest(
+      path.join(directory, `${id}${MANIFEST_SUFFIX}`),
+    );
+    // A violation's related tests are editable too: a surviving mutant is
+    // filed against the source file but killed by strengthening a test, and
+    // the manifest names those tests precisely so the fixer can find them.
+    const named = manifested.flatMap((violation) => [
+      violation.file,
+      ...(violation.relatedTests ?? []),
+    ]);
+    for (const candidate of named) {
+      const file = path.normalize(candidate);
+      if (!isDeniedFile(file)) {
+        files.add(file);
+      }
     }
   }
   return { files, active: true };
+}
+
+/**
+ * The scope-lock's view across every checkout a hook call touches.
+ */
+export interface SessionScope {
+  /**
+  Whether any of the checkouts holds an open fix loop for this session.
+  */
+  readonly active: boolean;
+  /**
+  May the fixer write this ABSOLUTE path?
+  */
+  allowsEdit(file: string): boolean;
+  /**
+  May the fixer read this ABSOLUTE path?
+  */
+  allowsRead(file: string): boolean;
+}
+
+/**
+ * Collect the session's scope from several repository roots at once.
+ *
+ * One root is not enough once worktrees nest. Claude Code puts subagent
+ * worktrees under `.claude/worktrees/` INSIDE the project, and a fixer a lane
+ * agent spawns can run with the parent checkout as its cwd while the manifest
+ * it was handed -- and the files it edits -- live in the lane's worktree.
+ * Looking only at the cwd's root read that as "no fixer running" and left the
+ * fixer unconfined in exactly the place it was working.
+ *
+ * `roots[0]` is the caller's own checkout and is always readable. Every other
+ * root counts only if it holds an open loop for this session: a target path's
+ * root is a candidate, never a grant, so a read of some unrelated repository
+ * cannot widen the read-lock just by naming a file inside it.
+ */
+export function collectSessionScope(
+  roots: readonly string[],
+  sessionId: string | undefined,
+  now: number,
+): SessionScope {
+  const unique = [...new Set(roots.map((root) => path.resolve(root)))];
+  const open = unique
+    .map((root) => ({
+      root,
+      scope: collectManifestScope(stateDirectory(root), sessionId, now),
+    }))
+    .filter((entry) => entry.scope.active);
+  const editable = new Set(
+    open.flatMap(({ root, scope }) =>
+      [...scope.files].map((file) => path.resolve(root, file)),
+    ),
+  );
+  const readable = [...unique.slice(0, 1), ...open.map((entry) => entry.root)];
+  return {
+    active: open.length > 0,
+    allowsEdit: (file) => editable.has(path.resolve(file)),
+    allowsRead: (file) => readable.some((root) => isWithinRepo(root, file)),
+  };
 }
 
 /**
@@ -151,15 +278,4 @@ export function isWithinRepo(repoRoot: string, candidate: string): boolean {
   // `relative === ''` disjunct would be dead weight no test could distinguish.
   const relative = path.relative(repoRoot, path.resolve(repoRoot, candidate));
   return !relative.startsWith('..') && !path.isAbsolute(relative);
-}
-
-export function isPathAllowed(
-  files: ReadonlySet<string>,
-  repoRoot: string,
-  candidate: string,
-): boolean {
-  const relative = path.isAbsolute(candidate)
-    ? path.relative(repoRoot, candidate)
-    : candidate;
-  return files.has(path.normalize(relative));
 }

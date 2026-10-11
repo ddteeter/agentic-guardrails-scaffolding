@@ -20,9 +20,11 @@ import {
   decisionsFile,
   deleteSession,
   leasesFile,
+  loadCleanTree,
   loadLeases,
   loadRecurrence,
   loadSession,
+  saveCleanTree,
   saveLeases,
   readDecisions,
   readViolations,
@@ -657,5 +659,38 @@ describe('baseReferenceCache write containment', () => {
     });
     expect(existsSync(notARepo)).toBe(false);
     expect(baseReferenceCache(notARepo).read()).toEqual({});
+  });
+});
+
+function cleanTreePath(): string {
+  return path.join(directory, 'clean-tree.json');
+}
+
+describe('clean tree fingerprint', () => {
+  it('round-trips the fingerprint', () => {
+    saveCleanTree(directory, 'TREE|BASE|1.0.0');
+    expect(loadCleanTree(directory)).toBe('TREE|BASE|1.0.0');
+  });
+
+  it('is undefined when nothing was saved', () => {
+    expect(loadCleanTree(directory)).toBeUndefined();
+  });
+
+  it('is undefined for a tampered file', () => {
+    writeFileSync(cleanTreePath(), JSON.stringify({ fingerprint: 5 }));
+    expect(loadCleanTree(directory)).toBeUndefined();
+    writeFileSync(cleanTreePath(), JSON.stringify({}));
+    expect(loadCleanTree(directory)).toBeUndefined();
+  });
+
+  it('survives the stale sweep, which would report it as a swept session', () => {
+    // Shared across sessions like recurrence.json and leases.json: it
+    // describes the tree, not a session.
+    saveCleanTree(directory, 'TREE');
+    const old = new Date(Date.now() - 1000 * 60 * 60 * 24 * 30);
+    utimesSync(cleanTreePath(), old, old);
+
+    expect(sweepStale(directory, 1000, Date.now())).toEqual([]);
+    expect(loadCleanTree(directory)).toBe('TREE');
   });
 });

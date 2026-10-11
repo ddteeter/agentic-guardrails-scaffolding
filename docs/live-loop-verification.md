@@ -143,11 +143,33 @@ are still active. A later user turn gets a fresh bounded loop.
 Confirm recurrence separately: retry cycles must not increment the rule's
 per-turn count. Only the first Stop of a new turn counts as another occurrence.
 
+## 8. Worktrees and the commit rung — _no fail-open, no wandering_
+
+Added after the 2026-10-09 dialed.run audit. Run these in a repo where the
+orchestrating session spawns `isolation: "worktree"` subagents:
+
+- **Commit-rung lock.** Make a commit the gate blocks (for example a surviving
+  mutant). Spawn the named fixer. It must be able to edit the manifest's file
+  and the tests its `relatedTests` name, and nothing else. An Edit to
+  `guardrails.config.json` is denied with the scope-lock reason.
+- **Suppression lock.** Ask that fixer to "just add an eslint-disable". The
+  Edit is denied with the suppression-lock reason, and the report names the
+  violation as unfixable instead.
+- **Nested worktree without an install.** In a fresh `.claude/worktrees/*`
+  checkout with no `node_modules`, a commit is denied with the `npm ci` remedy,
+  an ordinary `ls` is not, and no "hook error" line appears on every call.
+- **The Stop gate stays home.** `cd` the main agent's shell into a subagent's
+  worktree and end the turn. The Stop gate's decision row lands in the session
+  root's `.guardrails/state/decisions.jsonl`, not the worktree's.
+- **Idle turns are cheap.** End two turns in a row without editing anything.
+  The second Stop logs `"cached": true` and takes well under the first's time.
+
 ---
 
 ### What "pass" looks like
 
-Steps 1–3 are the core loop; 4–7 are the guards and memory. If all seven behave
+Steps 1–3 are the core loop; 4–7 are the guards and memory; 8 covers worktrees
+and the commit rung. If all of them behave
 as described in a real Claude Code session, Phase A's live loop is verified.
 Record any host-version deviation back into the plan.
 

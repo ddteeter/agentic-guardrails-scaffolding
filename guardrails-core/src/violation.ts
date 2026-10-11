@@ -135,6 +135,27 @@ export function isViolation(value: unknown): value is Violation {
 /**
 `verify` exits non-zero when any error-severity violation exists.
 */
+/**
+ * Fill one optional key on every violation that lacks it, from `derive`.
+ * Violations that already carry the key are left alone, and one whose derived
+ * value is `undefined` gets no key at all: absent means "not computed", which
+ * is not the same claim as an empty value. Idempotent by construction, so it
+ * is safe to apply at every layer that attributes violations.
+ */
+export function withDerived(
+  violations: readonly Violation[],
+  key: 'guidance' | 'package',
+  derive: (violation: Violation) => string | undefined,
+): Violation[] {
+  return violations.map((violation) => {
+    if (violation[key] !== undefined) {
+      return violation;
+    }
+    const value = derive(violation);
+    return value === undefined ? violation : { ...violation, [key]: value };
+  });
+}
+
 export function hasErrors(violations: readonly Violation[]): boolean {
   return violations.some((v) => v.severity === 'error');
 }

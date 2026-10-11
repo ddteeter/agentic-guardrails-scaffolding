@@ -45,16 +45,19 @@ import {
 import type { AnalyzerMode, Rung } from './verify/analyzer-policy.js';
 import {
   appendDecision,
+  loadCleanTree,
   loadLeases,
   loadRecurrence,
   loadSession,
   manifestFile,
+  saveCleanTree,
   saveLeases,
   saveRecurrence,
   saveSession,
   stateDirectory,
   writeViolations,
 } from './state-store.js';
+import { treeFingerprint } from './tree-fingerprint.js';
 import {
   findLeaseOverlap,
   type FixerLease,
@@ -73,6 +76,7 @@ import {
 import { parseFileList } from './verify/git.js';
 import { runVerify } from './verify/index.js';
 import { loadWorkspaceResolver, withPackages } from './workspaces.js';
+import { repoSourceReader } from './repo-source.js';
 import { resolveBaseReference } from './verify/git.js';
 
 export interface StopGateOptions {
@@ -576,8 +580,10 @@ function forTheFixer(
   repoRoot: string,
 ): Violation[] {
   const attributed = withPackages(violations, loadWorkspaceResolver(repoRoot));
-  return withCoveringTests(withGuidance(attributed), () =>
-    readTestCorpus(repoRoot),
+  return withCoveringTests(
+    withGuidance(attributed),
+    () => readTestCorpus(repoRoot),
+    repoSourceReader(repoRoot),
   );
 }
 
@@ -646,7 +652,16 @@ export async function runStopGate(
     // mutant suppressed costs a sanction that has to be justified forever.
     analyzerRungs: options.analyzerRungs,
   };
-  const { violations } = await runVerify(verifyOptions);
+  // No open loop is the precondition: a fixer mid-flight has to have its
+  // progress measured, never assumed from an earlier clean turn.
+  const fingerprint = isHadSnapshot
+    ? undefined
+    : await treeFingerprint(exec, repoRoot, baseBranch);
+  const isUnchanged =
+    fingerprint !== undefined && loadCleanTree(directory) === fingerprint;
+  const { violations } = isUnchanged
+    ? { violations: [] }
+    : await runVerify(verifyOptions);
   // Guidance rides on the violation so it reaches the fixer through the
   // manifest — the one channel every runtime reads. `runVerify`'s violations
   // are already attributed; `withPackages` is idempotent, so re-applying is a
@@ -696,7 +711,11 @@ export async function runStopGate(
     rung: 'stop',
     session: sessionId,
     ...decision.log,
+    ...(isUnchanged && { cached: true }),
   });
+  if (fingerprint !== undefined && decision.outcome === 'clean') {
+    saveCleanTree(directory, fingerprint);
+  }
   // `fixerAgent` is set on exactly the outcomes that ask for a spawn, so it is
   // the whole condition: a decision that names nobody releases this rung's
   // claim, and one that names somebody takes or defers it.
@@ -776,10 +795,11 @@ async function branchDiff(options: CommitGateOptions): Promise<WorkingDiff> {
  * needs no teaching.
  *
  * `.husky/pre-commit` runs with no hook payload and therefore no session, so
- * the fallback is fixed.
+ * the fallback is fixed. The suffix names the RUNG, so a push block's manifest
+ * is not filed under `-commit` (the scope-lock knows all three suffixes).
  */
-function commitManifestId(sessionId: string | undefined): string {
-  return `${sessionId ?? 'commit'}-commit`;
+function commitManifestId(sessionId: string | undefined, rung: Rung): string {
+  return `${sessionId ?? 'nosession'}-${rung}`;
 }
 
 export async function runCommitGate(
@@ -832,7 +852,10 @@ export async function runCommitGate(
   // the stop rung writes -- violations plus the audit findings, guidance
   // attached -- so `guardrail-fixer` needs no second format to understand.
   const directory = stateDirectory(options.repoRoot);
-  const manifestId = commitManifestId(options.sessionId);
+  const manifestId = commitManifestId(
+    options.sessionId,
+    options.profile ?? 'commit',
+  );
   const manifestPath = path.relative(
     options.repoRoot,
     manifestFile(directory, manifestId),
@@ -848,6 +871,8 @@ export async function runCommitGate(
       openLeaseCycle(directory, owner, manifestPath, guided),
       undefined,
     );
+    // And the scope-lock loop it opened, for the same reason.
+    rmSync(snapshotFile(directory, manifestId), { force: true });
     return { violations: guided, findings, blocked: false, skippedAnalyzers };
   }
 
@@ -856,6 +881,15 @@ export async function runCommitGate(
     options.repoRoot,
   );
   writeViolations(directory, manifestId, combined);
+  // Open a scope-lock loop for the fixer this block is about to name. Without
+  // the marker the lock never engaged at this rung, and a commit-rung fixer
+  // could edit anything -- guardrails.config.json included. Only for an
+  // agent's commit (a hook payload carries the session): a developer's commit
+  // through `.githooks/pre-commit` spawns no fixer, and a loop opened there
+  // would confine whichever session next ran without one.
+  if (options.sessionId !== undefined) {
+    writeFileSync(snapshotFile(directory, manifestId), '[]');
+  }
 
   // Routed by the SAME loose-class rule the stop gate uses, rather than a
   // second policy: the commit-rung analyzers (knip, dependency-cruiser,

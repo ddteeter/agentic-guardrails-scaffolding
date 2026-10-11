@@ -111,14 +111,59 @@ function isImportingTarget(
 export function coveringTests(
   target: string,
   testFiles: ReadonlyMap<string, string>,
+  readSource?: (file: string) => string | undefined,
 ): string[] {
-  const found: string[] = [];
-  for (const [testFile, contents] of testFiles) {
-    if (isImportingTarget(testFile, contents, target)) {
-      found.push(testFile);
-    }
-  }
+  const direct = [...testFiles]
+    .filter(([testFile, contents]) =>
+      isImportingTarget(testFile, contents, target),
+    )
+    .map(([testFile]) => testFile);
+  const found =
+    readSource === undefined || direct.length > 0
+      ? direct
+      : testsOneHopAway(target, testFiles, readSource);
   return found.toSorted((left, right) => left.localeCompare(right));
+}
+
+/**
+ * The tests that import a module which imports `target` -- used only when no
+ * test imports `target` itself.
+ *
+ * A helper extracted into its own file is exercised through its parent's
+ * tests, which import the parent. With direct importers alone, a fixer handed
+ * that helper's surviving mutants was pointed at no test, and the scope-lock
+ * -- which makes a violation's related tests editable -- left it unable to
+ * edit the one file that would kill them. Extraction is the fix fixers reach
+ * for on a duplication finding, so this was not a corner case.
+ *
+ * One hop only: every further hop widens what a fixer may edit, on evidence
+ * that gets weaker each time. Each module a test names is read at most once.
+ */
+function testsOneHopAway(
+  target: string,
+  testFiles: ReadonlyMap<string, string>,
+  readSource: (file: string) => string | undefined,
+): string[] {
+  const importsTarget = new Map<string, boolean>();
+  const isBridge = (module: string): boolean => {
+    let answer = importsTarget.get(module);
+    if (answer === undefined) {
+      const contents = readSource(module);
+      answer =
+        contents !== undefined && isImportingTarget(module, contents, target);
+      importsTarget.set(module, answer);
+    }
+    return answer;
+  };
+  return [...testFiles]
+    .filter(([testFile, contents]) =>
+      contents
+        .matchAll(RELATIVE_SPECIFIER)
+        .some(([, specifier = '']) =>
+          resolutionsOf(testFile, specifier).some((module) => isBridge(module)),
+        ),
+    )
+    .map(([testFile]) => testFile);
 }
 
 /**
@@ -266,6 +311,7 @@ function readWithinLimit(
 export function withCoveringTests(
   violations: readonly Violation[],
   loadCorpus: () => ReadonlyMap<string, string>,
+  readSource?: (file: string) => string | undefined,
 ): Violation[] {
   let corpus: ReadonlyMap<string, string> | undefined;
   const byFile = new Map<string, readonly string[]>();
@@ -276,7 +322,7 @@ export function withCoveringTests(
     corpus ??= loadCorpus();
     let related = byFile.get(violation.file);
     if (related === undefined) {
-      related = coveringTests(violation.file, corpus);
+      related = coveringTests(violation.file, corpus, readSource);
       byFile.set(violation.file, related);
     }
     return related.length === 0

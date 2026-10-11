@@ -2,6 +2,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -19,9 +20,11 @@ import {
   type StopGateOptions,
 } from '../src/gate.js';
 import type { GateConfig, GateDecision } from '../src/gate-decision.js';
+import { collectManifestScope } from '../src/scope.js';
 import { createSession, type FixerLease } from '../src/state.js';
 import {
   leasesFile,
+  loadCleanTree,
   loadLeases,
   loadRecurrence,
   loadSession,
@@ -1283,6 +1286,51 @@ describe('runCommitGate: delegation for the laborious classes', () => {
     ).toBeGreaterThan(0);
   });
 
+  it('names the manifest for the rung that wrote it', async () => {
+    // The push rung used to write `commit-commit.last.json`, which sent
+    // agents reading a push block to a file named for the other rung.
+    const { sessionId: _unused, ...options } = blockedOptions();
+    const result = await runCommitGate({ ...options, profile: 'push' });
+
+    expect(result.delegation?.manifestPath).toContain(
+      'nosession-push.last.json',
+    );
+  });
+
+  it('opens a scope-lock loop for the fixer it names', async () => {
+    // Without a loop marker the scope-lock never engaged for a commit-rung
+    // fixer, which could then edit anything -- guardrails.config.json included.
+    await runCommitGate(blockedOptions());
+
+    const scope = collectManifestScope(stateDirectory(root), 'sid');
+    expect(scope.active).toBe(true);
+    expect([...scope.files]).toEqual(['src/foo.ts']);
+  });
+
+  it('opens no loop for a commit with no session (a git hook, not an agent)', async () => {
+    const { sessionId: _unused, ...options } = blockedOptions();
+    await runCommitGate(options);
+
+    const markers = readdirSync(stateDirectory(root)).filter((name) =>
+      name.endsWith('.pre-fix.json'),
+    );
+    expect(markers).toEqual([]);
+  });
+
+  it('closes the loop once the next commit passes', async () => {
+    await runCommitGate(blockedOptions());
+    const clean = makeExec((line) => {
+      if (line.includes('--name-only')) return ok('');
+      if (line.includes('--others')) return ok('');
+      return ok('');
+    });
+    await runCommitGate({ ...blockedOptions(), exec: clean });
+
+    expect(collectManifestScope(stateDirectory(root), 'sid').active).toBe(
+      false,
+    );
+  });
+
   it('writes nothing and names nobody when the gate passes', async () => {
     // A clean commit must not leave a stale manifest behind for the next
     // block to be read against.
@@ -1541,5 +1589,122 @@ describe('fixer leases across the two rungs', () => {
         .map((lease) => lease.owner)
         .toSorted((left, right) => left.localeCompare(right)),
     ).toEqual(['commit:sid-commit', 'stop:sid']);
+  });
+});
+
+/**
+ * A clean repo whose fingerprint is whatever `tree.current` holds, counting
+ * every eslint spawn. `rev-parse --git-path index` names a file that does
+ * not exist, so the fingerprint starts from an empty throwaway index.
+ */
+function fingerprinted(tree: {
+  current: string;
+  failing?: boolean;
+  violating?: boolean;
+}) {
+  let eslintRuns = 0;
+  const exec = makeExec((line) => {
+    if (line.includes('--git-path')) return ok('.git/index');
+    if (line.includes('write-tree'))
+      return tree.failing === true
+        ? { stdout: '', stderr: 'boom', code: 128 }
+        : ok(`${tree.current}\n`);
+    if (line.includes('merge-base')) return ok('BASESHA\n');
+    if (line.includes('--name-only')) return ok('src/foo.ts');
+    if (line.includes('eslint')) {
+      eslintRuns += 1;
+      return ok(tree.violating === true ? eslintError() : '[]');
+    }
+    if (line.includes('--showConfig'))
+      return ok(JSON.stringify({ files: ['src/foo.ts'] }));
+    return ok('');
+  });
+  return { exec, eslintRuns: () => eslintRuns };
+}
+
+describe('runStopGate: an unchanged tree is not re-verified', () => {
+  it('skips verify when the tree matches the last clean stop', async () => {
+    const tree = { current: 'TREE1' };
+    const { exec, eslintRuns } = fingerprinted(tree);
+
+    await runStopGate(options(exec));
+    const second = await runStopGate(options(exec));
+
+    expect(eslintRuns()).toBe(1);
+    expect(second.decision.outcome).toBe('clean');
+  });
+
+  it('remembers a clean tree, and only a clean one', async () => {
+    const clean = fingerprinted({ current: 'TREE1' });
+    await runStopGate(options(clean.exec));
+    expect(loadCleanTree(stateDirectory(root))).toMatch(/^TREE1\|BASESHA\|/);
+  });
+
+  it('remembers nothing when the fingerprint could not be taken', async () => {
+    const { exec } = fingerprinted({ current: 'TREE1', failing: true });
+    const result = await runStopGate(options(exec));
+    expect(result.decision.outcome).toBe('clean');
+    expect(loadCleanTree(stateDirectory(root))).toBeUndefined();
+    // `loadCleanTree` alone cannot tell "never written" from "written with an
+    // undefined fingerprint" (JSON drops the key), so check the file itself.
+    expect(existsSync(path.join(stateDirectory(root), 'clean-tree.json'))).toBe(
+      false,
+    );
+  });
+
+  it('remembers nothing when verify blocks', async () => {
+    const { exec } = fingerprinted({ current: 'TREE1', violating: true });
+    const result = await runStopGate(options(exec));
+    expect(result.decision.outcome).toBe('delegate');
+    expect(loadCleanTree(stateDirectory(root))).toBeUndefined();
+  });
+
+  it('logs the skipped run as cached', async () => {
+    const { exec } = fingerprinted({ current: 'TREE1' });
+
+    await runStopGate(options(exec));
+    await runStopGate(options(exec));
+
+    expect(
+      readDecisions(stateDirectory(root)).map((row) => row.cached ?? false),
+    ).toEqual([false, true]);
+  });
+
+  it('verifies again once the tree changes', async () => {
+    const tree = { current: 'TREE1' };
+    const { exec, eslintRuns } = fingerprinted(tree);
+
+    await runStopGate(options(exec));
+    tree.current = 'TREE2';
+    await runStopGate(options(exec));
+
+    expect(eslintRuns()).toBe(2);
+  });
+
+  it('verifies every time when the fingerprint cannot be taken', async () => {
+    const { exec, eslintRuns } = fingerprinted({
+      current: 'TREE1',
+      failing: true,
+    });
+
+    await runStopGate(options(exec));
+    await runStopGate(options(exec));
+
+    expect(eslintRuns()).toBe(2);
+  });
+
+  it('never uses the cache while a fix loop is open', async () => {
+    // An open loop means a fixer is mid-flight against a manifest; its
+    // progress has to be measured, not assumed from an earlier clean turn.
+    const { exec, eslintRuns } = fingerprinted({ current: 'TREE1' });
+    await runStopGate(options(exec));
+    writeFileSync(
+      path.join(stateDirectory(root), 'sid.pre-fix.json'),
+      JSON.stringify([]),
+    );
+
+    await runStopGate(options(exec));
+
+    expect(eslintRuns()).toBe(2);
   });
 });

@@ -57,6 +57,13 @@ export interface HookInput {
    * absence as "this host cannot tell me", never as "this is not a fixer".
    */
   agentType?: string;
+  /**
+   * The text changes an edit tool proposes, when it is one: Claude's
+   * Edit/MultiEdit/Write, Copilot's str_replace_editor/edit/create, Codex's
+   * apply_patch. Read by the scope-lock to refuse a fixer edit that ADDS a
+   * suppression (#77).
+   */
+  edits?: readonly HookEdit[];
 }
 
 /** Paths named by Codex's canonical `apply_patch` envelope. Update+move
@@ -80,6 +87,82 @@ export function parseApplyPatchFilePaths(command: string): string[] {
     }
   }
   return paths;
+}
+
+const PATCH_FILE_HEADER =
+  /^\*\*\* (Add File|Update File|Delete File|Move to): (.+)/;
+
+/**
+ * One proposed change to one file. `before` is absent for a whole-file write
+ * (Claude's Write, Copilot's create), whose prior content is whatever is on
+ * disk -- the caller reads it, so this module stays free of filesystem reads.
+ */
+interface HookEdit {
+  file: string;
+  before?: string;
+  after: string;
+}
+
+/**
+ * What a Codex `apply_patch` removes and adds, per file: `-` lines are the
+ * before, `+` lines the after. Context lines are the same on both sides and
+ * carry nothing. A deleted file adds nothing, so it has no entry; a `Move to`
+ * keeps the hunks with the file being updated.
+ */
+function parseApplyPatchEdits(command: string): HookEdit[] {
+  const edits: { file: string; before: string[]; after: string[] }[] = [];
+  let current: { before: string[]; after: string[] } | undefined;
+  for (const line of command.split('\n')) {
+    const header = PATCH_FILE_HEADER.exec(line);
+    if (header === null) {
+      if (line.startsWith('+')) {
+        current?.after.push(line.slice(1));
+      } else if (line.startsWith('-')) {
+        current?.before.push(line.slice(1));
+      }
+      continue;
+    }
+    const [, operation, file = ''] = header;
+    if (operation === 'Add File' || operation === 'Update File') {
+      current = { before: [], after: [] };
+      edits.push({ file: file.trim(), ...current });
+    } else if (operation === 'Delete File') {
+      current = undefined;
+    }
+  }
+  return edits.map(({ file, before, after }) => ({
+    file,
+    before: before.join('\n'),
+    after: after.join('\n'),
+  }));
+}
+
+/**
+A string-replacement edit (Claude's old/new_string, Copilot's old/new_str).
+*/
+function replacement(file: string, args: Record<string, unknown>): HookEdit[] {
+  const before = firstString(args.old_string, args.old_str);
+  const after = firstString(args.new_string, args.new_str);
+  return before === undefined || after === undefined
+    ? []
+    : [{ file, before, after }];
+}
+
+/**
+The edits named by a single-file edit tool's arguments.
+*/
+function textEdits(file: string, args: Record<string, unknown>): HookEdit[] {
+  if (Array.isArray(args.edits)) {
+    return args.edits
+      .filter((edit) => isRecord(edit))
+      .flatMap((edit) => replacement(file, edit));
+  }
+  const replaced = replacement(file, args);
+  if (replaced.length > 0) {
+    return replaced;
+  }
+  const content = firstString(args.content, args.file_text);
+  return content === undefined ? [] : [{ file, after: content }];
 }
 
 /** The files a hook payload names: Codex's multi-path `apply_patch` list when
@@ -160,6 +243,16 @@ function selectArguments(
   return {};
 }
 
+function proposedEdits(
+  input: HookInput,
+  args: Record<string, unknown>,
+): HookEdit[] {
+  if (input.toolName === 'apply_patch') {
+    return parseApplyPatchEdits(input.command ?? '');
+  }
+  return input.filePath === undefined ? [] : textEdits(input.filePath, args);
+}
+
 export function parseHookInput(stdin: string): HookInput {
   let parsed: unknown;
   // prettier-ignore
@@ -185,7 +278,7 @@ export function parseHookInput(stdin: string): HookInput {
   // (field, [candidates in precedence order]) — Claude first, Copilot fallback.
   type StringHookField = Exclude<
     keyof HookInput,
-    'filePaths' | 'stopHookActive'
+    'filePaths' | 'stopHookActive' | 'edits'
   >;
   const fields: readonly [StringHookField, readonly unknown[]][] = [
     ['sessionId', [claude.session_id, copilot.sessionId]],
@@ -216,6 +309,10 @@ export function parseHookInput(stdin: string): HookInput {
     if (filePaths.length > 0) {
       input.filePaths = filePaths;
     }
+  }
+  const edits = proposedEdits(input, args);
+  if (edits.length > 0) {
+    input.edits = edits;
   }
   return input;
 }

@@ -19,7 +19,10 @@ const config = JSON.parse(
   ),
 ) as {
   version: number;
-  hooks: Record<string, { hooks: { command?: string }[] }[]>;
+  hooks: Record<
+    string,
+    { hooks: { command?: string; timeoutSec?: number }[] }[]
+  >;
 };
 
 describe('.github/hooks/guardrails.json', () => {
@@ -56,6 +59,25 @@ describe('.github/hooks/guardrails.json', () => {
         }
       }
     }
+  });
+
+  it('gives every gate a timeout well above the 30-second default', () => {
+    // Copilot's default `timeoutSec` is 30, and a timeout is fail-OPEN for
+    // every event, preToolUse included (docs.github.com/en/copilot/reference/
+    // hooks-reference). A commit gate routinely runs longer than that, so
+    // without an explicit timeout the gate was silently skipped on any commit
+    // slower than half a minute. 300 matches the Claude and Codex wiring; the
+    // CLI's own deadline (`hookDeadlineSeconds`) sits below it so the gate
+    // decides before the host gives up on it.
+    for (const event of ['preToolUse', 'agentStop']) {
+      const groups = config.hooks[event] ?? [];
+      for (const group of groups) {
+        for (const hook of group.hooks) {
+          expect(hook.timeoutSec).toBe(300);
+        }
+      }
+    }
+    expect(config.hooks.postToolUse?.[0]?.hooks[0]?.timeoutSec).toBe(120);
   });
 
   it('spells each Copilot command exactly', () => {

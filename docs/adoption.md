@@ -549,6 +549,34 @@ Things worth knowing before you hit them, rather than after:
   guarantee to buy convenience. If `openai/codex#16226` lands, Codex joins the
   first row.
 
+  A commit-gate block opens the same lock for the fixer it names. On Copilot
+  and Codex that means the session is confined to the commit manifest's files
+  (and the tests the manifest names) until a commit passes, or for at most 30
+  minutes, after which the loop is treated as abandoned.
+
+- **Every host lets a timed-out hook through.** Claude Code, Codex and Copilot
+  all treat a hook timeout as fail-open, so a gate that is still running when
+  the host gives up has decided nothing. The scaffolded wiring gives every gate
+  a 300-second hook timeout. The CLI keeps its own, shorter deadline
+  (`hookDeadlineSeconds` in `guardrails.config.json`, default 240) and decides
+  before the host does: a git write it could not finish checking is denied, a
+  Stop is let through with a note on stderr, and its analyzers are stopped. If
+  you raise a hook `timeout`, raise `hookDeadlineSeconds` with it. Copilot's
+  own default is 30 seconds, which is why the Copilot wiring sets `timeoutSec`
+  explicitly.
+- **A worktree needs its own install.** A checkout nested inside another one
+  (Claude Code puts subagent worktrees in `.claude/worktrees/`) resolves the
+  parent's `guardrails-core` when it has no `node_modules` of its own. The CLI
+  refuses to guard with a copy the checkout did not install. A git commit or
+  push there is denied, and a Stop is blocked once, both with the remedy (`npm
+ci` in that checkout). Every other tool call passes through untouched. The
+  git hooks say the same and still block.
+- **On Codex and Copilot the Stop gate checks the agent's current
+  directory.** Claude Code exposes the session's root (`CLAUDE_PROJECT_DIR`),
+  and the Stop gate verifies that rather than wherever the shell last went.
+  The other hosts expose no such root, so an orchestrating agent that `cd`s
+  into another checkout has that checkout verified at its next Stop.
+
 - **The seeded `stryker.conf.json` trips knip.** Its starter `testRunner` is
   `"command"`, and knip reads that file, resolves the runner, and reports
   `@stryker-mutator/command-runner` as an unlisted dependency — in exactly the

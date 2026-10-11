@@ -22,7 +22,7 @@
  * tarball: `init` never copies it, because the reader has not run `init` yet.
  */
 
-import type { Violation } from './violation.js';
+import { type Violation, withDerived } from './violation.js';
 
 /**
 rule-id prefix → repo-relative guidance doc. Longest match wins.
@@ -41,11 +41,7 @@ function guidanceFor(ruleId: string): string | undefined {
  * (no key added) so the manifest stays terse.
  */
 export function withGuidance(violations: readonly Violation[]): Violation[] {
-  return violations.map((violation) => {
-    if (violation.guidance !== undefined) {
-      return violation;
-    }
-    const guidance = guidanceFor(violation.ruleId);
-    return guidance === undefined ? violation : { ...violation, guidance };
-  });
+  return withDerived(violations, 'guidance', (violation) =>
+    guidanceFor(violation.ruleId),
+  );
 }

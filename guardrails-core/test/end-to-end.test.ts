@@ -57,8 +57,23 @@ function isolatedGitEnvironment(): NodeJS.ProcessEnv {
   return env;
 }
 
+// A caller that passes its own environment keeps it: `treeFingerprint` points
+// git at a private index through GIT_INDEX_FILE, and replacing that would make
+// its `git add -A` stage into the temp repo's real index. Module scope already
+// scrubbed GIT_* from process.env, so nothing inherited can ride along.
+//
+// A call with no cwd is pinned to the temp repo. The Stop gate now WRITES
+// (`git add -A`, into a private index), and a mutant that drops the call's
+// options would otherwise run it from stryker's sandbox -- inside this repo --
+// and stage this repo's whole working tree into its real index. That happened
+// once while the fingerprint was being written; see pinnedToTemporaryRepo for
+// the earlier, worse incident of the same shape.
 const isolatedExec: Exec = (command, args, options) =>
-  spawnExec(command, args, { ...options, env: isolatedGitEnvironment() });
+  spawnExec(command, args, {
+    ...options,
+    cwd: options?.cwd ?? root,
+    env: options?.env ?? isolatedGitEnvironment(),
+  });
 
 /**
  * Pin every git call to the temp repo in ARGV.

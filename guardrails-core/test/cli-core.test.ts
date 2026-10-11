@@ -9,8 +9,9 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import process from 'node:process';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { type CliDependencies, runCommand } from '../src/cli-core.js';
 import type { Exec, ExecResult } from '../src/exec.js';
@@ -25,6 +26,21 @@ import {
 } from '../src/state-store.js';
 import type { Violation } from '../src/violation.js';
 import { checksum as scaffoldChecksum } from '../src/scaffold/manifest.js';
+
+/**
+ * Close the inheritance channel for CLAUDE_PROJECT_DIR, at module scope,
+ * before anything runs.
+ *
+ * `sessionCwd` reads it through `dependencies.env ?? process.env`, and every
+ * test injects an empty `env`. But the commit gate runs stryker from INSIDE a
+ * Claude Code hook, whose environment carries CLAUDE_PROJECT_DIR pointing at the
+ * real checkout. Stryker's workers inherit it, so a mutant that drops the
+ * injected env made the stop-gate tests below verify -- and write fixture state
+ * into -- the developer's real repository. That happened seven times while this
+ * was being built, and once in a worktree a live check was running in. Scrubbing
+ * it here holds because stryker never mutates test files.
+ */
+delete process.env.CLAUDE_PROJECT_DIR;
 
 let root: string;
 let out: string[];
@@ -60,6 +76,9 @@ function dependencies(over: Partial<CliDependencies> = {}): CliDependencies {
     stderr: (text) => {
       errors.push(text);
     },
+    // Explicitly empty: a developer running the suite from inside a Claude
+    // Code session must not have CLAUDE_PROJECT_DIR re-root every hook test.
+    env: {},
     ...over,
   };
 }
@@ -777,7 +796,7 @@ describe('runCommand — gate pretooluse (copilot commit/push gate)', () => {
       dependencies({ exec, readStdin: () => Promise.resolve(stdin) }),
     );
 
-    expect(denyReason(JSON.parse(out.join('')))).toContain('commit-commit');
+    expect(denyReason(JSON.parse(out.join('')))).toContain('nosession-commit');
   });
 
   it('stays silent for a non-git shell command', async () => {
@@ -1162,6 +1181,33 @@ describe('pretooluse gate trigger conditions', () => {
     ).toBe('');
   });
 
+  it('does not read a QUOTED heredoc body as commands', async () => {
+    // A quoted heredoc (`<<'EOF'`, `<<"EOF"`, `<<\EOF`) is literal text: the
+    // shell runs nothing inside it. Its backticks used to count as command
+    // separators, so a script or a commit message that merely quoted
+    // `git commit` in backticks ran the commit gate -- three times while this
+    // very fix was being built.
+    for (const command of [
+      "cat > notes.md <<'EOF'\nRun `git commit` when ready.\nEOF",
+      "python3 - <<'EOF'\nprint('x')  # then `git push`\nEOF",
+      'cat <<"EOF"\n`git commit -m x`\nEOF',
+      'cat <<\\EOF\n$(git push)\nEOF',
+      "cat <<-'EOF'\n\t`git commit`\n\tEOF",
+      "a <<'ONE' && b <<'TWO'\n`git commit`\nONE\n`git push`\nTWO",
+      // Every leading tab of a `<<-` terminator is stripped, not just one.
+      "cat <<-'EOF'\n\t`git commit`\n\t\tEOF",
+      // An unquoted heredoc closes at its own full delimiter, so the quoted
+      // one queued after it is still stripped.
+      "cat <<EOF && cat <<'TWO'\nplain\nEOF\n`git commit`\nTWO",
+    ]) {
+      out.length = 0;
+      expect(
+        await runPreToolUse(preToolUseStdin('bash', command)),
+        `should not gate: ${JSON.stringify(command)}`,
+      ).toBe('');
+    }
+  });
+
   it('cannot be made to backtrack catastrophically by a run of flags', async () => {
     // ReDoS regression. The first version of the global-option run was
     // `(?:-[cC][ \t]+[^ \t]+|-[^ \t]+)*`, whose two alternatives could tile the
@@ -1219,6 +1265,20 @@ describe('pretooluse gate trigger conditions', () => {
       // linear time for a false negative; it does not.
       'git -c http.extraHeader=-x commit -m y',
       'git -c a=-1 -c b=-2 push',
+      // An UNQUOTED heredoc expands command substitutions, so its body runs.
+      'cat <<EOF\n`git commit -m x`\nEOF',
+      // A quoted heredoc ends at its delimiter; what follows is a command.
+      "cat > notes.md <<'EOF'\nnotes\nEOF\ngit commit -m x",
+      // A delimiter that never arrives leaves nothing stripped: being wrong
+      // here must cost a spurious gate run, never a missed commit.
+      "cat <<'EOF'\nnotes\ngit commit -m x",
+      // Only `<<-` lets the terminator be tab-indented; a plain `<<'EOF'`
+      // body is not closed by "\tEOF", so it stays unterminated.
+      "cat <<'EOF'\n`git commit`\n\tEOF",
+      // Tabs are stripped only from the line's START, never from its middle.
+      "cat <<-'EOF'\n`git commit`\nE\tOF",
+      // An unquoted heredoc's body runs, even beside a quoted one.
+      "a <<ONE && b <<'TWO'\n`git commit`\nONE\n`git push`\nTWO",
     ]) {
       out.length = 0;
       expect(
@@ -1310,6 +1370,21 @@ async function runScopeCheck(stdin: string): Promise<string> {
     dependencies({ readStdin: () => Promise.resolve(stdin) }),
   );
   return out.join('');
+}
+
+/**
+An exec whose eslint run reports the given JSON and whose changed-file list is
+just src/foo.ts, so verify's outcome is decided by the eslint messages alone.
+*/
+function eslintReportExec(eslint: string): Exec {
+  return (command, args) => {
+    const line = [command, ...args].join(' ');
+    if (line.includes('--name-only')) return Promise.resolve(ok('src/foo.ts'));
+    if (line.includes('eslint')) return Promise.resolve(ok(eslint));
+    if (line.includes('--showConfig'))
+      return Promise.resolve(ok(JSON.stringify({ files: ['src/foo.ts'] })));
+    return Promise.resolve(ok(''));
+  };
 }
 
 /**
@@ -1635,9 +1710,56 @@ describe('verify and audit exit codes', () => {
     await runCommand('verify', [], dependencies({ exec: failingVerifyExec() }));
     // A count, not a specific number: the fixture supplies no stryker report,
     // so the fail-closed check correctly adds an analyzer-failed violation too.
-    expect(errors.join('')).toContain(' violation(s).');
-    expect(errors.join('')).not.toContain('0 violation(s).');
+    expect(errors.join('')).toContain(' error(s), ');
+    expect(errors.join('')).not.toContain(' 0 error(s)');
     expect(errors.join('')).not.toContain('clean (0 violations)');
+  });
+
+  it('counts warnings apart from errors, so an advisory does not read as a failure', async () => {
+    // A non-blocking advisory (stryker-out-of-scope, an eslint warning) was
+    // printed as "1 violation(s)." next to an exit code of 0, and agents went
+    // looking for what had failed.
+    const eslint = JSON.stringify([
+      {
+        filePath: path.join(root, 'src/foo.ts'),
+        messages: [
+          { ruleId: 'no-console', severity: 1, message: 'x', line: 1 },
+        ],
+      },
+    ]);
+    const exec = eslintReportExec(eslint);
+    writeFileSync(
+      path.join(root, 'guardrails.config.json'),
+      JSON.stringify({ analyzers: { stryker: 'off' } }),
+    );
+
+    const code = await runCommand('verify', [], dependencies({ exec }));
+
+    expect(code).toBe(0);
+    expect(errors.join('')).toContain('0 error(s), 1 warning(s).');
+  });
+
+  it('counts errors and warnings separately when both are present', async () => {
+    // One error plus one warning: the warning count must be total minus errors
+    // (1), not total plus errors (3).
+    const eslint = JSON.stringify([
+      {
+        filePath: path.join(root, 'src/foo.ts'),
+        messages: [
+          { ruleId: 'no-console', severity: 2, message: 'x', line: 1 },
+          { ruleId: 'no-alert', severity: 1, message: 'y', line: 2 },
+        ],
+      },
+    ]);
+    const exec = eslintReportExec(eslint);
+    writeFileSync(
+      path.join(root, 'guardrails.config.json'),
+      JSON.stringify({ analyzers: { stryker: 'off' } }),
+    );
+
+    await runCommand('verify', [], dependencies({ exec }));
+
+    expect(errors.join('')).toContain('1 error(s), 1 warning(s).');
   });
 
   it('warns that an enabled analyzer was silently skipped, on the very run that reports clean', async () => {
@@ -3525,5 +3647,717 @@ describe('session-start guidance staleness', () => {
     utimesSync(stale, new Date(0), new Date(0));
     await runCommand('session-start', [], dependencies({}));
     expect(existsSync(stale)).toBe(false);
+  });
+});
+
+function fixerEdit(filePath: string, cwd = root): string {
+  return JSON.stringify({
+    session_id: 'sid',
+    cwd,
+    tool_name: 'Edit',
+    tool_input: { file_path: filePath },
+    agent_id: 'fixer',
+    agent_type: 'guardrail-fixer',
+  });
+}
+
+describe('scope-check across rungs and nested worktrees', () => {
+  it('locks a commit-rung fixer to its manifest', async () => {
+    // Reproduced against the built CLI before the fix: with only a commit-rung
+    // manifest present, a fixer's edit to guardrails.config.json was allowed.
+    writeActiveViolations('sid-commit', [violation('src/allowed.ts')]);
+
+    const output = await runScopeCheck(
+      fixerEdit(path.join(root, 'guardrails.config.json')),
+    );
+
+    expect(output).toContain('deny');
+  });
+
+  it('locks a fixer whose cwd is the parent checkout but whose manifest is in a nested worktree', async () => {
+    // Claude Code puts subagent worktrees under .claude/worktrees/ INSIDE the
+    // project; a lane agent's fixer can run with the parent as its cwd.
+    mkdirSync(path.join(root, '.git'));
+    const nested = path.join(root, '.claude', 'worktrees', 'agent-1');
+    mkdirSync(nested, { recursive: true });
+    writeFileSync(path.join(nested, '.git'), 'gitdir: elsewhere\n');
+    const state = stateDirectory(nested);
+    writeViolations(state, 'sid-commit', [violation('src/allowed.ts')]);
+    writeFileSync(path.join(state, 'sid-commit.pre-fix.json'), '[]');
+
+    const denied = await runScopeCheck(
+      fixerEdit(path.join(nested, 'src/other.ts')),
+    );
+    expect(denied).toContain('deny');
+
+    out = [];
+    const allowed = await runScopeCheck(
+      fixerEdit(path.join(nested, 'src/allowed.ts')),
+    );
+    expect(allowed).toBe('');
+  });
+});
+
+const FIXER_IDENTITY: Readonly<Record<string, string>> = {
+  agent_id: 'fixer',
+  agent_type: 'guardrail-fixer',
+};
+
+function listed(): string {
+  return path.join(root, 'src/a.ts');
+}
+
+function editStdin(
+  toolInput: Record<string, unknown>,
+  identity: Readonly<Record<string, string>> = FIXER_IDENTITY,
+  toolName = 'Edit',
+): string {
+  return JSON.stringify({
+    session_id: 'sid',
+    cwd: root,
+    tool_name: toolName,
+    tool_input: toolInput,
+    ...identity,
+  });
+}
+
+describe('scope-check refuses a fixer edit that adds a suppression (#77)', () => {
+  beforeEach(() => {
+    writeActiveViolations('sid', [violation('src/a.ts')]);
+  });
+
+  it('denies an Edit that adds a directive, naming the honest route', async () => {
+    const output = await runScopeCheck(
+      editStdin({
+        file_path: listed(),
+        old_string: 'const a = 1;',
+        new_string: '// eslint-disable-next-line\nconst a = 1;',
+      }),
+    );
+    expect(output).toContain('deny');
+    expect(output).toContain('eslint-disable');
+    expect(output).toContain('report');
+    expect(output).not.toContain('more');
+  });
+
+  it('counts the further suppressions an edit adds', async () => {
+    const output = await runScopeCheck(
+      editStdin({
+        file_path: listed(),
+        old_string: 'const a = 1;',
+        new_string: '// eslint-disable-next-line\n// @ts-ignore\nconst a = 1;',
+      }),
+    );
+    expect(output).toContain('and 1 more');
+  });
+
+  it('allows an Edit that only carries an existing directive', async () => {
+    const directive = '// fallow-ignore-next-line code-duplication';
+    const output = await runScopeCheck(
+      editStdin({
+        file_path: listed(),
+        old_string: `${directive}\nexport function a() {}`,
+        new_string: `${directive}\nexport function a() { return 1; }`,
+      }),
+    );
+    expect(output).toBe('');
+  });
+
+  it('leaves the main thread alone', async () => {
+    const output = await runScopeCheck(
+      editStdin(
+        {
+          file_path: listed(),
+          old_string: 'f(x);',
+          new_string: 'f(x as any);',
+        },
+        {},
+      ),
+    );
+    expect(output).toBe('');
+  });
+
+  it('compares a Write against the file on disk', async () => {
+    mkdirSync(path.join(root, 'src'), { recursive: true });
+    writeFileSync(
+      listed(),
+      '// @ts-expect-error legacy\nconst a: number = "x";\n',
+    );
+
+    const kept = await runScopeCheck(
+      editStdin(
+        {
+          file_path: listed(),
+          content: '// @ts-expect-error legacy\nconst a: number = "y";\n',
+        },
+        undefined,
+        'Write',
+      ),
+    );
+    expect(kept).toBe('');
+
+    out = [];
+    const added = await runScopeCheck(
+      editStdin(
+        {
+          file_path: listed(),
+          content:
+            '// @ts-expect-error legacy\nconst a: number = "y";\n// @ts-ignore\nconst b: number = "z";\n',
+        },
+        undefined,
+        'Write',
+      ),
+    );
+    expect(added).toContain('deny');
+  });
+
+  it('treats a Write to a new file as adding everything in it', async () => {
+    const output = await runScopeCheck(
+      editStdin(
+        { file_path: listed(), content: "it.skip('x', () => {});\n" },
+        undefined,
+        'Write',
+      ),
+    );
+    expect(output).toContain('deny');
+  });
+});
+
+/**
+ * Dependencies for a CLI resolved from an ANCESTOR's node_modules -- the
+ * nested-worktree case: Claude Code puts subagent worktrees under
+ * .claude/worktrees/ inside the project, a fresh worktree has no install, and
+ * Node's resolution walks up to the parent checkout's copy.
+ */
+function ancestorInstall(stdin = ''): CliDependencies {
+  mkdirSync(path.join(root, '.git'), { recursive: true });
+  return dependencies({
+    selfPath: path.join(
+      path.dirname(root),
+      'node_modules',
+      'guardrails-core',
+      'dist',
+      'cli.mjs',
+    ),
+    readStdin: () => Promise.resolve(stdin),
+  });
+}
+
+function shellStdin(command: string, extra: Record<string, unknown> = {}) {
+  return JSON.stringify({
+    cwd: root,
+    tool_name: 'Bash',
+    tool_input: { command },
+    ...extra,
+  });
+}
+
+describe('an untrusted install never fails open, and never denies everything', () => {
+  it('denies a git write with the install remedy', async () => {
+    // Exit 1 here used to be NON-blocking on Claude Code and Codex: the commit
+    // went through ungated -- `--no-verify` included -- in every worktree
+    // without its own node_modules.
+    const code = await runCommand(
+      'gate',
+      ['--mode=pretooluse'],
+      ancestorInstall(shellStdin('git commit -m x')),
+    );
+
+    expect(code).toBe(0);
+    const output = out.join('');
+    expect(output).toContain('deny');
+    expect(output).toContain('not installed');
+    expect(output).toContain('npm ci');
+  });
+
+  it('denies in the Copilot shape on the copilot dialect', async () => {
+    await runCommand(
+      'gate',
+      ['--mode=pretooluse', '--dialect=copilot'],
+      ancestorInstall(
+        JSON.stringify({
+          cwd: root,
+          toolName: 'bash',
+          toolArgs: { command: 'git push' },
+        }),
+      ),
+    );
+
+    expect(JSON.parse(out.join(''))).toMatchObject({
+      permissionDecision: 'deny',
+    });
+  });
+
+  it('lets every other shell command through, silently', async () => {
+    // On Copilot a non-zero pre-tool exit is a DENY, so exit 1 here used to
+    // block every command -- including the `npm ci` that would fix it.
+    const code = await runCommand(
+      'gate',
+      ['--mode=pretooluse'],
+      ancestorInstall(shellStdin('npm ci')),
+    );
+
+    expect(code).toBe(0);
+    expect(out.join('')).toBe('');
+    expect(errors.join('')).toBe('');
+  });
+
+  it('blocks the stop with the install remedy', async () => {
+    const code = await runCommand(
+      'gate',
+      ['--mode=stop'],
+      ancestorInstall(JSON.stringify({ cwd: root })),
+    );
+
+    expect(code).toBe(0);
+    const decision = JSON.parse(out.join('')) as Record<string, unknown>;
+    expect(decision.decision).toBe('block');
+    expect(String(decision.reason)).toContain('not installed');
+  });
+
+  it('releases a stop it has already blocked once, saying why', async () => {
+    // Blocking again would only spend the host's continuation cap on a
+    // checkout the agent may be unable to install into.
+    await runCommand(
+      'gate',
+      ['--mode=stop'],
+      ancestorInstall(JSON.stringify({ cwd: root, stop_hook_active: true })),
+    );
+
+    expect(out.join('')).toBe('');
+    expect(errors.join('')).toContain('not installed');
+  });
+
+  it('names the checkout root, not the subdirectory it ran from', async () => {
+    const nested = path.join(root, 'packages', 'app');
+    mkdirSync(nested, { recursive: true });
+
+    await runCommand('gate', ['--mode=stop'], {
+      ...ancestorInstall(JSON.stringify({ cwd: nested })),
+      cwd: nested,
+    });
+
+    const decision = JSON.parse(out.join('')) as Record<string, unknown>;
+    expect(String(decision.reason)).toContain(`(${root})`);
+    expect(String(decision.reason)).toContain(`npm ci\` in ${root},`);
+  });
+
+  it.each([
+    ['verify', []],
+    ['verify', ['--mode=stop']],
+    ['verify', ['--mode=pretooluse']],
+    ['gate', []],
+    ['gate', ['--mode=commit']],
+  ])(
+    'keeps exit 1 and the outside-repo message for %s %j',
+    async (command, rest) => {
+      const code = await runCommand(
+        command,
+        rest,
+        ancestorInstall(shellStdin('git commit -m x')),
+      );
+
+      expect(code).toBe(1);
+      expect(out.join('')).toBe('');
+      expect(errors.join('')).not.toBe('');
+    },
+  );
+
+  it.each(['autofix', 'session-start', 'session-end'])(
+    'treats %s as a silent no-op',
+    async (command) => {
+      const code = await runCommand(
+        command,
+        [],
+        ancestorInstall(JSON.stringify({ cwd: root })),
+      );
+
+      expect(code).toBe(0);
+      expect(errors.join('')).toBe('');
+    },
+  );
+
+  it('still enforces the scope-lock, which reads only state files', async () => {
+    const dependenciesForFixer = ancestorInstall(
+      JSON.stringify({
+        session_id: 'sid',
+        cwd: root,
+        tool_name: 'Edit',
+        tool_input: { file_path: path.join(root, 'src/elsewhere.ts') },
+        agent_id: 'fixer',
+        agent_type: 'guardrail-fixer',
+      }),
+    );
+    writeActiveViolations('sid', [violation('src/a.ts')]);
+
+    await runCommand('scope-check', [], dependenciesForFixer);
+
+    expect(out.join('')).toContain('deny');
+  });
+});
+
+const exploding: Exec = () => Promise.reject(new Error('git exploded'));
+
+describe('a gate that throws still decides', () => {
+  /**
+   * Claude Code and Codex treat a crashed hook as non-blocking, so before this
+   * a bug in the gate was a silent pass. The decision is made explicitly
+   * instead, carrying the error so the cause is visible.
+   */
+  it('denies the git write it could not check', async () => {
+    const code = await runCommand(
+      'gate',
+      ['--mode=pretooluse'],
+      dependencies({
+        exec: exploding,
+        readStdin: () => Promise.resolve(shellStdin('git commit -m x')),
+      }),
+    );
+
+    expect(code).toBe(0);
+    const output = out.join('');
+    expect(output).toContain('deny');
+    expect(output).toContain('git exploded');
+  });
+
+  it('blocks the stop it could not check', async () => {
+    await runCommand(
+      'gate',
+      ['--mode=stop'],
+      dependencies({
+        exec: exploding,
+        readStdin: () => Promise.resolve(JSON.stringify({ cwd: root })),
+      }),
+    );
+
+    const decision = JSON.parse(out.join('')) as Record<string, unknown>;
+    expect(decision.decision).toBe('block');
+    expect(String(decision.reason)).toContain('git exploded');
+  });
+
+  it('releases a stop it already blocked once, saying why', async () => {
+    await runCommand(
+      'gate',
+      ['--mode=stop'],
+      dependencies({
+        exec: exploding,
+        readStdin: () =>
+          Promise.resolve(
+            JSON.stringify({ cwd: root, stop_hook_active: true }),
+          ),
+      }),
+    );
+
+    expect(out.join('')).toBe('');
+    expect(errors.join('')).toContain('git exploded');
+  });
+});
+
+function hasDecisionsIn(checkout: string): boolean {
+  return existsSync(path.join(stateDirectory(checkout), 'decisions.jsonl'));
+}
+
+describe('session-scoped rungs anchor on the session root (CLAUDE_PROJECT_DIR)', () => {
+  /**
+   * The Stop payload's `cwd` follows the agent's shell: probed live, after a
+   * `cd` into a nested worktree the payload named the worktree while
+   * CLAUDE_PROJECT_DIR still named the launch root. In the dialed.run adoption
+   * about 150 coordinator Stop runs verified -- and sent fixers into -- lane
+   * worktrees other agents were mid-way through.
+   */
+  let nested: string;
+
+  beforeEach(() => {
+    mkdirSync(path.join(root, '.git'));
+    nested = path.join(root, '.claude', 'worktrees', 'lane');
+    mkdirSync(nested, { recursive: true });
+    writeFileSync(path.join(nested, '.git'), 'gitdir: elsewhere\n');
+  });
+
+  function stopFrom(
+    payload: Record<string, unknown>,
+    rest: string[] = ['--mode=stop'],
+  ): Promise<number> {
+    return runCommand(
+      'gate',
+      rest,
+      dependencies({
+        env: { CLAUDE_PROJECT_DIR: root },
+        readStdin: () =>
+          Promise.resolve(JSON.stringify({ cwd: nested, ...payload })),
+      }),
+    );
+  }
+
+  it('verifies the session root, not the worktree the shell wandered into', async () => {
+    await stopFrom({});
+
+    expect(hasDecisionsIn(root)).toBe(true);
+    expect(hasDecisionsIn(nested)).toBe(false);
+  });
+
+  it('keeps the payload cwd on hosts that do not set the variable', async () => {
+    // Codex and Copilot expose no project root; a stray CLAUDE_PROJECT_DIR in
+    // their environment must not be read as theirs.
+    await stopFrom({}, ['--mode=stop', '--dialect=codex']);
+
+    expect(hasDecisionsIn(nested)).toBe(true);
+    expect(hasDecisionsIn(root)).toBe(false);
+  });
+
+  it('keeps the payload cwd for a subagent, which runs in its own worktree', async () => {
+    await stopFrom({ agent_id: 'lane', agent_type: 'general-purpose' });
+
+    expect(hasDecisionsIn(nested)).toBe(true);
+  });
+
+  it('ignores a CLAUDE_PROJECT_DIR that is not inside a repository', async () => {
+    const elsewhere = mkdtempSync(path.join(tmpdir(), 'guardrails-not-repo-'));
+    try {
+      await runCommand(
+        'gate',
+        ['--mode=stop'],
+        dependencies({
+          env: { CLAUDE_PROJECT_DIR: elsewhere },
+          readStdin: () => Promise.resolve(JSON.stringify({ cwd: nested })),
+        }),
+      );
+      expect(hasDecisionsIn(nested)).toBe(true);
+    } finally {
+      rmSync(elsewhere, { recursive: true, force: true });
+    }
+  });
+
+  it('ends the session at the session root', async () => {
+    saveSession(
+      stateDirectory(root),
+      'sid',
+      loadSession(stateDirectory(root), 'sid'),
+    );
+    await runCommand(
+      'session-end',
+      [],
+      dependencies({
+        env: { CLAUDE_PROJECT_DIR: root },
+        readStdin: () =>
+          Promise.resolve(JSON.stringify({ session_id: 'sid', cwd: nested })),
+      }),
+    );
+
+    expect(existsSync(sessionFile(stateDirectory(root), 'sid'))).toBe(false);
+  });
+});
+
+/**
+An exec that answers only after any test has long finished.
+*/
+const hanging: Exec = () =>
+  new Promise<ExecResult>((resolve) => {
+    setTimeout(() => {
+      resolve(ok(''));
+    }, 60_000).unref();
+  });
+
+describe('hook gates finish before the host gives up on them', () => {
+  /**
+   * Every host treats a hook timeout as fail-open, so a gate still running
+   * when the host's timeout fires has decided nothing -- and in the field such
+   * gates ran on for up to twenty minutes, analyzers and all. The CLI now
+   * keeps its own, shorter deadline.
+   */
+
+  let terminated: number;
+  let exitCodes: number[];
+
+  beforeEach(() => {
+    terminated = 0;
+    exitCodes = [];
+    mkdirSync(path.join(root, '.git'));
+    writeFileSync(
+      path.join(root, 'guardrails.config.json'),
+      JSON.stringify({ hookDeadlineSeconds: 0.05 }),
+    );
+  });
+
+  function deadlined(
+    stdin: string,
+    exec: Exec = hanging,
+    env: NodeJS.ProcessEnv = {},
+  ): CliDependencies {
+    return dependencies({
+      exec,
+      env,
+      readStdin: () => Promise.resolve(stdin),
+      terminate: () => {
+        terminated += 1;
+        return 0;
+      },
+      exit: (code) => {
+        exitCodes.push(code);
+      },
+    });
+  }
+
+  it('denies a git write it could not finish checking, and stops its analyzers', async () => {
+    await runCommand(
+      'gate',
+      ['--mode=pretooluse'],
+      deadlined(shellStdin('git commit -m x')),
+    );
+
+    const output = out.join('');
+    expect(output).toContain('deny');
+    expect(output).toContain('did not finish');
+    expect(terminated).toBe(1);
+    expect(exitCodes).toEqual([0]);
+  });
+
+  it('lets a stop end when the gate runs out of time, saying so', async () => {
+    await runCommand(
+      'gate',
+      ['--mode=stop'],
+      deadlined(JSON.stringify({ cwd: root })),
+    );
+
+    expect(out.join('')).toBe('');
+    expect(errors.join('')).toContain('did not finish');
+    expect(terminated).toBe(1);
+  });
+
+  it('drops anything the abandoned gate prints afterwards', async () => {
+    // The gate keeps running until the analyzers die; a block it reaches then
+    // must not follow the decision already given.
+    // The analyzers are held until after the abandonment, then answer with a
+    // finding that WOULD block the stop if it were allowed to print.
+    const eslint = JSON.stringify([
+      {
+        filePath: path.join(root, 'src/foo.ts'),
+        messages: [
+          { ruleId: 'no-console', severity: 2, message: 'x', line: 1 },
+        ],
+      },
+    ]);
+    const { promise: held, resolve: release } =
+      Promise.withResolvers<undefined>();
+    const late: Exec = async (command, args) => {
+      await held;
+      const line = [command, ...args].join(' ');
+      if (line.includes('--name-only')) return ok('src/foo.ts');
+      if (line.includes('HEAD')) return ok('');
+      if (line.includes('eslint')) return ok(eslint);
+      return ok('');
+    };
+    await runCommand(
+      'gate',
+      ['--mode=stop'],
+      deadlined(JSON.stringify({ session_id: 'sid', cwd: root }), late),
+    );
+    expect(exitCodes).toEqual([0]);
+    release(undefined);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    expect(out.join('')).toBe('');
+    expect(errors.join('')).not.toContain('releasing');
+  });
+
+  it('ends the process itself when no exit is injected', async () => {
+    const exits: unknown[] = [];
+    const spy = vi.spyOn(process, 'exit').mockImplementation((code) => {
+      exits.push(code);
+      throw new Error('process.exit called');
+    });
+    try {
+      await expect(
+        runCommand(
+          'gate',
+          ['--mode=stop'],
+          dependencies({
+            exec: hanging,
+            readStdin: () => Promise.resolve(JSON.stringify({ cwd: root })),
+            terminate: () => 0,
+          }),
+        ),
+      ).rejects.toThrow('process.exit called');
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(exits).toEqual([0]);
+  });
+
+  it('reads the deadline from the repository root, not the directory it ran in', async () => {
+    mkdirSync(path.join(root, 'src'));
+
+    await runCommand(
+      'gate',
+      ['--mode=stop'],
+      deadlined(JSON.stringify({ cwd: path.join(root, 'src') })),
+    );
+
+    expect(terminated).toBe(1);
+  });
+
+  describe('which directory names the repository', () => {
+    let elsewhere: string;
+
+    beforeEach(() => {
+      elsewhere = mkdtempSync(path.join(tmpdir(), 'guardrails-cli-else-'));
+      mkdirSync(path.join(elsewhere, '.git'));
+    });
+
+    afterEach(() => {
+      rmSync(elsewhere, { recursive: true, force: true });
+    });
+
+    it('a stop follows the session root over the payload cwd', async () => {
+      await runCommand(
+        'gate',
+        ['--mode=stop'],
+        deadlined(JSON.stringify({ cwd: elsewhere }), hanging, {
+          CLAUDE_PROJECT_DIR: root,
+        }),
+      );
+
+      expect(terminated).toBe(1);
+    });
+
+    it('a tool-scoped gate follows the payload cwd over the session root', async () => {
+      await runCommand(
+        'gate',
+        ['--mode=pretooluse'],
+        deadlined(shellStdin('git commit -m x'), hanging, {
+          CLAUDE_PROJECT_DIR: elsewhere,
+        }),
+      );
+
+      expect(terminated).toBe(1);
+    });
+  });
+
+  it('cancels its deadline timer once the gate has finished', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      await runCommand(
+        'gate',
+        ['--mode=stop'],
+        deadlined(JSON.stringify({ cwd: root }), () => Promise.resolve(ok(''))),
+      );
+
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('leaves a gate that finishes in time alone', async () => {
+    await runCommand(
+      'gate',
+      ['--mode=stop'],
+      deadlined(JSON.stringify({ cwd: root }), () => Promise.resolve(ok(''))),
+    );
+
+    expect(terminated).toBe(0);
+    expect(exitCodes).toEqual([]);
+    expect(errors.join('')).not.toContain('did not finish');
   });
 });

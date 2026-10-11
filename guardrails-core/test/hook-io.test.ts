@@ -502,3 +502,181 @@ describe('agent identity', () => {
     expect(input.agentType).toBeUndefined();
   });
 });
+
+function patchEdits(lines: string[]): unknown {
+  return parseHookInput(
+    JSON.stringify({
+      tool_name: 'apply_patch',
+      tool_input: { command: lines.join('\n') },
+    }),
+  ).edits;
+}
+
+describe('parseHookInput — proposed edits', () => {
+  it('reads a Claude Edit as one replacement', () => {
+    const parsed = parseHookInput(
+      JSON.stringify({
+        tool_name: 'Edit',
+        tool_input: { file_path: 'src/a.ts', old_string: 'a', new_string: 'b' },
+      }),
+    );
+    expect(parsed.edits).toEqual([
+      { file: 'src/a.ts', before: 'a', after: 'b' },
+    ]);
+  });
+
+  it('reads every replacement of a Claude MultiEdit', () => {
+    const parsed = parseHookInput(
+      JSON.stringify({
+        tool_name: 'MultiEdit',
+        tool_input: {
+          file_path: 'src/a.ts',
+          edits: [
+            { old_string: 'a', new_string: 'b' },
+            { old_string: 'c', new_string: 'd' },
+          ],
+        },
+      }),
+    );
+    expect(parsed.edits).toEqual([
+      { file: 'src/a.ts', before: 'a', after: 'b' },
+      { file: 'src/a.ts', before: 'c', after: 'd' },
+    ]);
+  });
+
+  it('reads a Claude Write as a whole-file replacement with no known before', () => {
+    const parsed = parseHookInput(
+      JSON.stringify({
+        tool_name: 'Write',
+        tool_input: { file_path: 'src/a.ts', content: 'x' },
+      }),
+    );
+    expect(parsed.edits).toEqual([{ file: 'src/a.ts', after: 'x' }]);
+  });
+
+  it('reads Copilot str_replace_editor and create arguments', () => {
+    const replace = parseHookInput(
+      JSON.stringify({
+        toolName: 'str_replace_editor',
+        toolArgs: { path: 'src/a.ts', old_str: 'a', new_str: 'b' },
+      }),
+    );
+    expect(replace.edits).toEqual([
+      { file: 'src/a.ts', before: 'a', after: 'b' },
+    ]);
+    const create = parseHookInput(
+      JSON.stringify({
+        toolName: 'create',
+        toolArgs: { path: 'src/a.ts', file_text: 'x' },
+      }),
+    );
+    expect(create.edits).toEqual([{ file: 'src/a.ts', after: 'x' }]);
+  });
+
+  it('reads a Codex apply_patch per file, removed lines before and added after', () => {
+    const command = [
+      '*** Begin Patch',
+      '*** Update File: src/a.ts',
+      '@@',
+      ' keep',
+      '-old',
+      '+new',
+      '*** Add File: src/b.ts',
+      '+fresh',
+      '*** End Patch',
+    ].join('\n');
+    const parsed = parseHookInput(
+      JSON.stringify({ tool_name: 'apply_patch', tool_input: { command } }),
+    );
+    expect(parsed.edits).toEqual([
+      { file: 'src/a.ts', before: 'old', after: 'new' },
+      { file: 'src/b.ts', before: '', after: 'fresh' },
+    ]);
+  });
+
+  it('ignores patch lines that come before any file header', () => {
+    expect(patchEdits(['*** Begin Patch', '+stray', '-gone'])).toBeUndefined();
+  });
+
+  it('attributes nothing to a deleted file, or to the file before it', () => {
+    expect(
+      patchEdits([
+        '*** Update File: src/a.ts',
+        '+new',
+        '*** Delete File: src/b.ts',
+        '+smuggled',
+        '-removed',
+      ]),
+    ).toEqual([{ file: 'src/a.ts', before: '', after: 'new' }]);
+  });
+
+  it('keeps a moved file’s hunks with the file being updated', () => {
+    expect(
+      patchEdits([
+        '*** Update File: src/a.ts',
+        '*** Move to: src/b.ts',
+        '-old',
+        '+new',
+      ]),
+    ).toEqual([{ file: 'src/a.ts', before: 'old', after: 'new' }]);
+  });
+
+  it('trims the path off a patch header', () => {
+    expect(patchEdits(['*** Add File: src/a.ts  ', '+x'])).toEqual([
+      { file: 'src/a.ts', before: '', after: 'x' },
+    ]);
+  });
+
+  it('reads a header only at the start of a line', () => {
+    expect(
+      patchEdits(['*** Update File: src/a.ts', '+see *** Add File: evil.ts']),
+    ).toEqual([
+      { file: 'src/a.ts', before: '', after: 'see *** Add File: evil.ts' },
+    ]);
+  });
+
+  it('needs both halves of a replacement', () => {
+    for (const toolInput of [
+      { file_path: 'src/a.ts', old_string: 'a' },
+      { file_path: 'src/a.ts', new_string: 'b' },
+    ]) {
+      expect(
+        parseHookInput(
+          JSON.stringify({ tool_name: 'Edit', tool_input: toolInput }),
+        ).edits,
+      ).toBeUndefined();
+    }
+  });
+
+  it('skips MultiEdit entries that are not edits', () => {
+    const parsed = parseHookInput(
+      JSON.stringify({
+        tool_name: 'MultiEdit',
+        tool_input: {
+          file_path: 'src/a.ts',
+          edits: [null, 'text', { old_string: 'a', new_string: 'b' }],
+        },
+      }),
+    );
+    expect(parsed.edits).toEqual([
+      { file: 'src/a.ts', before: 'a', after: 'b' },
+    ]);
+  });
+
+  it('reads no edits when the payload names no file', () => {
+    const parsed = parseHookInput(
+      JSON.stringify({
+        tool_name: 'Edit',
+        tool_input: { old_string: 'a', new_string: 'b' },
+      }),
+    );
+    expect(parsed.edits).toBeUndefined();
+  });
+
+  it('reads no edits from a tool that changes nothing', () => {
+    const parsed = parseHookInput(
+      JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'ls' } }),
+    );
+    expect(parsed.edits).toBeUndefined();
+  });
+});

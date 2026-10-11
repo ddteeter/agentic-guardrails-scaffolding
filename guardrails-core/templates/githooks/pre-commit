@@ -7,7 +7,15 @@
 # UNLESS core.hooksPath already points at another hooks directory, which they
 # will not overwrite. In that case call the line below from the pre-commit hook
 # you already have, and this file stays inert.
-node "./node_modules/guardrails-core/dist/cli.mjs" gate --mode=commit || {
+cli="./node_modules/guardrails-core/dist/cli.mjs"
+# A checkout with no install (a fresh clone or worktree) cannot run the gate.
+# Say that, rather than "resolve violations": there are none to find. Still
+# blocking -- a gate that could not run is not a gate that passed.
+[ -f "$cli" ] || {
+  echo "guardrails: commit blocked — guardrails-core is not installed in this checkout. Run 'npm ci' here, then commit again." >&2
+  exit 1
+}
+node "$cli" gate --mode=commit || {
   echo "guardrails: commit blocked — resolve violations or run 'guardrails verify'." >&2
   exit 1
 }

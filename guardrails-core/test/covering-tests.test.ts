@@ -360,3 +360,111 @@ describe('readTestCorpus', () => {
     expect(readTestCorpus(path.join(root, 'absent')).size).toBe(0);
   });
 });
+
+describe('coveringTests — one hop through the module a test imports', () => {
+  /**
+   * A helper extracted into its own file is exercised through its parent's
+   * tests, which import the PARENT. Direct importers alone named no test for
+   * it, so once the fixer scope-lock confined a fixer to its manifest's files
+   * and their related tests, a fixer handed the helper's surviving mutants
+   * could edit nothing that would kill them -- and extraction is the very fix
+   * fixers reach for on a duplication finding.
+   */
+  const sources = new Map([
+    ['src/parent.ts', `import { helper } from './helper.js';`],
+    ['src/a.ts', `import { b } from './b.js';`],
+    ['src/b.ts', `import { target } from './target.js';`],
+  ]);
+  const readSource = (file: string): string | undefined => sources.get(file);
+
+  it('finds a test that reaches the file through a module it imports', () => {
+    const testFiles = new Map([
+      ['test/parent.test.ts', `import { parent } from '../src/parent.js';`],
+    ]);
+    expect(coveringTests('src/helper.ts', testFiles, readSource)).toEqual([
+      'test/parent.test.ts',
+    ]);
+  });
+
+  it('prefers direct importers when there are any', () => {
+    // The hint stays as narrow as the evidence allows: a test that imports
+    // the file itself is the one to strengthen.
+    const testFiles = new Map([
+      ['test/helper.test.ts', `import { helper } from '../src/helper.js';`],
+      ['test/parent.test.ts', `import { parent } from '../src/parent.js';`],
+    ]);
+    expect(coveringTests('src/helper.ts', testFiles, readSource)).toEqual([
+      'test/helper.test.ts',
+    ]);
+  });
+
+  it('stops after one hop', () => {
+    // Every further hop widens what the fixer may edit, for evidence that
+    // gets weaker each time.
+    const testFiles = new Map([
+      ['test/a.test.ts', `import { a } from '../src/a.js';`],
+    ]);
+    expect(coveringTests('src/target.ts', testFiles, readSource)).toEqual([]);
+  });
+
+  it('stays direct-only without a source reader', () => {
+    const testFiles = new Map([
+      ['test/parent.test.ts', `import { parent } from '../src/parent.js';`],
+    ]);
+    expect(coveringTests('src/helper.ts', testFiles)).toEqual([]);
+  });
+
+  it('finds a test whose bridging import is not its only import', () => {
+    const testFiles = new Map([
+      [
+        'test/mixed.test.ts',
+        `import { x } from '../src/unrelated.js';\nimport { parent } from '../src/parent.js';`,
+      ],
+    ]);
+    expect(coveringTests('src/helper.ts', testFiles, readSource)).toEqual([
+      'test/mixed.test.ts',
+    ]);
+  });
+
+  it('reads each module at most once, whether or not it bridges', () => {
+    const reads: string[] = [];
+    const countingReader = (file: string): string | undefined => {
+      reads.push(file);
+      return sources.get(file);
+    };
+    const testFiles = new Map([
+      [
+        'test/one.test.ts',
+        `import { x } from '../src/unrelated.js';\nimport { parent } from '../src/parent.js';`,
+      ],
+      [
+        'test/two.test.ts',
+        `import { x } from '../src/unrelated.js';\nimport { parent } from '../src/parent.js';`,
+      ],
+    ]);
+    coveringTests('src/helper.ts', testFiles, countingReader);
+    expect(reads.filter((file) => file === 'src/parent.ts')).toEqual([
+      'src/parent.ts',
+    ]);
+    expect(reads.filter((file) => file === 'src/unrelated.ts')).toEqual([
+      'src/unrelated.ts',
+    ]);
+  });
+
+  it('is wired through withCoveringTests', () => {
+    const testFiles = new Map([
+      ['test/parent.test.ts', `import { parent } from '../src/parent.js';`],
+    ]);
+    const violation = {
+      ruleId: 'stryker/survived',
+      file: 'src/helper.ts',
+      message: 'm',
+      severity: 'error' as const,
+      fixable: false,
+      tool: 'stryker',
+    };
+    expect(withCoveringTests([violation], () => testFiles, readSource)).toEqual(
+      [{ ...violation, relatedTests: ['test/parent.test.ts'] }],
+    );
+  });
+});
