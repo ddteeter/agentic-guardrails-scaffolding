@@ -18,9 +18,12 @@ import {
   isFixerLease,
   pruneLeases,
   withDeferral,
+  withHeartbeat,
   withLease,
   withoutLease,
   type FixerLease,
+  FIXER_HEARTBEAT_REFRESH_MS,
+  FIXER_IDLE_MS,
   LEASE_TTL_MS,
   MAX_LEASE_DEFERRALS,
 } from '../src/state.js';
@@ -335,6 +338,10 @@ describe('isFixerLease', () => {
     expect(isFixerLease(lease())).toBe(true);
   });
 
+  it('accepts a lease carrying a fixer heartbeat', () => {
+    expect(isFixerLease(lease({ lastSeenAt: 2000 }))).toBe(true);
+  });
+
   it.each([
     ['a non-record', 'nope'],
     ['a non-string owner', { ...lease(), owner: 1 }],
@@ -344,6 +351,7 @@ describe('isFixerLease', () => {
     ['a non-string file entry', { ...lease(), files: ['src/a.ts', 7] }],
     ['a non-numeric grantedAt', { ...lease(), grantedAt: '1000' }],
     ['a non-numeric deferrals', { ...lease(), deferrals: '0' }],
+    ['a non-numeric lastSeenAt', { ...lease(), lastSeenAt: '1000' }],
   ])('rejects %s', (_label, value) => {
     expect(isFixerLease(value)).toBe(false);
   });
@@ -420,6 +428,44 @@ describe('findLeaseOverlap', () => {
     ).toBeUndefined();
   });
 
+  it('keeps honouring a waited-on lease while its fixer is seen working', () => {
+    // The one-wait bound exists for a fixer that DIED. A fixer whose tool
+    // calls are still arriving is not dead, and giving up on it is what
+    // invites a second fixer into the same files.
+    expect(
+      findLeaseOverlap(
+        [lease({ deferrals: 3, lastSeenAt: now - FIXER_IDLE_MS + 1 })],
+        'stop:sid',
+        ['src/a.ts'],
+        now,
+      )?.owner,
+    ).toBe('commit:sid-commit');
+  });
+
+  it('falls back to the one-wait bound once the fixer has gone quiet', () => {
+    // Pinned to the literal for the same reason as the TTL above.
+    expect(FIXER_IDLE_MS).toBe(5 * 60 * 1000);
+    expect(
+      findLeaseOverlap(
+        [lease({ deferrals: 1, lastSeenAt: now - FIXER_IDLE_MS })],
+        'stop:sid',
+        ['src/a.ts'],
+        now,
+      ),
+    ).toBeUndefined();
+  });
+
+  it('lets a heartbeat extend the wait but never past the TTL', () => {
+    expect(
+      findLeaseOverlap(
+        [lease({ grantedAt: 0, deferrals: 1, lastSeenAt: LEASE_TTL_MS })],
+        'stop:sid',
+        ['src/a.ts'],
+        LEASE_TTL_MS + 1,
+      ),
+    ).toBeUndefined();
+  });
+
   it('picks the lease with the largest intersection', () => {
     const overlap = findLeaseOverlap(
       [
@@ -492,6 +538,38 @@ describe('lease transforms', () => {
     expect(withoutLease([lease(), other], 'commit:sid-commit')).toEqual([
       other,
     ]);
+  });
+
+  it('withHeartbeat stamps every lease the session owns, on either rung', () => {
+    const next = withHeartbeat(
+      [
+        lease({ owner: 'stop:sid' }),
+        lease({ owner: 'commit:sid-commit' }),
+        lease({ owner: 'commit:sid2-commit' }),
+        lease({ owner: 'stop:other' }),
+      ],
+      'sid',
+      5000,
+    );
+    expect(next.map((entry) => [entry.owner, entry.lastSeenAt])).toEqual([
+      ['stop:sid', 5000],
+      ['commit:sid-commit', 5000],
+      ['commit:sid2-commit', undefined],
+      ['stop:other', undefined],
+    ]);
+  });
+
+  it('withHeartbeat leaves a recent stamp alone, so a busy fixer is not a write per call', () => {
+    const recent = lease({ owner: 'stop:sid', lastSeenAt: 5000 });
+    const leases = [recent];
+    expect(FIXER_HEARTBEAT_REFRESH_MS).toBe(30 * 1000);
+    expect(
+      withHeartbeat(leases, 'sid', 5000 + FIXER_HEARTBEAT_REFRESH_MS - 1)[0],
+    ).toBe(recent);
+    expect(
+      withHeartbeat(leases, 'sid', 5000 + FIXER_HEARTBEAT_REFRESH_MS)[0]
+        ?.lastSeenAt,
+    ).toBe(5000 + FIXER_HEARTBEAT_REFRESH_MS);
   });
 
   it('withDeferral counts the wait against the lease that was waited on', () => {

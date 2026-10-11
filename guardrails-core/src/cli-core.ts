@@ -78,12 +78,17 @@ import { collectSessionScope, isWithinRepo } from './scope.js';
 import {
   baseReferenceCache,
   deleteSession,
+  isAgentIdentityReported,
+  loadLeases,
   loadRecurrence,
   loadSession,
+  markAgentIdentityReported,
   readDecisions,
+  saveLeases,
   stateDirectory,
   sweepStale,
 } from './state-store.js';
+import { withHeartbeat } from './state.js';
 import { hasErrors, isViolation, type Violation } from './violation.js';
 import type { Rung } from './verify/analyzer-policy.js';
 import { runVerify, silentSkipWarning } from './verify/index.js';
@@ -1174,38 +1179,121 @@ const FIXER_AGENT_TYPES: ReadonlySet<string> = new Set([
  * agent or from a sibling subagent fanned out in parallel, and confines all of
  * them.
  *
- * The dialect is what makes absence readable, and it is why `agentId` is
- * parsed at all:
+ * A PRESENT `agentId` is read the same way on every host: the fixer types are
+ * confined, any other reported type is not, and a subagent whose type we
+ * somehow did not get is confined -- unknown is not "not the fixer". The host
+ * writes these fields, so a fixer cannot rename itself out of the lock.
  *
- * - **claude** reports identity on EVERY hook event, and its SDK documents
+ * An ABSENT one is where the hosts differ, and `isAbsenceMainThread` carries
+ * that:
+ *
+ * - **claude** reports identity on every hook event, and its SDK documents
  *   `agent_id` as present only inside a subagent -- "Absent for the main
- *   thread, even in --agent sessions". So on this dialect a missing `agentId`
- *   positively identifies the MAIN THREAD, which is never the fixer. Without
- *   this branch the main agent stayed confined during a fix, because a normal
- *   session's main thread sends neither field and looked identical to a host
- *   that cannot report at all.
- * - **codex / copilot** report nothing on `preToolUse` -- Copilot only on
- *   `subagentStart`/`subagentStop`, Codex not at all (`openai/codex#16226`).
- *   Absence there is "I cannot tell you", so the session-scoped lock stands.
- *   That is the conservative direction on purpose: Codex has no per-agent tool
- *   allowlist, so this hook is its only enforcement.
- *
- * No surface ends up less protected than before; what changes is how narrowly
- * the lock applies where the host gives us enough to narrow it.
+ *   thread, even in --agent sessions". Absence positively identifies the MAIN
+ *   THREAD, which is never the fixer.
+ * - **codex** has reported subagent identity on `PreToolUse` since
+ *   openai/codex#22882, but its main-thread payload is identical to every
+ *   payload an older Codex sent, fixer included. So absence means "main
+ *   thread" only once this session has shown a present `agent_id` (see
+ *   `isAgentIdentityReported`); until then the session-scoped lock stands,
+ *   because Codex has no per-agent tool allowlist and this hook is its only
+ *   enforcement.
+ * - **copilot** reports nothing on `preToolUse` -- only on
+ *   `subagentStart`/`subagentStop` -- so absence is "I cannot tell you" and
+ *   everyone in the session is confined.
  */
-function isFixerCaller(input: HookInput, dialect: Dialect): boolean {
-  if (dialect !== 'claude') {
-    // These hosts report nothing on `preToolUse`, so there is nothing to
-    // narrow by: everyone in the session is confined, as before.
-    return true;
-  }
+function isFixerCaller(
+  input: HookInput,
+  isAbsenceMainThread: boolean,
+): boolean {
   if (input.agentId === undefined) {
-    return false;
+    return !isAbsenceMainThread;
   }
-  // A subagent whose type we somehow did not get is confined rather than
-  // trusted: unknown is not the same as "not the fixer".
   return (
     input.agentType === undefined || FIXER_AGENT_TYPES.has(input.agentType)
+  );
+}
+
+/**
+ * Is this a call the host positively attributes to a fixer -- a fixer TYPE,
+ * not merely a caller the lock confines? Only that is evidence the fixer is
+ * alive; a heartbeat from anything else would keep a dead fixer's lease
+ * looking held.
+ */
+function isReportedFixer(input: HookInput): boolean {
+  // No type is no fixer type: `?? ''` rather than a separate guard, which
+  // would be redundant at runtime and exist only to narrow for the compiler.
+  return (
+    input.agentId !== undefined && FIXER_AGENT_TYPES.has(input.agentType ?? '')
+  );
+}
+
+/**
+ * Whether a missing `agentId` identifies the main thread on this dialect, for
+ * this session -- see `isFixerCaller`. A Codex call that carries one is the
+ * proof, so it is recorded here for the calls after it.
+ */
+function isAbsenceMainThread(
+  input: HookInput,
+  dialect: Dialect,
+  directory: string,
+  sessionId: string,
+): boolean {
+  if (dialect === 'claude') {
+    return true;
+  }
+  if (dialect !== 'codex') {
+    return false;
+  }
+  const isReported = isAgentIdentityReported(directory, sessionId);
+  if (!isReported && input.agentId !== undefined) {
+    markAgentIdentityReported(directory, sessionId);
+  }
+  return isReported;
+}
+
+/**
+ * Stamp the session's fixer leases as seen working (see
+ * `FixerLease.lastSeenAt`), in every checkout the call touches. The fixer's
+ * own tool calls pass through this hook, which makes it the one place its
+ * liveness is visible to the gates waiting on it.
+ */
+function recordFixerHeartbeat(
+  roots: readonly string[],
+  sessionId: string,
+  now: number,
+): void {
+  const unique = new Set(roots.map((entry) => path.resolve(entry)));
+  for (const root of unique) {
+    const directory = stateDirectory(root);
+    const leases = loadLeases(directory);
+    const next = withHeartbeat(leases, sessionId, now);
+    if (next.some((lease, index) => lease !== leases[index])) {
+      saveLeases(directory, next);
+    }
+  }
+}
+
+/**
+ * Whether the scope-lock applies to this caller, given an open fix loop --
+ * and, as a side effect, the bookkeeping that caller's identity proves: a
+ * Codex `agent_id` settles how to read its absence for the rest of the
+ * session, and a fixer's call is its heartbeat.
+ */
+function isConfinedCaller(
+  input: HookInput,
+  dialect: Dialect,
+  repoRoot: string,
+  roots: readonly string[],
+  now: number,
+): boolean {
+  const sessionId = input.sessionId ?? 'default';
+  if (isReportedFixer(input)) {
+    recordFixerHeartbeat(roots, sessionId, now);
+  }
+  return isFixerCaller(
+    input,
+    isAbsenceMainThread(input, dialect, stateDirectory(repoRoot), sessionId),
   );
 }
 
@@ -1225,14 +1313,13 @@ async function scopeCheckCommand(
   const targetRoots = targets
     .map((target) => findGitRoot(target.absolute))
     .filter((found) => found !== undefined);
-  const scope = collectSessionScope(
-    [repoRoot, ...targetRoots],
-    input.sessionId,
-    Date.now(),
-  );
+  const now = Date.now();
+  const roots = [repoRoot, ...targetRoots];
+  const scope = collectSessionScope(roots, input.sessionId, now);
   // Every branch below is a FIXER lock, so a caller the host tells us is not
   // the fixer is left alone entirely.
-  const isConfined = scope.active && isFixerCaller(input, dialect);
+  const isConfined =
+    scope.active && isConfinedCaller(input, dialect, repoRoot, roots, now);
   // Codex custom agents do not expose a per-agent tool allowlist. While a
   // fixer manifest is active, the repo-level hook therefore enforces the same
   // no-shell/no-MCP boundary that Claude and Copilot express declaratively.

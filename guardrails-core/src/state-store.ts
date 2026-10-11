@@ -9,6 +9,7 @@
 
 import {
   appendFileSync,
+  existsSync,
   mkdirSync,
   readdirSync,
   readFileSync,
@@ -42,6 +43,35 @@ export function sessionFile(directory: string, sessionId: string): string {
 
 export function manifestFile(directory: string, sessionId: string): string {
   return path.join(directory, `${sessionId}.last.json`);
+}
+
+const AGENT_IDENTITY_SUFFIX = '.identity.json';
+
+/**
+ * Whether this session's host has been seen reporting agent identity on a tool
+ * call -- see `isFixerCaller` in `cli-core.ts`, which is the only reader.
+ *
+ * Codex's main thread sends no agent fields, and neither did any Codex call
+ * before it learned to report subagent identity. The payloads are otherwise
+ * identical, so the only proof that a session's Codex is new enough to read a
+ * missing `agent_id` as "main thread" is having seen one present.
+ */
+function agentIdentityFile(directory: string, sessionId: string): string {
+  return path.join(directory, `${sessionId}${AGENT_IDENTITY_SUFFIX}`);
+}
+
+export function markAgentIdentityReported(
+  directory: string,
+  sessionId: string,
+): void {
+  writeJson(agentIdentityFile(directory, sessionId), { reported: true });
+}
+
+export function isAgentIdentityReported(
+  directory: string,
+  sessionId: string,
+): boolean {
+  return existsSync(agentIdentityFile(directory, sessionId));
 }
 
 const CLEAN_TREE_FILE = 'clean-tree.json';
@@ -302,6 +332,7 @@ export function saveSession(
 export function deleteSession(directory: string, sessionId: string): void {
   rmSync(sessionFile(directory, sessionId), { force: true });
   rmSync(manifestFile(directory, sessionId), { force: true });
+  rmSync(agentIdentityFile(directory, sessionId), { force: true });
 }
 
 export function loadRecurrence(directory: string): RecurrenceCounts {
@@ -452,7 +483,10 @@ export function sweepStale(
       // makes that ordinary race an idempotent delete rather than an ENOENT
       // that bricks SessionStart.
       removeFile(file, { force: true });
-      if (!name.endsWith('.last.json')) {
+      if (
+        !name.endsWith('.last.json') &&
+        !name.endsWith(AGENT_IDENTITY_SUFFIX)
+      ) {
         deleted.push(name);
       }
     }

@@ -44,17 +44,21 @@ export interface HookInput {
    * ABSENCE IS THE SIGNAL: Claude Code sets this only inside a subagent, never
    * on the main thread, and its SDK documents it as the field to use for that
    * distinction (not `agentType`, which is also set on the main thread of an
-   * `--agent` session). Copilot's `preToolUse` and Codex carry no agent fields
-   * at all -- see `agentType`.
+   * `--agent` session). Codex sends it for thread-spawned subagents
+   * (openai/codex#22882) and omits it on the main thread, as Claude does --
+   * but so did every Codex call before that change, so its absence there
+   * proves nothing on its own (see `isFixerCaller`). Copilot's `preToolUse`
+   * carries no agent fields at all.
    */
   agentId?: string;
   /**
    * The calling agent's type name, e.g. `guardrail-fixer`.
    *
-   * Available on Claude Code's hook events. NOT available on Copilot's
-   * `preToolUse` (only on `subagentStart`/`subagentStop`) and not available on
-   * Codex at all (`openai/codex#16226`). Consumers must therefore treat its
-   * absence as "this host cannot tell me", never as "this is not a fixer".
+   * Available on Claude Code's hook events, and on Codex's for thread-spawned
+   * subagents (the custom agent's name). NOT available on Copilot's
+   * `preToolUse` (only on `subagentStart`/`subagentStop`). Consumers must
+   * therefore treat its absence as "this host cannot tell me", never as "this
+   * is not a fixer".
    */
   agentType?: string;
   /**

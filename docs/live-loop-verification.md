@@ -163,6 +163,9 @@ orchestrating session spawns `isolation: "worktree"` subagents:
   root's `.guardrails/state/decisions.jsonl`, not the worktree's.
 - **Idle turns are cheap.** End two turns in a row without editing anything.
   The second Stop logs `"cached": true` and takes well under the first's time.
+- **A running fixer is seen.** Make the Stop gate delegate, then spawn the
+  fixer. Its first tool call stamps `lastSeenAt` on the session's lease in
+  `.guardrails/state/leases.json`; the main thread's own calls do not.
 
 ---
 

@@ -539,15 +539,18 @@ Things worth knowing before you hit them, rather than after:
   | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
   | **Claude Code** | unaffected — `agent_id` appears only inside a subagent, so its absence identifies the main thread and a non-fixer `agent_type` identifies a sibling |
   | **Copilot**     | confined — `preToolUse` carries no agent fields                                                                                                     |
-  | **Codex**       | confined — no agent fields at all (`openai/codex#16226`)                                                                                            |
+  | **Codex**       | siblings unaffected (they report `agent_type`); the main thread confined until the session's fixer has reported its own identity, then unaffected   |
 
-  On Copilot and Codex, a fan-out of unrelated subagents during a fix is locked
-  to the fixer's manifest, and the main agent cannot edit outside it either, so
-  a fix cycle blocks the turn rather than overlapping with it. This is the
-  conservative direction on purpose: Codex has no per-agent tool allowlist, so
-  the hook is its only enforcement, and relaxing it there would remove a real
-  guarantee to buy convenience. If `openai/codex#16226` lands, Codex joins the
-  first row.
+  On Copilot, a fan-out of unrelated subagents during a fix is locked to the
+  fixer's manifest, and the main agent cannot edit outside it either, so a fix
+  cycle blocks the turn rather than overlapping with it. Codex has sent
+  `agent_id`/`agent_type` for thread-spawned subagents since
+  `openai/codex#22882`, but its main-thread payload is identical to what an
+  older Codex sent for every agent, fixer included. So a missing `agent_id`
+  reads as "main thread" only after a fixer in the same session has shown one;
+  before that, the main thread stays confined. That is the conservative
+  direction on purpose: Codex has no per-agent tool allowlist, so the hook is
+  its only enforcement.
 
   A commit-gate block opens the same lock for the fixer it names. On Copilot
   and Codex that means the session is confined to the commit manifest's files
