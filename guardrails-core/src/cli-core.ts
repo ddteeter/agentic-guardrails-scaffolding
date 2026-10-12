@@ -74,6 +74,8 @@ import {
   HOOKS_DIRECTORY,
 } from './scaffold/hooks-path.js';
 import { initCommand } from './scaffold/init.js';
+import { isPushGatedByHook } from './push-hook.js';
+import { COMMAND_START, withoutQuotedHeredocBodies } from './shell-command.js';
 import { collectSessionScope, isWithinRepo } from './scope.js';
 import {
   baseReferenceCache,
@@ -649,7 +651,6 @@ const SHELL_TOOLS = /^(?:bash|shell|powershell)$/i;
  * `xargs git commit` remain misses, for the reason already recorded -- neither
  * skips the git hooks, so the git-native floor still catches them.
  */
-const COMMAND_START = String.raw`(?:^|[\n;&|()\`{}])[ \t]*`;
 /**
  * git's global options: a flag token, or `-c`/`-C` plus its separate value.
  *
@@ -675,59 +676,24 @@ const GIT_GLOBAL_OPTIONS = String.raw`(?:[ \t]+(?:-[cC][ \t]+[^-\s][^ \t]*|-[^ \
 const GIT_WRITE = new RegExp(
   `${COMMAND_START}git${GIT_GLOBAL_OPTIONS}[ \t]+(?:commit|push)\\b`,
 );
+const GIT_COMMIT = new RegExp(
+  `${COMMAND_START}git${GIT_GLOBAL_OPTIONS}[ \t]+commit\\b`,
+);
 
 /**
- * A heredoc opener: `<<WORD`, `<<-WORD`, or a quoted delimiter (`<<'WORD'`,
- * `<<"WORD"`, `<<\WORD`). Not a here-string: `<<<` is excluded on both sides.
- * Groups: 1 the `-` that lets the terminator be tab-indented, 2-4 a QUOTED
- * delimiter, 5 an unquoted one.
+ * What takes a push out of reach of its pre-push hook: the flag that skips it,
+ * or a hooks path chosen on the command line. A push carrying either is gated
+ * here as it always was, whatever the hook says.
  */
-const HEREDOC_OPENER =
-  /(?<!<)<<(?!<)(-?)[ \t]*(?:'([^'\n]+)'|"([^"\n]+)"|\\(\w+)|(\w+))/g;
+const HOOK_BYPASS = /--no-verify\b|hooksPath/;
 
 /**
- * The command with the bodies of its QUOTED heredocs removed.
- *
- * A quoted heredoc is literal text -- the shell expands nothing inside it --
- * yet its backticks used to count as command separators, so a script or a
- * commit message that merely quoted a git write in backticks ran the commit
- * gate. Unquoted heredocs DO expand `$(...)` and backticks, so their bodies are
- * kept. Every opener on a line queues its body in order, quoted or not, so an
- * unquoted body is never mistaken for a quoted one's.
- *
- * Fails toward gating: if any body is left unterminated the command is
- * returned untouched, because a wrong guess here must cost a spurious gate
- * run, never a missed commit.
+ * Is this a push and nothing else -- no commit riding along, no hook bypass --
+ * so that the pre-push hook is the gate it will meet?
  */
-function withoutQuotedHeredocBodies(command: string): string {
-  const lines = command.split('\n');
-  const dropped = new Set<number>();
-  const pending: { word: string; isIndented: boolean; isQuoted: boolean }[] =
-    [];
-  for (const [index, line] of lines.entries()) {
-    const [body] = pending;
-    if (body === undefined) {
-      for (const opener of line.matchAll(HEREDOC_OPENER)) {
-        const [, dash, single, double, escaped, bare] = opener;
-        const quoted = single ?? double ?? escaped;
-        pending.push({
-          word: quoted ?? bare ?? '',
-          isIndented: dash === '-',
-          isQuoted: quoted !== undefined,
-        });
-      }
-      continue;
-    }
-    const candidate = body.isIndented ? line.replace(/^\t+/, '') : line;
-    if (candidate === body.word) {
-      pending.shift();
-    } else if (body.isQuoted) {
-      dropped.add(index);
-    }
-  }
-  return pending.length === 0
-    ? lines.filter((_line, index) => !dropped.has(index)).join('\n')
-    : command;
+function isPlainPush(command: string): boolean {
+  const text = withoutQuotedHeredocBodies(command);
+  return !GIT_COMMIT.test(text) && !HOOK_BYPASS.test(text);
 }
 
 /**
@@ -761,6 +727,15 @@ async function gatePreToolUseCommand(
     return; // allow (silent)
   }
   const repoRoot = await commandRepoRoot(dependencies, input.cwd);
+  // A push whose pre-push hook runs the push gate meets a superset of these
+  // checks there, under the machine-wide lock. Pre-running them here bought an
+  // unlocked, deadline-bounded duplicate. A commit is unchanged.
+  if (
+    isPlainPush(input.command ?? '') &&
+    (await isPushGatedByHook(dependencies.exec, repoRoot))
+  ) {
+    return; // allow (silent): the pre-push hook is the gate
+  }
   const config = loadConfig(repoRoot);
   // Quiet: this rung answers a hook with a JSON decision.
   const base = await resolveBase(dependencies, repoRoot, config);

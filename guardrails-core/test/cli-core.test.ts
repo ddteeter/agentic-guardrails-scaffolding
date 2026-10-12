@@ -4613,3 +4613,174 @@ describe('gate --mode=push: a tree that already passed is not re-checked', () =>
     );
   });
 });
+
+/**
+ * `dirtyExec`, plus a git that names `hookPath` as the effective pre-push hook.
+ * The gate DENIES whenever it runs, so "did pretooluse pre-run the push?" is
+ * observable as a deny.
+ */
+function hookedExec(hookPath: string, code = 0): Exec {
+  const dirty = dirtyExec();
+  return (command, args, options) =>
+    args.join(' ') === 'rev-parse --git-path hooks/pre-push'
+      ? Promise.resolve({ stdout: `${hookPath}\n`, stderr: '', code })
+      : dirty(command, args, options);
+}
+
+function writeHook(relative: string, body: string, mode = 0o755): void {
+  const file = path.join(root, relative);
+  mkdirSync(path.dirname(file), { recursive: true });
+  writeFileSync(file, body, { mode });
+}
+
+const GATED_HOOK =
+  '#!/bin/sh\nnode ./node_modules/guardrails-core/dist/cli.mjs gate --mode=push || exit 1\n';
+
+async function pushVerdict(command: string, exec: Exec): Promise<string> {
+  writeFileSync(
+    path.join(root, 'guardrails.config.json'),
+    JSON.stringify({ enforcement: 'block' }),
+  );
+  await runCommand(
+    'gate',
+    ['--mode=pretooluse'],
+    dependencies({
+      exec,
+      readStdin: () =>
+        Promise.resolve(
+          JSON.stringify({
+            tool_name: 'Bash',
+            tool_input: { command },
+            cwd: root,
+          }),
+        ),
+    }),
+  );
+  return out.join('');
+}
+
+describe('pretooluse leaves a push to the pre-push hook that gates it', () => {
+  it('does not pre-run the gate when the pre-push hook runs gate --mode=push', async () => {
+    writeHook('.githooks/pre-push', GATED_HOOK);
+    expect(
+      await pushVerdict(
+        'git push -u origin HEAD',
+        hookedExec('.githooks/pre-push'),
+      ),
+    ).toBe('');
+  });
+
+  it('reads an absolute hook path as git reports it', async () => {
+    writeHook('hooks/pre-push', GATED_HOOK);
+    expect(
+      await pushVerdict(
+        'git push',
+        hookedExec(path.join(root, 'hooks/pre-push')),
+      ),
+    ).toBe('');
+  });
+
+  it.each([
+    ['there is no pre-push hook', '', GATED_HOOK, 0o755, 0],
+    [
+      'git cannot name the hook path',
+      '.githooks/pre-push',
+      GATED_HOOK,
+      0o755,
+      128,
+    ],
+    [
+      'the hook does not run the push gate',
+      '.githooks/pre-push',
+      '#!/bin/sh\nnpm test\n',
+      0o755,
+      0,
+    ],
+    [
+      'the hook only MENTIONS it in a comment',
+      '.githooks/pre-push',
+      '#!/bin/sh\n  # gate --mode=push\nnpm test\n',
+      0o755,
+      0,
+    ],
+    [
+      'the hook is not executable, so git skips it',
+      '.githooks/pre-push',
+      GATED_HOOK,
+      0o644,
+      0,
+    ],
+    [
+      'the hook is a husky stub that delegates elsewhere',
+      '.husky/_/pre-push',
+      '#!/usr/bin/env sh\n. "$(dirname "$0")/h"\n',
+      0o755,
+      0,
+    ],
+  ])(
+    'still gates the push when %s',
+    async (_label, named, body, mode, code) => {
+      if (named !== '') {
+        writeHook(named === '' ? 'unused' : named, body, mode);
+      }
+      expect(
+        await pushVerdict(
+          'git push',
+          hookedExec(named === '' ? '.git/hooks/pre-push' : named, code),
+        ),
+      ).toContain('violation(s)');
+    },
+  );
+
+  it.each([
+    ['a word that merely ends in gate', '#!/bin/sh\nnotgate --mode=push\n'],
+    ['a different mode', '#!/bin/sh\nguardrails gate --mode=pushy\n'],
+  ])('still gates the push when the hook runs %s', async (_label, body) => {
+    writeHook('.githooks/pre-push', body);
+    expect(
+      await pushVerdict('git push', hookedExec('.githooks/pre-push')),
+    ).toContain('violation(s)');
+  });
+
+  it('accepts any spacing between gate and its mode', async () => {
+    writeHook(
+      '.githooks/pre-push',
+      '#!/bin/sh\nguardrails gate \t --mode=push\n',
+    );
+    expect(
+      await pushVerdict('git push', hookedExec('.githooks/pre-push')),
+    ).toBe('');
+  });
+
+  it.each([
+    ['skips the hook with --no-verify', 'git push --no-verify'],
+    ['overrides the hooks path', 'git -c core.hooksPath=/dev/null push'],
+    ['also commits, which is still gated here', 'git commit -m x && git push'],
+  ])('still gates a push that %s', async (_label, command) => {
+    writeHook('.githooks/pre-push', GATED_HOOK);
+    expect(
+      await pushVerdict(command, hookedExec('.githooks/pre-push')),
+    ).toContain('violation(s)');
+  });
+
+  it('never changes a commit, hook or no hook', async () => {
+    writeHook('.githooks/pre-push', GATED_HOOK);
+    expect(
+      await pushVerdict('git commit -m x', hookedExec('.githooks/pre-push')),
+    ).toContain('violation(s)');
+  });
+
+  it('asks git from the repository root', async () => {
+    writeHook('.githooks/pre-push', GATED_HOOK);
+    const cwds: (string | undefined)[] = [];
+    const inner = hookedExec('.githooks/pre-push');
+    const exec: Exec = (command, args, options) => {
+      if (args[0] === 'rev-parse' && args[1] === '--git-path') {
+        cwds.push(options?.cwd);
+      }
+      return inner(command, args, options);
+    };
+    await pushVerdict('git push', exec);
+    expect(cwds).toEqual([root]);
+  });
+});
