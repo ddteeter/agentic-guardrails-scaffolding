@@ -25,10 +25,12 @@ import {
   markAgentIdentityReported,
   loadCleanTree,
   loadLeases,
+  loadPushPass,
   loadRecurrence,
   loadSession,
   saveCleanTree,
   saveLeases,
+  savePushPass,
   readDecisions,
   readViolations,
   recurrenceFile,
@@ -736,5 +738,57 @@ describe('clean tree fingerprint', () => {
 
     expect(sweepStale(directory, 1000, Date.now())).toEqual([]);
     expect(loadCleanTree(directory)).toBe('TREE');
+  });
+});
+
+function pushPassPath(): string {
+  return path.join(directory, 'push-pass.json');
+}
+
+describe('push pass memo', () => {
+  it('round-trips the fingerprint and the base', () => {
+    savePushPass(directory, { fingerprint: 'TREE|BASE|1.0.0', base: 'main' });
+    expect(loadPushPass(directory)).toEqual({
+      fingerprint: 'TREE|BASE|1.0.0',
+      base: 'main',
+    });
+  });
+
+  it('is undefined when nothing was saved', () => {
+    expect(loadPushPass(directory)).toBeUndefined();
+  });
+
+  it.each([
+    ['a non-string fingerprint', { fingerprint: 5, base: 'main' }],
+    ['a missing base', { fingerprint: 'TREE' }],
+    ['a non-string base', { fingerprint: 'TREE', base: 7 }],
+    ['an array', ['TREE', 'main']],
+    ['null', null],
+  ])('is undefined for %s', (_label, raw) => {
+    writeFileSync(pushPassPath(), JSON.stringify(raw));
+    expect(loadPushPass(directory)).toBeUndefined();
+  });
+
+  it('keeps only the two fields it knows', () => {
+    writeFileSync(
+      pushPassPath(),
+      JSON.stringify({ fingerprint: 'TREE', base: 'main', extra: true }),
+    );
+    expect(loadPushPass(directory)).toEqual({
+      fingerprint: 'TREE',
+      base: 'main',
+    });
+  });
+
+  it('survives the stale sweep, which would report it as a swept session', () => {
+    savePushPass(directory, { fingerprint: 'TREE', base: 'main' });
+    const old = new Date(Date.now() - 1000 * 60 * 60 * 24 * 30);
+    utimesSync(pushPassPath(), old, old);
+
+    expect(sweepStale(directory, 1000, Date.now())).toEqual([]);
+    expect(loadPushPass(directory)).toEqual({
+      fingerprint: 'TREE',
+      base: 'main',
+    });
   });
 });

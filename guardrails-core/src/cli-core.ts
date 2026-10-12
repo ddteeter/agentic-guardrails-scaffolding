@@ -535,6 +535,7 @@ async function gateCommitCommand(
     skippedAnalyzers,
     delegation,
     unreadable,
+    cached,
   } = await runCommitGate({
     ...commitGateOptionsFromConfig(
       repoRoot,
@@ -545,6 +546,15 @@ async function gateCommitCommand(
     changedScope,
     profile,
   });
+  if (cached === true) {
+    // Said, so a two-second push gate is never mistaken for one that ran. No
+    // early return: a cached result is an empty, unblocked one, so the rest of
+    // this function already passes it.
+    dependencies.stderr(
+      'guardrails: push gate skipped — this exact tree already passed it ' +
+        'against the same base (cached: true).\n',
+    );
+  }
   printGateDetail(dependencies, violations, findings);
   // Before the pass/block decision, because it qualifies either one: a gate
   // that blocked still checked less than the adopter thinks it did.

@@ -96,6 +96,39 @@ export function saveCleanTree(directory: string, fingerprint: string): void {
   writeJson(cleanTreeFile(directory), { fingerprint });
 }
 
+/**
+ * The last tree the PUSH rung passed, and the base ref it was checked against.
+ *
+ * The push gate is the slowest thing an agent runs -- it carries the branch-wide
+ * analyzers, mutation testing included -- and a push retried after a rejected
+ * ref, a dropped connection or a lock timeout re-checked a tree that had
+ * already passed. The base is stored beside the fingerprint, not only inside
+ * it: the fingerprint carries the merge-base SHA, which two base refs can share.
+ */
+export interface PushPass {
+  fingerprint: string;
+  base: string;
+}
+
+const PUSH_PASS_FILE = 'push-pass.json';
+
+function pushPassFile(directory: string): string {
+  return path.join(directory, PUSH_PASS_FILE);
+}
+
+export function loadPushPass(directory: string): PushPass | undefined {
+  const raw = readJson(pushPassFile(directory));
+  return isRecord(raw) &&
+    typeof raw.fingerprint === 'string' &&
+    typeof raw.base === 'string'
+    ? { fingerprint: raw.fingerprint, base: raw.base }
+    : undefined;
+}
+
+export function savePushPass(directory: string, pass: PushPass): void {
+  writeJson(pushPassFile(directory), pass);
+}
+
 export function recurrenceFile(directory: string): string {
   return path.join(directory, 'recurrence.json');
 }
@@ -437,6 +470,7 @@ const SHARED_STATE_FILES: ReadonlySet<string> = new Set([
   'recurrence.json',
   'leases.json',
   CLEAN_TREE_FILE,
+  PUSH_PASS_FILE,
 ]);
 
 /**

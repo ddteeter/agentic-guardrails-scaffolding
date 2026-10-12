@@ -4579,3 +4579,37 @@ describe('hook gates finish before the host gives up on them', () => {
     expect(errors.join('')).not.toContain('did not finish');
   });
 });
+
+/**
+A repo whose tree fingerprint is always the same one.
+*/
+const pushExec: Exec = (command, args) => {
+  const line = [command, ...args].join(' ');
+  if (line.includes('--git-path')) return Promise.resolve(ok('.git/index'));
+  if (line.includes('write-tree')) return Promise.resolve(ok('TREE1\n'));
+  if (line.includes('merge-base')) return Promise.resolve(ok('BASESHA\n'));
+  return Promise.resolve(ok(''));
+};
+
+describe('gate --mode=push: a tree that already passed is not re-checked', () => {
+  it('says it skipped, and passes', async () => {
+    writeFileSync(
+      path.join(root, 'guardrails.config.json'),
+      JSON.stringify({ enforcement: 'block', analyzers: { stryker: 'off' } }),
+    );
+    const exec = pushExec;
+    expect(
+      await runCommand('gate', ['--mode=push'], dependencies({ exec })),
+    ).toBe(0);
+    expect(errors.join('')).not.toContain('cached');
+
+    errors.length = 0;
+    expect(
+      await runCommand('gate', ['--mode=push'], dependencies({ exec })),
+    ).toBe(0);
+    expect(errors.join('')).toContain(
+      'guardrails: push gate skipped — this exact tree already passed it ' +
+        'against the same base (cached: true).',
+    );
+  });
+});

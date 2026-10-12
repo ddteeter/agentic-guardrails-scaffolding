@@ -20,12 +20,14 @@ import {
   type StopGateOptions,
 } from '../src/gate.js';
 import type { GateConfig, GateDecision } from '../src/gate-decision.js';
+import { packageVersion } from '../src/package-root.js';
 import { collectManifestScope } from '../src/scope.js';
 import { createSession, type FixerLease } from '../src/state.js';
 import {
   leasesFile,
   loadCleanTree,
   loadLeases,
+  loadPushPass,
   loadRecurrence,
   loadSession,
   readDecisions,
@@ -1706,5 +1708,195 @@ describe('runStopGate: an unchanged tree is not re-verified', () => {
     await runStopGate(options(exec));
 
     expect(eslintRuns()).toBe(2);
+  });
+});
+
+/**
+ * A repo for the push rung whose fingerprint and merge-base are whatever
+ * `tree` holds, counting every eslint spawn. Both base candidates resolve, so
+ * the ref the memo records is the configured name itself.
+ */
+function pushRepo(tree: {
+  current: string;
+  mergeBase?: string;
+  violating?: boolean;
+  failing?: boolean;
+}) {
+  let eslintRuns = 0;
+  const exec = makeExec((line) => {
+    if (line.includes('--git-path')) return ok('.git/index');
+    if (line.includes('write-tree'))
+      return tree.failing === true
+        ? { stdout: '', stderr: 'boom', code: 128 }
+        : ok(`${tree.current}\n`);
+    if (line.includes('merge-base'))
+      return ok(`${tree.mergeBase ?? 'BASESHA'}\n`);
+    if (line.includes('--name-only')) return ok('src/foo.ts');
+    if (line.includes('eslint')) {
+      eslintRuns += 1;
+      return ok(tree.violating === true ? eslintError() : '[]');
+    }
+    if (line.includes('--showConfig'))
+      return ok(JSON.stringify({ files: ['src/foo.ts'] }));
+    return ok('');
+  });
+  return { exec, eslintRuns: () => eslintRuns };
+}
+
+function push(exec: Exec, baseBranch = 'main') {
+  return runCommitGate({
+    repoRoot: root,
+    baseBranch,
+    config,
+    exec,
+    profile: 'push',
+    changedScope: 'branch',
+    // The push rung carries stryker, which has no report to read here.
+    analyzers: { stryker: 'off' },
+  });
+}
+
+describe('runCommitGate: the push rung remembers a tree it passed', () => {
+  it('skips the analyzers when the same tree is pushed again', async () => {
+    const { exec, eslintRuns } = pushRepo({ current: 'TREE1' });
+
+    const first = await push(exec);
+    const second = await push(exec);
+
+    expect(first.cached).toBeUndefined();
+    expect(second.cached).toBe(true);
+    expect(second.blocked).toBe(false);
+    expect(second.violations).toEqual([]);
+    expect(second.findings).toEqual([]);
+    expect(second.skippedAnalyzers).toEqual([]);
+    expect(eslintRuns()).toBe(1);
+  });
+
+  it('records the fingerprint and the resolved base ref', async () => {
+    const { exec } = pushRepo({ current: 'TREE1' });
+    await push(exec);
+    expect(loadPushPass(stateDirectory(root))).toEqual({
+      fingerprint: `TREE1|BASESHA|${packageVersion()}`,
+      base: 'main',
+    });
+  });
+
+  it('fingerprints against origin/<base> where that is all that resolves', async () => {
+    const mergeBases: string[] = [];
+    const exec = makeExec((line) => {
+      if (line.includes('rev-parse --verify --quiet main^{commit}'))
+        return { stdout: '', stderr: '', code: 1 };
+      if (line.includes('--git-path')) return ok('.git/index');
+      if (line.includes('write-tree')) return ok('TREE1\n');
+      if (line.startsWith('git merge-base')) {
+        mergeBases.push(line);
+        return ok('BASESHA\n');
+      }
+      return ok('');
+    });
+    await push(exec);
+    expect(loadPushPass(stateDirectory(root))?.base).toBe('origin/main');
+    expect(mergeBases[0]).toBe('git merge-base origin/main HEAD');
+  });
+
+  it('runs again once a byte of the tree changes', async () => {
+    const tree = { current: 'TREE1' };
+    const { exec, eslintRuns } = pushRepo(tree);
+    await push(exec);
+    tree.current = 'TREE2';
+    const second = await push(exec);
+    expect(second.cached).toBeUndefined();
+    expect(eslintRuns()).toBe(2);
+  });
+
+  it('runs again once the merge-base moves', async () => {
+    const tree: { current: string; mergeBase: string } = {
+      current: 'TREE1',
+      mergeBase: 'BASESHA',
+    };
+    const { exec, eslintRuns } = pushRepo(tree);
+    await push(exec);
+    tree.mergeBase = 'NEWBASE';
+    await push(exec);
+    expect(eslintRuns()).toBe(2);
+  });
+
+  it('runs again against a different base ref', async () => {
+    const { exec, eslintRuns } = pushRepo({ current: 'TREE1' });
+    await push(exec, 'main');
+    await push(exec, 'release');
+    expect(eslintRuns()).toBe(2);
+  });
+
+  it('runs again under a different guardrails-core version', async () => {
+    const { exec, eslintRuns } = pushRepo({ current: 'TREE1' });
+    mkdirSync(stateDirectory(root), { recursive: true });
+    writeFileSync(
+      path.join(stateDirectory(root), 'push-pass.json'),
+      JSON.stringify({
+        fingerprint: 'TREE1|BASESHA|0.0.0-older',
+        base: 'main',
+      }),
+    );
+    await push(exec);
+    expect(eslintRuns()).toBe(1);
+  });
+
+  it('never writes the memo for a blocked push', async () => {
+    const { exec } = pushRepo({ current: 'TREE1', violating: true });
+    const result = await push(exec);
+    expect(result.blocked).toBe(true);
+    expect(existsSync(path.join(stateDirectory(root), 'push-pass.json'))).toBe(
+      false,
+    );
+  });
+
+  it('does not skip a push whose tree was memoised and then blocked', async () => {
+    // A blocked push leaves the memo of an EARLIER tree in place; it must not
+    // be read as covering this one.
+    const tree = { current: 'TREE1', violating: false };
+    const { exec, eslintRuns } = pushRepo(tree);
+    await push(exec);
+    tree.current = 'TREE2';
+    tree.violating = true;
+    await push(exec);
+    const third = await push(exec);
+    expect(third.blocked).toBe(true);
+    expect(eslintRuns()).toBe(3);
+  });
+
+  it('remembers nothing when the fingerprint could not be taken', async () => {
+    const { exec, eslintRuns } = pushRepo({ current: 'TREE1', failing: true });
+    await push(exec);
+    await push(exec);
+    expect(eslintRuns()).toBe(2);
+    expect(existsSync(path.join(stateDirectory(root), 'push-pass.json'))).toBe(
+      false,
+    );
+  });
+
+  it('is the push rung only: commit and ci never read or write it', async () => {
+    const { exec, eslintRuns } = pushRepo({ current: 'TREE1' });
+    for (const profile of ['commit', 'ci'] as const) {
+      await runCommitGate({
+        repoRoot: root,
+        baseBranch: 'main',
+        config,
+        exec,
+        profile,
+      });
+    }
+    expect(existsSync(path.join(stateDirectory(root), 'push-pass.json'))).toBe(
+      false,
+    );
+    await push(exec);
+    await runCommitGate({
+      repoRoot: root,
+      baseBranch: 'main',
+      config,
+      exec,
+      profile: 'ci',
+    });
+    expect(eslintRuns()).toBe(4);
   });
 });
