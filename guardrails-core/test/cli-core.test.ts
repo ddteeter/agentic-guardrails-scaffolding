@@ -4784,3 +4784,186 @@ describe('pretooluse leaves a push to the pre-push hook that gates it', () => {
     expect(cwds).toEqual([root]);
   });
 });
+
+async function waitVerdict(
+  tool_input: Record<string, unknown>,
+  options: { dialect?: string; config?: object; toolName?: string } = {},
+): Promise<string> {
+  writeFileSync(
+    path.join(root, 'guardrails.config.json'),
+    JSON.stringify({ enforcement: 'block', ...options.config }),
+  );
+  const flags = ['--mode=pretooluse'];
+  if (options.dialect !== undefined) {
+    flags.push(`--dialect=${options.dialect}`);
+  }
+  await runCommand(
+    'gate',
+    flags,
+    dependencies({
+      exec: dirtyExec(),
+      readStdin: () =>
+        Promise.resolve(
+          JSON.stringify({
+            tool_name: options.toolName ?? 'Bash',
+            tool_input,
+            cwd: root,
+          }),
+        ),
+    }),
+  );
+  return out.join('');
+}
+
+describe('pretooluse denies a foreground wait on Claude Code', () => {
+  it.each([
+    'gh pr checks 42 --watch',
+    'gh run watch 99',
+    'until ! kill -0 4242; do sleep 20; done',
+    'while pgrep -f stryker >/dev/null; do sleep 30; done',
+    'sleep 600',
+    'node ./node_modules/guardrails-core/dist/cli.mjs ship',
+  ])('denies %j in the foreground', async (command) => {
+    const printed = await waitVerdict({ command });
+    expect(printed).toContain('deny');
+    expect(printed).toContain('run_in_background: true');
+    expect(printed).toContain('end your turn');
+    expect(printed).toContain('5-minute prompt-cache window');
+  });
+
+  it('names the wait it found', async () => {
+    expect(await waitVerdict({ command: 'gh run watch 99' })).toContain(
+      'guardrails: gh run watch waits in the foreground',
+    );
+  });
+
+  it.each([
+    'gh pr checks 42 --watch',
+    'sleep 600',
+    'until ! kill -0 4242; do sleep 20; done',
+  ])('allows %j in the background', async (command) => {
+    expect(await waitVerdict({ command, run_in_background: true })).toBe('');
+  });
+
+  it('still denies when run_in_background is false', async () => {
+    expect(
+      await waitVerdict({ command: 'sleep 600', run_in_background: false }),
+    ).toContain('deny');
+  });
+
+  it.each([
+    'git log --grep "gh pr checks --watch"',
+    "cat <<'EOF'\nsleep 600\nEOF",
+    'sleep 60',
+  ])('allows %j, which waits for nothing', async (command) => {
+    expect(await waitVerdict({ command })).toBe('');
+  });
+
+  it('allows everything when turned off', async () => {
+    expect(
+      await waitVerdict(
+        { command: 'gh pr checks 42 --watch' },
+        { config: { denyForegroundWaits: false } },
+      ),
+    ).toBe('');
+  });
+
+  it('reads the sleep limit from the config', async () => {
+    expect(
+      await waitVerdict(
+        { command: 'sleep 60' },
+        { config: { foregroundSleepLimitSeconds: 30 } },
+      ),
+    ).toContain('deny');
+  });
+
+  it.each(['codex', 'copilot'])(
+    'leaves the %s dialect alone, whose shell cannot background',
+    async (dialect) => {
+      expect(
+        await waitVerdict({ command: 'gh pr checks 42 --watch' }, { dialect }),
+      ).toBe('');
+    },
+  );
+
+  it('leaves a tool that is not Claude Code Bash alone', async () => {
+    expect(
+      await waitVerdict(
+        { command: 'gh pr checks 42 --watch' },
+        { toolName: 'bash' },
+      ),
+    ).toBe('');
+  });
+
+  it('answers a wait that also writes git with the wait denial alone', async () => {
+    const printed = await waitVerdict({
+      command: 'git commit -m x && sleep 600',
+    });
+    expect(printed).toContain('waits in the foreground');
+    expect(printed).not.toContain('violation(s)');
+  });
+
+  it('still gates a foreground git write that waits for nothing', async () => {
+    expect(await waitVerdict({ command: 'git commit -m x' })).toContain(
+      'violation(s)',
+    );
+  });
+});
+
+function bashCall(command: string, cwd?: string): string {
+  return JSON.stringify({ tool_name: 'Bash', tool_input: { command }, cwd });
+}
+
+describe('pretooluse reads the foreground-wait policy where the command runs', () => {
+  it('reads the payload cwd, not the hook process cwd', async () => {
+    writeFileSync(
+      path.join(root, 'guardrails.config.json'),
+      JSON.stringify({ denyForegroundWaits: false }),
+    );
+    const elsewhere = mkdtempSync(path.join(tmpdir(), 'guardrails-elsewhere-'));
+    try {
+      await runCommand(
+        'gate',
+        ['--mode=pretooluse'],
+        dependencies({
+          cwd: elsewhere,
+          readStdin: () => Promise.resolve(bashCall('sleep 600', root)),
+        }),
+      );
+    } finally {
+      rmSync(elsewhere, { recursive: true, force: true });
+    }
+    expect(out.join('')).toBe('');
+  });
+
+  it('falls back to the hook process cwd', async () => {
+    writeFileSync(
+      path.join(root, 'guardrails.config.json'),
+      JSON.stringify({ foregroundSleepLimitSeconds: 30 }),
+    );
+    await runCommand(
+      'gate',
+      ['--mode=pretooluse'],
+      dependencies({ readStdin: () => Promise.resolve(bashCall('sleep 60')) }),
+    );
+    expect(out.join('')).toContain('deny');
+  });
+
+  it('reads the config at the git root from a subdirectory', async () => {
+    mkdirSync(path.join(root, '.git'));
+    mkdirSync(path.join(root, 'sub'));
+    writeFileSync(
+      path.join(root, 'guardrails.config.json'),
+      JSON.stringify({ foregroundSleepLimitSeconds: 30 }),
+    );
+    await runCommand(
+      'gate',
+      ['--mode=pretooluse'],
+      dependencies({
+        readStdin: () =>
+          Promise.resolve(bashCall('sleep 60', path.join(root, 'sub'))),
+      }),
+    );
+    expect(out.join('')).toContain('deny');
+  });
+});

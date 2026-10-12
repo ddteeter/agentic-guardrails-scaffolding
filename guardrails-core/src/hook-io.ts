@@ -39,6 +39,12 @@ export interface HookInput {
   command?: string;
   stopHookActive?: boolean;
   /**
+   * Claude Code's Bash `run_in_background`, when the payload carries a boolean
+   * one. A backgrounded command wakes the agent once, when it exits, which is
+   * what makes a long wait cheap (see `foreground-wait.ts`).
+   */
+  runInBackground?: boolean;
+  /**
    * The calling subagent's id, when the host reports one.
    *
    * ABSENCE IS THE SIGNAL: Claude Code sets this only inside a subagent, never
@@ -282,7 +288,7 @@ export function parseHookInput(stdin: string): HookInput {
   // (field, [candidates in precedence order]) — Claude first, Copilot fallback.
   type StringHookField = Exclude<
     keyof HookInput,
-    'filePaths' | 'stopHookActive' | 'edits'
+    'filePaths' | 'stopHookActive' | 'edits' | 'runInBackground'
   >;
   const fields: readonly [StringHookField, readonly unknown[]][] = [
     ['sessionId', [claude.session_id, copilot.sessionId]],
@@ -307,6 +313,9 @@ export function parseHookInput(stdin: string): HookInput {
       : copilot.stopHookActive;
   if (typeof stopHookActive === 'boolean') {
     input.stopHookActive = stopHookActive;
+  }
+  if (typeof args.run_in_background === 'boolean') {
+    input.runInBackground = args.run_in_background;
   }
   if (input.toolName === 'apply_patch' && input.command !== undefined) {
     const filePaths = parseApplyPatchFilePaths(input.command);

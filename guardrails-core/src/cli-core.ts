@@ -74,6 +74,7 @@ import {
   HOOKS_DIRECTORY,
 } from './scaffold/hooks-path.js';
 import { initCommand } from './scaffold/init.js';
+import { foregroundWait, foregroundWaitDenial } from './foreground-wait.js';
 import { isPushGatedByHook } from './push-hook.js';
 import { COMMAND_START, withoutQuotedHeredocBodies } from './shell-command.js';
 import { collectSessionScope, isWithinRepo } from './scope.js';
@@ -714,6 +715,43 @@ function isShellGitWrite(input: HookInput): boolean {
   );
 }
 
+/**
+ * Deny a foreground wait (see `foreground-wait.ts`), and say whether it did.
+ *
+ * Claude Code only, and only its `Bash` tool: that is the shell whose
+ * `run_in_background` wakes the agent once, when the command exits. Telling a
+ * Codex or Copilot agent to background a command its shell cannot background
+ * would leave it no way to run the command at all.
+ *
+ * The config is read from the checkout the command runs in, the way
+ * `decidingHook` reads its deadline -- by walking the filesystem, because this
+ * runs on every Bash call and a git spawn per call is a cost every command
+ * would pay.
+ */
+function didDenyForegroundWait(
+  dependencies: CliDependencies,
+  input: HookInput,
+  dialect: Dialect,
+): boolean {
+  if (
+    dialect !== 'claude' ||
+    input.toolName !== 'Bash' ||
+    input.runInBackground === true
+  ) {
+    return false;
+  }
+  const where = input.cwd ?? dependencies.cwd;
+  const config = loadConfig(findGitRoot(where) ?? where);
+  const wait = config.denyForegroundWaits
+    ? foregroundWait(input.command ?? '', config.foregroundSleepLimitSeconds)
+    : undefined;
+  if (wait === undefined) {
+    return false;
+  }
+  denyPreToolUse(dependencies, foregroundWaitDenial(wait), dialect);
+  return true;
+}
+
 /** `gate --mode=pretooluse`: the Copilot commit/push gate. Self-filters on the
  * shell-tool + git-commit/push command shape rather than relying on hook
  * matcher config, because VS Code's Copilot hook host ignores matchers — the
@@ -723,6 +761,9 @@ async function gatePreToolUseCommand(
   dialect: Dialect,
 ): Promise<void> {
   const input = parseHookInput(await dependencies.readStdin());
+  if (didDenyForegroundWait(dependencies, input, dialect)) {
+    return;
+  }
   if (!isShellGitWrite(input)) {
     return; // allow (silent)
   }

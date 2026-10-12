@@ -32,6 +32,10 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
+function bashPayload(tool_input: Record<string, unknown>) {
+  return parseHookInput(JSON.stringify({ tool_name: 'Bash', tool_input }));
+}
+
 describe('parseHookInput', () => {
   it('extracts session id and cwd from a Stop payload', () => {
     const parsed = parseHookInput(
@@ -154,6 +158,24 @@ describe('parseHookInput', () => {
       }),
     );
     expect(parsed.command).toBe('git push');
+  });
+
+  it('reads whether a Claude Bash call runs in the background', () => {
+    expect(
+      bashPayload({ command: 'sleep 600', run_in_background: true })
+        .runInBackground,
+    ).toBe(true);
+    expect(
+      bashPayload({ command: 'sleep 600', run_in_background: false })
+        .runInBackground,
+    ).toBe(false);
+    expect(
+      bashPayload({ command: 'sleep 600' }).runInBackground,
+    ).toBeUndefined();
+    expect(
+      bashPayload({ command: 'sleep 600', run_in_background: 'true' })
+        .runInBackground,
+    ).toBeUndefined();
   });
 
   it('extracts every path from a Codex apply_patch payload', () => {

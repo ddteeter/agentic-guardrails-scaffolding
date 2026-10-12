@@ -192,6 +192,24 @@ export interface RepoConfig {
    * raises one raises both.
    */
   hookDeadlineSeconds: number;
+  /**
+   * Deny a Claude Code Bash call that WAITS in the foreground -- `gh pr checks
+   * --watch`, `gh run watch`, a `kill -0`/`pgrep` wait loop, a long `sleep`,
+   * `guardrails ship` -- unless it runs with `run_in_background`. See
+   * `foreground-wait.ts` for why: a foreground wait hits the tool timeout and
+   * re-wakes the agent every ten minutes, and each wake after the five-minute
+   * prompt-cache window re-pays its whole context. Backgrounded, the host wakes
+   * it once, when the command exits.
+   *
+   * On unless set to exactly `false` -- a typo keeps the denial, the
+   * more-checking direction like every other field here.
+   */
+  denyForegroundWaits: boolean;
+  /**
+   * The longest foreground `sleep` allowed, in seconds, when
+   * `denyForegroundWaits` is on. A short sleep is a pause; a long one is a wait.
+   */
+  foregroundSleepLimitSeconds: number;
   /** Copilot model id for the fast/thorough fixer .agent.md (the tier ladder on
    * Copilot). Unset → omit `model` so the agent loads on Copilot's default. */
   copilotFastModel?: string;
@@ -214,6 +232,8 @@ export function defaultConfig(): RepoConfig {
     distribution: 'solo',
     enforcement: 'warn',
     hookDeadlineSeconds: 240,
+    denyForegroundWaits: true,
+    foregroundSleepLimitSeconds: 120,
   };
 }
 
@@ -596,6 +616,11 @@ export function loadConfig(repoRoot: string): RepoConfig {
     hookDeadlineSeconds: pickPositive(
       raw.hookDeadlineSeconds,
       defaults.hookDeadlineSeconds,
+    ),
+    denyForegroundWaits: raw.denyForegroundWaits !== false,
+    foregroundSleepLimitSeconds: pickPositive(
+      raw.foregroundSleepLimitSeconds,
+      defaults.foregroundSleepLimitSeconds,
     ),
     ...(typeof raw.copilotFastModel === 'string' && {
       copilotFastModel: raw.copilotFastModel,
