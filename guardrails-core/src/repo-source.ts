@@ -12,11 +12,12 @@
  * scores a file it cannot read as zero occurrences, which is the deleted-file
  * case and should be reported as drift rather than skipped. A directory reads
  * as absent too (#118): the covering-test lookup asks about every path a
- * specifier could mean, and `existsSync` is true for a directory, so the
- * `EISDIR` from reading one escaped the commit gate and hid its violation.
+ * specifier could mean, and the `EISDIR` from reading one escaped the commit
+ * gate and hid its violation. So nothing here throws: any read error, from
+ * `ENOENT` to `EACCES`, is the absent answer.
  */
 
-import { readFileSync, statSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
 import { isWithinRepo } from './scope.js';
@@ -28,9 +29,11 @@ export function repoSourceReader(
     if (!isWithinRepo(repoRoot, file)) {
       return;
     }
-    const full = path.join(repoRoot, file);
-    return statSync(full, { throwIfNoEntry: false })?.isFile() === true
-      ? readFileSync(full, 'utf8')
-      : undefined;
+    try {
+      return readFileSync(path.join(repoRoot, file), 'utf8');
+    } catch {
+      // Absent, a directory, or not ours to read: one answer, by falling
+      // through. A `return` here would be an equivalent mutant.
+    }
   };
 }

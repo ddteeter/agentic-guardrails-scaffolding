@@ -6,7 +6,13 @@
  * the violation it was about to report.
  */
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -24,6 +30,7 @@ describe('repoSourceReader', () => {
   });
 
   afterEach(() => {
+    chmodSync(path.join(root, 'src'), 0o755);
     rmSync(root, { recursive: true, force: true });
   });
 
@@ -37,6 +44,16 @@ describe('repoSourceReader', () => {
 
   it('reads a directory as undefined instead of throwing EISDIR', () => {
     expect(repoSourceReader(root)('src/lib')).toBeUndefined();
+  });
+
+  it('reads a file it may not open as undefined instead of throwing', () => {
+    chmodSync(path.join(root, 'src', 'a.ts'), 0o000);
+    expect(repoSourceReader(root)('src/a.ts')).toBeUndefined();
+  });
+
+  it('reads a path under an unsearchable directory as undefined', () => {
+    chmodSync(path.join(root, 'src'), 0o000);
+    expect(repoSourceReader(root)('src/a.ts')).toBeUndefined();
   });
 
   it('reads a path escaping the repo as undefined', () => {
