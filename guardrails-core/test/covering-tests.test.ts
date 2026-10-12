@@ -25,6 +25,7 @@ import path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { repoSourceReader } from '../src/repo-source.js';
 import {
   coveringTests,
   readTestCorpus,
@@ -466,5 +467,112 @@ describe('coveringTests — one hop through the module a test imports', () => {
     expect(withCoveringTests([violation], () => testFiles, readSource)).toEqual(
       [{ ...violation, relatedTests: ['test/parent.test.ts'] }],
     );
+  });
+});
+
+describe('coveringTests — specifiers that name a directory (#118)', () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(path.join(tmpdir(), 'covering-dir-'));
+    mkdirSync(path.join(root, 'src', 'lib'), { recursive: true });
+    mkdirSync(path.join(root, 'test'), { recursive: true });
+    writeFileSync(path.join(root, 'src', 'a.ts'), 'export const a = 1;\n');
+    writeFileSync(
+      path.join(root, 'src', 'lib', 'index.ts'),
+      `export * from '../a.js';\n`,
+    );
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('reaches a file through a barrel directory a test imports', () => {
+    // The issue's repro A: `../src/lib` means `../src/lib/index.ts`, and the
+    // directory itself used to be read first and throw EISDIR.
+    const testFiles = new Map([
+      ['test/x.test.ts', `import { a } from '../src/lib';`],
+    ]);
+    expect(
+      coveringTests('src/a.ts', testFiles, repoSourceReader(root)),
+    ).toEqual(['test/x.test.ts']);
+  });
+
+  it('survives a "." produced by prose between two quoted strings', () => {
+    // Repro B: `data-part="rail"` followed by `."The harness` puts a bare
+    // `"."` between two quotes, which resolves to the test's own directory.
+    const testFiles = new Map([
+      [
+        'test/y.test.ts',
+        '// cards in `data-part="rail"` beside it. "The harness',
+      ],
+    ]);
+    expect(
+      coveringTests('src/a.ts', testFiles, repoSourceReader(root)),
+    ).toEqual([]);
+  });
+
+  it('never reads an extensionless path, which is not a source file', () => {
+    const reads: string[] = [];
+    const reader = (file: string): string | undefined => {
+      reads.push(file);
+      return repoSourceReader(root)(file);
+    };
+    coveringTests(
+      'src/a.ts',
+      new Map([['test/x.test.ts', `import { a } from '../src/lib';`]]),
+      reader,
+    );
+    expect(reads).not.toContain('src/lib');
+    expect(reads).toContain('src/lib/index.ts');
+    // Exactly the extension candidates and then the barrel, nothing else.
+    expect(reads).toEqual([
+      'src/lib.ts',
+      'src/lib.tsx',
+      'src/lib.mts',
+      'src/lib.cts',
+      'src/lib.js',
+      'src/lib.jsx',
+      'src/lib/index.ts',
+    ]);
+  });
+
+  it('resolves a bare "." or ".." specifier to the directory index', () => {
+    expect(
+      coveringTests(
+        'src/lib/index.ts',
+        new Map([['src/lib/x.test.ts', `import { a } from '.';`]]),
+      ),
+    ).toEqual(['src/lib/x.test.ts']);
+    expect(
+      coveringTests(
+        'src/index.ts',
+        new Map([['src/lib/x.test.ts', `import { a } from '..';`]]),
+      ),
+    ).toEqual(['src/lib/x.test.ts']);
+  });
+
+  it('keeps a specifier written with its source extension', () => {
+    expect(
+      coveringTests(
+        'src/a.ts',
+        new Map([['test/x.test.ts', `import { a } from '../src/a.ts';`]]),
+      ),
+    ).toEqual(['test/x.test.ts']);
+  });
+
+  it('ignores a quoted dot-name that is not a relative path', () => {
+    // `".a"` is a selector or a dotfile, never a relative specifier: those
+    // start `./`, `../`, or are exactly `.` / `..`.
+    const reads: string[] = [];
+    coveringTests(
+      'src/a.ts',
+      new Map([['test/z.test.ts', `query(".a"); query('..ts');`]]),
+      (file) => {
+        reads.push(file);
+      },
+    );
+    expect(reads).toEqual([]);
   });
 });

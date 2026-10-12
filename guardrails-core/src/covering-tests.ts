@@ -31,12 +31,13 @@ import type { Violation } from './violation.js';
  *
  * One pattern for `import`, `export ... from`, `require()` and dynamic
  * `import()` alike, because all four wrap the specifier in quotes and only the
- * leading `.` matters here. Deliberately not a parser: a quoted relative path
- * that is not an import resolves to a file the target either is or is not, and
- * a false positive means naming one extra test file — the cost of being wrong
- * is a hint, not a fix.
+ * leading `./`, `../`, or a bare `.` / `..` matters here — a quoted `.a` is a
+ * selector or a dotfile, never a relative specifier. Deliberately not a parser:
+ * a quoted relative path that is not an import resolves to a file the target
+ * either is or is not, and a false positive means naming one extra test file —
+ * the cost of being wrong is a hint, not a fix.
  */
-const RELATIVE_SPECIFIER = /['"](\.[^'"\n]*)['"]/g;
+const RELATIVE_SPECIFIER = /['"](\.\.?(?:\/[^'"\n]*)?)['"]/g;
 
 /**
  * Extensions a specifier may be written with, mapped to what it can mean on
@@ -77,7 +78,9 @@ function resolutionsOf(fromFile: string, specifier: string): string[] {
     return replacements.map((replacement) => `${stem}${replacement}`);
   }
   return [
-    joined,
+    // Kept only with an extension: an extensionless path is no source file,
+    // and is often a directory (#118).
+    ...(path.posix.extname(joined) === '' ? [] : [joined]),
     ...BARE_EXTENSIONS.map((extension) => `${joined}${extension}`),
     // A directory specifier: `./verify` meaning `./verify/index.ts`.
     ...BARE_EXTENSIONS.map((extension) => `${joined}/index${extension}`),

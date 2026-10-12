@@ -10,10 +10,14 @@
  *
  * Absent and unreadable are the same answer on purpose — `sanctionCountDrift`
  * scores a file it cannot read as zero occurrences, which is the deleted-file
- * case and should be reported as drift rather than skipped.
+ * case and should be reported as drift rather than skipped. A directory reads
+ * as absent too (#118): the covering-test lookup asks about every path a
+ * specifier could mean, and the `EISDIR` from reading one escaped the commit
+ * gate and hid its violation. So nothing here throws: any read error, from
+ * `ENOENT` to `EACCES`, is the absent answer.
  */
 
-import { existsSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
 import { isWithinRepo } from './scope.js';
@@ -22,9 +26,14 @@ export function repoSourceReader(
   repoRoot: string,
 ): (file: string) => string | undefined {
   return (file) => {
-    const full = path.join(repoRoot, file);
-    return isWithinRepo(repoRoot, file) && existsSync(full)
-      ? readFileSync(full, 'utf8')
-      : undefined;
+    if (!isWithinRepo(repoRoot, file)) {
+      return;
+    }
+    try {
+      return readFileSync(path.join(repoRoot, file), 'utf8');
+    } catch {
+      // Absent, a directory, or not ours to read: one answer, by falling
+      // through. A `return` here would be an equivalent mutant.
+    }
   };
 }
