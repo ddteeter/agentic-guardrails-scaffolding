@@ -5,8 +5,10 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -22,6 +24,7 @@ import {
 import type { GateConfig, GateDecision } from '../src/gate-decision.js';
 import { collectManifestScope } from '../src/scope.js';
 import { createSession, type FixerLease } from '../src/state.js';
+import type { Violation } from '../src/violation.js';
 import {
   leasesFile,
   loadCleanTree,
@@ -947,44 +950,91 @@ describe('manifest guidance', () => {
     // where the test for the violated file lives, through the one channel it
     // reads. `coveringTests` proves the resolution; this proves the gate
     // actually runs it and the result survives serialisation.
-    mkdirSync(path.join(root, 'src'), { recursive: true });
-    mkdirSync(path.join(root, 'test'), { recursive: true });
-    writeFileSync(path.join(root, 'src', 'foo.ts'), 'export const foo = 1;\n');
-    writeFileSync(
-      path.join(root, 'test', 'unrelated-name.test.ts'),
+    const violation = await manifestForFoo(
       `import { foo } from '../src/foo.js';\n`,
+      { withTypescript: true },
     );
-    const exec = makeExec((line) => {
-      if (line.includes('--name-only')) return ok('src/foo.ts');
-      if (line.includes('--others')) return ok('');
-      if (line.includes('eslint'))
-        return ok(
-          JSON.stringify([
-            {
-              filePath: path.join(root, 'src/foo.ts'),
-              messages: [
-                {
-                  ruleId: 'no-console',
-                  severity: 2,
-                  message: 'Unexpected console.',
-                  line: 2,
-                },
-              ],
-            },
-          ]),
-        );
-      return ok('');
+    expect(violation?.relatedTests).toEqual(['test/unrelated-name.test.ts']);
+  });
+
+  it('finds a covering test that imports through a tsconfig alias', async () => {
+    // #120: the regex lookup this replaced gave an alias-importing repo no
+    // relatedTests at all.
+    const violation = await manifestForFoo(`import { foo } from '@/foo';\n`, {
+      withTypescript: true,
     });
-    await runStopGate(options(exec));
-    const written = readViolations(stateDirectory(root), 'sid');
-    expect(written).toContainEqual(
-      expect.objectContaining({
-        file: 'src/foo.ts',
-        relatedTests: ['test/unrelated-name.test.ts'],
-      }),
+    expect(violation?.relatedTests).toEqual(['test/unrelated-name.test.ts']);
+  });
+
+  it('blocks with no relatedTests, rather than failing, without TypeScript', async () => {
+    const violation = await manifestForFoo(
+      `import { foo } from '../src/foo.js';\n`,
+      { withTypescript: false },
     );
+    expect(violation).toBeDefined();
+    expect(violation).not.toHaveProperty('relatedTests');
   });
 });
+
+/**
+ * Block on one violation in `src/foo.ts`, with `testText` as the only test
+ * file, and return what the manifest says about `src/foo.ts`.
+ */
+async function manifestForFoo(
+  testText: string,
+  { withTypescript }: { withTypescript: boolean },
+): Promise<Violation | undefined> {
+  mkdirSync(path.join(root, 'src'), { recursive: true });
+  mkdirSync(path.join(root, 'test'), { recursive: true });
+  writeFileSync(path.join(root, 'src', 'foo.ts'), 'export const foo = 1;\n');
+  writeFileSync(
+    path.join(root, 'tsconfig.json'),
+    JSON.stringify({
+      compilerOptions: {
+        module: 'esnext',
+        moduleResolution: 'bundler',
+        paths: { '@/*': ['./src/*'] },
+      },
+    }),
+  );
+  writeFileSync(path.join(root, 'test', 'unrelated-name.test.ts'), testText);
+  if (withTypescript) {
+    // The consumer shape: TypeScript installed in the repo being gated,
+    // which is where the gate loads it from.
+    mkdirSync(path.join(root, 'node_modules'), { recursive: true });
+    symlinkSync(
+      path.dirname(
+        createRequire(import.meta.url).resolve('typescript/package.json'),
+      ),
+      path.join(root, 'node_modules', 'typescript'),
+    );
+  }
+  const exec = makeExec((line) => {
+    if (line.includes('--name-only')) return ok('src/foo.ts');
+    if (line.includes('--others')) return ok('');
+    if (line.includes('eslint'))
+      return ok(
+        JSON.stringify([
+          {
+            filePath: path.join(root, 'src/foo.ts'),
+            messages: [
+              {
+                ruleId: 'no-console',
+                severity: 2,
+                message: 'Unexpected console.',
+                line: 2,
+              },
+            ],
+          },
+        ]),
+      );
+    return ok('');
+  });
+  await runStopGate(options(exec));
+  return readViolations(stateDirectory(root), 'sid').find(
+    (violation) => violation.file === 'src/foo.ts',
+  );
+}
 
 // Public API (exported from index.ts) with no internal caller — it is what a
 // consumer wiring their own Stop hook would use to render the block text.
