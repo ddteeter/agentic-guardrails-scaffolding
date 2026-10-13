@@ -242,9 +242,10 @@ export function withCoveringTests(
   readSource?: (file: string) => string | undefined,
 ): Violation[] {
   let loaded:
+    | typeof NO_RESOLVER
     | {
+        readonly imports: ImportResolver;
         readonly corpus: ReadonlyMap<string, string>;
-        readonly imports: ImportResolver | undefined;
       }
     | undefined;
   const byFile = new Map<string, readonly string[]>();
@@ -252,18 +253,44 @@ export function withCoveringTests(
     if (violation.relatedTests !== undefined || isTestFile(violation.file)) {
       return violation;
     }
-    loaded ??= { corpus: loadCorpus(), imports: loadImports() };
-    const { corpus, imports } = loaded;
-    if (imports === undefined) {
+    // The resolver first: without one there is nothing to ask, and the
+    // corpus -- up to 800 test files -- would be read only to be discarded.
+    loaded ??= loadBoth(loadImports, loadCorpus);
+    if (loaded === NO_RESOLVER) {
       return violation;
     }
     let related = byFile.get(violation.file);
     if (related === undefined) {
-      related = coveringTests(violation.file, corpus, imports, readSource);
+      related = coveringTests(
+        violation.file,
+        loaded.corpus,
+        loaded.imports,
+        readSource,
+      );
       byFile.set(violation.file, related);
     }
     return related.length === 0
       ? violation
       : { ...violation, relatedTests: related };
   });
+}
+
+/**
+No TypeScript to ask, so nothing is attributed.
+*/
+const NO_RESOLVER = 'no-resolver';
+
+function loadBoth(
+  loadImports: () => ImportResolver | undefined,
+  loadCorpus: () => ReadonlyMap<string, string>,
+):
+  | typeof NO_RESOLVER
+  | {
+      readonly imports: ImportResolver;
+      readonly corpus: ReadonlyMap<string, string>;
+    } {
+  const imports = loadImports();
+  return imports === undefined
+    ? NO_RESOLVER
+    : { imports, corpus: loadCorpus() };
 }

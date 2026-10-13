@@ -296,6 +296,18 @@ resolves them, and an import-shaped string in a comment is never mistaken for
 an import. A test that imports a module which imports the violated file also
 counts, one hop and no further.
 
+The lookup reaches a little past what the compiler alone would accept, because
+tests do:
+
+- an import your configured resolution rejects, such as a barrel import under
+  Classic resolution, is retried bundler-style, with your aliases kept;
+- a relative import of a non-TypeScript file, such as `.vue` or `.svelte`,
+  counts when that file exists;
+- an import that resolves to a hand-written `.d.ts` names the `.js` file
+  beside it;
+- a workspace package linked through `node_modules` counts as the source file
+  in your repo that it resolves to.
+
 Without `typescript` installed, violations carry no `relatedTests`, and a
 fixer searches for the test itself (on Codex it cannot, so it escalates more
 often). The gate is unaffected otherwise. The same is true past the corpus

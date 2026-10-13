@@ -19,7 +19,7 @@
  * as a repo past the corpus cap, whose fixer searches for itself.
  */
 
-import { existsSync, realpathSync } from 'node:fs';
+import { existsSync, realpathSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 
@@ -141,19 +141,81 @@ function resolvedInRepo(
   containing: string,
   options: Ts.CompilerOptions,
 ): string[] {
-  const resolved = ts.resolveModuleName(
-    specifier,
-    containing,
-    options,
-    ts.sys,
-  ).resolvedModule;
-  if (resolved === undefined || resolved.isExternalLibraryImport === true) {
+  const resolve = (
+    compilerOptions: Ts.CompilerOptions,
+  ): Ts.ResolvedModuleFull | undefined =>
+    ts.resolveModuleName(specifier, containing, compilerOptions, ts.sys)
+      .resolvedModule;
+  const resolved = resolve(options) ?? resolve(bundlerStyle(ts, options));
+  const file =
+    resolved === undefined
+      ? literalFile(specifier, containing)
+      : implementationOf(resolved.resolvedFileName);
+  if (file === undefined) {
     return [];
   }
-  const relative = path.relative(root, resolved.resolvedFileName);
-  return isWithinRepo(root, relative)
+  const relative = path.relative(root, file);
+  // Not `isExternalLibraryImport`: a workspace package is linked through
+  // node_modules, so TypeScript flags it external while handing back its
+  // real path in the repo. Where the file IS decides, not how it was reached.
+  return isWithinRepo(root, relative) &&
+    !relative.split(path.sep).includes('node_modules')
     ? [relative.split(path.sep).join('/')]
     : [];
+}
+
+/**
+ * The project's options with bundler resolution, for a second try at an
+ * import its own resolution rejected. Classic resolution knows no index
+ * files -- TypeScript 5 picks it for `module: esnext` with no
+ * `moduleResolution` -- and node16 ESM wants extensions, but tests import
+ * barrels and extensionless paths whatever the config says, and vitest runs
+ * them. Aliases are kept.
+ */
+function bundlerStyle(
+  ts: Typescript,
+  options: Ts.CompilerOptions,
+): Ts.CompilerOptions {
+  return {
+    ...options,
+    module: ts.ModuleKind.ESNext,
+    moduleResolution: ts.ModuleResolutionKind.Bundler,
+  };
+}
+
+/**
+ * A relative import TypeScript cannot resolve, taken by its literal name when
+ * that names a file: a `.vue` or `.svelte` component is linted, so it can
+ * carry a violation, and no shim makes TypeScript resolve one. Only a regular
+ * file -- a directory named `lib.d` is #118 again.
+ */
+function literalFile(
+  specifier: string,
+  containing: string,
+): string | undefined {
+  if (!specifier.startsWith('.') || path.extname(specifier) === '') {
+    return undefined;
+  }
+  const candidate = path.resolve(path.dirname(containing), specifier);
+  return isRegularFile(candidate) ? candidate : undefined;
+}
+
+/**
+ * The JavaScript file behind a hand-written declaration file, when there is
+ * one: TypeScript resolves `./a.js` to `a.d.ts` beside `a.js`, but the
+ * violation is in `a.js`.
+ */
+function implementationOf(file: string): string {
+  const declaration = /\.d\.([cm]?)ts$/.exec(file);
+  if (declaration === null) {
+    return file;
+  }
+  const sibling = `${file.slice(0, declaration.index)}.${declaration[1] ?? ''}js`;
+  return isRegularFile(sibling) ? sibling : file;
+}
+
+function isRegularFile(file: string): boolean {
+  return statSync(file, { throwIfNoEntry: false })?.isFile() === true;
 }
 
 /**

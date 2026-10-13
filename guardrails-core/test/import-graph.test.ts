@@ -380,6 +380,168 @@ function counting(): { typescript: typeof ts; scans: () => number } {
   };
 }
 
+describe('createImportResolver — what the old lookup matched (PR #121 review)', () => {
+  it('resolves a barrel directory and "." under Classic resolution', () => {
+    // TS 5 defaults `module: esnext` with no `moduleResolution` to Classic,
+    // which knows no index files. Tests sit outside `include` often enough
+    // that tsc never objects to the barrel imports vitest accepts.
+    write(
+      'tsconfig.json',
+      JSON.stringify({ compilerOptions: { moduleResolution: 'classic' } }),
+    );
+    write('src/lib/b.test.ts', '');
+    expect(
+      importsOf('test/x.test.ts', `import { a } from '../src/lib';`),
+    ).toEqual(['src/lib/index.ts']);
+    expect(importsOf('src/lib/b.test.ts', `import { a } from '.';`)).toEqual([
+      'src/lib/index.ts',
+    ]);
+  });
+
+  it('keeps a relative import of a file TypeScript cannot resolve, by its name', () => {
+    // A `.vue` or `.svelte` component is linted, so it can carry a violation,
+    // and no `declare module '*.vue'` shim makes TypeScript resolve it.
+    write('src/Comp.vue', '<template />\n');
+    write('src/Card.svelte', '<div />\n');
+    // A directory whose name has an extension: #118's EISDIR, by another road.
+    write('src/lib.d/keep.ts', '');
+    expect(
+      importsOf(
+        'test/x.test.ts',
+        [
+          `import Comp from '../src/Comp.vue';`,
+          `import Card from '../src/Card.svelte';`,
+          `import Gone from '../src/Gone.vue';`,
+          `import Dir from '../src/lib.d';`,
+        ].join('\n'),
+      ),
+    ).toEqual(['src/Comp.vue', 'src/Card.svelte']);
+  });
+
+  it('names the JavaScript file behind a hand-written declaration file', () => {
+    write('src/js.js', 'export const j = 1;\n');
+    write('src/js.d.ts', 'export declare const j: number;\n');
+    write('src/types-only.d.ts', 'export declare const t: number;\n');
+    expect(
+      importsOf(
+        'test/x.test.ts',
+        `import { j } from '../src/js.js';\nimport { t } from '../src/types-only';`,
+      ),
+    ).toEqual(['src/js.js', 'src/types-only.d.ts']);
+  });
+
+  it('keeps the config aliases when it retries a barrel under bundler resolution', () => {
+    write(
+      'tsconfig.json',
+      JSON.stringify({
+        compilerOptions: {
+          moduleResolution: 'classic',
+          paths: { '@/*': ['./src/*'] },
+        },
+      }),
+    );
+    expect(importsOf('test/x.test.ts', `import { a } from '@/lib';`)).toEqual([
+      'src/lib/index.ts',
+    ]);
+  });
+
+  it('takes only a relative specifier with an extension by its literal name', () => {
+    write('src/LICENSE', 'text\n');
+    write('test/vendor/thing.vue', '<template />\n');
+    write('src/Comp.vue', '<template />\n');
+    // None of these is a relative path with an extension: a bare specifier
+    // that happens to name a file beside the importer, and an extensionless
+    // file. The positive control is the one that is.
+    expect(
+      importsOf(
+        'test/x.test.ts',
+        [
+          `import Bare from 'vendor/thing.vue';`,
+          `import Bare from '../src/LICENSE';`,
+        ].join('\n'),
+      ),
+    ).toEqual([]);
+    expect(
+      importsOf('test/x.test.ts', `import Comp from '../src/Comp.vue';`),
+    ).toEqual(['src/Comp.vue']);
+  });
+
+  it('names the module file behind a .d.mts or .d.cts declaration', () => {
+    write('src/m.mjs', 'export const m = 1;\n');
+    write('src/m.d.mts', 'export declare const m: number;\n');
+    write('src/c.cjs', 'module.exports = 1;\n');
+    write('src/c.d.cts', 'export declare const c: number;\n');
+    expect(
+      importsOf(
+        'test/x.test.ts',
+        `import { m } from '../src/m.mjs';\nimport c from '../src/c.cjs';`,
+      ),
+    ).toEqual(['src/m.mjs', 'src/c.cjs']);
+  });
+
+  it('leaves a source file whose name only starts like a declaration file', () => {
+    write('src/x.js', 'export const x = 1;\n');
+    write('src/x.d.tsx', 'export const x = 1;\n');
+    expect(
+      importsOf('test/x.test.ts', `import { x } from '../src/x.d';`),
+    ).toEqual(['src/x.d.tsx']);
+  });
+
+  it('follows a workspace package to its source in the repo', () => {
+    // npm and pnpm link a workspace package into node_modules. TypeScript
+    // reports the real, in-repo path but flags it external, from the link.
+    write(
+      'tsconfig.json',
+      JSON.stringify({
+        compilerOptions: { module: 'esnext', moduleResolution: 'bundler' },
+      }),
+    );
+    write(
+      'packages/shared/package.json',
+      JSON.stringify({ name: '@acme/shared', types: './src/index.ts' }),
+    );
+    write('packages/shared/src/index.ts', 'export const s = 1;\n');
+    write(
+      'node_modules/vendor/package.json',
+      JSON.stringify({ name: 'vendor', types: './index.d.ts' }),
+    );
+    write('node_modules/vendor/index.d.ts', 'export declare const v: 1;\n');
+    mkdirSync(path.join(root, 'node_modules', '@acme'), { recursive: true });
+    symlinkSync(
+      path.join(root, 'packages', 'shared'),
+      path.join(root, 'node_modules', '@acme', 'shared'),
+    );
+    expect(
+      importsOf(
+        'test/x.test.ts',
+        `import { s } from '@acme/shared';\nimport { v } from 'vendor';`,
+      ),
+    ).toEqual(['packages/shared/src/index.ts']);
+  });
+
+  it('ignores a tsconfig above the repo root', () => {
+    // The repo is `root/repo`; `root/tsconfig.json` belongs to something else
+    // and its alias must not reach in.
+    write(
+      'tsconfig.json',
+      JSON.stringify({
+        compilerOptions: {
+          module: 'esnext',
+          moduleResolution: 'bundler',
+          paths: { '@/*': ['./repo/src/*'] },
+        },
+      }),
+    );
+    write('repo/src/a.ts', 'export const a = 1;\n');
+    expect(
+      createImportResolver(path.join(root, 'repo'), () => ts)?.(
+        'test/x.test.ts',
+        `import { a } from '@/a';\nimport { b } from '../src/a.js';`,
+      ),
+    ).toEqual(['src/a.ts']);
+  });
+});
+
 describe('createImportResolver — cost', () => {
   /**
    * The lookup asks about every test file once per violated file. Without

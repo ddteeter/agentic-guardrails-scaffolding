@@ -344,6 +344,21 @@ describe('withCoveringTests', () => {
     expect(loads).toBe(0);
   });
 
+  it('reads no corpus when there is no resolver to ask', () => {
+    // A JS-only repo blocks without TypeScript; reading up to 800 test files
+    // only to discard them is the whole cost with none of the answer.
+    let corpusLoads = 0;
+    withCoveringTests(
+      [base],
+      () => {
+        corpusLoads += 1;
+        return testFiles;
+      },
+      nothing,
+    );
+    expect(corpusLoads).toBe(0);
+  });
+
   it('loads the corpus and the resolver once for many violations', () => {
     // The corpus is every test file in the repo, and the resolver loads
     // TypeScript. Re-loading either per violation would turn a 30-mutant
@@ -360,7 +375,7 @@ describe('withCoveringTests', () => {
         return imports;
       },
     );
-    expect(loads).toEqual(['corpus', 'imports']);
+    expect(loads).toEqual(['imports', 'corpus']);
   });
 
   it('resolves each file once, however many violations it has', () => {
