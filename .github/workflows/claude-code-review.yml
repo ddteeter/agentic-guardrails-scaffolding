@@ -44,10 +44,6 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ github.token }}
           track_progress: true
-          # TEMPORARY: one verification run of the no-subagent review. Turned
-          # off again before merge -- the full transcript lands in a public
-          # repo's Actions log.
-          show_full_output: true
           # No plugin, no subagents. The code-review plugin fanned out to
           # background agents that died when the headless session ended, so the
           # job went green with only a "review agents are running" comment on
