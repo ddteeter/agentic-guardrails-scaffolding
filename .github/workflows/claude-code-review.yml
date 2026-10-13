@@ -44,9 +44,26 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ github.token }}
           track_progress: true
-          plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
-          plugins: 'code-review@claude-code-plugins'
+          # TEMPORARY: one verification run of the no-subagent review. Turned
+          # off again before merge -- the full transcript lands in a public
+          # repo's Actions log.
+          show_full_output: true
+          # No plugin, no subagents. The code-review plugin fanned out to
+          # background agents that died when the headless session ended, so the
+          # job went green with only a "review agents are running" comment on
+          # larger PRs (#122). Its `gh` calls were also denied by the default
+          # tool list. Agent/Task are disallowed so the review stays in one
+          # session that finishes before the job does; the allowlist is
+          # read-only apart from the comment tools that post the review.
+          claude_args: |
+            --allowedTools "Read,Glob,Grep,Bash(gh pr view *),Bash(gh pr diff *),Bash(git log *),Bash(git diff *),Bash(git show *),mcp__github_comment__update_claude_comment,mcp__github_inline_comment__create_inline_comment"
+            --disallowedTools "Agent,Task"
           prompt: |
-            Review this PR using the guidelines in .github/claude-review-prompt.md as additional context for your review.
+            Review pull request #${{ github.event.pull_request.number }} in ${{ github.repository }}. Do the whole review yourself, in this session: do not spawn subagents or background tasks, and do not end until the review is posted.
 
-            /code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }}
+            1. Read `.github/claude-review-prompt.md` (project review guidelines) and `CLAUDE.md`.
+            2. Get the change with `gh pr view ${{ github.event.pull_request.number }}` and `gh pr diff ${{ github.event.pull_request.number }}`. Read changed files in the workspace for surrounding context where the diff alone is not enough.
+            3. Review for correctness bugs first, then security and gate-integrity issues per the guidelines, then test quality. Only report findings you have verified against the code; skip style nits the linters already enforce.
+            4. Post the review by updating your tracking comment: a one-line verdict (`no blocking issues` or `blocking issues found`), then findings ordered by severity, each with `file:line`, what is wrong, and a concrete failure scenario. Use inline comments only for findings tied to a specific line. If you find nothing, say so explicitly.
+
+            Do not approve, request changes, merge, or push.
