@@ -66,6 +66,14 @@ export const LOCK_TIMEOUT_MARKER =
   'guardrails: gave up waiting for the gate lock';
 
 /**
+ * What the scaffolded pre-push hook prints when guardrails-core is missing
+ * from the checkout. It shares the push-blocked prefix, but no gate ran: the
+ * fix is `npm ci`, not a code change, so it is reported as an error.
+ */
+export const NOT_INSTALLED_MARKER =
+  'guardrails-core is not installed in this checkout';
+
+/**
 What the scaffolded hooks print when the gate itself blocked the push.
 */
 const GATE_BLOCK_MARKER = 'guardrails: push blocked';
@@ -93,7 +101,8 @@ function tailOf(text: string): string {
 
 /**
  * Why a push failed, from what the hook printed. A lock timeout is checked
- * first: the hook that timed out also says the push was blocked.
+ * first: the hook that timed out also says the push was blocked. An
+ * uninstalled checkout says so too, but no gate ran, so it is an error.
  */
 export function classifyPushFailure(
   result: ExecResult,
@@ -101,6 +110,9 @@ export function classifyPushFailure(
   const text = output(result);
   if (text.includes(LOCK_TIMEOUT_MARKER)) {
     return 'lock-timeout';
+  }
+  if (text.includes(NOT_INSTALLED_MARKER)) {
+    return 'error';
   }
   return text.includes(GATE_BLOCK_MARKER) ? 'gate-blocked' : 'error';
 }

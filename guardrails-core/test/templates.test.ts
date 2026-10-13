@@ -20,7 +20,7 @@ import process from 'node:process';
 
 import { describe, expect, it } from 'vitest';
 
-import { LOCK_TIMEOUT_MARKER } from '../src/ship.js';
+import { LOCK_TIMEOUT_MARKER, NOT_INSTALLED_MARKER } from '../src/ship.js';
 
 const templates = path.join(import.meta.dirname, '..', 'templates');
 
@@ -369,6 +369,14 @@ describe('the pre-push hook serializes the gate machine-wide', () => {
       'utf8',
     );
     expect(hook).toContain(LOCK_TIMEOUT_MARKER);
+  });
+
+  it('says an uninstalled checkout in the words `guardrails ship` reads', () => {
+    const hook = readFileSync(
+      path.join(templates, 'githooks', 'pre-push'),
+      'utf8',
+    );
+    expect(hook).toContain(NOT_INSTALLED_MARKER);
   });
 
   it('passes a passing gate and blocks a failing one', () => {

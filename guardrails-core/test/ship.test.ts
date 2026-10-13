@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Exec, ExecResult } from '../src/exec.js';
 import {
   LOCK_TIMEOUT_MARKER,
+  NOT_INSTALLED_MARKER,
   classifyPushFailure,
   ship,
   type ShipOptions,
@@ -268,6 +269,16 @@ describe('classifyPushFailure', () => {
         failed(`${LOCK_TIMEOUT_MARKER}\nguardrails: push blocked`),
       ),
     ).toBe('lock-timeout');
+  });
+
+  it('reports an uninstalled checkout as an error, not a gate block', () => {
+    expect(
+      classifyPushFailure(
+        failed(
+          `guardrails: push blocked — ${NOT_INSTALLED_MARKER}. Run 'npm ci' here, then push again.`,
+        ),
+      ),
+    ).toBe('error');
   });
 });
 
