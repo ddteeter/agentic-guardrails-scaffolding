@@ -78,6 +78,7 @@ const TAIL_LINES = 40;
  * started before that reports nothing to wait for.
  */
 const NO_CHECKS_RETRIES = 8;
+const NO_CHECKS_YET = 'no checks reported';
 const NO_CHECKS_DELAY_MS = 15_000;
 
 function output(result: ExecResult): string {
@@ -209,7 +210,11 @@ async function watchChecks(
       ['pr', 'checks', number, '--json', 'name,bucket'],
       { cwd: options.repoRoot },
     );
-    const checks = parseChecks(listed.stdout);
+    // Before CI registers, gh does not print an empty list: it exits 1 with
+    // this sentence on stderr. That is "none yet", not "unreadable".
+    const checks = output(listed).includes(NO_CHECKS_YET)
+      ? []
+      : parseChecks(listed.stdout);
     const tail = tailOf(output(watch));
     if (checks === undefined) {
       return {

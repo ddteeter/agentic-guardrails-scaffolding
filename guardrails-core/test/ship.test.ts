@@ -361,6 +361,38 @@ describe('ship: CI', () => {
     ).toHaveLength(3);
   });
 
+  it("waits through gh's own 'no checks reported' failure", async () => {
+    // What `gh pr checks --json` actually does before CI registers: exit 1,
+    // nothing on stdout, this sentence on stderr. Seen on the first real run
+    // (guardrails PR #122), which gave up as `error` within seconds.
+    const delays: number[] = [];
+    const { exec } = fakeExec({
+      ...HAPPY,
+      'gh pr checks 42 --json': [
+        failed("no checks reported on the 'feat/x' branch"),
+        ok(JSON.stringify([{ name: 'build', bucket: 'pass' }])),
+      ],
+    });
+    const status = await ship(
+      options(exec, {
+        delay: (ms) => {
+          delays.push(ms);
+          return Promise.resolve();
+        },
+      }),
+    );
+    expect(status.state).toBe('green');
+    expect(delays).toEqual([15_000]);
+  });
+
+  it('is still an error when gh fails for any other reason', async () => {
+    const { exec } = fakeExec({
+      ...HAPPY,
+      'gh pr checks 42 --json': failed('HTTP 502: Bad Gateway'),
+    });
+    expect(await stateOf(exec)).toBe('error');
+  });
+
   it('is green with no checks once the registration wait runs out', async () => {
     const delays: number[] = [];
     const { exec } = fakeExec({ ...HAPPY, 'gh pr checks 42 --json': ok('[]') });
