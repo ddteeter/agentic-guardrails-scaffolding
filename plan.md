@@ -594,6 +594,18 @@ left orphaned `workerd` processes doing exactly that. A scope flag on
   per manifest, lazily, capped at 800 files and 512KB each; a repo past the cap
   gets no hint and greps instead, which is the pre-existing behaviour.
 
+  Since #120 the import graph is TypeScript's, not a regex's:
+  `import-graph.ts` scans with `ts.preProcessFile` and resolves with
+  `ts.resolveModuleName` under the importing file's own project options. The
+  regex had matched prose (`data-part="rail". "The …` yielded the specifier
+  `"."`, a directory, and crashed the commit gate with EISDIR — #118), and the
+  hand-written resolution never knew tsconfig `paths`, so an alias-importing
+  repo got no hint at all. On this repo's own corpus the two agree on 58 of 59
+  source files; the 59th (`src/index.ts`) was 7 regex false positives. Cost:
+  ~350 ms once per blocking gate (TypeScript load plus the first corpus pass),
+  then ~9 ms per further file — the same as the regex — because answers are
+  kept per file. No `typescript` installed means no hint, never a guess.
+
   Grep is the general fix and `relatedTests` is the fast path — neither
   replaces the other. A fixer still has to search when the test it needs does
   not exist yet, which is the `no-coverage` case.

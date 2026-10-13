@@ -281,6 +281,38 @@ check with `tsc --build --noEmit`, so referenced projects are part of the gate.
 If TypeScript cannot produce a readable resolved configuration, verification
 fails closed rather than treating an unknown input set as clean.
 
+### Covering tests in the manifest (`relatedTests`)
+
+When a gate blocks, each violation outside a test file names the test files
+that cover it in `relatedTests`. That is the fixer's fast path to the test it
+must strengthen, and the scope-lock lets a fixer edit exactly those tests. On
+Codex, whose fixers cannot search, it is the only path.
+
+The lookup asks your installed `typescript` which files each test imports
+(`ts.preProcessFile`, then `ts.resolveModuleName` with the options of the
+nearest `tsconfig.json`, or of the referenced project that includes the file).
+So tsconfig `paths` aliases such as `@/lib/x` resolve the way your compiler
+resolves them, and an import-shaped string in a comment is never mistaken for
+an import. A test that imports a module which imports the violated file also
+counts, one hop and no further.
+
+The lookup reaches a little past what the compiler alone would accept, because
+tests do:
+
+- an import your configured resolution rejects, such as a barrel import under
+  Classic resolution, is retried bundler-style, with your aliases kept;
+- a relative import of a non-TypeScript file, such as `.vue` or `.svelte`,
+  counts when that file exists;
+- an import that resolves to a hand-written `.d.ts` names the `.js` file
+  beside it;
+- a workspace package linked through `node_modules` counts as the source file
+  in your repo that it resolves to.
+
+Without `typescript` installed, violations carry no `relatedTests`, and a
+fixer searches for the test itself (on Codex it cannot, so it escalates more
+often). The gate is unaffected otherwise. The same is true past the corpus
+cap of 800 test files.
+
 ### Stacked branches: `--base`
 
 Every diff-scoped analyzer sees `merge-base(<base>, HEAD)..HEAD`, and `<base>`

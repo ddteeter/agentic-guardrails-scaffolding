@@ -16,93 +16,17 @@
  * live in `test/verify/orchestrator.test.ts`, whose name contains neither the
  * module nor the symbol; any `<name>.test.ts` rule would have missed it, and
  * a substring rule would have attributed `src/a.ts`'s tests to `src/ab.ts`.
- * A specifier is resolved the way the runtime resolves it and compared as a
- * path, so the answer is right or absent, never approximate.
+ * Which files a text imports is TypeScript's answer, not a pattern's
+ * (`import-graph.ts`, #120): a comment is never an import, and a tsconfig
+ * `paths` alias resolves the way the compiler resolves it.
  */
 
 import { readdirSync, readFileSync, type Dirent } from 'node:fs';
 import path from 'node:path';
 
+import type { ImportResolver } from './import-graph.js';
 import { isTestFile } from './verify/git.js';
 import type { Violation } from './violation.js';
-
-/**
- * Every relative specifier in a source text.
- *
- * One pattern for `import`, `export ... from`, `require()` and dynamic
- * `import()` alike, because all four wrap the specifier in quotes and only the
- * leading `./`, `../`, or a bare `.` / `..` matters here — a quoted `.a` is a
- * selector or a dotfile, never a relative specifier. Deliberately not a parser:
- * a quoted relative path that is not an import resolves to a file the target
- * either is or is not, and a false positive means naming one extra test file —
- * the cost of being wrong is a hint, not a fix.
- */
-const RELATIVE_SPECIFIER = /['"](\.\.?(?:\/[^'"\n]*)?)['"]/g;
-
-/**
- * Extensions a specifier may be written with, mapped to what it can mean on
- * disk. ESM TypeScript names the EMITTED file (`./a.js` for `a.ts`), so the
- * literal specifier usually does not exist as written.
- */
-const SPECIFIER_ENDINGS: readonly (readonly [string, readonly string[]])[] = [
-  ['.js', ['.ts', '.tsx', '.js']],
-  ['.jsx', ['.tsx', '.jsx']],
-  ['.mjs', ['.mts', '.mjs']],
-  ['.cjs', ['.cts', '.cjs']],
-];
-
-/**
- * Extensions an extensionless specifier may resolve to, in resolution order.
- */
-const BARE_EXTENSIONS: readonly string[] = [
-  '.ts',
-  '.tsx',
-  '.mts',
-  '.cts',
-  '.js',
-  '.jsx',
-];
-
-/**
- * Every repo-relative path a specifier could denote, written with POSIX
- * separators to match the git-relative paths a violation carries.
- */
-function resolutionsOf(fromFile: string, specifier: string): string[] {
-  const joined = path.posix.normalize(
-    path.posix.join(path.posix.dirname(fromFile), specifier),
-  );
-  const ending = SPECIFIER_ENDINGS.find(([suffix]) => joined.endsWith(suffix));
-  if (ending !== undefined) {
-    const [suffix, replacements] = ending;
-    const stem = joined.slice(0, -suffix.length);
-    return replacements.map((replacement) => `${stem}${replacement}`);
-  }
-  return [
-    // Kept only with an extension: an extensionless path is no source file,
-    // and is often a directory (#118).
-    ...(path.posix.extname(joined) === '' ? [] : [joined]),
-    ...BARE_EXTENSIONS.map((extension) => `${joined}${extension}`),
-    // A directory specifier: `./verify` meaning `./verify/index.ts`.
-    ...BARE_EXTENSIONS.map((extension) => `${joined}/index${extension}`),
-  ];
-}
-
-function isImportingTarget(
-  testFile: string,
-  contents: string,
-  target: string,
-): boolean {
-  for (const [, specifier = ''] of contents.matchAll(RELATIVE_SPECIFIER)) {
-    // Destructured with a default rather than guarded: group 1 is mandatory in
-    // `RELATIVE_SPECIFIER`, so a match always carries it and an `undefined`
-    // check is a branch no input can take — an equivalent mutant by
-    // construction. The default is unreachable for the same reason.
-    if (resolutionsOf(testFile, specifier).includes(target)) {
-      return true;
-    }
-  }
-  return false;
-}
 
 /**
  * The entries of `testFiles` whose contents import `target`, sorted so the
@@ -114,17 +38,18 @@ function isImportingTarget(
 export function coveringTests(
   target: string,
   testFiles: ReadonlyMap<string, string>,
+  imports: ImportResolver,
   readSource?: (file: string) => string | undefined,
 ): string[] {
   const direct = [...testFiles]
     .filter(([testFile, contents]) =>
-      isImportingTarget(testFile, contents, target),
+      imports(testFile, contents).includes(target),
     )
     .map(([testFile]) => testFile);
   const found =
     readSource === undefined || direct.length > 0
       ? direct
-      : testsOneHopAway(target, testFiles, readSource);
+      : testsOneHopAway(target, testFiles, imports, readSource);
   return found.toSorted((left, right) => left.localeCompare(right));
 }
 
@@ -145,6 +70,7 @@ export function coveringTests(
 function testsOneHopAway(
   target: string,
   testFiles: ReadonlyMap<string, string>,
+  imports: ImportResolver,
   readSource: (file: string) => string | undefined,
 ): string[] {
   const importsTarget = new Map<string, boolean>();
@@ -153,18 +79,14 @@ function testsOneHopAway(
     if (answer === undefined) {
       const contents = readSource(module);
       answer =
-        contents !== undefined && isImportingTarget(module, contents, target);
+        contents !== undefined && imports(module, contents).includes(target);
       importsTarget.set(module, answer);
     }
     return answer;
   };
   return [...testFiles]
     .filter(([testFile, contents]) =>
-      contents
-        .matchAll(RELATIVE_SPECIFIER)
-        .some(([, specifier = '']) =>
-          resolutionsOf(testFile, specifier).some((module) => isBridge(module)),
-        ),
+      imports(testFile, contents).some((module) => isBridge(module)),
     )
     .map(([testFile]) => testFile);
 }
@@ -305,31 +227,70 @@ function readWithinLimit(
  * Return `violations` with `relatedTests` set where the file has covering
  * tests.
  *
- * The corpus is read once, lazily: a manifest whose violations are all in test
- * files, or one with no violations at all, reads nothing. Violations already
+ * The corpus and the resolver are each loaded once, lazily: a manifest whose
+ * violations are all in test files, or one with no violations at all, loads
+ * neither -- so a clean gate never loads TypeScript. Violations already
  * carrying the key are left alone, and a file with no importer gets no key —
  * an empty array would claim "searched, none exist", which is a different
- * thing from "not computed" and would stop a fixer looking.
+ * thing from "not computed" and would stop a fixer looking. No resolver (no
+ * TypeScript installed) means no key on anything, for the same reason.
  */
 export function withCoveringTests(
   violations: readonly Violation[],
   loadCorpus: () => ReadonlyMap<string, string>,
+  loadImports: () => ImportResolver | undefined,
   readSource?: (file: string) => string | undefined,
 ): Violation[] {
-  let corpus: ReadonlyMap<string, string> | undefined;
+  let loaded:
+    | typeof NO_RESOLVER
+    | {
+        readonly imports: ImportResolver;
+        readonly corpus: ReadonlyMap<string, string>;
+      }
+    | undefined;
   const byFile = new Map<string, readonly string[]>();
   return violations.map((violation) => {
     if (violation.relatedTests !== undefined || isTestFile(violation.file)) {
       return violation;
     }
-    corpus ??= loadCorpus();
+    // The resolver first: without one there is nothing to ask, and the
+    // corpus -- up to 800 test files -- would be read only to be discarded.
+    loaded ??= loadBoth(loadImports, loadCorpus);
+    if (loaded === NO_RESOLVER) {
+      return violation;
+    }
     let related = byFile.get(violation.file);
     if (related === undefined) {
-      related = coveringTests(violation.file, corpus, readSource);
+      related = coveringTests(
+        violation.file,
+        loaded.corpus,
+        loaded.imports,
+        readSource,
+      );
       byFile.set(violation.file, related);
     }
     return related.length === 0
       ? violation
       : { ...violation, relatedTests: related };
   });
+}
+
+/**
+No TypeScript to ask, so nothing is attributed.
+*/
+const NO_RESOLVER = 'no-resolver';
+
+function loadBoth(
+  loadImports: () => ImportResolver | undefined,
+  loadCorpus: () => ReadonlyMap<string, string>,
+):
+  | typeof NO_RESOLVER
+  | {
+      readonly imports: ImportResolver;
+      readonly corpus: ReadonlyMap<string, string>;
+    } {
+  const imports = loadImports();
+  return imports === undefined
+    ? NO_RESOLVER
+    : { imports, corpus: loadCorpus() };
 }

@@ -23,14 +23,41 @@ import {
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
+import ts from 'typescript';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { repoSourceReader } from '../src/repo-source.js';
 import {
   coveringTests,
   readTestCorpus,
   withCoveringTests,
 } from '../src/covering-tests.js';
+import {
+  createImportResolver,
+  type ImportResolver,
+} from '../src/import-graph.js';
+import { repoSourceReader } from '../src/repo-source.js';
+
+/**
+ * An import graph declared outright: what each file imports, whatever its
+ * text says. Which files a text imports is `import-graph.ts`'s question, and
+ * its own tests answer it against real TypeScript; these tests are about what
+ * the lookup does with the answer.
+ */
+/**
+A reader or loader with nothing to give: an unreadable file, or no TypeScript.
+*/
+function nothing(): undefined {
+  return;
+}
+
+function textOf(file: string): string {
+  return `text of ${file}`;
+}
+
+function graph(edges: Record<string, readonly string[]>): ImportResolver {
+  const table = new Map(Object.entries(edges));
+  return (fromFile) => [...(table.get(fromFile) ?? [])];
+}
 
 describe('coveringTests', () => {
   it('finds a test that imports the file, whatever the test is called', () => {
@@ -39,107 +66,33 @@ describe('coveringTests', () => {
     expect(
       coveringTests(
         'guardrails-core/src/verify/index.ts',
-        new Map([
-          [
-            'guardrails-core/test/verify/orchestrator.test.ts',
-            `import { runVerify } from '../../src/verify/index.js';`,
+        new Map([['guardrails-core/test/verify/orchestrator.test.ts', '']]),
+        graph({
+          'guardrails-core/test/verify/orchestrator.test.ts': [
+            'guardrails-core/src/verify/index.ts',
           ],
-        ]),
+        }),
       ),
     ).toEqual(['guardrails-core/test/verify/orchestrator.test.ts']);
   });
 
-  it('resolves a .js specifier to the .ts file it means', () => {
-    // ESM TypeScript imports name the EMITTED file. A matcher comparing raw
-    // specifiers would never match anything in a repo like this one.
-    expect(
-      coveringTests(
-        'src/a.ts',
-        new Map([['test/a.test.ts', `import { a } from '../src/a.js';`]]),
-      ),
-    ).toEqual(['test/a.test.ts']);
-  });
-
-  it('resolves a .tsx file from a .js specifier too', () => {
-    expect(
-      coveringTests(
-        'src/ui/widget.tsx',
-        new Map([
-          ['test/widget.test.ts', `import { W } from '../src/ui/widget.js';`],
-        ]),
-      ),
-    ).toEqual(['test/widget.test.ts']);
-  });
-
-  it('resolves .jsx, .mjs and .cjs specifiers to their TypeScript sources', () => {
-    // One row of the ending table each. Only `.js` was exercised before, so
-    // the other three rows could have been emptied with every test still
-    // green — and a repo writing `.mjs` specifiers would have silently got no
-    // hints at all.
-    expect(
-      coveringTests(
-        'src/a.tsx',
-        new Map([['test/a.test.ts', `import { a } from '../src/a.jsx';`]]),
-      ),
-    ).toEqual(['test/a.test.ts']);
-    expect(
-      coveringTests(
-        'src/b.mts',
-        new Map([['test/b.test.ts', `import { b } from '../src/b.mjs';`]]),
-      ),
-    ).toEqual(['test/b.test.ts']);
-    expect(
-      coveringTests(
-        'src/c.cts',
-        new Map([['test/c.test.ts', `const c = require('../src/c.cjs');`]]),
-      ),
-    ).toEqual(['test/c.test.ts']);
-  });
-
-  it('resolves an extensionless specifier to each extension it may mean', () => {
-    for (const [target, name] of [
-      ['src/a.tsx', 'a'],
-      ['src/b.mts', 'b'],
-      ['src/c.cts', 'c'],
-      ['src/d.jsx', 'd'],
-    ] as const) {
-      expect(
-        coveringTests(
-          target,
-          new Map([['test/x.test.ts', `import { x } from '../src/${name}';`]]),
-        ),
-      ).toEqual(['test/x.test.ts']);
-    }
-  });
-
-  it('resolves an extensionless specifier', () => {
-    expect(
-      coveringTests(
-        'src/a.ts',
-        new Map([['test/a.test.ts', `import { a } from '../src/a';`]]),
-      ),
-    ).toEqual(['test/a.test.ts']);
-  });
-
-  it('resolves a directory specifier to its index file', () => {
-    expect(
-      coveringTests(
-        'src/verify/index.ts',
-        new Map([['test/v.test.ts', `import { x } from '../src/verify';`]]),
-      ),
-    ).toEqual(['test/v.test.ts']);
-  });
-
-  it('ignores a package specifier that merely looks similar', () => {
-    // `vitest` and `node:path` are not relative, and nothing about them can
-    // resolve to a repo file. A substring matcher would be fooled by a bare
-    // specifier ending in the same name.
-    expect(
-      coveringTests(
-        'src/path.ts',
-        new Map([['test/a.test.ts', `import path from 'node:path';`]]),
-      ),
-    ).toEqual([]);
+  it('asks about each test with that test’s own text', () => {
+    const asked: [string, string][] = [];
+    coveringTests(
+      'src/a.ts',
+      new Map([
+        ['test/a.test.ts', 'text of a'],
+        ['test/b.test.ts', 'text of b'],
+      ]),
+      (fromFile, text) => {
+        asked.push([fromFile, text]);
+        return [];
+      },
+    );
+    expect(asked).toEqual([
+      ['test/a.test.ts', 'text of a'],
+      ['test/b.test.ts', 'text of b'],
+    ]);
   });
 
   it('does not match a sibling whose name is a prefix', () => {
@@ -148,7 +101,8 @@ describe('coveringTests', () => {
     expect(
       coveringTests(
         'src/a.ts',
-        new Map([['test/ab.test.ts', `import { ab } from '../src/ab.js';`]]),
+        new Map([['test/ab.test.ts', '']]),
+        graph({ 'test/ab.test.ts': ['src/ab.ts'] }),
       ),
     ).toEqual([]);
   });
@@ -158,9 +112,13 @@ describe('coveringTests', () => {
       coveringTests(
         'src/a.ts',
         new Map([
-          ['test/z.test.ts', `import { a } from '../src/a.js';`],
-          ['test/b.test.ts', `import { a } from '../src/a.js';`],
+          ['test/z.test.ts', ''],
+          ['test/b.test.ts', ''],
         ]),
+        graph({
+          'test/z.test.ts': ['src/a.ts'],
+          'test/b.test.ts': ['src/other.ts', 'src/a.ts'],
+        }),
       ),
     ).toEqual(['test/b.test.ts', 'test/z.test.ts']);
   });
@@ -169,21 +127,141 @@ describe('coveringTests', () => {
     expect(
       coveringTests(
         'src/orphan.ts',
-        new Map([['test/a.test.ts', `import { a } from '../src/a.js';`]]),
+        new Map([['test/a.test.ts', '']]),
+        graph({ 'test/a.test.ts': ['src/a.ts'] }),
+      ),
+    ).toEqual([]);
+  });
+});
+
+describe('coveringTests — one hop through the module a test imports', () => {
+  /**
+   * A helper extracted into its own file is exercised through its parent's
+   * tests, which import the PARENT. Direct importers alone named no test for
+   * it, so once the fixer scope-lock confined a fixer to its manifest's files
+   * and their related tests, a fixer handed the helper's surviving mutants
+   * could edit nothing that would kill them -- and extraction is the very fix
+   * fixers reach for on a duplication finding.
+   */
+  const imports = graph({
+    'test/parent.test.ts': ['src/parent.ts'],
+    'test/helper.test.ts': ['src/helper.ts'],
+    'test/a.test.ts': ['src/a.ts'],
+    'test/mixed.test.ts': ['src/unrelated.ts', 'src/parent.ts'],
+    'src/parent.ts': ['src/helper.ts'],
+    'src/a.ts': ['src/b.ts'],
+    'src/b.ts': ['src/target.ts'],
+  });
+
+  it('finds a test that reaches the file through a module it imports', () => {
+    expect(
+      coveringTests(
+        'src/helper.ts',
+        new Map([['test/parent.test.ts', '']]),
+        imports,
+        textOf,
+      ),
+    ).toEqual(['test/parent.test.ts']);
+  });
+
+  it('asks about the bridging module with the module’s own text', () => {
+    const asked: [string, string][] = [];
+    coveringTests(
+      'src/helper.ts',
+      new Map([['test/parent.test.ts', '']]),
+      (fromFile, text) => {
+        asked.push([fromFile, text]);
+        return imports(fromFile, text);
+      },
+      textOf,
+    );
+    expect(asked).toContainEqual(['src/parent.ts', 'text of src/parent.ts']);
+  });
+
+  it('prefers direct importers when there are any', () => {
+    // The hint stays as narrow as the evidence allows: a test that imports
+    // the file itself is the one to strengthen.
+    expect(
+      coveringTests(
+        'src/helper.ts',
+        new Map([
+          ['test/helper.test.ts', ''],
+          ['test/parent.test.ts', ''],
+        ]),
+        imports,
+        textOf,
+      ),
+    ).toEqual(['test/helper.test.ts']);
+  });
+
+  it('stops after one hop', () => {
+    // Every further hop widens what the fixer may edit, for evidence that
+    // gets weaker each time.
+    expect(
+      coveringTests(
+        'src/target.ts',
+        new Map([['test/a.test.ts', '']]),
+        imports,
+        textOf,
       ),
     ).toEqual([]);
   });
 
-  it('reads a require and a dynamic import, not only static syntax', () => {
+  it('stays direct-only without a source reader', () => {
     expect(
       coveringTests(
-        'src/a.ts',
-        new Map([
-          ['test/a.test.ts', `const { a } = require('../src/a.js');`],
-          ['test/b.test.ts', `await import('../src/a.js');`],
-        ]),
+        'src/helper.ts',
+        new Map([['test/parent.test.ts', '']]),
+        imports,
       ),
-    ).toEqual(['test/a.test.ts', 'test/b.test.ts']);
+    ).toEqual([]);
+  });
+
+  it('treats a module it cannot read as no bridge', () => {
+    expect(
+      coveringTests(
+        'src/helper.ts',
+        new Map([['test/parent.test.ts', '']]),
+        imports,
+        nothing,
+      ),
+    ).toEqual([]);
+  });
+
+  it('finds a test whose bridging import is not its only import', () => {
+    expect(
+      coveringTests(
+        'src/helper.ts',
+        new Map([['test/mixed.test.ts', '']]),
+        imports,
+        textOf,
+      ),
+    ).toEqual(['test/mixed.test.ts']);
+  });
+
+  it('reads each module at most once, whether or not it bridges', () => {
+    const reads: string[] = [];
+    const countingReader = (file: string): string => {
+      reads.push(file);
+      return textOf(file);
+    };
+    coveringTests(
+      'src/helper.ts',
+      new Map([
+        ['test/one.test.ts', ''],
+        ['test/two.test.ts', ''],
+      ]),
+      graph({
+        'test/one.test.ts': ['src/unrelated.ts', 'src/parent.ts'],
+        'test/two.test.ts': ['src/unrelated.ts', 'src/parent.ts'],
+        'src/parent.ts': ['src/helper.ts'],
+      }),
+      countingReader,
+    );
+    expect(reads.toSorted((left, right) => left.localeCompare(right))).toEqual([
+      'src/parent.ts',
+      'src/unrelated.ts',
+    ]);
   });
 });
 
@@ -197,14 +275,17 @@ describe('withCoveringTests', () => {
     tool: 'stryker',
   };
 
-  const testFiles = new Map([
-    ['test/a.test.ts', `import { a } from '../src/a.js';`],
-  ]);
+  const testFiles = new Map([['test/a.test.ts', '']]);
+  const imports = graph({ 'test/a.test.ts': ['src/a.ts'] });
 
   it('attaches the covering tests to a violation', () => {
-    expect(withCoveringTests([base], () => testFiles)).toEqual([
-      { ...base, relatedTests: ['test/a.test.ts'] },
-    ]);
+    expect(
+      withCoveringTests(
+        [base],
+        () => testFiles,
+        () => imports,
+      ),
+    ).toEqual([{ ...base, relatedTests: ['test/a.test.ts'] }]);
   });
 
   it('adds no key when nothing imports the file', () => {
@@ -212,29 +293,89 @@ describe('withCoveringTests', () => {
     // class untouched. An empty array would read as "searched and there is no
     // test", which is a different claim from "not computed".
     expect(
-      withCoveringTests([{ ...base, file: 'src/orphan.ts' }], () => testFiles),
+      withCoveringTests(
+        [{ ...base, file: 'src/orphan.ts' }],
+        () => testFiles,
+        () => imports,
+      ),
     ).toEqual([{ ...base, file: 'src/orphan.ts' }]);
+  });
+
+  it('adds no key anywhere without a resolver (no TypeScript installed)', () => {
+    // The same degradation as a corpus past the cap: no hint, and the fixer
+    // searches for itself. Never a guess.
+    expect(
+      withCoveringTests(
+        [base, { ...base, file: 'src/b.ts' }],
+        () => testFiles,
+        nothing,
+      ),
+    ).toEqual([base, { ...base, file: 'src/b.ts' }]);
   });
 
   it('leaves a violation that is already in a test file alone', () => {
     // Its own file IS the test. Naming it back would be noise, and naming the
     // files it imports would point the fixer at production code.
     const inTest = { ...base, file: 'test/a.test.ts' };
-    expect(withCoveringTests([inTest], () => testFiles)).toEqual([inTest]);
+    expect(
+      withCoveringTests(
+        [inTest],
+        () => testFiles,
+        () => imports,
+      ),
+    ).toEqual([inTest]);
   });
 
-  it('reads the test corpus once for many violations in one file', () => {
-    // The corpus is every test file in the repo. Re-reading it per violation
-    // would turn a 30-mutant manifest into 30 full walks.
-    let reads = 0;
+  it('loads neither the corpus nor TypeScript when every violation is in a test', () => {
+    // A clean gate, or one blocking only on test files, never pays for
+    // loading TypeScript.
+    let loads = 0;
+    withCoveringTests(
+      [{ ...base, file: 'test/a.test.ts' }],
+      () => {
+        loads += 1;
+        return testFiles;
+      },
+      () => {
+        loads += 1;
+        return imports;
+      },
+    );
+    expect(loads).toBe(0);
+  });
+
+  it('reads no corpus when there is no resolver to ask', () => {
+    // A JS-only repo blocks without TypeScript; reading up to 800 test files
+    // only to discard them is the whole cost with none of the answer.
+    let corpusLoads = 0;
+    withCoveringTests(
+      [base],
+      () => {
+        corpusLoads += 1;
+        return testFiles;
+      },
+      nothing,
+    );
+    expect(corpusLoads).toBe(0);
+  });
+
+  it('loads the corpus and the resolver once for many violations', () => {
+    // The corpus is every test file in the repo, and the resolver loads
+    // TypeScript. Re-loading either per violation would turn a 30-mutant
+    // manifest into 30 of each.
+    const loads: string[] = [];
     withCoveringTests(
       [base, { ...base, line: 2 }, { ...base, file: 'src/b.ts' }],
       () => {
-        reads += 1;
+        loads.push('corpus');
         return testFiles;
       },
+      () => {
+        loads.push('imports');
+        return imports;
+      },
     );
-    expect(reads).toBe(1);
+    expect(loads).toEqual(['imports', 'corpus']);
   });
 
   it('resolves each file once, however many violations it has', () => {
@@ -252,19 +393,126 @@ describe('withCoveringTests', () => {
     withCoveringTests(
       [base, { ...base, line: 2 }, { ...base, line: 3 }],
       () => counting,
+      () => imports,
     );
     expect(scans).toBe(1);
   });
 
   it('does not overwrite relatedTests already present', () => {
     const carried = { ...base, relatedTests: ['test/kept.test.ts'] };
-    expect(withCoveringTests([carried], () => testFiles)).toEqual([carried]);
+    expect(
+      withCoveringTests(
+        [carried],
+        () => testFiles,
+        () => imports,
+      ),
+    ).toEqual([carried]);
   });
 
   it('answers the violations unchanged when the corpus is empty', () => {
     // A repo with no test files, or one whose corpus exceeded the cap: the
     // enrichment degrades to doing nothing rather than to a wrong answer.
-    expect(withCoveringTests([base], () => new Map())).toEqual([base]);
+    expect(
+      withCoveringTests(
+        [base],
+        () => new Map(),
+        () => imports,
+      ),
+    ).toEqual([base]);
+  });
+
+  it('passes the source reader through for the one-hop lookup', () => {
+    expect(
+      withCoveringTests(
+        [{ ...base, file: 'src/helper.ts' }],
+        () => new Map([['test/parent.test.ts', '']]),
+        () =>
+          graph({
+            'test/parent.test.ts': ['src/parent.ts'],
+            'src/parent.ts': ['src/helper.ts'],
+          }),
+        () => '',
+      ),
+    ).toEqual([
+      {
+        ...base,
+        file: 'src/helper.ts',
+        relatedTests: ['test/parent.test.ts'],
+      },
+    ]);
+  });
+});
+
+describe('coveringTests — end to end on a real repo', () => {
+  /**
+   * The issues this replaced a regex for, through the real resolver and the
+   * real reader: #118's barrel import and prose, and #120's alias.
+   */
+  let root: string;
+
+  function write(file: string, contents: string): void {
+    const full = path.join(root, file);
+    mkdirSync(path.dirname(full), { recursive: true });
+    writeFileSync(full, contents);
+  }
+
+  function lookup(target: string, testFile: string, text: string): string[] {
+    const imports = createImportResolver(root, () => ts);
+    if (imports === undefined) {
+      throw new Error('typescript did not load');
+    }
+    return coveringTests(
+      target,
+      new Map([[testFile, text]]),
+      imports,
+      repoSourceReader(root),
+    );
+  }
+
+  beforeEach(() => {
+    root = mkdtempSync(path.join(tmpdir(), 'covering-e2e-'));
+    write(
+      'tsconfig.json',
+      JSON.stringify({
+        compilerOptions: {
+          module: 'esnext',
+          moduleResolution: 'bundler',
+          paths: { '@/*': ['./src/*'] },
+        },
+      }),
+    );
+    write('src/a.ts', 'export const a = 1;\n');
+    write('src/lib/index.ts', `export * from '../a';\n`);
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('reaches a file through a barrel directory a test imports', () => {
+    expect(
+      lookup('src/a.ts', 'test/x.test.ts', `import { a } from '../src/lib';`),
+    ).toEqual(['test/x.test.ts']);
+  });
+
+  it('reaches a file through an alias, directly and through a barrel', () => {
+    expect(
+      lookup('src/a.ts', 'test/x.test.ts', `import { a } from '@/a';`),
+    ).toEqual(['test/x.test.ts']);
+    expect(
+      lookup('src/a.ts', 'test/y.test.ts', `import { a } from '@/lib';`),
+    ).toEqual(['test/y.test.ts']);
+  });
+
+  it('survives a "." produced by prose between two quoted strings', () => {
+    // #118's repro B: this crashed the commit gate with EISDIR.
+    expect(
+      lookup(
+        'src/a.ts',
+        'test/y.test.ts',
+        '// cards in `data-part="rail"` beside it. "The harness',
+      ),
+    ).toEqual([]);
   });
 });
 
@@ -359,220 +607,5 @@ describe('readTestCorpus', () => {
   it('answers empty for a directory that does not exist', () => {
     // The gate runs this; an unreadable path must not throw out of it.
     expect(readTestCorpus(path.join(root, 'absent')).size).toBe(0);
-  });
-});
-
-describe('coveringTests — one hop through the module a test imports', () => {
-  /**
-   * A helper extracted into its own file is exercised through its parent's
-   * tests, which import the PARENT. Direct importers alone named no test for
-   * it, so once the fixer scope-lock confined a fixer to its manifest's files
-   * and their related tests, a fixer handed the helper's surviving mutants
-   * could edit nothing that would kill them -- and extraction is the very fix
-   * fixers reach for on a duplication finding.
-   */
-  const sources = new Map([
-    ['src/parent.ts', `import { helper } from './helper.js';`],
-    ['src/a.ts', `import { b } from './b.js';`],
-    ['src/b.ts', `import { target } from './target.js';`],
-  ]);
-  const readSource = (file: string): string | undefined => sources.get(file);
-
-  it('finds a test that reaches the file through a module it imports', () => {
-    const testFiles = new Map([
-      ['test/parent.test.ts', `import { parent } from '../src/parent.js';`],
-    ]);
-    expect(coveringTests('src/helper.ts', testFiles, readSource)).toEqual([
-      'test/parent.test.ts',
-    ]);
-  });
-
-  it('prefers direct importers when there are any', () => {
-    // The hint stays as narrow as the evidence allows: a test that imports
-    // the file itself is the one to strengthen.
-    const testFiles = new Map([
-      ['test/helper.test.ts', `import { helper } from '../src/helper.js';`],
-      ['test/parent.test.ts', `import { parent } from '../src/parent.js';`],
-    ]);
-    expect(coveringTests('src/helper.ts', testFiles, readSource)).toEqual([
-      'test/helper.test.ts',
-    ]);
-  });
-
-  it('stops after one hop', () => {
-    // Every further hop widens what the fixer may edit, for evidence that
-    // gets weaker each time.
-    const testFiles = new Map([
-      ['test/a.test.ts', `import { a } from '../src/a.js';`],
-    ]);
-    expect(coveringTests('src/target.ts', testFiles, readSource)).toEqual([]);
-  });
-
-  it('stays direct-only without a source reader', () => {
-    const testFiles = new Map([
-      ['test/parent.test.ts', `import { parent } from '../src/parent.js';`],
-    ]);
-    expect(coveringTests('src/helper.ts', testFiles)).toEqual([]);
-  });
-
-  it('finds a test whose bridging import is not its only import', () => {
-    const testFiles = new Map([
-      [
-        'test/mixed.test.ts',
-        `import { x } from '../src/unrelated.js';\nimport { parent } from '../src/parent.js';`,
-      ],
-    ]);
-    expect(coveringTests('src/helper.ts', testFiles, readSource)).toEqual([
-      'test/mixed.test.ts',
-    ]);
-  });
-
-  it('reads each module at most once, whether or not it bridges', () => {
-    const reads: string[] = [];
-    const countingReader = (file: string): string | undefined => {
-      reads.push(file);
-      return sources.get(file);
-    };
-    const testFiles = new Map([
-      [
-        'test/one.test.ts',
-        `import { x } from '../src/unrelated.js';\nimport { parent } from '../src/parent.js';`,
-      ],
-      [
-        'test/two.test.ts',
-        `import { x } from '../src/unrelated.js';\nimport { parent } from '../src/parent.js';`,
-      ],
-    ]);
-    coveringTests('src/helper.ts', testFiles, countingReader);
-    expect(reads.filter((file) => file === 'src/parent.ts')).toEqual([
-      'src/parent.ts',
-    ]);
-    expect(reads.filter((file) => file === 'src/unrelated.ts')).toEqual([
-      'src/unrelated.ts',
-    ]);
-  });
-
-  it('is wired through withCoveringTests', () => {
-    const testFiles = new Map([
-      ['test/parent.test.ts', `import { parent } from '../src/parent.js';`],
-    ]);
-    const violation = {
-      ruleId: 'stryker/survived',
-      file: 'src/helper.ts',
-      message: 'm',
-      severity: 'error' as const,
-      fixable: false,
-      tool: 'stryker',
-    };
-    expect(withCoveringTests([violation], () => testFiles, readSource)).toEqual(
-      [{ ...violation, relatedTests: ['test/parent.test.ts'] }],
-    );
-  });
-});
-
-describe('coveringTests — specifiers that name a directory (#118)', () => {
-  let root: string;
-
-  beforeEach(() => {
-    root = mkdtempSync(path.join(tmpdir(), 'covering-dir-'));
-    mkdirSync(path.join(root, 'src', 'lib'), { recursive: true });
-    mkdirSync(path.join(root, 'test'), { recursive: true });
-    writeFileSync(path.join(root, 'src', 'a.ts'), 'export const a = 1;\n');
-    writeFileSync(
-      path.join(root, 'src', 'lib', 'index.ts'),
-      `export * from '../a.js';\n`,
-    );
-  });
-
-  afterEach(() => {
-    rmSync(root, { recursive: true, force: true });
-  });
-
-  it('reaches a file through a barrel directory a test imports', () => {
-    // The issue's repro A: `../src/lib` means `../src/lib/index.ts`, and the
-    // directory itself used to be read first and throw EISDIR.
-    const testFiles = new Map([
-      ['test/x.test.ts', `import { a } from '../src/lib';`],
-    ]);
-    expect(
-      coveringTests('src/a.ts', testFiles, repoSourceReader(root)),
-    ).toEqual(['test/x.test.ts']);
-  });
-
-  it('survives a "." produced by prose between two quoted strings', () => {
-    // Repro B: `data-part="rail"` followed by `."The harness` puts a bare
-    // `"."` between two quotes, which resolves to the test's own directory.
-    const testFiles = new Map([
-      [
-        'test/y.test.ts',
-        '// cards in `data-part="rail"` beside it. "The harness',
-      ],
-    ]);
-    expect(
-      coveringTests('src/a.ts', testFiles, repoSourceReader(root)),
-    ).toEqual([]);
-  });
-
-  it('never reads an extensionless path, which is not a source file', () => {
-    const reads: string[] = [];
-    const reader = (file: string): string | undefined => {
-      reads.push(file);
-      return repoSourceReader(root)(file);
-    };
-    coveringTests(
-      'src/a.ts',
-      new Map([['test/x.test.ts', `import { a } from '../src/lib';`]]),
-      reader,
-    );
-    expect(reads).not.toContain('src/lib');
-    expect(reads).toContain('src/lib/index.ts');
-    // Exactly the extension candidates and then the barrel, nothing else.
-    expect(reads).toEqual([
-      'src/lib.ts',
-      'src/lib.tsx',
-      'src/lib.mts',
-      'src/lib.cts',
-      'src/lib.js',
-      'src/lib.jsx',
-      'src/lib/index.ts',
-    ]);
-  });
-
-  it('resolves a bare "." or ".." specifier to the directory index', () => {
-    expect(
-      coveringTests(
-        'src/lib/index.ts',
-        new Map([['src/lib/x.test.ts', `import { a } from '.';`]]),
-      ),
-    ).toEqual(['src/lib/x.test.ts']);
-    expect(
-      coveringTests(
-        'src/index.ts',
-        new Map([['src/lib/x.test.ts', `import { a } from '..';`]]),
-      ),
-    ).toEqual(['src/lib/x.test.ts']);
-  });
-
-  it('keeps a specifier written with its source extension', () => {
-    expect(
-      coveringTests(
-        'src/a.ts',
-        new Map([['test/x.test.ts', `import { a } from '../src/a.ts';`]]),
-      ),
-    ).toEqual(['test/x.test.ts']);
-  });
-
-  it('ignores a quoted dot-name that is not a relative path', () => {
-    // `".a"` is a selector or a dotfile, never a relative specifier: those
-    // start `./`, `../`, or are exactly `.` / `..`.
-    const reads: string[] = [];
-    coveringTests(
-      'src/a.ts',
-      new Map([['test/z.test.ts', `query(".a"); query('..ts');`]]),
-      (file) => {
-        reads.push(file);
-      },
-    );
-    expect(reads).toEqual([]);
   });
 });
