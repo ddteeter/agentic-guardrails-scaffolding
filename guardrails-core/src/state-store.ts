@@ -129,6 +129,17 @@ export function savePushPass(directory: string, pass: PushPass): void {
   writeJson(pushPassFile(directory), pass);
 }
 
+const SHIP_STATUS_FILE = 'ship-status.json';
+
+/**
+ * Where `guardrails ship` writes its outcome by default. Shared rather than
+ * per-session: a ship is of the branch, and the agent that reads it is often
+ * not the one that started it.
+ */
+export function shipStatusFile(directory: string): string {
+  return path.join(directory, SHIP_STATUS_FILE);
+}
+
 export function recurrenceFile(directory: string): string {
   return path.join(directory, 'recurrence.json');
 }
@@ -471,6 +482,7 @@ const SHARED_STATE_FILES: ReadonlySet<string> = new Set([
   'leases.json',
   CLEAN_TREE_FILE,
   PUSH_PASS_FILE,
+  SHIP_STATUS_FILE,
 ]);
 
 /**

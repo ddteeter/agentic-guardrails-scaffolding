@@ -4967,3 +4967,99 @@ describe('pretooluse reads the foreground-wait policy where the command runs', (
     expect(out.join('')).toContain('deny');
   });
 });
+
+/**
+A git + gh that ships `feat/x` as PR 42, whose checks land in `bucket`.
+*/
+function shipExec(bucket: string, calls: string[] = []): Exec {
+  return (command, args) => {
+    const line = [command, ...args].join(' ');
+    calls.push(line);
+    if (line === 'git rev-parse --abbrev-ref HEAD') {
+      return Promise.resolve(ok('feat/x\n'));
+    }
+    if (line.startsWith('gh pr view')) {
+      return Promise.resolve(ok(JSON.stringify({ number: 42, url: 'U' })));
+    }
+    if (line.startsWith('gh pr checks 42 --json')) {
+      return Promise.resolve(ok(JSON.stringify([{ name: 'build', bucket }])));
+    }
+    return Promise.resolve(ok(''));
+  };
+}
+
+describe('runCommand — ship', () => {
+  it('exits 0 on green, prints one line and writes the status', async () => {
+    const code = await runCommand(
+      'ship',
+      [],
+      dependencies({ exec: shipExec('pass') }),
+    );
+    expect(code).toBe(0);
+    expect(out).toEqual([
+      'guardrails ship: green — feat/x, PR #42 U (status: .guardrails/state/ship-status.json)\n',
+    ]);
+    const written: unknown = JSON.parse(
+      readFileSync(
+        path.join(root, '.guardrails', 'state', 'ship-status.json'),
+        'utf8',
+      ),
+    );
+    expect(written).toMatchObject({ state: 'green', pr: 42, branch: 'feat/x' });
+  });
+
+  it('exits 1 on anything but green', async () => {
+    expect(
+      await runCommand('ship', [], dependencies({ exec: shipExec('fail') })),
+    ).toBe(1);
+    expect(out.join('')).toContain('ci-red');
+    expect(out.join('')).toContain('failing: build');
+  });
+
+  it('writes the status where --status-file says', async () => {
+    await runCommand(
+      'ship',
+      ['--status-file=out/status.json'],
+      dependencies({ exec: shipExec('pass') }),
+    );
+    expect(existsSync(path.join(root, 'out', 'status.json'))).toBe(true);
+    expect(out.join('')).toContain('(status: out/status.json)');
+  });
+
+  it('opens a missing PR against the configured base, from --body-file', async () => {
+    writeFileSync(
+      path.join(root, 'guardrails.config.json'),
+      JSON.stringify({ baseBranch: 'develop' }),
+    );
+    const calls: string[] = [];
+    const inner = shipExec('pass', calls);
+    let views = 0;
+    const exec: Exec = (command, args, options) => {
+      if (views === 0 && args.includes('number,url')) {
+        views += 1;
+        return Promise.resolve({ stdout: '', stderr: 'none', code: 1 });
+      }
+      return inner(command, args, options);
+    };
+    await runCommand('ship', ['--body-file=pr.md'], dependencies({ exec }));
+    expect(calls.find((line) => line.startsWith('gh pr create'))).toBe(
+      `gh pr create --base develop --title  --body-file ${path.join(root, 'pr.md')}`,
+    );
+  });
+
+  it('keeps the shared status file out of the stale-session sweep', async () => {
+    await runCommand('ship', [], dependencies({ exec: shipExec('pass') }));
+    const file = path.join(root, '.guardrails', 'state', 'ship-status.json');
+    const old = new Date(Date.now() - 1000 * 60 * 60 * 24 * 30);
+    utimesSync(file, old, old);
+    await runCommand('session-start', [], dependencies());
+    expect(existsSync(file)).toBe(true);
+  });
+
+  it('is listed in the usage', async () => {
+    await runCommand('nope', [], dependencies());
+    expect(errors.join('')).toContain(
+      'ship [--body-file=<f>] [--status-file=<f>] [--base=<ref>]',
+    );
+  });
+});

@@ -88,9 +88,11 @@ import {
   markAgentIdentityReported,
   readDecisions,
   saveLeases,
+  shipStatusFile,
   stateDirectory,
   sweepStale,
 } from './state-store.js';
+import { ship, shipSummary, writeShipStatus } from './ship.js';
 import { withHeartbeat } from './state.js';
 import { hasErrors, isViolation, type Violation } from './violation.js';
 import type { Rung } from './verify/analyzer-policy.js';
@@ -305,6 +307,21 @@ async function reportedBase(
 }
 
 /**
+ * The preamble of every command a person or a git hook runs directly (verify,
+ * the commit/push/ci gates, ship): the repository root, its config, and the
+ * base -- reported when it is not the configured one.
+ */
+async function directContext(
+  dependencies: CliDependencies,
+  rest: string[],
+): Promise<{ repoRoot: string; config: RepoConfig; base: EffectiveBase }> {
+  const repoRoot = await commandRepoRoot(dependencies);
+  const config = loadConfig(repoRoot);
+  const base = await reportedBase(dependencies, repoRoot, config, rest);
+  return { repoRoot, config, base };
+}
+
+/**
  * The one-line verdict, with warnings counted apart from errors: a
  * non-blocking advisory printed as "1 violation(s)." beside a zero exit sent
  * agents looking for a failure that was not there.
@@ -324,9 +341,7 @@ async function verifyCommand(
   dependencies: CliDependencies,
   rest: string[],
 ): Promise<number> {
-  const repoRoot = await commandRepoRoot(dependencies);
-  const config = loadConfig(repoRoot);
-  const base = await reportedBase(dependencies, repoRoot, config, rest);
+  const { repoRoot, config, base } = await directContext(dependencies, rest);
   const { violations, skippedAnalyzers } = await runVerify({
     repoRoot,
     baseBranch: base.base,
@@ -528,9 +543,7 @@ async function gateCommitCommand(
   profile: Rung,
   rest: string[],
 ): Promise<number> {
-  const repoRoot = await commandRepoRoot(dependencies);
-  const config = loadConfig(repoRoot);
-  const base = await reportedBase(dependencies, repoRoot, config, rest);
+  const { repoRoot, config, base } = await directContext(dependencies, rest);
   const {
     violations,
     findings,
@@ -1517,6 +1530,41 @@ async function installHooksCommand(
   return 0;
 }
 
+/**
+ * `ship`: push, find or open the pull request, wait for its checks, and write
+ * the outcome to a status file -- one command for an agent to background and
+ * be woken by once (see `ship.ts`). Exit 0 only on green.
+ *
+ * Paths given as flags are read from where the command was run, as a shell
+ * user means them; the default status file lives in the repository's state.
+ */
+async function shipCommand(
+  dependencies: CliDependencies,
+  rest: string[],
+): Promise<number> {
+  const { repoRoot, base } = await directContext(dependencies, rest);
+  const named = flag(rest, 'status-file');
+  const statusPath =
+    named === undefined
+      ? shipStatusFile(stateDirectory(repoRoot))
+      : path.resolve(dependencies.cwd, named);
+  const bodyFile = flag(rest, 'body-file');
+  const status = await ship({
+    exec: dependencies.exec,
+    repoRoot,
+    baseBranch: base.base,
+    bodyFile:
+      bodyFile === undefined
+        ? undefined
+        : path.resolve(dependencies.cwd, bodyFile),
+  });
+  writeShipStatus(statusPath, status);
+  dependencies.stdout(
+    `${shipSummary(status, path.relative(repoRoot, statusPath))}\n`,
+  );
+  return status.state === 'green' ? 0 : 1;
+}
+
 function flag(rest: string[], name: string): string | undefined {
   const prefix = `--${name}=`;
   return rest
@@ -1916,6 +1964,9 @@ export async function runCommand(
     case 'install-hooks': {
       return installHooksCommand(dependencies);
     }
+    case 'ship': {
+      return shipCommand(dependencies, rest);
+    }
     default: {
       dependencies.stderr(
         'usage: guardrails-core <command>\n' +
@@ -1925,6 +1976,7 @@ export async function runCommand(
           '       [--base=<ref>]\n' +
           '  verify [--base=<ref>]\n' +
           '  sanction [--from=<violations manifest>]\n' +
+          '  ship [--body-file=<f>] [--status-file=<f>] [--base=<ref>]\n' +
           '  autofix | audit | sanctions-check | install-hooks\n' +
           '  state | report | scope-check | session-start | session-end\n',
       );
