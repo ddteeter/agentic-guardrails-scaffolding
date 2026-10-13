@@ -1,5 +1,9 @@
 {
   "$schema": "https://unpkg.com/knip@6/schema.json",
+  // OS file lockers, not npm packages: test/templates.test.ts runs the
+  // scaffolded pre-push hook end to end and holds its lock with whichever of
+  // the two the machine has (lockf on BSD/macOS, flock on Linux).
+  "ignoreBinaries": ["lockf", "flock"],
   "workspaces": {
     "guardrails-core": {
       "project": ["src/**/*.ts", "test/**/*.ts"],

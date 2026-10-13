@@ -14,14 +14,69 @@
 # UNLESS core.hooksPath already points at another hooks directory, which they
 # will not overwrite. In that case call the line below from the pre-push hook
 # you already have, and this file stays inert.
+#
+# ---- One gate at a time, machine-wide ---------------------------------------
+#
+# The push gate is the heaviest thing an agent runs (mutation testing lives on
+# this rung), and several worktrees -- each with an agent that can push -- run
+# it at once. A tool's own concurrency setting bounds one run's workers, not the
+# number of runs, so N concurrent gates thrash the cores and the memory, and a
+# starved one can fail outright. The bound belongs on what is actually shared:
+# the machine. Serializing LOWERS the mean wait -- three queued runs finish at
+# about 1x/2x/3x, three thrashing ones all finish past 3x -- and the queue is
+# legible where a silent slowdown is not.
+#
+# The lock is held on a file descriptor, so a gate killed mid-run releases it:
+# there is no stale lock to clean up. `lockf -k` keeps the file, which is what
+# keeps waiters in order. The lock file is shared by every repository on the
+# machine that uses this hook; set GUARDRAILS_GATE_LOCK to give a repository a
+# lock of its own.
+#
+# The wait is long on purpose (GUARDRAILS_GATE_LOCK_TIMEOUT seconds, 3 hours
+# by default): an agent that runs the push in the background waits for free,
+# and a timeout only sends it to the back of the queue. The ceiling exists so a
+# genuinely wedged gate eventually says so. A timeout is reported as exit 75
+# (EX_TEMPFAIL: lockf's default, and what `flock -E` is told) and printed
+# differently from a block, because waiting is not a violation.
+#
+# The probe before the lock only prints: both lockers are silent while they
+# wait, and a quiet half hour looks like a hang. With neither `lockf` (BSD,
+# macOS) nor `flock` (util-linux) present, the gate still runs, unserialized.
 cli="./node_modules/guardrails-core/dist/cli.mjs"
 # See .githooks/pre-commit: an uninstalled checkout is said as such, and still
-# blocks.
+# blocks. Checked before the lock, so a fresh worktree is not told to queue for
+# a gate it could never have run.
 [ -f "$cli" ] || {
   echo "guardrails: push blocked — guardrails-core is not installed in this checkout. Run 'npm ci' here, then push again." >&2
   exit 1
 }
-node "$cli" gate --mode=push || {
+
+lock="${GUARDRAILS_GATE_LOCK:-$HOME/.guardrails-gate.lock}"
+ceiling="${GUARDRAILS_GATE_LOCK_TIMEOUT:-10800}"
+gate="node $cli gate --mode=push"
+waiting="guardrails: another checkout is running the gate — waiting for the lock (up to ${ceiling}s)…"
+
+if command -v lockf >/dev/null 2>&1; then
+  lockf -k -s -t 0 "$lock" true 2>/dev/null || echo "$waiting" >&2
+  lockf -k -s -t "$ceiling" "$lock" /bin/sh -c "$gate"
+  status=$?
+elif command -v flock >/dev/null 2>&1; then
+  flock -n "$lock" true 2>/dev/null || echo "$waiting" >&2
+  flock -w "$ceiling" -E 75 "$lock" /bin/sh -c "$gate"
+  status=$?
+else
+  echo "guardrails: neither lockf nor flock found — running the gate unserialized." >&2
+  /bin/sh -c "$gate"
+  status=$?
+fi
+
+if [ "$status" -eq 75 ]; then
+  echo "guardrails: gave up waiting for the gate lock after ${ceiling}s — another checkout is still running it." >&2
+  echo "guardrails: push again to re-queue, or check $lock if you believe nothing is holding it." >&2
+  exit 1
+fi
+
+if [ "$status" -ne 0 ]; then
   echo "guardrails: push blocked — resolve violations or run 'guardrails verify'." >&2
   exit 1
-}
+fi
