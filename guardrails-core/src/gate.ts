@@ -929,7 +929,9 @@ export async function runCommitGate(
     );
     // And the scope-lock loop it opened, for the same reason.
     rmSync(snapshotFile(directory, manifestId), { force: true });
-    if (pass !== undefined) {
+    // A pass that silently skipped an analyzer checked less than it claims:
+    // replaying it would drop the skip warning, so it is not remembered.
+    if (pass !== undefined && skippedAnalyzers.length === 0) {
       savePushPass(directory, pass);
     }
     return { violations: guided, findings, blocked: false, skippedAnalyzers };

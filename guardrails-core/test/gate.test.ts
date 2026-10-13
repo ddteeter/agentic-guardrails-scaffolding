@@ -1743,7 +1743,15 @@ function pushRepo(tree: {
   return { exec, eslintRuns: () => eslintRuns };
 }
 
-function push(exec: Exec, baseBranch = 'main') {
+function push(exec: Exec, baseBranch = 'main', hasEslintDeclared = true) {
+  // A pass is only remembered when no analyzer was silently skipped, so the
+  // repo declares the one analyzer these tests run and switches the rest off.
+  if (hasEslintDeclared) {
+    writeFileSync(
+      path.join(root, 'package.json'),
+      JSON.stringify({ devDependencies: { eslint: '*' } }),
+    );
+  }
   return runCommitGate({
     repoRoot: root,
     baseBranch,
@@ -1752,7 +1760,13 @@ function push(exec: Exec, baseBranch = 'main') {
     profile: 'push',
     changedScope: 'branch',
     // The push rung carries stryker, which has no report to read here.
-    analyzers: { stryker: 'off' },
+    analyzers: {
+      stryker: 'off',
+      tsc: 'off',
+      knip: 'off',
+      'dependency-cruiser': 'off',
+      dupes: 'off',
+    },
   });
 }
 
@@ -1840,6 +1854,21 @@ describe('runCommitGate: the push rung remembers a tree it passed', () => {
     );
     await push(exec);
     expect(eslintRuns()).toBe(1);
+  });
+
+  it('never remembers a pass that skipped an analyzer', async () => {
+    // A pass that checked less is not a pass to replay: the cache hit would
+    // drop the skipped-analyzer warning the first run printed.
+    const { exec, eslintRuns } = pushRepo({ current: 'TREE1' });
+    const first = await push(exec, 'main', false);
+    const second = await push(exec, 'main', false);
+    expect(first.skippedAnalyzers).toEqual([['eslint', 'eslint']]);
+    expect(second.cached).toBeUndefined();
+    expect(second.skippedAnalyzers).toEqual([['eslint', 'eslint']]);
+    expect(eslintRuns()).toBe(2);
+    expect(existsSync(path.join(stateDirectory(root), 'push-pass.json'))).toBe(
+      false,
+    );
   });
 
   it('never writes the memo for a blocked push', async () => {

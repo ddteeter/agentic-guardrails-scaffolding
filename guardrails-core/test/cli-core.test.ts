@@ -4593,9 +4593,21 @@ const pushExec: Exec = (command, args) => {
 
 describe('gate --mode=push: a tree that already passed is not re-checked', () => {
   it('says it skipped, and passes', async () => {
+    // Every analyzer off, not left `auto` and undeclared: a pass that silently
+    // skipped an analyzer is never remembered.
     writeFileSync(
       path.join(root, 'guardrails.config.json'),
-      JSON.stringify({ enforcement: 'block', analyzers: { stryker: 'off' } }),
+      JSON.stringify({
+        enforcement: 'block',
+        analyzers: {
+          eslint: 'off',
+          tsc: 'off',
+          knip: 'off',
+          'dependency-cruiser': 'off',
+          stryker: 'off',
+          dupes: 'off',
+        },
+      }),
     );
     const exec = pushExec;
     expect(
