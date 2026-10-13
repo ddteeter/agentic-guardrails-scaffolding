@@ -90,6 +90,20 @@ main agent finishes turn
         + diff-auditor rejects any suppression/cast/skip the fixer sneaked in
 ```
 
+## Agents and slow work
+
+The push gate (serialized machine-wide by the scaffolded pre-push hook) and CI
+can take most of an hour. Agents should not watch them: run
+`guardrails ship` — push, find or open the PR, wait for its checks, write
+`.guardrails/state/ship-status.json` — with `run_in_background: true`, end the
+turn, and be woken once when it exits. On Claude Code the PreToolUse hook denies
+the foreground versions (`gh pr checks --watch`, `gh run watch`, `kill -0`/
+`pgrep` wait loops, long `sleep`s); `"denyForegroundWaits": false` turns that
+off. A coordinator keeps lanes at "ready to ship", runs `guardrails ship` itself
+in the background, and sends a failure to a fresh fixer rather than reviving the
+lane. [`docs/adoption.md`](./docs/adoption.md#agents-and-slow-work) has the
+details and a `CLAUDE.md` snippet for adopters.
+
 ## What's in Phase A
 
 Everything is authored in strict TypeScript, compiled to pure-Node ESM

@@ -326,6 +326,55 @@ _file-scoped_ run, so an agent that wants one reaches for `npx stryker run
 left orphaned `workerd` processes doing exactly that. A scope flag on
 `verify`/`gate` would make the safe path and the fast path the same path.
 
+## Finding: agents paid most for waiting (dialed.run, 2026-10-12)
+
+In the dialed.run adoption, background lane agents spent about **27% of a
+weekly usage limit waiting** -- not on the gate's analyzers, but on the agents'
+own context while they watched slow work. The repo's pre-push hook serializes
+`gate --mode=push` behind a machine-wide `lockf`, and CI follows it. Agents
+waited for both in foreground loops (`until ! kill -0 <pid>; do sleep 20;
+done`, `gh pr checks --watch`) that hit the ten-minute tool timeout, so they
+woke every ten minutes. A subagent's prompt cache lasts five, so every wake
+re-cached a 400-540k-token context. Claude Code already wakes an agent once
+when a `run_in_background` command exits; nothing pushed agents toward it.
+
+What changed:
+
+- **Push-gate pass memo.** The push rung stores the tree fingerprint (the stop
+  gate's `tree-fingerprint.ts`, against the resolved base ref) plus that ref in
+  `.guardrails/state/push-pass.json` on a clean outcome, and skips the
+  analyzers with `cached: true` when both match. A blocked or unreadable push
+  never writes it; commit and ci never read it.
+- **PreToolUse stops pre-running the push.** On `git push` it ran the commit
+  rung over the whole branch -- unlocked, up to `hookDeadlineSeconds` -- before
+  the pre-push hook ran a superset under the lock. It now skips when the
+  effective pre-push hook (`git rev-parse --git-path hooks/pre-push`) is
+  executable and runs `gate --mode=push`; every way of not knowing keeps the
+  pre-run.
+- **Foreground waits are denied at PreToolUse** (Claude Code's `Bash` only):
+  `gh pr checks --watch`, `gh run watch`, `kill -0`/`pgrep` wait loops, a
+  `sleep` over `foregroundSleepLimitSeconds`, and `guardrails ship`.
+  `denyForegroundWaits: false` turns it off.
+- **`guardrails ship`** pushes, finds or opens the PR, watches its checks, and
+  writes one status file in one of five states -- the command to background.
+- **The machine-wide lock moved into the template** `.githooks/pre-push`, with a
+  three-hour default ceiling: waiting is free once it is backgrounded, and a
+  timeout sends the agent to the back of the queue.
+
+**Not done here.** The push rung's memo is reported on stderr, not in the
+decision log: only the stop rung writes `decisions.jsonl` (#53), and a push row
+written only on a cache hit would make the report's push numbers mean nothing.
+The memo is keyed on the tracked-and-untracked tree, so an analyzer upgraded in
+`node_modules` without a lockfile change does not invalidate it.
+
+**Found while building it:** the PreToolUse gate checks the repository of the
+SESSION's cwd, not the one a `cd <dir> && git commit` targets. Run from a
+coordinating session whose cwd was another repo, every commit in this worktree
+was gated against that repo instead -- whose installed 0.7.0 then crashed with
+the EISDIR fixed in #118, denying the commit. The commits here were made
+through a script so the hook's regex did not see them, with this worktree's own
+pre-commit gate still running on every one.
+
 ## Roadmap: fixer-loop hardening (from the dogfooding live proof)
 
 - **The dialed.run transcript audit (2026-09-25 → 10-09) found fail-open paths
