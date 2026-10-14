@@ -69,6 +69,37 @@ interface Heredoc {
 interface Cursor {
   readonly text: string;
   index: number;
+  /**
+  True once a command substitution with a git write in it has been read.
+  */
+  isWriteHidden: boolean;
+}
+
+function cursorOver(text: string): Cursor {
+  return { text, index: 0, isWriteHidden: false };
+}
+
+/**
+ * Note on the cursor whether a substitution's tokens hold a git write. Its
+ * directory is never resolved: the write is answered `unknown` instead.
+ */
+function noteHiddenWrite(cursor: Cursor, tokens: readonly Token[]): void {
+  cursor.isWriteHidden ||= simpleCommands(tokens).some(
+    (command) => gitWrite(command) !== undefined,
+  );
+}
+
+/**
+Inside backticks a backslash escapes only these; before anything else it stays.
+*/
+const BACKTICK_ESCAPES = new Set(['$', '`', '\\']);
+
+function readBacktickCharacter(cursor: Cursor): string {
+  const isEscape =
+    peek(cursor) === '\\' && BACKTICK_ESCAPES.has(peek(cursor, 1));
+  const character = peek(cursor, Number(isEscape));
+  cursor.index += 1 + Number(isEscape);
+  return character;
 }
 
 function peek(cursor: Cursor, offset = 0): string {
@@ -76,23 +107,28 @@ function peek(cursor: Cursor, offset = 0): string {
 }
 
 /**
-Skip from an opening backtick past its closing one.
-*/
+ * Skip from an opening backtick past its closing one, reading the command
+ * between them for a git write.
+ */
 function skipBackticks(cursor: Cursor): void {
   cursor.index += 1;
+  let body = '';
   while (peek(cursor) !== '`') {
     if (peek(cursor) === '') {
       throw new SyntaxError('an unclosed backtick');
     }
-    readCharacter(cursor);
+    body += readBacktickCharacter(cursor);
   }
   cursor.index += 1;
+  const inner = cursorOver(body);
+  noteHiddenWrite(cursor, scanTokens(inner, false));
+  cursor.isWriteHidden ||= inner.isWriteHidden;
 }
 
 /**
  * Skip a `$(`, `` ` `` or plain `$` expansion starting at the cursor. A `$(`
  * is read with the full scanner, so quotes, heredocs and parentheses inside
- * it cannot end it early.
+ * it cannot end it early, and a git write inside it is noted.
  */
 function skipExpansion(cursor: Cursor): void {
   if (peek(cursor) === '`') {
@@ -308,6 +344,7 @@ function scanTokens(cursor: Cursor, isSubstitution: boolean): Token[] {
   const scan: Scan = { tokens: [], heredocs: [] };
   while (cursor.index < cursor.text.length) {
     if (isClosedByToken(cursor, scan, isSubstitution)) {
+      noteHiddenWrite(cursor, scan.tokens);
       return scan.tokens;
     }
   }
@@ -579,7 +616,7 @@ function sharedTarget(
     return hasChangedDirectory
       ? unknown(
           'the command changes directory, but this could not find the git ' +
-            'write in it (inside a substitution or backticks?)',
+            'write in it',
         )
       : directoryTarget(cwd);
   }
@@ -635,8 +672,14 @@ export function commandTarget(
   home: string,
 ): CommandTarget {
   try {
-    const tokens = scanTokens({ text: command, index: 0 }, false);
-    return resolveWrites(simpleCommands(tokens), cwd, home);
+    const cursor = cursorOver(command);
+    const tokens = scanTokens(cursor, false);
+    return cursor.isWriteHidden
+      ? unknown(
+          'a git write inside a command substitution or backticks, whose ' +
+            'directory this does not resolve',
+        )
+      : resolveWrites(simpleCommands(tokens), cwd, home);
   } catch (error) {
     // Every error, not only the scanner's own: a bug here must deny the
     // write, never let it through ungated.

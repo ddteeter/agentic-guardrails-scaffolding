@@ -235,13 +235,44 @@ describe('commandTarget: git directory options', () => {
     // Only a word that STARTS like an assignment is one.
     ['cd /abs && ./run=1 git commit', 'could not find the git write'],
     ['git commit && cd /abs && git push', 'one repository per command'],
-    // A cd it followed, with no git write it can find: the write is
-    // somewhere it does not read (a substitution, a backtick).
-    ['cd /abs && echo $(git commit)', 'could not find the git write'],
-    ['cd /abs && echo `git commit`', 'could not find the git write'],
+    // A cd it followed, with no git write it can find.
     ['cd /abs && echo done', 'could not find the git write'],
   ])('%j cannot be resolved (%s)', (command, reason) => {
     expect(reasonOf(command)).toContain(reason);
+  });
+
+  it.each([
+    ['out=$(cd /x && git commit -m m)', 'inside a command substitution'],
+    ['$(git -C /x commit)', 'inside a command substitution'],
+    ['`git commit`', 'inside a command substitution'],
+    ['x=`cd /x; git -C y push`', 'inside a command substitution'],
+    ['echo "$(git push)"', 'inside a command substitution'],
+    // At any depth: a nested substitution, a subshell inside one, a
+    // backtick escaped inside backticks.
+    ['echo $(echo $(git commit))', 'inside a command substitution'],
+    ['echo $( (git commit) )', 'inside a command substitution'],
+    ['echo `echo \\`git commit\\``', 'inside a command substitution'],
+    // Whatever the rest of the command resolves to.
+    ['cd /abs && echo $(git commit)', 'inside a command substitution'],
+    ['cd /abs && echo `git commit`', 'inside a command substitution'],
+    ['git -C /abs commit && echo $(git push)', 'inside a command substitution'],
+  ])('%j hides a git write in a substitution (%s)', (command, reason) => {
+    expect(reasonOf(command)).toContain(reason);
+  });
+
+  it.each([
+    // A substitution that writes nothing does not move the answer.
+    ['cd /abs && git commit -m "$(date)"', '/abs'],
+    ['git commit -m "$(git log -1 --format=%s)"', CWD],
+    ["echo `echo 'git commit'` && git commit", CWD],
+    // Inside backticks a backslash escapes only $, ` and itself.
+    ['echo `echo \\"a` && git commit', CWD],
+    ['echo `echo \\$(true) git commit` && git commit', CWD],
+    ['echo `echo \\\\"` && git commit', CWD],
+    // Text that only names a write is not one.
+    ['echo "git commit"', CWD],
+  ])('%j runs its write in %s despite a substitution', (command, expected) => {
+    expect(directoryOf(command)).toBe(expected);
   });
 
   it('reads long, pathological commands in linear time', () => {
