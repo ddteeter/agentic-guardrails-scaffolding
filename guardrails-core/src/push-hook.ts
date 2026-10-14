@@ -25,6 +25,26 @@ A command line (not a comment) that runs the push rung.
 const PUSH_GATE = /\bgate[ \t]+--mode=push\b/;
 
 /**
+ * A quoted string, or the `#` that opens a shell comment: one that starts a
+ * word. Matched left to right, so a `#` inside a closed quote belongs to the
+ * string. An unclosed quote matches nothing, leaving its `#` a comment --
+ * which errs toward "does not gate", the side that still runs the gate.
+ */
+const QUOTED_OR_COMMENT = /("[^"]*"|'[^']*')|(?:(?:^|(?<=\s))#)/g;
+
+/**
+The line up to its shell comment, if it has one.
+*/
+function withoutComment(line: string): string {
+  for (const match of line.matchAll(QUOTED_OR_COMMENT)) {
+    if (match[1] === undefined) {
+      return line.slice(0, match.index);
+    }
+  }
+  return line;
+}
+
+/**
 Any execute bit: git runs a hook only when it is executable.
 */
 const EXECUTABLE = 0o111;
@@ -70,5 +90,5 @@ export async function isPushGatedByHook(
   }
   return readHook(path.resolve(repoRoot, relative))
     .split('\n')
-    .some((line) => !line.trimStart().startsWith('#') && PUSH_GATE.test(line));
+    .some((line) => PUSH_GATE.test(withoutComment(line)));
 }

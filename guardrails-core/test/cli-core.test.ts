@@ -4716,6 +4716,27 @@ describe('pretooluse leaves a push to the pre-push hook that gates it', () => {
       0,
     ],
     [
+      'a trailing comment only MENTIONS it',
+      '.githooks/pre-push',
+      '#!/bin/sh\nexit 0  # instead of gate --mode=push\n',
+      0o755,
+      0,
+    ],
+    [
+      'a comment at the very start of a line MENTIONS it',
+      '.githooks/pre-push',
+      '#!/bin/sh\n# gate --mode=push\nnpm test\n',
+      0o755,
+      0,
+    ],
+    [
+      'an unclosed quote leaves the comment a comment',
+      '.githooks/pre-push',
+      '#!/bin/sh\necho "x # gate --mode=push\n',
+      0o755,
+      0,
+    ],
+    [
       'the hook is not executable, so git skips it',
       '.githooks/pre-push',
       GATED_HOOK,
@@ -4752,6 +4773,22 @@ describe('pretooluse leaves a push to the pre-push hook that gates it', () => {
     expect(
       await pushVerdict('git push', hookedExec('.githooks/pre-push')),
     ).toContain('violation(s)');
+  });
+
+  it.each([
+    ['a trailing comment', 'guardrails gate --mode=push  # the push rung'],
+    ['a quoted #', 'echo "a #" && guardrails gate --mode=push'],
+    [
+      'a quoted command, as the template sets it',
+      'gate="node cli gate --mode=push"',
+    ],
+    ["a single-quoted ' #'", "echo ' #' && guardrails gate --mode=push"],
+    ['a # inside a word', 'x=a#b guardrails gate --mode=push'],
+  ])('reads the gate through %s', async (_label, line) => {
+    writeHook('.githooks/pre-push', `#!/bin/sh\n${line}\n`);
+    expect(
+      await pushVerdict('git push', hookedExec('.githooks/pre-push')),
+    ).toBe('');
   });
 
   it('accepts any spacing between gate and its mode', async () => {
