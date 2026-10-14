@@ -661,6 +661,31 @@ Things worth knowing before you hit them, rather than after:
   (and the tests the manifest names) until a commit passes, or for at most 30
   minutes, after which the loop is treated as abandoned.
 
+- **A git write is gated in the repository it lands in, which the hook has to
+  work out from the command.** The hook payload names the directory the shell
+  started in, but `cd ../other && git commit` commits in `../other`. The
+  PreToolUse gate reads a narrow set of literal shapes to find the target:
+  a `cd` chain joined to the write by `&&`, `;` or a newline (absolute,
+  relative, quoted, `~`), and every `git -C <dir>`. Same-install writes, such
+  as a `cd` into a subdirectory, gate in-process as before. A write that lands
+  in another repository is handed to that repository's own guardrails-core,
+  so its config, its pinned version and its tree decide. If that repository
+  has a `guardrails.config.json` but no install of its own, the write is
+  denied with an `npm ci` remedy naming it. If it never adopted guardrails,
+  the write is allowed, and its own git hooks still run.
+
+  Anything it cannot read for certain is denied rather than guessed at, since
+  a guess gates the wrong repository. That covers a `cd` to a variable or a
+  substitution, `cd -`, `pushd`/`popd`, a `cd` inside a subshell, group,
+  pipeline, `||` or `&`, `--git-dir`/`--work-tree` and
+  `GIT_DIR=`/`GIT_WORK_TREE=`, and one command writing into two directories.
+  The remedy is always a literal path: `cd <dir> && git ...` or
+  `git -C <dir> ...`. `$(...)` and backticks elsewhere in the command, such as
+  a `-m "$(cat <<'EOF' ...)"` message, do not affect the answer. Out of reach,
+  as they always were: `xargs git commit`, `sh -c '...'` and git aliases. The
+  Stop gate and the git hooks need none of this, because they already run in
+  the repository being written.
+
 - **Every host lets a timed-out hook through.** Claude Code, Codex and Copilot
   all treat a hook timeout as fail-open, so a gate that is still running when
   the host gives up has decided nothing. The scaffolded wiring gives every gate
