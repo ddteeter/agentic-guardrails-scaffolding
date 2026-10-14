@@ -3,6 +3,7 @@ import {
   mkdirSync,
   mkdtempSync,
   rmSync,
+  utimesSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -79,6 +80,29 @@ describe('treeFingerprint', () => {
   it('changes when a tracked file is edited', async () => {
     const before = await fingerprint();
     writeFileSync(path.join(root, 'a.ts'), 'export const a = 2;\n');
+    expect(await fingerprint()).not.toBe(before);
+  });
+
+  it("sees a same-size edit git's racy check would catch", async () => {
+    // Git trusts an index entry whose stat matches the file, unless the entry
+    // is "racy": stamped no earlier than the index itself, so an edit in the
+    // same tick could hide behind it. Copying the index to a fresh file gives
+    // the copy a NEW mtime, which un-races every entry -- and a same-size edit
+    // in that window kept the old fingerprint (seen as a flaky
+    // "changes when a tracked file is edited" at pre-push). Built
+    // deterministically here: ctime ignored, the file's mtime restored, and
+    // the real index stamped at that same instant, so only the racy check can
+    // see the edit.
+    await git('config', 'core.trustctime', 'false');
+    const file = path.join(root, 'a.ts');
+    const stamp = new Date(Date.now() - 100_000);
+    utimesSync(file, stamp, stamp);
+    await git('add', '-A');
+    const index = path.join(root, '.git', 'index');
+    utimesSync(index, stamp, stamp);
+    const before = await fingerprint();
+    writeFileSync(file, 'export const a = 2;\n');
+    utimesSync(file, stamp, stamp);
     expect(await fingerprint()).not.toBe(before);
   });
 

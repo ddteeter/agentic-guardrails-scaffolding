@@ -21,7 +21,13 @@
  * cache": the gate then runs verify, as it always did.
  */
 
-import { copyFileSync, mkdtempSync, rmSync, statSync } from 'node:fs';
+import {
+  copyFileSync,
+  mkdtempSync,
+  rmSync,
+  statSync,
+  utimesSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
@@ -59,10 +65,16 @@ export async function treeFingerprint(
       return undefined;
     }
     const realIndex = path.resolve(repoRoot, indexName);
-    if (statSync(realIndex, { throwIfNoEntry: false })?.isFile() === true) {
+    const realStat = statSync(realIndex, { throwIfNoEntry: false });
+    if (realStat?.isFile() === true) {
       // A copy, not a fresh index: starting from the real one keeps git's stat
       // cache, so `add -A` only hashes what actually changed.
       copyFileSync(realIndex, temporaryIndex);
+      // And the copy keeps the real index's mtime. Git re-hashes a "racy"
+      // entry -- one stamped no earlier than the index -- because a same-size
+      // edit in that tick matches its stat. A copy stamped NOW un-races every
+      // entry, and such an edit then left the fingerprint unchanged.
+      utimesSync(temporaryIndex, realStat.atime, realStat.mtime);
     }
     const environment = {
       ...cleanEnvironment(),

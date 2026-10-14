@@ -536,6 +536,78 @@ un-counted exemption that was pre-justified for you. (There is deliberately no
 config list of generated paths: `sanctionedFiles` is already the human-entered
 list, and a second list that has to agree with it fails worse than a heuristic.)
 
+## Agents and slow work
+
+Three things in a guarded repo take minutes to an hour: the push gate (which
+queues behind a machine-wide lock, below), CI, and anything an agent polls
+for. An agent that waits for them in the foreground pays for every minute. Its
+shell call times out (ten minutes on Claude Code), it wakes, it polls again, and
+each wake after the five-minute prompt-cache window re-reads its whole context.
+On the adoption where this was measured, background agents spent about 27% of a
+weekly usage limit waiting.
+
+The cheap shape already exists: run the wait with `run_in_background: true` and
+end the turn. Claude Code wakes the agent once, when the command exits.
+
+- **`guardrails ship`** is the one command to background. It runs
+  `git push -u origin HEAD` (and with it the pre-push gate), finds the branch's
+  pull request or opens one (`--body-file=<f>`, else `gh pr create --fill`),
+  waits with `gh pr checks --watch`, and writes
+  `.guardrails/state/ship-status.json` (`--status-file=<f>` to move it):
+  `{state, branch, pr, url, failing, tail, finishedAt}`. `state` is `green`,
+  `gate-blocked`, `lock-timeout`, `ci-red` (with the failing check names) or
+  `error`. It prints one line and exits 0 only on green. It needs `gh`,
+  authenticated.
+- **The PreToolUse hook enforces it.** On Claude Code's `Bash`, without
+  `run_in_background: true`, it denies `gh pr checks … --watch`,
+  `gh run watch`, an `until`/`while` loop polling `kill -0` or `pgrep`, a
+  `sleep` longer than `foregroundSleepLimitSeconds` (default 120), and
+  `guardrails ship`. The denial says what to do instead. Set
+  `"denyForegroundWaits": false` in `guardrails.config.json` to turn it off.
+  Codex and Copilot are left alone: their shells cannot background a command.
+- **A retried push is cheap.** The push gate remembers the last tree it passed,
+  with its base, in `.guardrails/state/push-pass.json`. Pushing the same tree
+  against the same base again (after a rejected ref, a dropped connection, a
+  rebase that changed nothing) skips the analyzers and says `cached: true`. A
+  new byte, a moved merge-base, another base ref or another guardrails-core
+  version runs it again.
+- **A push is gated once, not twice.** The PreToolUse hook no longer runs the
+  commit-rung gate before a `git push` whose pre-push hook (as git resolves it,
+  `core.hooksPath` included) runs `gate --mode=push`. A push that also commits,
+  carries `--no-verify` or overrides the hooks path is still gated there.
+- **One push gate at a time, per machine.** The scaffolded `.githooks/pre-push`
+  takes a file-descriptor lock (`lockf` or `flock`) before running the gate, so
+  agents in several worktrees queue instead of thrashing the machine together.
+  `GUARDRAILS_GATE_LOCK` names the lock file (default
+  `$HOME/.guardrails-gate.lock`, shared by every repo on the machine) and
+  `GUARDRAILS_GATE_LOCK_TIMEOUT` the ceiling in seconds (default 10800). A
+  timeout prints `guardrails: gave up waiting for the gate lock`, which
+  `guardrails ship` reports as `lock-timeout` rather than as a block.
+
+A `CLAUDE.md` snippet for adopters:
+
+```markdown
+## Slow work runs in the background
+
+- Ship with `node ./node_modules/guardrails-core/dist/cli.mjs ship`, run with
+  `run_in_background: true`, then end your turn. You are woken once when it
+  exits; read `.guardrails/state/ship-status.json` for what happened.
+- Never wait in the foreground: no `gh pr checks --watch`, `gh run watch`,
+  `sleep` loops, or `kill -0`/`pgrep` polling. Background it and end the turn.
+- Anything that may take over two minutes (the full test suite, mutation
+  testing, a build) runs in the background too.
+```
+
+**Coordinating several agents.** A lane agent's context is the expensive part,
+so don't keep one alive to watch a push:
+
+- Lanes stop at **ready to ship**: committed, local gates green, not pushed.
+- The coordinator runs `guardrails ship` for each lane in the background and
+  reads the status file when it is woken.
+- On `gate-blocked` or `ci-red`, hand the status file's `tail` and `failing` to
+  a **fresh** fixer agent rather than reviving the lane. On `lock-timeout`, run
+  `guardrails ship` again: it re-queues.
+
 ## Known limits
 
 Things worth knowing before you hit them, rather than after:

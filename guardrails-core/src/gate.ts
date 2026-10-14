@@ -48,11 +48,14 @@ import {
   appendDecision,
   loadCleanTree,
   loadLeases,
+  loadPushPass,
   loadRecurrence,
   loadSession,
   manifestFile,
+  type PushPass,
   saveCleanTree,
   saveLeases,
+  savePushPass,
   saveRecurrence,
   saveSession,
   stateDirectory,
@@ -226,6 +229,12 @@ interface CommitGateCommon {
    *  passes while three analyzers never ran is a pass the adopter reads as a
    *  guarantee. */
   skippedAnalyzers: readonly (readonly [string, string])[];
+  /**
+   * The push rung skipped every analyzer because this exact tree already
+   * passed it against the same base (see `pushPassKey`). Absent on every run
+   * that actually checked something.
+   */
+  cached?: true | undefined;
 }
 
 /**
@@ -804,9 +813,72 @@ function commitManifestId(sessionId: string | undefined, rung: Rung): string {
   return `${sessionId ?? 'nosession'}-${rung}`;
 }
 
+/**
+ * Record a push pass -- unless it silently skipped an analyzer. Such a pass
+ * checked less than it claims, and replaying it would drop the skip warning.
+ * Split out of `runCommitGate` to keep it under the complexity ceiling.
+ */
+function rememberPushPass(
+  directory: string,
+  pass: PushPass | undefined,
+  skippedAnalyzers: readonly (readonly [string, string])[],
+): void {
+  if (pass !== undefined && skippedAnalyzers.length === 0) {
+    savePushPass(directory, pass);
+  }
+}
+
+/**
+ * What a push-rung pass is remembered by: the tree fingerprint, taken against
+ * the RESOLVED base ref (`origin/main` in a checkout with no local `main`), and
+ * that ref. `undefined` on every other rung, and whenever the fingerprint could
+ * not be taken -- which means "no memo", so the gate runs as it always did.
+ *
+ * Push only, deliberately. The commit rung is staged-scoped, so a tree is not
+ * what it checked; and CI is the authoritative twin that must never trust a
+ * local file.
+ */
+async function pushPassKey(
+  options: CommitGateOptions,
+): Promise<PushPass | undefined> {
+  if (options.profile !== 'push') {
+    return undefined;
+  }
+  const resolved = await resolveBaseReference(
+    options.exec,
+    options.repoRoot,
+    options.baseBranch,
+  );
+  const base = resolved.ref ?? options.baseBranch;
+  const fingerprint = await treeFingerprint(
+    options.exec,
+    options.repoRoot,
+    base,
+  );
+  return fingerprint === undefined ? undefined : { fingerprint, base };
+}
+
 export async function runCommitGate(
   options: CommitGateOptions,
 ): Promise<CommitGateResult> {
+  const directory = stateDirectory(options.repoRoot);
+  // Taken BEFORE the analyzers run: what is remembered must be the tree that
+  // was checked, not whatever an agent left behind while the gate ran.
+  const pass = await pushPassKey(options);
+  const remembered = loadPushPass(directory);
+  if (
+    pass !== undefined &&
+    remembered?.fingerprint === pass.fingerprint &&
+    remembered.base === pass.base
+  ) {
+    return {
+      violations: [],
+      findings: [],
+      blocked: false,
+      skippedAnalyzers: [],
+      cached: true,
+    };
+  }
   const { violations, skippedAnalyzers } = await runVerify({
     repoRoot: options.repoRoot,
     baseBranch: options.baseBranch,
@@ -853,7 +925,6 @@ export async function runCommitGate(
   // Delegation for the commit rung (#49). The manifest carries the same shape
   // the stop rung writes -- violations plus the audit findings, guidance
   // attached -- so `guardrail-fixer` needs no second format to understand.
-  const directory = stateDirectory(options.repoRoot);
   const manifestId = commitManifestId(
     options.sessionId,
     options.profile ?? 'commit',
@@ -875,6 +946,7 @@ export async function runCommitGate(
     );
     // And the scope-lock loop it opened, for the same reason.
     rmSync(snapshotFile(directory, manifestId), { force: true });
+    rememberPushPass(directory, pass, skippedAnalyzers);
     return { violations: guided, findings, blocked: false, skippedAnalyzers };
   }
 

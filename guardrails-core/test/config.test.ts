@@ -672,3 +672,43 @@ describe('hookDeadlineSeconds', () => {
     expect(loadConfig(root).hookDeadlineSeconds).toBe(240);
   });
 });
+
+describe('denyForegroundWaits and foregroundSleepLimitSeconds', () => {
+  it('denies foreground waits by default, with a two-minute sleep limit', () => {
+    expect(defaultConfig().denyForegroundWaits).toBe(true);
+    expect(defaultConfig().foregroundSleepLimitSeconds).toBe(120);
+  });
+
+  it('reads both', () => {
+    writeFileSync(
+      path.join(root, 'guardrails.config.json'),
+      JSON.stringify({
+        denyForegroundWaits: false,
+        foregroundSleepLimitSeconds: 30,
+      }),
+    );
+    expect(loadConfig(root)).toMatchObject({
+      denyForegroundWaits: false,
+      foregroundSleepLimitSeconds: 30,
+    });
+  });
+
+  it.each(['no', 0, null])(
+    'keeps denying when the switch is %j rather than false',
+    (value) => {
+      writeFileSync(
+        path.join(root, 'guardrails.config.json'),
+        JSON.stringify({ denyForegroundWaits: value }),
+      );
+      expect(loadConfig(root).denyForegroundWaits).toBe(true);
+    },
+  );
+
+  it.each([0, -5, 'soon'])('ignores a sleep limit of %j', (value) => {
+    writeFileSync(
+      path.join(root, 'guardrails.config.json'),
+      JSON.stringify({ foregroundSleepLimitSeconds: value }),
+    );
+    expect(loadConfig(root).foregroundSleepLimitSeconds).toBe(120);
+  });
+});

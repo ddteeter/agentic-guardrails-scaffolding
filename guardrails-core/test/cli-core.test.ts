@@ -4579,3 +4579,536 @@ describe('hook gates finish before the host gives up on them', () => {
     expect(errors.join('')).not.toContain('did not finish');
   });
 });
+
+/**
+A repo whose tree fingerprint is always the same one.
+*/
+const pushExec: Exec = (command, args) => {
+  const line = [command, ...args].join(' ');
+  if (line.includes('--git-path')) return Promise.resolve(ok('.git/index'));
+  if (line.includes('write-tree')) return Promise.resolve(ok('TREE1\n'));
+  if (line.includes('merge-base')) return Promise.resolve(ok('BASESHA\n'));
+  return Promise.resolve(ok(''));
+};
+
+describe('gate --mode=push: a tree that already passed is not re-checked', () => {
+  it('says it skipped, and passes', async () => {
+    // Every analyzer off, not left `auto` and undeclared: a pass that silently
+    // skipped an analyzer is never remembered.
+    writeFileSync(
+      path.join(root, 'guardrails.config.json'),
+      JSON.stringify({
+        enforcement: 'block',
+        analyzers: {
+          eslint: 'off',
+          tsc: 'off',
+          knip: 'off',
+          'dependency-cruiser': 'off',
+          stryker: 'off',
+          dupes: 'off',
+        },
+      }),
+    );
+    const exec = pushExec;
+    expect(
+      await runCommand('gate', ['--mode=push'], dependencies({ exec })),
+    ).toBe(0);
+    expect(errors.join('')).not.toContain('cached');
+
+    errors.length = 0;
+    expect(
+      await runCommand('gate', ['--mode=push'], dependencies({ exec })),
+    ).toBe(0);
+    expect(errors.join('')).toContain(
+      'guardrails: push gate skipped — this exact tree already passed it ' +
+        'against the same base (cached: true).',
+    );
+  });
+});
+
+/**
+ * `dirtyExec`, plus a git that names `hookPath` as the effective pre-push hook.
+ * The gate DENIES whenever it runs, so "did pretooluse pre-run the push?" is
+ * observable as a deny.
+ */
+function hookedExec(hookPath: string, code = 0): Exec {
+  const dirty = dirtyExec();
+  return (command, args, options) =>
+    args.join(' ') === 'rev-parse --git-path hooks/pre-push'
+      ? Promise.resolve({ stdout: `${hookPath}\n`, stderr: '', code })
+      : dirty(command, args, options);
+}
+
+function writeHook(relative: string, body: string, mode = 0o755): void {
+  const file = path.join(root, relative);
+  mkdirSync(path.dirname(file), { recursive: true });
+  writeFileSync(file, body, { mode });
+}
+
+const GATED_HOOK =
+  '#!/bin/sh\nnode ./node_modules/guardrails-core/dist/cli.mjs gate --mode=push || exit 1\n';
+
+async function pushVerdict(command: string, exec: Exec): Promise<string> {
+  writeFileSync(
+    path.join(root, 'guardrails.config.json'),
+    JSON.stringify({ enforcement: 'block' }),
+  );
+  await runCommand(
+    'gate',
+    ['--mode=pretooluse'],
+    dependencies({
+      exec,
+      readStdin: () =>
+        Promise.resolve(
+          JSON.stringify({
+            tool_name: 'Bash',
+            tool_input: { command },
+            cwd: root,
+          }),
+        ),
+    }),
+  );
+  return out.join('');
+}
+
+describe('pretooluse leaves a push to the pre-push hook that gates it', () => {
+  it('does not pre-run the gate when the pre-push hook runs gate --mode=push', async () => {
+    writeHook('.githooks/pre-push', GATED_HOOK);
+    expect(
+      await pushVerdict(
+        'git push -u origin HEAD',
+        hookedExec('.githooks/pre-push'),
+      ),
+    ).toBe('');
+  });
+
+  it('reads an absolute hook path as git reports it', async () => {
+    writeHook('hooks/pre-push', GATED_HOOK);
+    expect(
+      await pushVerdict(
+        'git push',
+        hookedExec(path.join(root, 'hooks/pre-push')),
+      ),
+    ).toBe('');
+  });
+
+  it.each([
+    ['there is no pre-push hook', '', GATED_HOOK, 0o755, 0],
+    [
+      'git cannot name the hook path',
+      '.githooks/pre-push',
+      GATED_HOOK,
+      0o755,
+      128,
+    ],
+    [
+      'the hook does not run the push gate',
+      '.githooks/pre-push',
+      '#!/bin/sh\nnpm test\n',
+      0o755,
+      0,
+    ],
+    [
+      'the hook only MENTIONS it in a comment',
+      '.githooks/pre-push',
+      '#!/bin/sh\n  # gate --mode=push\nnpm test\n',
+      0o755,
+      0,
+    ],
+    [
+      'a trailing comment only MENTIONS it',
+      '.githooks/pre-push',
+      '#!/bin/sh\nexit 0  # instead of gate --mode=push\n',
+      0o755,
+      0,
+    ],
+    [
+      'a comment at the very start of a line MENTIONS it',
+      '.githooks/pre-push',
+      '#!/bin/sh\n# gate --mode=push\nnpm test\n',
+      0o755,
+      0,
+    ],
+    [
+      'an unclosed quote leaves the comment a comment',
+      '.githooks/pre-push',
+      '#!/bin/sh\necho "x # gate --mode=push\n',
+      0o755,
+      0,
+    ],
+    [
+      'the hook is not executable, so git skips it',
+      '.githooks/pre-push',
+      GATED_HOOK,
+      0o644,
+      0,
+    ],
+    [
+      'the hook is a husky stub that delegates elsewhere',
+      '.husky/_/pre-push',
+      '#!/usr/bin/env sh\n. "$(dirname "$0")/h"\n',
+      0o755,
+      0,
+    ],
+  ])(
+    'still gates the push when %s',
+    async (_label, named, body, mode, code) => {
+      if (named !== '') {
+        writeHook(named === '' ? 'unused' : named, body, mode);
+      }
+      expect(
+        await pushVerdict(
+          'git push',
+          hookedExec(named === '' ? '.git/hooks/pre-push' : named, code),
+        ),
+      ).toContain('violation(s)');
+    },
+  );
+
+  it.each([
+    ['a word that merely ends in gate', '#!/bin/sh\nnotgate --mode=push\n'],
+    ['a different mode', '#!/bin/sh\nguardrails gate --mode=pushy\n'],
+  ])('still gates the push when the hook runs %s', async (_label, body) => {
+    writeHook('.githooks/pre-push', body);
+    expect(
+      await pushVerdict('git push', hookedExec('.githooks/pre-push')),
+    ).toContain('violation(s)');
+  });
+
+  it.each([
+    ['a trailing comment', 'guardrails gate --mode=push  # the push rung'],
+    ['a quoted #', 'echo "a #" && guardrails gate --mode=push'],
+    [
+      'a quoted command, as the template sets it',
+      'gate="node cli gate --mode=push"',
+    ],
+    ["a single-quoted ' #'", "echo ' #' && guardrails gate --mode=push"],
+    ['a # inside a word', 'x=a#b guardrails gate --mode=push'],
+  ])('reads the gate through %s', async (_label, line) => {
+    writeHook('.githooks/pre-push', `#!/bin/sh\n${line}\n`);
+    expect(
+      await pushVerdict('git push', hookedExec('.githooks/pre-push')),
+    ).toBe('');
+  });
+
+  it('accepts any spacing between gate and its mode', async () => {
+    writeHook(
+      '.githooks/pre-push',
+      '#!/bin/sh\nguardrails gate \t --mode=push\n',
+    );
+    expect(
+      await pushVerdict('git push', hookedExec('.githooks/pre-push')),
+    ).toBe('');
+  });
+
+  it.each([
+    ['skips the hook with --no-verify', 'git push --no-verify'],
+    ['overrides the hooks path', 'git -c core.hooksPath=/dev/null push'],
+    ['also commits, which is still gated here', 'git commit -m x && git push'],
+  ])('still gates a push that %s', async (_label, command) => {
+    writeHook('.githooks/pre-push', GATED_HOOK);
+    expect(
+      await pushVerdict(command, hookedExec('.githooks/pre-push')),
+    ).toContain('violation(s)');
+  });
+
+  it('never changes a commit, hook or no hook', async () => {
+    writeHook('.githooks/pre-push', GATED_HOOK);
+    expect(
+      await pushVerdict('git commit -m x', hookedExec('.githooks/pre-push')),
+    ).toContain('violation(s)');
+  });
+
+  it('asks git from the repository root', async () => {
+    writeHook('.githooks/pre-push', GATED_HOOK);
+    const cwds: (string | undefined)[] = [];
+    const inner = hookedExec('.githooks/pre-push');
+    const exec: Exec = (command, args, options) => {
+      if (args[0] === 'rev-parse' && args[1] === '--git-path') {
+        cwds.push(options?.cwd);
+      }
+      return inner(command, args, options);
+    };
+    await pushVerdict('git push', exec);
+    expect(cwds).toEqual([root]);
+  });
+});
+
+async function waitVerdict(
+  tool_input: Record<string, unknown>,
+  options: { dialect?: string; config?: object; toolName?: string } = {},
+): Promise<string> {
+  writeFileSync(
+    path.join(root, 'guardrails.config.json'),
+    JSON.stringify({ enforcement: 'block', ...options.config }),
+  );
+  const flags = ['--mode=pretooluse'];
+  if (options.dialect !== undefined) {
+    flags.push(`--dialect=${options.dialect}`);
+  }
+  await runCommand(
+    'gate',
+    flags,
+    dependencies({
+      exec: dirtyExec(),
+      readStdin: () =>
+        Promise.resolve(
+          JSON.stringify({
+            tool_name: options.toolName ?? 'Bash',
+            tool_input,
+            cwd: root,
+          }),
+        ),
+    }),
+  );
+  return out.join('');
+}
+
+describe('pretooluse denies a foreground wait on Claude Code', () => {
+  it.each([
+    'gh pr checks 42 --watch',
+    'gh run watch 99',
+    'until ! kill -0 4242; do sleep 20; done',
+    'while pgrep -f stryker >/dev/null; do sleep 30; done',
+    'sleep 600',
+    'node ./node_modules/guardrails-core/dist/cli.mjs ship',
+  ])('denies %j in the foreground', async (command) => {
+    const printed = await waitVerdict({ command });
+    expect(printed).toContain('deny');
+    expect(printed).toContain('run_in_background: true');
+    expect(printed).toContain('end your turn');
+    expect(printed).toContain('5-minute prompt-cache window');
+  });
+
+  it('names the wait it found', async () => {
+    expect(await waitVerdict({ command: 'gh run watch 99' })).toContain(
+      'guardrails: gh run watch waits in the foreground',
+    );
+  });
+
+  it.each([
+    'gh pr checks 42 --watch',
+    'sleep 600',
+    'until ! kill -0 4242; do sleep 20; done',
+  ])('allows %j in the background', async (command) => {
+    expect(await waitVerdict({ command, run_in_background: true })).toBe('');
+  });
+
+  it('still denies when run_in_background is false', async () => {
+    expect(
+      await waitVerdict({ command: 'sleep 600', run_in_background: false }),
+    ).toContain('deny');
+  });
+
+  it.each([
+    'git log --grep "gh pr checks --watch"',
+    "cat <<'EOF'\nsleep 600\nEOF",
+    'sleep 60',
+  ])('allows %j, which waits for nothing', async (command) => {
+    expect(await waitVerdict({ command })).toBe('');
+  });
+
+  it('allows everything when turned off', async () => {
+    expect(
+      await waitVerdict(
+        { command: 'gh pr checks 42 --watch' },
+        { config: { denyForegroundWaits: false } },
+      ),
+    ).toBe('');
+  });
+
+  it('reads the sleep limit from the config', async () => {
+    expect(
+      await waitVerdict(
+        { command: 'sleep 60' },
+        { config: { foregroundSleepLimitSeconds: 30 } },
+      ),
+    ).toContain('deny');
+  });
+
+  it.each(['codex', 'copilot'])(
+    'leaves the %s dialect alone, whose shell cannot background',
+    async (dialect) => {
+      expect(
+        await waitVerdict({ command: 'gh pr checks 42 --watch' }, { dialect }),
+      ).toBe('');
+    },
+  );
+
+  it('leaves a tool that is not Claude Code Bash alone', async () => {
+    expect(
+      await waitVerdict(
+        { command: 'gh pr checks 42 --watch' },
+        { toolName: 'bash' },
+      ),
+    ).toBe('');
+  });
+
+  it('answers a wait that also writes git with the wait denial alone', async () => {
+    const printed = await waitVerdict({
+      command: 'git commit -m x && sleep 600',
+    });
+    expect(printed).toContain('waits in the foreground');
+    expect(printed).not.toContain('violation(s)');
+  });
+
+  it('still gates a foreground git write that waits for nothing', async () => {
+    expect(await waitVerdict({ command: 'git commit -m x' })).toContain(
+      'violation(s)',
+    );
+  });
+});
+
+function bashCall(command: string, cwd?: string): string {
+  return JSON.stringify({ tool_name: 'Bash', tool_input: { command }, cwd });
+}
+
+describe('pretooluse reads the foreground-wait policy where the command runs', () => {
+  it('reads the payload cwd, not the hook process cwd', async () => {
+    writeFileSync(
+      path.join(root, 'guardrails.config.json'),
+      JSON.stringify({ denyForegroundWaits: false }),
+    );
+    const elsewhere = mkdtempSync(path.join(tmpdir(), 'guardrails-elsewhere-'));
+    try {
+      await runCommand(
+        'gate',
+        ['--mode=pretooluse'],
+        dependencies({
+          cwd: elsewhere,
+          readStdin: () => Promise.resolve(bashCall('sleep 600', root)),
+        }),
+      );
+    } finally {
+      rmSync(elsewhere, { recursive: true, force: true });
+    }
+    expect(out.join('')).toBe('');
+  });
+
+  it('falls back to the hook process cwd', async () => {
+    writeFileSync(
+      path.join(root, 'guardrails.config.json'),
+      JSON.stringify({ foregroundSleepLimitSeconds: 30 }),
+    );
+    await runCommand(
+      'gate',
+      ['--mode=pretooluse'],
+      dependencies({ readStdin: () => Promise.resolve(bashCall('sleep 60')) }),
+    );
+    expect(out.join('')).toContain('deny');
+  });
+
+  it('reads the config at the git root from a subdirectory', async () => {
+    mkdirSync(path.join(root, '.git'));
+    mkdirSync(path.join(root, 'sub'));
+    writeFileSync(
+      path.join(root, 'guardrails.config.json'),
+      JSON.stringify({ foregroundSleepLimitSeconds: 30 }),
+    );
+    await runCommand(
+      'gate',
+      ['--mode=pretooluse'],
+      dependencies({
+        readStdin: () =>
+          Promise.resolve(bashCall('sleep 60', path.join(root, 'sub'))),
+      }),
+    );
+    expect(out.join('')).toContain('deny');
+  });
+});
+
+/**
+A git + gh that ships `feat/x` as PR 42, whose checks land in `bucket`.
+*/
+function shipExec(bucket: string, calls: string[] = []): Exec {
+  return (command, args) => {
+    const line = [command, ...args].join(' ');
+    calls.push(line);
+    if (line === 'git rev-parse --abbrev-ref HEAD') {
+      return Promise.resolve(ok('feat/x\n'));
+    }
+    if (line.startsWith('gh pr view')) {
+      return Promise.resolve(ok(JSON.stringify({ number: 42, url: 'U' })));
+    }
+    if (line.startsWith('gh pr checks 42 --json')) {
+      return Promise.resolve(ok(JSON.stringify([{ name: 'build', bucket }])));
+    }
+    return Promise.resolve(ok(''));
+  };
+}
+
+describe('runCommand — ship', () => {
+  it('exits 0 on green, prints one line and writes the status', async () => {
+    const code = await runCommand(
+      'ship',
+      [],
+      dependencies({ exec: shipExec('pass') }),
+    );
+    expect(code).toBe(0);
+    expect(out).toEqual([
+      'guardrails ship: green — feat/x, PR #42 U (status: .guardrails/state/ship-status.json)\n',
+    ]);
+    const written: unknown = JSON.parse(
+      readFileSync(
+        path.join(root, '.guardrails', 'state', 'ship-status.json'),
+        'utf8',
+      ),
+    );
+    expect(written).toMatchObject({ state: 'green', pr: 42, branch: 'feat/x' });
+  });
+
+  it('exits 1 on anything but green', async () => {
+    expect(
+      await runCommand('ship', [], dependencies({ exec: shipExec('fail') })),
+    ).toBe(1);
+    expect(out.join('')).toContain('ci-red');
+    expect(out.join('')).toContain('failing: build');
+  });
+
+  it('writes the status where --status-file says', async () => {
+    await runCommand(
+      'ship',
+      ['--status-file=out/status.json'],
+      dependencies({ exec: shipExec('pass') }),
+    );
+    expect(existsSync(path.join(root, 'out', 'status.json'))).toBe(true);
+    expect(out.join('')).toContain('(status: out/status.json)');
+  });
+
+  it('opens a missing PR against the configured base, from --body-file', async () => {
+    writeFileSync(
+      path.join(root, 'guardrails.config.json'),
+      JSON.stringify({ baseBranch: 'develop' }),
+    );
+    const calls: string[] = [];
+    const inner = shipExec('pass', calls);
+    let views = 0;
+    const exec: Exec = (command, args, options) => {
+      if (views === 0 && args.includes('number,url')) {
+        views += 1;
+        return Promise.resolve({ stdout: '', stderr: 'none', code: 1 });
+      }
+      return inner(command, args, options);
+    };
+    await runCommand('ship', ['--body-file=pr.md'], dependencies({ exec }));
+    expect(calls.find((line) => line.startsWith('gh pr create'))).toBe(
+      `gh pr create --base develop --title  --body-file ${path.join(root, 'pr.md')}`,
+    );
+  });
+
+  it('keeps the shared status file out of the stale-session sweep', async () => {
+    await runCommand('ship', [], dependencies({ exec: shipExec('pass') }));
+    const file = path.join(root, '.guardrails', 'state', 'ship-status.json');
+    const old = new Date(Date.now() - 1000 * 60 * 60 * 24 * 30);
+    utimesSync(file, old, old);
+    await runCommand('session-start', [], dependencies());
+    expect(existsSync(file)).toBe(true);
+  });
+
+  it('is listed in the usage', async () => {
+    await runCommand('nope', [], dependencies());
+    expect(errors.join('')).toContain(
+      'ship [--body-file=<f>] [--status-file=<f>] [--base=<ref>]',
+    );
+  });
+});
