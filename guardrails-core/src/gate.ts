@@ -35,6 +35,7 @@ import { auditDiff, findingKey, type AuditFinding } from './audit.js';
 import type { SanctionedFile, SanctionedSuppression } from './config.js';
 import type { Exec, ExecResult } from './exec.js';
 import { readTestCorpus, withCoveringTests } from './covering-tests.js';
+import { createImportResolver } from './import-graph.js';
 import { withGuidance } from './guidance.js';
 import {
   decideGate,
@@ -592,6 +593,7 @@ function forTheFixer(
   return withCoveringTests(
     withGuidance(attributed),
     () => readTestCorpus(repoRoot),
+    () => createImportResolver(repoRoot),
     repoSourceReader(repoRoot),
   );
 }
