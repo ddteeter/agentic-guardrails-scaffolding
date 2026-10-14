@@ -5,6 +5,7 @@
  */
 
 import { existsSync, readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
@@ -75,6 +76,7 @@ import {
 } from './scaffold/hooks-path.js';
 import { initCommand } from './scaffold/init.js';
 import { foregroundWait, foregroundWaitDenial } from './foreground-wait.js';
+import { commandTarget } from './command-target.js';
 import { isPushGatedByHook } from './push-hook.js';
 import { COMMAND_START, withoutQuotedHeredocBodies } from './shell-command.js';
 import { collectSessionScope, isWithinRepo } from './scope.js';
@@ -765,6 +767,41 @@ function didDenyForegroundWait(
   return true;
 }
 
+/**
+ * The remedy when the write's repository cannot be told: the two literal
+ * shapes `commandTarget` always resolves.
+ */
+function unknownTargetMessage(reason: string): string {
+  return (
+    `guardrails: cannot tell which repository this git write lands in ` +
+    `(${reason}), so it was not checked. Use a literal path: ` +
+    '`cd <dir> && git ...` or `git -C <dir> ...`.'
+  );
+}
+
+/**
+ * The repository the command's git write lands in (#123) -- not the one the
+ * payload's `cwd` names, which is where the shell stood BEFORE a `cd` or a
+ * `git -C` moved it. Denies the write, and answers `undefined`, when that
+ * cannot be told: guessing would gate the wrong repository, which is the bug.
+ */
+async function writeRepoRoot(
+  dependencies: CliDependencies,
+  input: HookInput,
+  dialect: Dialect,
+): Promise<string | undefined> {
+  const target = commandTarget(
+    input.command ?? '',
+    input.cwd ?? dependencies.cwd,
+    homedir(),
+  );
+  if (target.kind === 'unknown') {
+    denyPreToolUse(dependencies, unknownTargetMessage(target.reason), dialect);
+    return undefined;
+  }
+  return commandRepoRoot(dependencies, target.directory);
+}
+
 /** `gate --mode=pretooluse`: the Copilot commit/push gate. Self-filters on the
  * shell-tool + git-commit/push command shape rather than relying on hook
  * matcher config, because VS Code's Copilot hook host ignores matchers — the
@@ -780,7 +817,10 @@ async function gatePreToolUseCommand(
   if (!isShellGitWrite(input)) {
     return; // allow (silent)
   }
-  const repoRoot = await commandRepoRoot(dependencies, input.cwd);
+  const repoRoot = await writeRepoRoot(dependencies, input, dialect);
+  if (repoRoot === undefined) {
+    return; // denied: which repository the write lands in is unknowable
+  }
   // A push whose pre-push hook runs the push gate meets a superset of these
   // checks there, under the machine-wide lock. Pre-running them here bought an
   // unlocked, deadline-bounded duplicate. A commit is unchanged.
