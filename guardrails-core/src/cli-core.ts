@@ -4,7 +4,8 @@
  * `cli.ts` is a thin bootstrap that supplies the real dependencies.
  */
 
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
@@ -802,6 +803,129 @@ async function writeRepoRoot(
   return commandRepoRoot(dependencies, target.directory);
 }
 
+/**
+ * The environment variable a delegated pretooluse run reads its repository
+ * root from. Set only by `delegateToTarget`, on the run it spawns, so that run
+ * gates exactly that root: re-reading `cd ../x` from the rewritten cwd would
+ * land somewhere else.
+ */
+const PRETOOLUSE_TARGET = 'GUARDRAILS_PRETOOLUSE_TARGET';
+
+/**
+Where this CLI was resolved from, as a filesystem path.
+*/
+function selfLocation(dependencies: CliDependencies): string {
+  return dependencies.selfPath ?? fileURLToPath(import.meta.url);
+}
+
+/**
+ * Where `repoRoot`'s own guardrails-core CLI resolves from, the way the hook
+ * command resolves it when run there. Empty when nothing resolves.
+ */
+function resolveCliFrom(repoRoot: string): { cli?: string } {
+  try {
+    const requireFrom = createRequire(path.join(repoRoot, 'package.json'));
+    return { cli: requireFrom.resolve('guardrails-core/cli') };
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * The deny for a write into a repository that adopted guardrails but has no
+ * guardrails-core of its own (#115's remedy, naming the target).
+ */
+function targetInstallRemedy(repoRoot: string): string {
+  return (
+    `guardrails: this git write lands in ${repoRoot}, which has a ` +
+    `${CONFIG_FILE_NAME} but no guardrails-core installed inside it, so its ` +
+    `gate cannot run. Run \`npm ci\` in ${repoRoot}, then retry.`
+  );
+}
+
+/**
+ * Hand a write that lands in ANOTHER repository to that repository's own
+ * install (#123): its config, its pinned version, its tree. The payload's cwd
+ * is rewritten to the target root too, so a target whose guardrails-core
+ * predates the marker still gates the right tree through its own `cwd` path.
+ *
+ * A target with no install of its own is denied when it adopted guardrails
+ * (there is a gate that should have run) and allowed when it did not (there
+ * is nothing to enforce, and its git hooks still run). A delegate that fails
+ * throws, so `decidingHook` denies the write rather than letting it through.
+ */
+async function delegateToTarget(
+  dependencies: CliDependencies,
+  stdin: string,
+  repoRoot: string,
+  dialect: Dialect,
+): Promise<void> {
+  const { cli } = resolveCliFrom(repoRoot);
+  if (cli === undefined || !isWithinRepo(realpathSync(repoRoot), cli)) {
+    if (existsSync(path.join(repoRoot, CONFIG_FILE_NAME))) {
+      denyPreToolUse(dependencies, targetInstallRemedy(repoRoot), dialect);
+    }
+    return;
+  }
+  const result = await dependencies.exec(
+    process.execPath,
+    [
+      '-e',
+      "import('guardrails-core/cli')",
+      'guardrails',
+      'gate',
+      '--mode=pretooluse',
+      `--dialect=${dialect}`,
+    ],
+    {
+      cwd: repoRoot,
+      env: {
+        ...(dependencies.env ?? process.env),
+        [PRETOOLUSE_TARGET]: repoRoot,
+      },
+      input: JSON.stringify({ ...JSON.parse(stdin), cwd: repoRoot }),
+    },
+  );
+  // A spawn failure needs no clause of its own: `spawnExec` reports it with
+  // exit code 1. A kill does: Node reports it as a null code, coalesced to 0.
+  if (result.signal !== undefined || result.code !== 0) {
+    const killed = result.signal === undefined ? '' : ` on ${result.signal}`;
+    throw new Error(
+      `the guardrails-core in ${repoRoot} exited ${result.code}${killed}: ` +
+        result.stderr.trim(),
+    );
+  }
+  dependencies.stdout(result.stdout);
+  dependencies.stderr(result.stderr);
+}
+
+/**
+ * The root this run gates in-process, or `undefined` once the write is
+ * decided another way: denied because its target is unknowable, or handed to
+ * the target repository's own install. A delegated run takes its root from
+ * the marker and never delegates again.
+ */
+async function gateRoot(
+  dependencies: CliDependencies,
+  input: HookInput,
+  stdin: string,
+  dialect: Dialect,
+): Promise<string | undefined> {
+  const marked = (dependencies.env ?? process.env)[PRETOOLUSE_TARGET];
+  if (marked !== undefined) {
+    return marked;
+  }
+  const repoRoot = await writeRepoRoot(dependencies, input, dialect);
+  if (
+    repoRoot === undefined ||
+    isWithinRepo(repoRoot, selfLocation(dependencies))
+  ) {
+    return repoRoot;
+  }
+  await delegateToTarget(dependencies, stdin, repoRoot, dialect);
+  return undefined;
+}
+
 /** `gate --mode=pretooluse`: the Copilot commit/push gate. Self-filters on the
  * shell-tool + git-commit/push command shape rather than relying on hook
  * matcher config, because VS Code's Copilot hook host ignores matchers — the
@@ -810,16 +934,17 @@ async function gatePreToolUseCommand(
   dependencies: CliDependencies,
   dialect: Dialect,
 ): Promise<void> {
-  const input = parseHookInput(await dependencies.readStdin());
+  const stdin = await dependencies.readStdin();
+  const input = parseHookInput(stdin);
   if (didDenyForegroundWait(dependencies, input, dialect)) {
     return;
   }
   if (!isShellGitWrite(input)) {
     return; // allow (silent)
   }
-  const repoRoot = await writeRepoRoot(dependencies, input, dialect);
+  const repoRoot = await gateRoot(dependencies, input, stdin, dialect);
   if (repoRoot === undefined) {
-    return; // denied: which repository the write lands in is unknowable
+    return; // decided already: denied, or handed to the target's install
   }
   // A push whose pre-push hook runs the push gate meets a superset of these
   // checks there, under the machine-wide lock. Pre-running them here bought an
@@ -1633,7 +1758,7 @@ function resolveDialect(rest: string[]): Dialect {
  * cwd" and reject the hoisted-subpackage layout the walk exists to support.
  */
 function outsideRepoMessage(dependencies: CliDependencies): string | undefined {
-  const selfPath = dependencies.selfPath ?? fileURLToPath(import.meta.url);
+  const selfPath = selfLocation(dependencies);
   const repoRoot = findGitRoot(dependencies.cwd);
   if (repoRoot === undefined || isWithinRepo(repoRoot, selfPath)) {
     return undefined;
