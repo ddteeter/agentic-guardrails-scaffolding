@@ -375,6 +375,43 @@ the EISDIR fixed in #118, denying the commit. The commits here were made
 through a script so the hook's regex did not see them, with this worktree's own
 pre-commit gate still running on every one.
 
+**Resolved in #123** (plan:
+`docs/superpowers/plans/2026-10-12-pretooluse-target-repo.md`). The PreToolUse
+gate now resolves the directory the write lands in
+(`guardrails-core/src/command-target.ts`), which also covers the push
+short-circuit's hook lookup. It gates in-process when that repository contains
+the running CLI, and otherwise spawns the target's own install with a
+`GUARDRAILS_PRETOOLUSE_TARGET` marker and the payload's cwd rewritten. An
+adopted target without an install is denied; an unadopted one is allowed. An
+undeterminable target fails closed, with a literal-path remedy. Deliberate
+misses, each of which denies rather than guesses: a non-literal `cd`, `cd -`,
+`pushd`/`popd`, a `cd` outside a plain `&&`/`;`/newline chain,
+`--git-dir`/`--work-tree`/`GIT_DIR=`/`GIT_WORK_TREE=`, and writes into two
+directories in one command. Unchanged, and still outside the matcher:
+`xargs git commit`, `sh -c '...'` and aliases.
+
+**Found while building #123:**
+
+- `guardrails verify` reported clean on a tree where the commit gate, run
+  seconds later on the same staged change, blocked on a `stryker/survived`
+  mutant in the new file. An agent that treats a green `verify` as "ready to
+  commit" is surprised at the commit boundary. Worth checking whether `verify`
+  skips the mutation rung on uncommitted or untracked files.
+- A wall-clock timing test (`toBeLessThan(2000)` at 20 000 repetitions) failed
+  stryker's dry run twice at load averages of 23 to 35, and the failure was
+  once attributed to the neighbouring test. The test is now a ratio between n
+  and 10n, which a loaded machine does not move.
+- A delegated write runs under two deadlines: the session repository's
+  `hookDeadlineSeconds` wraps the whole round trip, and the target's own gate
+  keeps its own. When the outer one fires first, `terminateChildren` SIGTERMs
+  only the delegate process, and Node's default disposition used to kill it
+  without touching the analyzers it had spawned (`child.kill` reaches one
+  process, not its group). Hook gate modes now install a SIGTERM handler that
+  terminates their own children before exiting. **A target pinned to an
+  older guardrails-core, without that handler, can still orphan its analyzers
+  on the outer deadline** -- for up to their full run, holding the
+  machine-wide lock. It closes once the target upgrades.
+
 ## Roadmap: fixer-loop hardening (from the dogfooding live proof)
 
 - **The dialed.run transcript audit (2026-09-25 → 10-09) found fail-open paths
