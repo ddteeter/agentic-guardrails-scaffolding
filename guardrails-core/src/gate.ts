@@ -812,6 +812,21 @@ function commitManifestId(sessionId: string | undefined, rung: Rung): string {
 }
 
 /**
+ * Record a push pass -- unless it silently skipped an analyzer. Such a pass
+ * checked less than it claims, and replaying it would drop the skip warning.
+ * Split out of `runCommitGate` to keep it under the complexity ceiling.
+ */
+function rememberPushPass(
+  directory: string,
+  pass: PushPass | undefined,
+  skippedAnalyzers: readonly (readonly [string, string])[],
+): void {
+  if (pass !== undefined && skippedAnalyzers.length === 0) {
+    savePushPass(directory, pass);
+  }
+}
+
+/**
  * What a push-rung pass is remembered by: the tree fingerprint, taken against
  * the RESOLVED base ref (`origin/main` in a checkout with no local `main`), and
  * that ref. `undefined` on every other rung, and whenever the fingerprint could
@@ -929,11 +944,7 @@ export async function runCommitGate(
     );
     // And the scope-lock loop it opened, for the same reason.
     rmSync(snapshotFile(directory, manifestId), { force: true });
-    // A pass that silently skipped an analyzer checked less than it claims:
-    // replaying it would drop the skip warning, so it is not remembered.
-    if (pass !== undefined && skippedAnalyzers.length === 0) {
-      savePushPass(directory, pass);
-    }
+    rememberPushPass(directory, pass, skippedAnalyzers);
     return { violations: guided, findings, blocked: false, skippedAnalyzers };
   }
 
