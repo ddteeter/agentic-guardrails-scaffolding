@@ -399,6 +399,37 @@ const SEQUENCE = new Set(['', '&&', ';', '\n']);
 
 const CHANGE_DIRECTORY = new Set(['cd', 'pushd', 'popd']);
 
+function directoryTarget(directory: string): CommandTarget {
+  return { kind: 'directory', directory };
+}
+
+function unknown(reason: string): CommandTarget {
+  return { kind: 'unknown', reason };
+}
+
+/**
+ * A literal path, resolved the way the shell expands it: `~` and `~/…` from
+ * `home`, anything else from `directory`. `what` names the command for the
+ * reason it cannot be.
+ */
+function literalPath(
+  word: Word | undefined,
+  directory: string,
+  home: string,
+  what: string,
+): CommandTarget {
+  if (!word?.isLiteral) {
+    return unknown(`${what} to a path that is not a literal one`);
+  }
+  if (word.isTildeExpandable && /^~(?:\/|$)/.test(word.text)) {
+    return directoryTarget(path.resolve(home, word.text.slice(2)));
+  }
+  if (word.isTildeExpandable) {
+    return unknown(`${what} to another user’s home directory`);
+  }
+  return directoryTarget(path.resolve(directory, word.text));
+}
+
 /**
 Where a `cd` moves the shell, or why that cannot be known.
 */
@@ -421,40 +452,176 @@ function changeDirectory(
   }
   const [target, ...rest] = command.parameters;
   if (target === undefined) {
-    return { kind: 'directory', directory: home };
+    return directoryTarget(home);
   }
-  if (!target.isLiteral || rest.length > 0 || target.text.startsWith('-')) {
-    return unknown(`\`cd\` to a path that is not a literal one`);
-  }
-  if (target.isTildeExpandable && /^~(?:\/|$)/.test(target.text)) {
-    return {
-      kind: 'directory',
-      directory: path.resolve(home, target.text.slice(2)),
-    };
-  }
-  if (target.isTildeExpandable) {
-    return unknown('`cd` to another user’s home directory');
-  }
-  return { kind: 'directory', directory: path.resolve(directory, target.text) };
-}
-
-function unknown(reason: string): CommandTarget {
-  return { kind: 'unknown', reason };
+  const isOption = rest.length > 0 || target.text.startsWith('-');
+  return literalPath(isOption ? undefined : target, directory, home, '`cd`');
 }
 
 const GIT_WRITES = new Set(['commit', 'push']);
 
 /**
-Is this simple command a `git commit` or `git push`?
+A `NAME=value` prefix: an environment assignment for the command after it.
 */
-function isGitWrite(command: SimpleCommand): boolean {
-  if (command.name.text !== 'git') {
-    return false;
+const ASSIGNMENT = /^[A-Za-z_]\w*=/;
+
+/**
+The variables, and the options, that move git's repository off its directory.
+*/
+const GIT_LOCATION_VARIABLES = new Set(['GIT_DIR', 'GIT_WORK_TREE']);
+const GIT_LOCATION_OPTIONS = new Set(['--git-dir', '--work-tree']);
+
+/**
+The part of `NAME=value` or `--option=value` before the `=`.
+*/
+function beforeEquals(word: Word): string {
+  const [name = ''] = word.text.split('=', 1);
+  return name;
+}
+const GIT_LOCATION_REASON =
+  'git is pointed at its repository by --git-dir, --work-tree, GIT_DIR or ' +
+  'GIT_WORK_TREE';
+
+/**
+Git's global options that take their value as the NEXT word.
+*/
+const GIT_VALUE_OPTIONS = new Set([
+  '-C',
+  '-c',
+  '--namespace',
+  '--config-env',
+  '--git-dir',
+  '--work-tree',
+]);
+
+/**
+A git write: the `-C` values it runs under, and why its directory is unknowable.
+*/
+interface GitWrite {
+  directories: (Word | undefined)[];
+  reason: string | undefined;
+}
+
+/**
+Read git's global options up to the subcommand; a write answers a `GitWrite`.
+*/
+function gitOptions(
+  options: ArrayIterator<Word>,
+  inherited: string | undefined,
+): GitWrite | undefined {
+  const directories: (Word | undefined)[] = [];
+  let reason = inherited;
+  for (const option of options) {
+    if (!option.text.startsWith('-')) {
+      return GIT_WRITES.has(option.text) ? { directories, reason } : undefined;
+    }
+    if (GIT_LOCATION_OPTIONS.has(beforeEquals(option))) {
+      reason = GIT_LOCATION_REASON;
+    }
+    const value = GIT_VALUE_OPTIONS.has(option.text)
+      ? options.next().value
+      : undefined;
+    if (option.text === '-C') {
+      directories.push(value);
+    }
   }
-  const subcommand = command.parameters.find(
-    (word) => !word.text.startsWith('-'),
+  return undefined;
+}
+
+/**
+Is this simple command a `git commit` or `git push`, and how is it pointed?
+*/
+function gitWrite(command: SimpleCommand): GitWrite | undefined {
+  const words = [command.name, ...command.parameters];
+  const first = words.findIndex((word) => !ASSIGNMENT.test(word.text));
+  if (words[first]?.text !== 'git') {
+    return undefined;
+  }
+  const isRelocated = words
+    .slice(0, first)
+    .some((word) => GIT_LOCATION_VARIABLES.has(beforeEquals(word)));
+  return gitOptions(
+    words.slice(first + 1).values(),
+    isRelocated ? GIT_LOCATION_REASON : undefined,
   );
-  return subcommand !== undefined && GIT_WRITES.has(subcommand.text);
+}
+
+/**
+Where a git write runs, given the directory the shell is in when it does.
+*/
+function writeTarget(
+  write: GitWrite,
+  current: CommandTarget,
+  home: string,
+): CommandTarget {
+  if (write.reason !== undefined) {
+    return unknown(write.reason);
+  }
+  let target = current;
+  for (const directory of write.directories) {
+    if (target.kind === 'directory') {
+      target = literalPath(directory, target.directory, home, '`git -C`');
+    }
+  }
+  return target;
+}
+
+/**
+Every write's target, folded to the one directory they share.
+*/
+function sharedTarget(
+  targets: readonly CommandTarget[],
+  hasChangedDirectory: boolean,
+  cwd: string,
+): CommandTarget {
+  const [first] = targets;
+  if (first === undefined) {
+    return hasChangedDirectory
+      ? unknown(
+          'the command changes directory, but this could not find the git ' +
+            'write in it (inside a substitution or backticks?)',
+        )
+      : directoryTarget(cwd);
+  }
+  const directories = new Set<string>();
+  for (const target of targets) {
+    if (target.kind === 'unknown') {
+      return target;
+    }
+    directories.add(target.directory);
+  }
+  return directories.size > 1
+    ? unknown(
+        `git writes in ${[...directories].join(' and ')}: one repository ` +
+          'per command',
+      )
+    : first;
+}
+
+/**
+The target of every git write in the command, in order.
+*/
+function resolveWrites(
+  commands: readonly SimpleCommand[],
+  cwd: string,
+  home: string,
+): CommandTarget {
+  let current = directoryTarget(cwd);
+  let hasChangedDirectory = false;
+  const targets: CommandTarget[] = [];
+  for (const simple of commands) {
+    const write = gitWrite(simple);
+    if (write !== undefined) {
+      targets.push(writeTarget(write, current, home));
+    } else if (CHANGE_DIRECTORY.has(simple.name.text)) {
+      hasChangedDirectory = true;
+      current =
+        current.kind === 'directory'
+          ? changeDirectory(simple, current.directory, home)
+          : current;
+    }
+  }
+  return sharedTarget(targets, hasChangedDirectory, cwd);
 }
 
 /**
@@ -467,25 +634,12 @@ export function commandTarget(
   cwd: string,
   home: string,
 ): CommandTarget {
-  let commands: SimpleCommand[];
   try {
-    commands = simpleCommands(scanTokens({ text: command, index: 0 }, false));
+    const tokens = scanTokens({ text: command, index: 0 }, false);
+    return resolveWrites(simpleCommands(tokens), cwd, home);
   } catch (error) {
     // Every error, not only the scanner's own: a bug here must deny the
     // write, never let it through ungated.
     return unknown(`the command could not be read (${String(error)})`);
   }
-  let current: CommandTarget = { kind: 'directory', directory: cwd };
-  for (const simple of commands) {
-    if (isGitWrite(simple)) {
-      return current;
-    }
-    if (
-      current.kind === 'directory' &&
-      CHANGE_DIRECTORY.has(simple.name.text)
-    ) {
-      current = changeDirectory(simple, current.directory, home);
-    }
-  }
-  return { kind: 'directory', directory: cwd };
 }

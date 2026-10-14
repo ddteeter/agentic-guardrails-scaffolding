@@ -104,7 +104,6 @@ describe('commandTarget: literal cd chains', () => {
     ['echo commit && cd /abs && git commit', '/abs'],
     ['cd /abs && git --no-pager commit', '/abs'],
     // No git write it can find: where the command started.
-    ['cd /abs && echo done', CWD],
     ['git', CWD],
   ])('%j runs its write in %s', (command, expected) => {
     expect(directoryOf(command)).toBe(expected);
@@ -156,4 +155,105 @@ describe('commandTarget: literal cd chains', () => {
       `the command could not be read (SyntaxError: ${reason})`,
     );
   });
+});
+
+/**
+ * Five pathological shapes, each `repetitions` pieces long: option runs, cd
+ * chains, nested substitutions, heredoc openers, and escaped quotes.
+ */
+function pathological(repetitions: number): string[] {
+  const many = (piece: string): string => piece.repeat(repetitions);
+  const escapedQuotes = many(String.raw`\'`);
+  return [
+    `git ${many('-c a=b ')}commit`,
+    `${many('cd a && cd .. && ')}git commit`,
+    `git commit -m "${many('$( (x) ) ')}"`,
+    `${many('cat <<EOF\n')}git commit`,
+    `git commit -m '${escapedQuotes}`,
+  ];
+}
+
+/**
+The fastest of three reads of every pathological command, in milliseconds.
+*/
+function fastestRead(repetitions: number): number {
+  const commands = pathological(repetitions);
+  const timings = Array.from({ length: 3 }, () => {
+    const started = performance.now();
+    for (const command of commands) {
+      commandTarget(command, CWD, HOME);
+    }
+    return performance.now() - started;
+  });
+  return Math.min(...timings);
+}
+
+describe('commandTarget: git directory options', () => {
+  it.each([
+    ['git -C /abs commit', '/abs'],
+    ['git -C rel commit', `${CWD}/rel`],
+    ['git -C a -C b commit', `${CWD}/a/b`],
+    ['cd a && git -C b commit', `${CWD}/a/b`],
+    ['git -C ~/x push', `${HOME}/x`],
+    ['git -C "/with space" commit', '/with space'],
+    ['git -c core.editor=true -C /abs commit', '/abs'],
+    ['git -c user.name=x commit', CWD],
+    ['git --namespace n -C /abs push', '/abs'],
+    ['git --config-env a=B -C /abs push', '/abs'],
+    ['git --no-pager -C /abs commit', '/abs'],
+    ['LANG=C git -C /abs commit', '/abs'],
+    ['EDITOR=true git commit', CWD],
+    ['A=1 && git commit', CWD],
+    ['MY_GIT_DIR=x git commit', CWD],
+    // Only a PREFIX assignment points git anywhere; an argument does not.
+    ['git commit -m GIT_DIR=x', CWD],
+    ['git --no-git-dir-check -C /abs commit', '/abs'],
+    // The same directory twice is still one repository.
+    ['git -C /abs commit && git -C /abs push', '/abs'],
+    ['cd /abs && git commit && git push', '/abs'],
+    // `-C` on a git command that writes nothing does not matter.
+    ['git -C /elsewhere status && git commit', CWD],
+    ['git -c x=y log && git -C /abs commit', '/abs'],
+  ])('%j runs its write in %s', (command, expected) => {
+    expect(directoryOf(command)).toBe(expected);
+  });
+
+  it.each([
+    ['git --git-dir=/x/.git commit', '--git-dir'],
+    ['git --git-dir /x/.git commit', '--git-dir'],
+    ['git --work-tree=/x commit', '--git-dir'],
+    ['git --work-tree /x push', '--git-dir'],
+    ['GIT_DIR=/x/.git git commit', 'GIT_DIR'],
+    ['GIT_WORK_TREE=/x git commit', 'GIT_DIR'],
+    ['A=1 GIT_DIR=/x git commit', 'GIT_DIR'],
+    ['git -C "$X" commit', 'not a literal'],
+    ['git -C /abs -C "$X" commit', 'not a literal'],
+    ['git -C ~other commit', 'another user'],
+    ['cd "$X" && git -C /abs commit', 'not a literal'],
+    ['git -C /a commit && git -C /b push', '/a and /b: one repository'],
+    ['git -C /abs commit && git -C "$X" push', 'not a literal'],
+    // Only a word that STARTS like an assignment is one.
+    ['cd /abs && ./run=1 git commit', 'could not find the git write'],
+    ['git commit && cd /abs && git push', 'one repository per command'],
+    // A cd it followed, with no git write it can find: the write is
+    // somewhere it does not read (a substitution, a backtick).
+    ['cd /abs && echo $(git commit)', 'could not find the git write'],
+    ['cd /abs && echo `git commit`', 'could not find the git write'],
+    ['cd /abs && echo done', 'could not find the git write'],
+  ])('%j cannot be resolved (%s)', (command, reason) => {
+    expect(reasonOf(command)).toContain(reason);
+  });
+
+  it('reads long, pathological commands in linear time', () => {
+    // A RATIO, not a wall-clock budget: this suite runs beside other agents'
+    // mutation gates at load averages of 20-45, where an absolute limit is
+    // noise. Ten times the input costs about ten times as long when the read
+    // is linear and about a hundred times when it is quadratic; 30 sits well
+    // between them. The 1 ms floor keeps a sub-millisecond small run from
+    // inflating the ratio. The absolute ceiling is only a backstop.
+    const small = fastestRead(2000);
+    const large = fastestRead(20_000);
+    expect(large / Math.max(small, 1)).toBeLessThan(30);
+    expect(large).toBeLessThan(60_000);
+  }, 300_000);
 });
