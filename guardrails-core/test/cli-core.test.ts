@@ -4372,14 +4372,29 @@ describe('session-scoped rungs anchor on the session root (CLAUDE_PROJECT_DIR)',
 });
 
 /**
-An exec that answers only after any test has long finished.
+A result that arrives only after any test has long finished.
 */
-const hanging: Exec = () =>
-  new Promise<ExecResult>((resolve) => {
+function eventually(): Promise<ExecResult> {
+  return new Promise<ExecResult>((resolve) => {
     setTimeout(() => {
       resolve(ok(''));
     }, 60_000).unref();
   });
+}
+
+/**
+An exec that answers only after any test has long finished.
+*/
+const hanging: Exec = eventually;
+
+/**
+The SIGTERM listeners added since `before` was taken.
+*/
+function addedSigtermListeners(before: readonly unknown[]) {
+  return process
+    .listeners('SIGTERM')
+    .filter((listener) => !before.includes(listener));
+}
 
 describe('hook gates finish before the host gives up on them', () => {
   /**
@@ -4506,6 +4521,43 @@ describe('hook gates finish before the host gives up on them', () => {
     }
 
     expect(exits).toEqual([0]);
+  });
+
+  it('stops its own analyzers when it is terminated itself', async () => {
+    // A delegating run's deadline SIGTERMs the delegate; its default
+    // disposition would die and orphan the analyzers IT spawned.
+    const before = process.listeners('SIGTERM');
+    const added: number[] = [];
+    const terminatedMidGate: Exec = () => {
+      const listeners = addedSigtermListeners(before);
+      added.push(listeners.length);
+      for (const listener of listeners) {
+        listener('SIGTERM');
+      }
+      return eventually();
+    };
+
+    await runCommand(
+      'gate',
+      ['--mode=stop'],
+      deadlined(JSON.stringify({ cwd: root }), terminatedMidGate),
+    );
+
+    expect(added[0]).toBe(1);
+    expect(exitCodes[0]).toBe(143);
+    expect(terminated).toBe(2);
+  });
+
+  it('stops listening for SIGTERM once the gate has decided', async () => {
+    const before = process.listeners('SIGTERM');
+
+    await runCommand(
+      'gate',
+      ['--mode=pretooluse'],
+      deadlined(shellStdin('git commit -m x')),
+    );
+
+    expect(addedSigtermListeners(before)).toEqual([]);
   });
 
   it('reads the deadline from the repository root, not the directory it ran in', async () => {

@@ -883,6 +883,8 @@ async function delegateToTarget(
         ...(dependencies.env ?? process.env),
         [PRETOOLUSE_TARGET]: repoRoot,
       },
+      // Valid JSON by now: only a payload `parseHookInput` already parsed
+      // reaches here, through `isShellGitWrite`.
       input: JSON.stringify({ ...JSON.parse(stdin), cwd: repoRoot }),
     },
   );
@@ -1900,8 +1902,44 @@ function abandonGate(
         `turn was not checked. The commit and push gates still apply.\n`,
     );
   }
+  stopAnalyzers(dependencies, 0);
+}
+
+/**
+Stop every analyzer still running, then end the process with `code`.
+*/
+function stopAnalyzers(dependencies: CliDependencies, code: number): void {
   (dependencies.terminate ?? terminateChildren)();
-  (dependencies.exit ?? ((code: number) => process.exit(code)))(0);
+  (dependencies.exit ?? ((exitCode: number) => process.exit(exitCode)))(code);
+}
+
+/**
+The exit status of a process ended by SIGTERM: 128 plus the signal's number.
+*/
+const TERMINATED_EXIT_CODE = 143;
+
+/**
+ * Run a hook gate so that a SIGTERM to this CLI stops its analyzers before it
+ * ends. Node's default disposition dies on the spot, and `child.kill` reaches
+ * one process, not its group: so when a delegating run's deadline SIGTERMs
+ * the delegate (`delegateToTarget`), or a host kills a hook it gave up on,
+ * the analyzers this process spawned would be orphaned, holding the
+ * machine-wide lock for as long as they run. The listener is removed once
+ * the gate has decided.
+ */
+async function terminable(
+  dependencies: CliDependencies,
+  gate: () => Promise<number>,
+): Promise<number> {
+  const onTerminate = (): void => {
+    stopAnalyzers(dependencies, TERMINATED_EXIT_CODE);
+  };
+  process.once('SIGTERM', onTerminate);
+  try {
+    return await gate();
+  } finally {
+    process.off('SIGTERM', onTerminate);
+  }
 }
 
 /**
@@ -2068,10 +2106,10 @@ function gateCommand(
   if (mode === 'ci') {
     return gateCommitCommand(dependencies, 'branch', 'ci', rest);
   }
-  if (mode === 'pretooluse') {
-    return decidingHook(dependencies, 'pretooluse', resolveDialect(rest));
-  }
-  return decidingHook(dependencies, 'stop', resolveDialect(rest));
+  const hookMode = mode === 'pretooluse' ? 'pretooluse' : 'stop';
+  return terminable(dependencies, () =>
+    decidingHook(dependencies, hookMode, resolveDialect(rest)),
+  );
 }
 
 export async function runCommand(

@@ -401,6 +401,16 @@ directories in one command. Unchanged, and still outside the matcher:
   stryker's dry run twice at load averages of 23 to 35, and the failure was
   once attributed to the neighbouring test. The test is now a ratio between n
   and 10n, which a loaded machine does not move.
+- A delegated write runs under two deadlines: the session repository's
+  `hookDeadlineSeconds` wraps the whole round trip, and the target's own gate
+  keeps its own. When the outer one fires first, `terminateChildren` SIGTERMs
+  only the delegate process, and Node's default disposition used to kill it
+  without touching the analyzers it had spawned (`child.kill` reaches one
+  process, not its group). Hook gate modes now install a SIGTERM handler that
+  terminates their own children before exiting. **A target pinned to an
+  older guardrails-core, without that handler, can still orphan its analyzers
+  on the outer deadline** -- for up to their full run, holding the
+  machine-wide lock. It closes once the target upgrades.
 
 ## Roadmap: fixer-loop hardening (from the dogfooding live proof)
 
