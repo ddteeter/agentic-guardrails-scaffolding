@@ -1,5 +1,7 @@
 /**
- * fallow adapter: maps `fallow dupes --format json` output into `Violation[]`.
+ * fallow adapter: maps `fallow dupes --format json` and `fallow health
+ * --complexity --format json` output into `Violation[]`. The complexity half is
+ * documented at its own section below; this header covers dupes.
  *
  * fallow reports duplication as CLONE GROUPS — a set of two or more locations
  * sharing a normalized token sequence. That is the shape the whole analyzer
@@ -164,4 +166,147 @@ export function parseFallowDupesJson(
       group.instances.some((instance) => changed.has(instance.file)),
     )
     .flatMap((group) => toViolations(group));
+}
+
+/*
+ * ---------------------------------------------------------------------------
+ * `fallow health --complexity --format json`
+ * ---------------------------------------------------------------------------
+ *
+ * Function-level complexity against the adopter's own fallow thresholds
+ * (`max_cyclomatic_threshold` / `max_cognitive_threshold`). This exists
+ * because `sonarjs/cognitive-complexity` at the same limit counts differently:
+ * in #122 a commit took `runCommitGate` to cognitive 16, every commit gate
+ * passed, and only the pre-push `fallow health` failed — a full push cycle
+ * lost to a check that could have run at commit.
+ *
+ * Only the cyclomatic and cognitive halves are reported. CRAP needs FRESH
+ * coverage, which the commit rung does not have (fallow estimates it, or reads
+ * a stale `coverage-final.json`), so a `crap`-only finding is dropped and the
+ * `*_crap` values report just their complexity part. CRAP stays a pre-push / CI
+ * concern.
+ *
+ * Diff scoping is the same file-level rule as dupes: a finding is kept when its
+ * `path` is in the changed set. A touched file's pre-existing over-limit
+ * function is therefore reported too, exactly as ESLint does at commit.
+ */
+
+/** `exceeded` → rule id, verbatim from fallow's `issue-registry.json` and
+ *  pinned by the drift guard. A Map, not an object literal, so an `exceeded`
+ *  value that happens to be a prototype key (`constructor`) cannot resolve. */
+const COMPLEXITY_RULE_IDS: ReadonlyMap<string, string> = new Map([
+  ['cyclomatic', 'fallow/high-cyclomatic-complexity'],
+  ['cyclomatic_crap', 'fallow/high-cyclomatic-complexity'],
+  ['cognitive', 'fallow/high-cognitive-complexity'],
+  ['cognitive_crap', 'fallow/high-cognitive-complexity'],
+  ['both', 'fallow/high-complexity'],
+  ['all', 'fallow/high-complexity'],
+]);
+
+interface HealthFinding {
+  path: string;
+  name: string;
+  line: number;
+  cyclomatic: number;
+  cognitive: number;
+  exceeded: string;
+}
+
+interface HealthThresholds {
+  max_cyclomatic_threshold: number;
+  max_cognitive_threshold: number;
+}
+
+interface HealthReport {
+  findings: unknown[];
+  summary: HealthThresholds;
+}
+
+const FINDING_STRING_FIELDS = ['path', 'name', 'exceeded'] as const;
+const FINDING_NUMBER_FIELDS = ['line', 'cyclomatic', 'cognitive'] as const;
+
+/**
+ * The finding guard checks its fields as two lists rather than six inline
+ * clauses, for a mutation-testing reason. Inline, `typeof path === 'string'`
+ * and `typeof exceeded === 'string'` are EQUIVALENT mutants: a non-string
+ * `path` fails the changed-set lookup and a non-string `exceeded` fails the
+ * rule-id lookup, so removing either check changes nothing observable. As
+ * list entries they share one predicate with `name`, whose check nothing
+ * downstream repeats — so every mutant here is killable and none needs a
+ * sanctioned exemption.
+ */
+function isHealthFinding(value: unknown): value is HealthFinding {
+  return (
+    isRecord(value) &&
+    FINDING_STRING_FIELDS.every((field) => typeof value[field] === 'string') &&
+    FINDING_NUMBER_FIELDS.every((field) => typeof value[field] === 'number')
+  );
+}
+
+/**
+ * The thresholds are part of the report's shape, not decoration: the message
+ * states them, and a report without them is not one this adapter knows how to
+ * read. Rejecting it makes the runner report analyzer-failed on a schema
+ * change rather than read it as a clean tree.
+ */
+function isHealthReport(value: unknown): value is HealthReport {
+  return (
+    isRecord(value) &&
+    Array.isArray(value.findings) &&
+    isRecord(value.summary) &&
+    typeof value.summary.max_cyclomatic_threshold === 'number' &&
+    typeof value.summary.max_cognitive_threshold === 'number'
+  );
+}
+
+function toComplexityViolation(
+  finding: HealthFinding,
+  ruleId: string,
+  thresholds: HealthThresholds,
+): Violation {
+  return {
+    ruleId,
+    file: finding.path,
+    line: finding.line,
+    message:
+      `\`${finding.name}\` is over the complexity threshold: cyclomatic ` +
+      `${finding.cyclomatic} (limit ${thresholds.max_cyclomatic_threshold}), ` +
+      `cognitive ${finding.cognitive} (limit ` +
+      `${thresholds.max_cognitive_threshold}). Extract helper functions to ` +
+      `split it; do not suppress it with a fallow-ignore comment.`,
+    severity: 'error',
+    fixable: false,
+    tool: 'complexity',
+  };
+}
+
+/**
+ * Parse a `fallow health --complexity --format json` report, keeping only
+ * cyclomatic/cognitive findings in `changedFiles`.
+ *
+ * `isReport` says whether stdout was a health report at all, independent of
+ * whether anything survived the filter. fallow exits 1 whenever it has ANY
+ * finding — including CRAP-only and out-of-diff ones this drops — so the
+ * runner needs "it parsed" rather than "it produced violations" to tell a
+ * finding-bearing run from a crash.
+ */
+export function parseFallowHealthJson(
+  stdout: string,
+  changedFiles: readonly string[],
+): { violations: Violation[]; isReport: boolean } {
+  const { parsed } = parseJsonText(stdout);
+  if (!isHealthReport(parsed)) {
+    return { violations: [], isReport: false };
+  }
+  const changed = new Set(changedFiles);
+  const violations = parsed.findings
+    .filter((finding) => isHealthFinding(finding))
+    .filter((finding) => changed.has(finding.path))
+    .flatMap((finding) => {
+      const ruleId = COMPLEXITY_RULE_IDS.get(finding.exceeded);
+      return ruleId === undefined
+        ? []
+        : [toComplexityViolation(finding, ruleId, parsed.summary)];
+    });
+  return { violations, isReport: true };
 }

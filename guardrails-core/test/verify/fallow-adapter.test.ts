@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
-import { parseFallowDupesJson } from '../../src/verify/fallow-adapter.js';
+import {
+  parseFallowDupesJson,
+  parseFallowHealthJson,
+} from '../../src/verify/fallow-adapter.js';
 
 /**
  * A minimal `fallow dupes --format json` envelope. Only the fields the adapter
@@ -270,5 +273,237 @@ describe('parseFallowDupesJson', () => {
 
   it('reports a clean tree as no violations', () => {
     expect(parseFallowDupesJson(report([]), ['src/a.ts'])).toEqual([]);
+  });
+});
+
+/**
+ * A minimal `fallow health --complexity --format json` envelope. Only the
+ * fields the adapter reads are modelled, plus `severity` and `actions` so the
+ * fixture looks like what fallow actually prints; `vital_signs`,
+ * `large_functions` and `next_steps` are deliberately ignored.
+ */
+function healthReport(
+  findings: {
+    path: string;
+    name: string;
+    line?: number;
+    cyclomatic?: number;
+    cognitive?: number;
+    exceeded: string;
+  }[],
+): string {
+  return JSON.stringify({
+    kind: 'health',
+    schema_version: 7,
+    findings: findings.map((finding) => ({
+      col: 0,
+      line_count: 40,
+      severity: 'moderate',
+      actions: [],
+      line: 10,
+      cyclomatic: 22,
+      cognitive: 17,
+      ...finding,
+    })),
+    summary: {
+      functions_above_threshold: findings.length,
+      max_cyclomatic_threshold: 20,
+      max_cognitive_threshold: 15,
+      max_crap_threshold: 30,
+    },
+  });
+}
+
+function healthRuleIdsFor(exceeded: string): string[] {
+  const { violations } = parseFallowHealthJson(
+    healthReport([{ path: 'src/a.ts', name: 'big', exceeded }]),
+    ['src/a.ts'],
+  );
+  return violations.map((violation) => violation.ruleId);
+}
+
+describe('parseFallowHealthJson', () => {
+  it.each([
+    ['cyclomatic', 'fallow/high-cyclomatic-complexity'],
+    ['cognitive', 'fallow/high-cognitive-complexity'],
+    ['both', 'fallow/high-complexity'],
+    ['all', 'fallow/high-complexity'],
+    // The *_crap values report only their complexity half: CRAP needs fresh
+    // coverage, which the commit rung does not have.
+    ['cyclomatic_crap', 'fallow/high-cyclomatic-complexity'],
+    ['cognitive_crap', 'fallow/high-cognitive-complexity'],
+  ])('maps exceeded=%s to %s', (exceeded, ruleId) => {
+    expect(healthRuleIdsFor(exceeded)).toEqual([ruleId]);
+  });
+
+  it('drops a CRAP-only finding', () => {
+    expect(healthRuleIdsFor('crap')).toEqual([]);
+  });
+
+  it('drops a finding whose exceeded value it does not know', () => {
+    // Includes a prototype key, so a plain-object lookup table would be wrong.
+    expect(healthRuleIdsFor('something_new')).toEqual([]);
+    expect(healthRuleIdsFor('constructor')).toEqual([]);
+  });
+
+  it('drops a finding outside the changed set', () => {
+    const { violations } = parseFallowHealthJson(
+      healthReport([
+        { path: 'src/a.ts', name: 'inScope', exceeded: 'cognitive' },
+        { path: 'src/untouched.ts', name: 'outOfScope', exceeded: 'cognitive' },
+      ]),
+      ['src/a.ts'],
+    );
+
+    expect(violations.map((violation) => violation.file)).toEqual(['src/a.ts']);
+  });
+
+  it('reports nothing when nothing changed, but still reads the report', () => {
+    expect(
+      parseFallowHealthJson(
+        healthReport([{ path: 'src/a.ts', name: 'big', exceeded: 'both' }]),
+        [],
+      ),
+    ).toEqual({ violations: [], isReport: true });
+  });
+
+  it('locates the violation at the function and carries the loose-class metadata', () => {
+    const { violations } = parseFallowHealthJson(
+      healthReport([
+        { path: 'src/a.ts', name: 'big', line: 42, exceeded: 'cognitive' },
+      ]),
+      ['src/a.ts'],
+    );
+
+    expect(violations).toEqual([
+      expect.objectContaining({
+        ruleId: 'fallow/high-cognitive-complexity',
+        file: 'src/a.ts',
+        line: 42,
+        severity: 'error',
+        fixable: false,
+        tool: 'complexity',
+      }),
+    ]);
+  });
+
+  it('names the function, both scores and both thresholds, and says not to suppress', () => {
+    const { violations } = parseFallowHealthJson(
+      healthReport([
+        {
+          path: 'src/a.ts',
+          name: 'runCommitGate',
+          cyclomatic: 18,
+          cognitive: 16,
+          exceeded: 'cognitive',
+        },
+      ]),
+      ['src/a.ts'],
+    );
+
+    expect(violations[0]?.message).toBe(
+      '`runCommitGate` is over the complexity threshold: cyclomatic 18 ' +
+        '(limit 20), cognitive 16 (limit 15). Extract helper functions to ' +
+        'split it; do not suppress it with a fallow-ignore comment.',
+    );
+  });
+
+  it('skips a malformed finding and keeps the rest', () => {
+    const malformed = JSON.stringify({
+      findings: [
+        { path: 'src/a.ts', line: 1, cyclomatic: 30, cognitive: 30 },
+        null,
+        {
+          path: 'src/a.ts',
+          name: 'big',
+          line: '1',
+          cyclomatic: 30,
+          cognitive: 30,
+          exceeded: 'both',
+        },
+        {
+          path: 42,
+          name: 'big',
+          line: 1,
+          cyclomatic: 30,
+          cognitive: 30,
+          exceeded: 'both',
+        },
+        {
+          path: 'src/a.ts',
+          name: 7,
+          line: 1,
+          cyclomatic: 30,
+          cognitive: 30,
+          exceeded: 'both',
+        },
+        {
+          path: 'src/a.ts',
+          name: 'big',
+          line: 1,
+          cyclomatic: '30',
+          cognitive: 30,
+          exceeded: 'both',
+        },
+        {
+          path: 'src/a.ts',
+          name: 'big',
+          line: 1,
+          cyclomatic: 30,
+          cognitive: '30',
+          exceeded: 'both',
+        },
+        {
+          path: 'src/a.ts',
+          name: 'kept',
+          line: 5,
+          cyclomatic: 30,
+          cognitive: 30,
+          exceeded: 'both',
+        },
+      ],
+      summary: { max_cyclomatic_threshold: 20, max_cognitive_threshold: 15 },
+    });
+
+    const { violations, isReport } = parseFallowHealthJson(malformed, [
+      'src/a.ts',
+    ]);
+
+    expect(isReport).toBe(true);
+    expect(violations.map((violation) => violation.line)).toEqual([5]);
+  });
+
+  it('reads a clean tree as a report with no violations', () => {
+    expect(parseFallowHealthJson(healthReport([]), ['src/a.ts'])).toEqual({
+      violations: [],
+      isReport: true,
+    });
+  });
+
+  it.each([
+    ['not JSON', 'not json at all'],
+    ['an array', '[]'],
+    ['null', 'null'],
+    ['findings not an array', '{"findings":{},"summary":{}}'],
+    [
+      'no summary',
+      '{"findings":[{"path":"src/a.ts","name":"big","line":1,"cyclomatic":30,"cognitive":30,"exceeded":"both"}]}',
+    ],
+    [
+      'a summary without thresholds',
+      '{"findings":[],"summary":{"max_cognitive_threshold":15}}',
+    ],
+    [
+      'a non-numeric cognitive threshold',
+      '{"findings":[],"summary":{"max_cyclomatic_threshold":20,"max_cognitive_threshold":"15"}}',
+    ],
+  ])('reads %s as no report at all', (_, stdout) => {
+    // The runner turns `isReport: false` plus a non-zero exit into
+    // analyzer-failed, so a crash or a schema change upstream is loud rather
+    // than a clean complexity check.
+    expect(parseFallowHealthJson(stdout, ['src/a.ts'])).toEqual({
+      violations: [],
+      isReport: false,
+    });
   });
 });
