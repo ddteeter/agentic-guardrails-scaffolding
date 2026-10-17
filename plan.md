@@ -1027,13 +1027,16 @@ core/src/audit.ts`) surfaced that it was a context-free text scan: it flagged
   in `.claude/settings.json` and `.husky/` runs `guardrails-core/dist`, which is
   gitignored and rebuilt only by `npm install` (`prepare`) or `npm run build`.
   The main checkout had last been built on 2026-10-10. Several pulls later,
-  with #119 (the EISDIR fix) and #133 (the `complexity` analyzer) on `main`,
+  with the #118 EISDIR fix (#119) and #133 (the `complexity` analyzer) on `main`,
   the Stop gate failed with `EISDIR: illegal operation on a directory` — the
   pre-#119 bug — and the 0.10.0 release push was blocked by a pre-push gate
   that both crashed the same way and rejected `"complexity"` as an unknown
   analyzer. Each looked like a regression until a rebuild made it disappear.
   Consumers are not affected: they install the built release tarball. Only a
-  self-hosting checkout runs its own build. **Fix direction:** a
+  self-hosting checkout runs its own build. **This is a recurrence**, not a first
+  discovery: the Phase-C-era entry "The gate had never actually run" (below)
+  records the same root cause — `dist/` is gitignored and nothing detects the
+  staleness. Two incidents now; the fix below is what that entry lacked. **Fix direction:** a
   `post-merge` / `post-checkout` hook here that runs `npm run build` when
   `guardrails-core/src/` changed between the old and new HEAD. A cheaper
   backstop is for `session-start` to warn when any file under
