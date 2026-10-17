@@ -351,10 +351,21 @@ What changed:
   effective pre-push hook (`git rev-parse --git-path hooks/pre-push`) is
   executable and runs `gate --mode=push`; every way of not knowing keeps the
   pre-run.
-- **Foreground waits are denied at PreToolUse** (Claude Code's `Bash` only):
+- **Foreground waits are denied at PreToolUse** (Claude Code's `Bash`; extended
+  to the Codex and Copilot shell tools below):
   `gh pr checks --watch`, `gh run watch`, `kill -0`/`pgrep` wait loops, a
   `sleep` over `foregroundSleepLimitSeconds`, and `guardrails ship`.
   `denyForegroundWaits: false` turns it off.
+- **Other hosts** (follow-up): Codex and Copilot CLI can background a command
+  but, as observed (Codex 0.154, Copilot CLI), do not wake the agent on exit,
+  so each check is another model call. The same denial now applies on the
+  `codex` and `copilot` dialects with a host message: start it detached
+  (`nohup … &`), finish the task, and read `ship-status.json` from outside.
+  Detached is the narrow definition: `nohup`/`setsid` at command position,
+  which the patterns already skip; a bare `… &` is denied, and
+  `run_in_background` excuses nothing off Claude. Docs gain an `AGENTS.md`
+  snippet. Not done: no Copilot async/detach payload field is read, because no
+  PreToolUse fixture carries one.
 - **`guardrails ship`** pushes, finds or opens the PR, watches its checks, and
   writes one status file in one of five states -- the command to background.
 - **The machine-wide lock moved into the template** `.githooks/pre-push`, with a

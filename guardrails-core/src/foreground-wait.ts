@@ -115,6 +115,13 @@ function isPollingLoop(text: string): boolean {
  * The foreground wait this command would run, named for the denial message, or
  * `undefined` when it runs none. `sleepLimitSeconds` is the longest `sleep`
  * that still counts as a pause.
+ *
+ * A command that starts itself detached -- `nohup npx guardrails ship … &`,
+ * `setsid gh run watch … &`, `nohup sh -c "until …" &` -- needs no exemption:
+ * every pattern here must sit at command position, and `nohup`/`setsid` or a
+ * quote is what stands there. A bare `… &` has no such cover and is denied: it
+ * ties the job to the shell, and on a host with no wake-on-exit the agent still
+ * has to poll it.
  */
 export function foregroundWait(
   command: string,
@@ -137,9 +144,23 @@ export function foregroundWait(
 }
 
 /**
-The denial, in the two lines an agent needs to change what it does.
+The denial, in the lines an agent needs to change what it does. Claude Code
+wakes the agent once when a background command exits; Codex and Copilot have no
+such wake, so the only cheap shape there is to not wait at all.
 */
-export function foregroundWaitDenial(wait: string): string {
+export function foregroundWaitDenial(
+  wait: string,
+  dialect: 'claude' | 'codex' | 'copilot' = 'claude',
+): string {
+  if (dialect !== 'claude') {
+    return (
+      `guardrails: ${wait} waits inside the agent, and every check re-reads ` +
+      `your whole context. Don't wait: start it detached (\`nohup … &\`) and ` +
+      `finish your task; ship's outcome lands in ` +
+      `.guardrails/state/ship-status.json. (Turn this off with ` +
+      `"denyForegroundWaits": false.)`
+    );
+  }
   return (
     `guardrails: ${wait} waits in the foreground. Run it with ` +
     `run_in_background: true and end your turn; you are woken once, when it ` +

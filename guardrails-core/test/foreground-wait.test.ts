@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { foregroundWait, withoutQuotedText } from '../src/foreground-wait.js';
+import {
+  foregroundWait,
+  foregroundWaitDenial,
+  withoutQuotedText,
+} from '../src/foreground-wait.js';
 
 const LIMIT = 120;
 
@@ -140,5 +144,46 @@ describe('withoutQuotedText', () => {
     expect(withoutQuotedText('a "b c')).toBe('a "');
     expect(withoutQuotedText('a "')).toBe('a "');
     expect(withoutQuotedText("a '")).toBe("a '");
+  });
+});
+
+describe('foregroundWait: a command that starts itself detached', () => {
+  it.each([
+    'nohup npx guardrails ship --body-file=pr.md > ship.log 2>&1 &',
+    'setsid gh run watch 99 > watch.log 2>&1 &',
+    'nohup sh -c "until ! kill -0 4242; do sleep 20; done" &',
+    'cd x && nohup gh pr checks --watch &',
+    'git push; nohup npx guardrails ship &',
+    'nohup sleep 600 &',
+  ])('is not a wait: %j', (command) => {
+    expect(foregroundWait(command, LIMIT)).toBeUndefined();
+  });
+
+  it.each([
+    ['gh run watch 99 &', 'gh run watch'],
+    ['npx guardrails ship > ship.log 2>&1 &', 'guardrails ship'],
+    ['sleep 600 &', 'sleep 600'],
+    ['nohup true & gh run watch 99', 'gh run watch'],
+    ['nohup true && sleep 600', 'sleep 600'],
+  ])('a bare background is still a wait: %j', (command, wait) => {
+    expect(foregroundWait(command, LIMIT)).toBe(wait);
+  });
+});
+
+describe('foregroundWaitDenial: per host', () => {
+  it('tells Claude to background and end the turn', () => {
+    expect(foregroundWaitDenial('sleep 600')).toContain('run_in_background');
+    expect(foregroundWaitDenial('sleep 600', 'claude')).toContain(
+      'end your turn',
+    );
+  });
+
+  it.each(['codex', 'copilot'] as const)('tells %s to detach', (dialect) => {
+    const text = foregroundWaitDenial('sleep 600', dialect);
+    expect(text).toContain('sleep 600 waits inside the agent');
+    expect(text).toContain('nohup');
+    expect(text).toContain('.guardrails/state/ship-status.json');
+    expect(text).not.toContain('run_in_background');
+    expect(text.split('\n').length).toBeLessThanOrEqual(3);
   });
 });
