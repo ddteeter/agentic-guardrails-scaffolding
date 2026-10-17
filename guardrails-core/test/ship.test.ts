@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -126,6 +126,39 @@ describe('ship: gh is checked before anything is pushed', () => {
   });
 });
 
+describe('ship: the body file is checked before anything is pushed', () => {
+  it('stops before pushing when the body file does not exist', async () => {
+    const { exec, calls } = fakeExec(HAPPY);
+    const missing = path.join(root, 'missing.md');
+    const status = await ship(options(exec, { bodyFile: missing }));
+    expect(status).toMatchObject({ state: 'error', pr: null, url: null });
+    expect(status.tail).toBe(
+      `guardrails ship: --body-file ${missing} does not exist (or is not ` +
+        'readable). Nothing was pushed.',
+    );
+    expect(calls.some((call) => call.line.startsWith('git push'))).toBe(false);
+  });
+
+  it('pushes as before when the body file is readable', async () => {
+    const { exec, calls } = fakeExec(HAPPY);
+    const body = path.join(root, 'pr.md');
+    writeFileSync(body, 'the body\n');
+    const status = await ship(options(exec, { bodyFile: body }));
+    expect(status.state).toBe('green');
+    expect(calls.map((call) => call.line)).toContain('git push -u origin HEAD');
+  });
+
+  it('checks gh before the body file', async () => {
+    const { exec } = fakeExec({
+      ...HAPPY,
+      'gh auth status': failed('You are not logged into any GitHub hosts.'),
+    });
+    const missing = path.join(root, 'missing.md');
+    const status = await ship(options(exec, { bodyFile: missing }));
+    expect(status.tail).toContain('gh auth login');
+  });
+});
+
 async function stateOf(exec: Exec): Promise<string> {
   const status = await ship(options(exec));
   return status.state;
@@ -195,9 +228,11 @@ describe('ship: finding or creating the pull request', () => {
       'gh pr view': [failed('no pull requests found'), ok(PR_JSON)],
       'git log -1 --format=%s': ok('feat: the thing\n'),
     });
-    await ship(options(exec, { bodyFile: 'pr.md' }));
+    const body = path.join(root, 'pr.md');
+    writeFileSync(body, 'the body\n');
+    await ship(options(exec, { bodyFile: body }));
     expect(calls.map((call) => call.line)).toContain(
-      'gh pr create --base main --title feat: the thing --body-file pr.md',
+      `gh pr create --base main --title feat: the thing --body-file ${body}`,
     );
   });
 

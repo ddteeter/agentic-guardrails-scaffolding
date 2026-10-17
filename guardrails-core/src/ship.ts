@@ -14,7 +14,7 @@
  * classification is tested without a network.
  */
 
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { accessSync, constants, mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 import type { Exec, ExecResult } from './exec.js';
@@ -319,11 +319,34 @@ async function ghUnavailable(
   return undefined;
 }
 
+/**
+ * Why the `--body-file` cannot be used, or `undefined` when it can (or none
+ * was given). Asked BEFORE the push for the same reason as `ghUnavailable`:
+ * `gh pr create` reads it only after the gate has run, and a missing file
+ * then leaves a pushed branch with no pull request (dialed.run #194).
+ */
+function bodyFileUnreadable(options: ShipOptions): string | undefined {
+  const { bodyFile } = options;
+  if (bodyFile === undefined) {
+    return undefined;
+  }
+  try {
+    accessSync(bodyFile, constants.R_OK);
+    return undefined;
+  } catch {
+    return (
+      `guardrails ship: --body-file ${bodyFile} does not exist (or is not ` +
+      'readable). Nothing was pushed.'
+    );
+  }
+}
+
 async function shipOutcome(
   options: ShipOptions,
   branch: string,
 ): Promise<Outcome> {
-  const unavailable = await ghUnavailable(options);
+  const unavailable =
+    (await ghUnavailable(options)) ?? bodyFileUnreadable(options);
   if (unavailable !== undefined) {
     return failure('error', unavailable);
   }

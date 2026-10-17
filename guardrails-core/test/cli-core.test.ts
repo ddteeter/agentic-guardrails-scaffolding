@@ -5194,6 +5194,8 @@ describe('runCommand — ship', () => {
       path.join(root, 'guardrails.config.json'),
       JSON.stringify({ baseBranch: 'develop' }),
     );
+    // ship checks the body file exists before it pushes.
+    writeFileSync(path.join(root, 'pr.md'), 'the body\n');
     const calls: string[] = [];
     const inner = shipExec('pass', calls);
     let views = 0;
