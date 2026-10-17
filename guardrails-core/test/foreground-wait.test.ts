@@ -196,11 +196,24 @@ describe('foregroundWait: a command that starts itself detached', () => {
     expect(foregroundWait(command, LIMIT)).toBe(wait);
   });
 
+  // Second review of #128: nohup covers its own command only, so a wait
+  // later in the pipe or chain is still attached even with one trailing &.
+  it.each([
+    ['nohup true | gh run watch 99 &', 'gh run watch'],
+    ['nohup true && gh run watch 99 &', 'gh run watch'],
+    ['nohup true || sleep 600 &', 'sleep 600'],
+    ['setsid true | npx guardrails ship &', 'guardrails ship'],
+  ])('a wait chained after a nohup is still a wait: %j', (command, wait) => {
+    expect(foregroundWait(command, LIMIT)).toBe(wait);
+  });
+
   it.each([
     'nohup nice sleep 600 &',
     'nohup gh run watch 99 >w.log 2>&1 & echo started',
     'nohup gh run watch 99 &\necho started',
     'setsid gh run watch 99 &;',
+    'env FOO=1 nohup gh run watch 99 &',
+    'GH_PAGER= nice nohup sleep 600 > s.log 2>&1 &',
   ])('is not a wait once nohup/setsid and & both cover it: %j', (command) => {
     expect(foregroundWait(command, LIMIT)).toBeUndefined();
   });

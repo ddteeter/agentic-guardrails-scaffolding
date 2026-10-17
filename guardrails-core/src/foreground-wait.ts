@@ -61,12 +61,17 @@ Command position, past any wrapper words.
 const AT_COMMAND = `${COMMAND_START}${WRAPPERS}`;
 
 /**
- * A job handed off for good: `nohup` or `setsid` at command position, and a
- * lone `&` closing it -- not the `&` of a `2>&1`, `&>` or `&&`. Only that pair
- * outlives the agent's shell, so only it is taken out before matching.
+ * A job handed off for good: `nohup` or `setsid` at command position (past any
+ * wrappers), and a lone `&` closing that same command -- not the `&` of a
+ * `2>&1` or `&>`. Only that pair outlives the agent's shell, so only it is
+ * taken out before matching.
+ *
+ * The scan stops at every command boundary (`|`, `&&`, `||`, a backtick, a
+ * bracket): `nohup` covers its own command, so in `nohup true | gh run watch &`
+ * the watch is still attached and must stay visible.
  */
 const DETACHED_JOB = new RegExp(
-  String.raw`(${COMMAND_START})(?:nohup|setsid)\b[^\n;]*?(?<![<>&])&(?![&>])`,
+  String.raw`(${COMMAND_START})${WRAPPERS}(?:nohup|setsid)\b(?:[^\n;|&\`(){}]|(?<=[<>])&|&(?=>))*(?<![<>&])&(?![&>])`,
   'g',
 );
 
