@@ -11,6 +11,7 @@ import { hasErrors, type Violation } from '../../src/violation.js';
 import {
   ANALYZER_TOOLS,
   runVerify,
+  silentlySkippedAnalyzers,
   applyMutateNegations,
   applyMutateScope,
   canReportPerTestCoverage,
@@ -4609,7 +4610,7 @@ function complexityFailures(violations: Violation[]): Violation[] {
 }
 
 describe('runVerify: the complexity analyzer', () => {
-  it('is off unless the repo opts in, so fallow health is never spawned', async () => {
+  it('is off where fallow is not declared, so fallow health is never spawned', async () => {
     const { exec, calls } = fakeExec();
     await runVerify({
       repoRoot: '/repo',
@@ -4617,9 +4618,86 @@ describe('runVerify: the complexity analyzer', () => {
       exec,
       profile: 'commit',
       analyzers: { stryker: 'off' },
+      declaredProviders: new Set(),
     });
 
     expect(calls.some((call) => call.args[0] === 'health')).toBe(false);
+  });
+
+  it('runs unconfigured where fallow is declared, and surfaces the finding', async () => {
+    // No `complexity` key at all: the provider-conditional default is what
+    // turns it on, so an adopter who installed fallow gets it on upgrade.
+    const { exec, calls } = complexityExec({
+      stdout: complexityReport(['src/new.ts']),
+    });
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      profile: 'commit',
+      analyzers: { stryker: 'off' },
+      declaredProviders: new Set(['fallow']),
+    });
+
+    expect(calls.filter((call) => call.args[0] === 'health')).toHaveLength(1);
+    expect(
+      violations.filter((violation) => violation.tool === 'complexity'),
+    ).toEqual([
+      expect.objectContaining({
+        ruleId: 'fallow/high-cognitive-complexity',
+        file: 'src/new.ts',
+      }),
+    ]);
+  });
+
+  it('reports a missing fallow when declared but unresolvable, with no complexity key', async () => {
+    // The `auto` default inherits auto's declared-means-asked rule: a broken
+    // install is an error, never a clean gate.
+    const { exec } = complexityExec({ spawnFailed: true });
+    const { violations } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      profile: 'commit',
+      analyzers: { stryker: 'off' },
+      declaredProviders: new Set(['fallow']),
+    });
+
+    expect(
+      violations.filter(
+        (violation) => violation.ruleId === 'guardrails/analyzer-missing',
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        message: expect.stringContaining('fallow'),
+      }),
+    ]);
+  });
+
+  it('honours an explicit off even where fallow is declared', async () => {
+    const { exec, calls } = complexityExec({
+      stdout: complexityReport(['src/new.ts']),
+    });
+    await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      profile: 'commit',
+      analyzers: { stryker: 'off', complexity: 'off' },
+      declaredProviders: new Set(['fallow']),
+    });
+
+    expect(calls.some((call) => call.args[0] === 'health')).toBe(false);
+  });
+
+  it('is never listed as silently skipped, declared or not', () => {
+    // The point of the conditional default: `auto` only where fallow is
+    // declared, so the auto-and-undeclared nag can never name it.
+    for (const declared of [new Set<string>(), new Set(['fallow'])]) {
+      expect(
+        silentlySkippedAnalyzers({}, declared).map(([tool]) => tool),
+      ).not.toContain('complexity');
+    }
   });
 
   it('runs a config-agnostic, layout-generic invocation and surfaces the finding', async () => {

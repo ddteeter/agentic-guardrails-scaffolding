@@ -134,19 +134,21 @@ by your own tooling afterward. Harmless, but don't be surprised by the diff.
 Not every analyzer runs on every turn. `guardrails-core/src/verify/index.ts`'s
 `ANALYZERS` table gates each one by a minimum cadence rung:
 
-| Analyzer           | Runs at                                  | Scope                                                                                  |
-| ------------------ | ---------------------------------------- | -------------------------------------------------------------------------------------- |
-| eslint             | every turn (Stop gate), commit, push, CI | diff-scoped — only changed TypeScript files are linted                                 |
-| tsc                | every turn (Stop gate), commit, push, CI | triggered by a changed file, but checks the whole project (type errors are cross-file) |
-| knip               | commit, push and CI only                 | whole-project                                                                          |
-| npm-peers          | commit, push and CI only                 | whole-project — asks `npm ls` which installed versions violate a peer range            |
-| dependency-cruiser | commit, push and CI only                 | whole-project                                                                          |
-| stryker            | commit, push and CI only                 | diff-scoped to changed production files                                                |
-| dupes              | commit, push and CI only (opt-in)        | whole-tree discovery, diff-scoped reporting: clone groups touching a changed file      |
-| complexity         | commit, push and CI only (opt-in)        | whole-tree run, diff-scoped reporting: over-threshold functions in a changed file      |
+| Analyzer           | Runs at                                   | Scope                                                                                  |
+| ------------------ | ----------------------------------------- | -------------------------------------------------------------------------------------- |
+| eslint             | every turn (Stop gate), commit, push, CI  | diff-scoped — only changed TypeScript files are linted                                 |
+| tsc                | every turn (Stop gate), commit, push, CI  | triggered by a changed file, but checks the whole project (type errors are cross-file) |
+| knip               | commit, push and CI only                  | whole-project                                                                          |
+| npm-peers          | commit, push and CI only                  | whole-project — asks `npm ls` which installed versions violate a peer range            |
+| dependency-cruiser | commit, push and CI only                  | whole-project                                                                          |
+| stryker            | commit, push and CI only                  | diff-scoped to changed production files                                                |
+| dupes              | commit, push and CI only (opt-in)         | whole-tree discovery, diff-scoped reporting: clone groups touching a changed file      |
+| complexity         | commit, push and CI only (on with fallow) | whole-tree run, diff-scoped reporting: over-threshold functions in a changed file      |
 
-`dupes` and `complexity` are the two analyzers that are **`off` by default**
-rather than installed-means-enabled. `dupes` It runs `fallow dupes`, which finds copy-paste across
+`dupes` and `complexity` are the two analyzers whose default is not plain
+installed-means-enabled. `dupes` is **`off` by default**, and `complexity` is
+**on by default where `fallow` is declared** in your `package.json`, `off`
+otherwise. `dupes` runs `fallow dupes`, which finds copy-paste across
 files — the gap `eslint-plugin-sonarjs` looks like it covers and structurally
 cannot, because ESLint receives one file's AST at a time and holds no cross-file
 state. Its precision depends on an ignore list only you can write (generated
@@ -166,8 +168,14 @@ fallow's cyclomatic and cognitive thresholds (20 and 15 unless you change them)
 in the commit that pushes them over, rather than at a pre-push
 `fallow --fail-on-issues` an hour later. ESLint's
 `sonarjs/cognitive-complexity` at the same limit does not close that gap: it
-counts differently, and a function it passes can still fail fallow. Turn it on
-with `"complexity": "required"`. The invocation passes no thresholds and no
+counts differently, and a function it passes can still fail fallow. If your
+`package.json` declares `fallow`, it is on with no configuration: having fallow
+installed means your fallow config already says what "too complex" means. Where
+fallow is not declared it stays `off`, so it never shows up in the "enabled but
+not installed" warning. Opt out with `"complexity": "off"`, or set
+`"complexity": "required"` to make a missing fallow block. **Upgrading:** a repo
+that declares fallow and has no `complexity` key starts running it at commit,
+push and CI on upgrade. The invocation passes no thresholds and no
 paths, so fallow reads `health.maxCyclomatic`, `health.maxCognitive` and
 `health.ignore` from your own fallow config, and the commit rung and your
 pre-push gate agree by construction.

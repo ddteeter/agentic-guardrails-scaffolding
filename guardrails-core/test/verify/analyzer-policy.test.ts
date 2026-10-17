@@ -43,40 +43,55 @@ describe('decideAnalyzer', () => {
 });
 
 describe('analyzerMode', () => {
-  it('defaults an unlisted analyzer to auto', () => {
-    expect(analyzerMode({}, 'knip')).toBe('auto');
+  it('defaults an unlisted analyzer to auto, declared or not', () => {
+    expect(analyzerMode({}, 'knip', true)).toBe('auto');
+    expect(analyzerMode({}, 'knip', false)).toBe('auto');
   });
 
   it('returns the configured mode for a listed analyzer', () => {
-    expect(analyzerMode({ knip: 'off' }, 'knip')).toBe('off');
+    expect(analyzerMode({ knip: 'off' }, 'knip', true)).toBe('off');
   });
 
-  it('defaults dupes to off rather than auto', () => {
-    // Unlike the other five, this analyzer's precision depends on an ignore
+  it('defaults dupes to off rather than auto, even where fallow is declared', () => {
+    // Unlike the other analyzers, this one's precision depends on an ignore
     // list that is inherently repo-specific (generated files, ORM schema DSLs,
-    // framework boilerplate), so an unconfigured run is noise. Opting in is the
-    // adopter's decision -- and defaulting it to `auto` would additionally put
-    // every existing consumer into `silentlySkippedAnalyzers`, nagging them to
-    // install a tool they never asked for.
-    expect(analyzerMode({}, 'dupes')).toBe('off');
+    // framework boilerplate), so an unconfigured run is noise -- whether or not
+    // fallow is installed. Opting in is the adopter's decision.
+    expect(analyzerMode({}, 'dupes', true)).toBe('off');
+    expect(analyzerMode({}, 'dupes', false)).toBe('off');
   });
 
   it('lets an explicit setting override a non-auto default', () => {
-    expect(analyzerMode({ dupes: 'required' }, 'dupes')).toBe('required');
-    expect(analyzerMode({ dupes: 'auto' }, 'dupes')).toBe('auto');
-  });
-
-  it('defaults complexity to off rather than auto', () => {
-    // Same reason as dupes: under `auto`, every consumer without fallow would
-    // get a silently-skipped nag for a tool they never asked for.
-    expect(analyzerMode({}, 'complexity')).toBe('off');
-  });
-
-  it('lets an explicit complexity setting win over its default', () => {
-    expect(analyzerMode({ complexity: 'required' }, 'complexity')).toBe(
+    expect(analyzerMode({ dupes: 'required' }, 'dupes', false)).toBe(
       'required',
     );
-    expect(analyzerMode({ complexity: 'auto' }, 'complexity')).toBe('auto');
+    expect(analyzerMode({ dupes: 'auto' }, 'dupes', false)).toBe('auto');
+  });
+
+  it('defaults complexity to auto where its provider is declared', () => {
+    // Thresholds come from the adopter's own fallow config, so a repo that
+    // installed fallow has already said what "too complex" means.
+    expect(analyzerMode({}, 'complexity', true)).toBe('auto');
+  });
+
+  it('defaults complexity to off where its provider is not declared', () => {
+    // Under `auto` an undeclared provider would land in
+    // `silentlySkippedAnalyzers` and nag about a tool nobody asked for.
+    expect(analyzerMode({}, 'complexity', false)).toBe('off');
+  });
+
+  it('lets an explicit complexity setting win over both defaults', () => {
+    for (const isDeclared of [true, false]) {
+      expect(
+        analyzerMode({ complexity: 'off' }, 'complexity', isDeclared),
+      ).toBe('off');
+      expect(
+        analyzerMode({ complexity: 'required' }, 'complexity', isDeclared),
+      ).toBe('required');
+      expect(
+        analyzerMode({ complexity: 'auto' }, 'complexity', isDeclared),
+      ).toBe('auto');
+    }
   });
 });
 

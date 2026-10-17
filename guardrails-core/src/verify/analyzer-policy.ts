@@ -99,6 +99,12 @@ export function decideAnalyzer(
 }
 
 /**
+ * An unlisted analyzer's default when it is not plain `auto`: `auto` where its
+ * provider package is declared, `off` where it is not.
+ */
+type DefaultMode = AnalyzerMode | 'auto-if-declared';
+
+/**
  * Analyzers whose UNLISTED default is not `auto`, and why each one is here.
  *
  * `auto` — run it if its binary resolves — is right for a tool that is useful
@@ -108,36 +114,63 @@ export function decideAnalyzer(
  * - **`dupes`** (`fallow dupes`): a clone detector's noise sources are
  *   inherently repo-specific — generated files, ORM schema DSLs, framework
  *   boilerplate — so an unconfigured run reports rhyming code rather than
- *   duplication worth fixing. Defaulting it to `auto` would also put it in
- *   `silentlySkippedAnalyzers` for every existing consumer, nagging them to
- *   install a tool they never asked for. Opting in is the adopter's decision.
- * - **`complexity`** (`fallow health --complexity`): the second of those two
- *   reasons applies unchanged. Its thresholds come from the adopter's own
- *   fallow config, so precision is less of a concern than for `dupes`, but an
- *   `auto` default would still nag every consumer without fallow about a tool
- *   they never asked for.
+ *   duplication worth fixing. That holds whether or not fallow is installed,
+ *   which is why `dupes` stays `off` even where fallow is declared: having the
+ *   tool says nothing about whether the repo has written the ignore list.
+ *   Defaulting it to `auto` would also put it in `silentlySkippedAnalyzers`
+ *   for every existing consumer, nagging them to install a tool they never
+ *   asked for. Opting in is the adopter's decision.
+ * - **`complexity`** (`fallow health --complexity`): `auto-if-declared`. It
+ *   shares only the second of `dupes`'s reasons. Its thresholds come from the
+ *   adopter's own fallow config, so a repo that installed fallow has already
+ *   said what "too complex" means, and running it there is the useful default.
+ *   A plain `auto` would nag every consumer WITHOUT fallow, because
+ *   `silentlySkippedAnalyzers` lists exactly the `auto`-and-undeclared case.
+ *   Resolving to `off` where fallow is undeclared makes that combination
+ *   unreachable, so the nag can never fire. It also reaches existing adopters
+ *   on upgrade, which an `init`-only change could not: `guardrails.config.json`
+ *   is seed-once. Behaviour change: a repo that declares fallow and has no
+ *   `complexity` key now runs it at commit, push and ci; `"complexity": "off"`
+ *   restores the old behaviour.
  *
  * A table rather than a field on verify's `ANALYZERS` entries, deliberately:
  * the mode is consulted from three places (`selectAnalyzers`,
  * `silentlySkippedAnalyzers`, and the scaffolder's `isAnalyzerAsked`), and a
  * field would have had to be mirrored into `SeedOnceAnalyzer` and kept in sync
- * by hand. Here, every caller inherits it with no signature change.
+ * by hand. Each of those callers already has the declared set and the
+ * analyzer's provider, so passing whether it is declared is all they add.
  */
-const DEFAULT_MODES: Readonly<Record<string, AnalyzerMode>> = {
+const DEFAULT_MODES: Readonly<Record<string, DefaultMode>> = {
   dupes: 'off',
-  complexity: 'off',
+  complexity: 'auto-if-declared',
 };
+
+function resolveDefault(
+  mode: DefaultMode,
+  isProviderDeclared: boolean,
+): AnalyzerMode {
+  if (mode !== 'auto-if-declared') {
+    return mode;
+  }
+  return isProviderDeclared ? 'auto' : 'off';
+}
 
 /**
  * The configured mode for `tool`. An unlisted analyzer falls back to its entry
  * in `DEFAULT_MODES`, and to `auto` when it has none. An explicit setting
  * always wins, so a repo can still say `"dupes": "required"`.
+ * `isProviderDeclared` is whether the repo's `package.json` names the
+ * analyzer's provider; only a provider-conditional default reads it.
  */
 export function analyzerMode(
   analyzers: Readonly<Record<string, AnalyzerMode>>,
   tool: string,
+  isProviderDeclared: boolean,
 ): AnalyzerMode {
-  return analyzers[tool] ?? DEFAULT_MODES[tool] ?? 'auto';
+  return (
+    analyzers[tool] ??
+    resolveDefault(DEFAULT_MODES[tool] ?? 'auto', isProviderDeclared)
+  );
 }
 
 const DEPENDENCY_FIELDS = [

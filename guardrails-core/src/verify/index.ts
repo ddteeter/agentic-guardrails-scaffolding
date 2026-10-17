@@ -1997,8 +1997,12 @@ export function silentlySkippedAnalyzers(
   declared: ReadonlySet<string>,
 ): readonly (readonly [string, string])[] {
   return Object.entries(installableAnalyzerProviders()).filter(
-    ([tool, provider]) =>
-      analyzerMode(analyzers, tool) === 'auto' && !declared.has(provider),
+    ([tool, provider]) => {
+      const isDeclared = declared.has(provider);
+      return (
+        !isDeclared && analyzerMode(analyzers, tool, isDeclared) === 'auto'
+      );
+    },
   );
 }
 
@@ -2150,9 +2154,10 @@ function selectAnalyzers(
 ): SelectedAnalyzer[] {
   const selected: SelectedAnalyzer[] = [];
   for (const analyzer of ANALYZERS) {
+    const isDeclared = declared.has(analyzer.provider);
     const decision = decideAnalyzer(
-      analyzerMode(analyzers, analyzer.tool),
-      declared.has(analyzer.provider),
+      analyzerMode(analyzers, analyzer.tool, isDeclared),
+      isDeclared,
     );
     if (!decision.run) {
       continue;
