@@ -14,7 +14,7 @@
  * classification is tested without a network.
  */
 
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { accessSync, constants, mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 import type { Exec, ExecResult } from './exec.js';
@@ -165,17 +165,56 @@ function failure(state: ShipState, tail: string): Outcome {
   return { state, pr: null, url: null, failing: [], tail: tailOf(tail) };
 }
 
+/**
+Run gh in the repository being shipped.
+*/
+function gh(options: ShipOptions, args: string[]): Promise<ExecResult> {
+  return options.exec('gh', args, { cwd: options.repoRoot });
+}
+
+/**
+ * The branch's pull request, or `undefined` when gh names none. Read-only:
+ * it never opens one.
+ */
+async function viewPullRequest(
+  options: ShipOptions,
+  branch: string,
+): Promise<{ pr: PullRequest | undefined; result: ExecResult }> {
+  const result = await gh(options, [
+    'pr',
+    'view',
+    branch,
+    '--json',
+    'number,url',
+  ]);
+  return { pr: parsePullRequest(result.stdout), result };
+}
+
+/**
+ * A failed push, still naming the pull request the branch already has: the
+ * push failing does not make an open PR disappear (deferred from #122).
+ */
+async function pushFailure(
+  options: ShipOptions,
+  branch: string,
+  pushed: ExecResult,
+): Promise<Outcome> {
+  const outcome = failure(classifyPushFailure(pushed), output(pushed));
+  const { pr } = await viewPullRequest(options, branch);
+  return pr === undefined
+    ? outcome
+    : { ...outcome, pr: pr.number, url: pr.url };
+}
+
 async function findOrOpenPullRequest(
   options: ShipOptions,
   branch: string,
 ): Promise<PullRequest | string> {
   const run = (command: string, args: string[]) =>
     options.exec(command, args, { cwd: options.repoRoot });
-  const viewArguments = ['pr', 'view', branch, '--json', 'number,url'];
-  const viewed = await run('gh', viewArguments);
-  const existing = parsePullRequest(viewed.stdout);
-  if (existing !== undefined) {
-    return existing;
+  const existing = await viewPullRequest(options, branch);
+  if (existing.pr !== undefined) {
+    return existing.pr;
   }
   let body = ['--fill'];
   if (options.bodyFile !== undefined) {
@@ -193,8 +232,8 @@ async function findOrOpenPullRequest(
   if (created.code !== 0) {
     return output(created);
   }
-  const opened = await run('gh', viewArguments);
-  return parsePullRequest(opened.stdout) ?? output(opened);
+  const opened = await viewPullRequest(options, branch);
+  return opened.pr ?? output(opened.result);
 }
 
 function defaultDelay(ms: number): Promise<void> {
@@ -212,11 +251,13 @@ async function readChecks(
   options: ShipOptions,
   number: string,
 ): Promise<{ checks: Check[] | undefined; listing: string }> {
-  const listed = await options.exec(
-    'gh',
-    ['pr', 'checks', number, '--json', 'name,bucket'],
-    { cwd: options.repoRoot },
-  );
+  const listed = await gh(options, [
+    'pr',
+    'checks',
+    number,
+    '--json',
+    'name,bucket',
+  ]);
   // Before CI registers, gh does not print an empty list: it exits 1 with
   // this sentence on stderr. That is "none yet", not "unreadable".
   const checks = output(listed).includes(NO_CHECKS_YET)
@@ -319,11 +360,34 @@ async function ghUnavailable(
   return undefined;
 }
 
+/**
+ * Why the `--body-file` cannot be used, or `undefined` when it can (or none
+ * was given). Asked BEFORE the push for the same reason as `ghUnavailable`:
+ * `gh pr create` reads it only after the gate has run, and a missing file
+ * then leaves a pushed branch with no pull request (dialed.run #194).
+ */
+function bodyFileUnreadable(options: ShipOptions): string | undefined {
+  const { bodyFile } = options;
+  if (bodyFile === undefined) {
+    return undefined;
+  }
+  try {
+    accessSync(bodyFile, constants.R_OK);
+    return undefined;
+  } catch {
+    return (
+      `guardrails ship: --body-file ${bodyFile} does not exist (or is not ` +
+      'readable). Nothing was pushed.'
+    );
+  }
+}
+
 async function shipOutcome(
   options: ShipOptions,
   branch: string,
 ): Promise<Outcome> {
-  const unavailable = await ghUnavailable(options);
+  const unavailable =
+    (await ghUnavailable(options)) ?? bodyFileUnreadable(options);
   if (unavailable !== undefined) {
     return failure('error', unavailable);
   }
@@ -331,7 +395,7 @@ async function shipOutcome(
     cwd: options.repoRoot,
   });
   if (pushed.code !== 0) {
-    return failure(classifyPushFailure(pushed), output(pushed));
+    return pushFailure(options, branch, pushed);
   }
   const pr = await findOrOpenPullRequest(options, branch);
   return typeof pr === 'string'
