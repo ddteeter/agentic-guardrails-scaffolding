@@ -1022,6 +1022,23 @@ core/src/audit.ts`) surfaced that it was a context-free text scan: it flagged
   commit; until then, `format:check` in CI is the backstop that catches what
   the local gate missed.
 
+- **The hooks in this checkout run a stale `dist/`, so a `git pull` that brings
+  a gate fix does not reach the gate (found 2026-10-17, unfixed).** Every hook
+  in `.claude/settings.json` and `.husky/` runs `guardrails-core/dist`, which is
+  gitignored and rebuilt only by `npm install` (`prepare`) or `npm run build`.
+  The main checkout had last been built on 2026-10-10. Several pulls later,
+  with #119 (the EISDIR fix) and #133 (the `complexity` analyzer) on `main`,
+  the Stop gate failed with `EISDIR: illegal operation on a directory` — the
+  pre-#119 bug — and the 0.10.0 release push was blocked by a pre-push gate
+  that both crashed the same way and rejected `"complexity"` as an unknown
+  analyzer. Each looked like a regression until a rebuild made it disappear.
+  Consumers are not affected: they install the built release tarball. Only a
+  self-hosting checkout runs its own build. **Fix direction:** a
+  `post-merge` / `post-checkout` hook here that runs `npm run build` when
+  `guardrails-core/src/` changed between the old and new HEAD. A cheaper
+  backstop is for `session-start` to warn when any file under
+  `guardrails-core/src/` is newer than `dist/cli.mjs`.
+
 ## Roadmap: analyzer opt-in (pack composition, not all-or-nothing) — shipped
 
 Phase E piece 1 shipped the hybrid this section used to guess at:
