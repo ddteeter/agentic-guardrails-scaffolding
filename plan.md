@@ -3381,8 +3381,9 @@ cycle. fallow's health thresholds were enforced only at pre-push, which was the
 clones, but not for complexity.
 
 The new `complexity` analyzer runs `fallow health --complexity --format json
---quiet` at commit, push and CI (provider `fallow`, default `off` like
-`dupes`; this repo sets it `required`). Plan:
+--quiet` at commit, push and CI (provider `fallow`; shipped with default `off`
+like `dupes`, now on by default where fallow is declared — see the follow-up
+below; this repo sets it `required`). Plan:
 `docs/superpowers/plans/2026-10-17-complexity-analyzer.md`. The decisions worth
 restating:
 
@@ -3406,7 +3407,14 @@ restating:
 
 ### Follow-up, not built here
 
-- **`init` could enable `complexity` automatically when the repo already
-  declares fallow** (it is a devDependency, or `check:graph`-style scripts call
-  it). Today an adopter has to opt in by hand, as for `dupes`. To be filed as
-  an issue.
+- **Done: `complexity` defaults on when the repo declares fallow.** Built as a
+  provider-conditional default in `analyzer-policy.ts` (`auto-if-declared`:
+  `auto` where fallow is declared, `off` otherwise) rather than in `init`,
+  because `guardrails.config.json` is seed-once and an `init`-only change would
+  never reach existing adopters. `silentlySkippedAnalyzers` fires only for
+  `auto`-and-undeclared, so the default can never nag. `dupes` stays `off`: its
+  reason is noise only an adopter-written ignore list fixes, which installing
+  fallow does not supply. Behaviour change for release notes: a repo that
+  declares fallow with no `complexity` key now runs it; `"complexity": "off"`
+  restores the old behaviour. Plan:
+  `docs/superpowers/plans/2026-10-17-complexity-default-when-fallow.md`.
