@@ -234,6 +234,7 @@ describe('ship: finding or creating the pull request', () => {
     expect(calls.map((call) => call.line)).toContain(
       `gh pr create --base main --title feat: the thing --body-file ${body}`,
     );
+    expect(calls.every((call) => call.cwd === root)).toBe(true);
   });
 
   it('is an error when the pull request cannot be created', async () => {
@@ -290,22 +291,75 @@ describe('ship: the branch', () => {
 });
 
 describe('ship: a push that did not go through', () => {
+  const GATE_BLOCK = failed(
+    'src/a.ts:1 [no-console]\nguardrails: push blocked — resolve violations or run guardrails verify.\nerror: failed to push some refs',
+  );
+
   it('reports the gate block, with the hook output', async () => {
     const { exec, calls } = fakeExec({
       ...HAPPY,
-      'git push': failed(
-        'src/a.ts:1 [no-console]\nguardrails: push blocked — resolve violations or run guardrails verify.\nerror: failed to push some refs',
-      ),
+      'gh pr view': failed('no pull requests found'),
+      'git push': GATE_BLOCK,
     });
     const status = await ship(options(exec));
     expect(status).toMatchObject({
       state: 'gate-blocked',
       pr: null,
+      url: null,
       failing: [],
     });
     expect(status.tail).toContain('src/a.ts:1 [no-console]');
-    // Only the up-front `gh auth status`: no pull request after a blocked push.
-    expect(calls.some((call) => call.line.startsWith('gh pr'))).toBe(false);
+    // A blocked push only looks the pull request up: it never opens one.
+    const lines = calls.map((call) => call.line);
+    expect(lines.some((line) => line.startsWith('gh pr create'))).toBe(false);
+    expect(lines.some((line) => line.startsWith('gh pr checks'))).toBe(false);
+  });
+
+  it('still names the PR the blocked branch already has', async () => {
+    const { exec, calls } = fakeExec({ ...HAPPY, 'git push': GATE_BLOCK });
+    const status = await ship(options(exec));
+    expect(status).toMatchObject({
+      state: 'gate-blocked',
+      pr: 42,
+      url: 'https://github.com/o/r/pull/42',
+      failing: [],
+    });
+    expect(status.tail).toContain('src/a.ts:1 [no-console]');
+    const view = calls.find((call) => call.line.startsWith('gh pr view'));
+    expect(view?.line).toBe('gh pr view feat/x --json number,url');
+    expect(view?.cwd).toBe(root);
+    expect(calls.some((call) => call.line.startsWith('gh pr create'))).toBe(
+      false,
+    );
+  });
+
+  it('keeps the push state and tail when the PR lookup fails', async () => {
+    const { exec } = fakeExec({
+      ...HAPPY,
+      'gh pr view': failed('HTTP 502: Bad Gateway'),
+      'git push': failed(`${LOCK_TIMEOUT_MARKER} after 10800s`),
+    });
+    const status = await ship(options(exec));
+    expect(status).toMatchObject({
+      state: 'lock-timeout',
+      pr: null,
+      url: null,
+      tail: `${LOCK_TIMEOUT_MARKER} after 10800s`,
+    });
+  });
+
+  it('ignores a lookup that printed something other than a PR', async () => {
+    const { exec } = fakeExec({
+      ...HAPPY,
+      'gh pr view': ok('not json'),
+      'git push': GATE_BLOCK,
+    });
+    const status = await ship(options(exec));
+    expect(status).toMatchObject({
+      state: 'gate-blocked',
+      pr: null,
+      url: null,
+    });
   });
 
   it('reports a lock timeout apart from a block', async () => {
