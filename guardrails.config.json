@@ -9,7 +9,8 @@
     "knip": "required",
     "dependency-cruiser": "required",
     "stryker": "required",
-    "dupes": "required"
+    "dupes": "required",
+    "complexity": "required"
   },
   "sanctionedSuppressions": [
     {

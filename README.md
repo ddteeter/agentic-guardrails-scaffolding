@@ -179,6 +179,13 @@ framework boilerplate), so it is opt-in: set `"dupes": "required"` and tune the
 `.fallowrc.jsonc` that `init` seeds. It discovers over the whole tree and
 reports only clone groups touching your diff.
 
+`complexity` is also `off` by default. It runs `fallow health --complexity` at
+the commit rung and reports functions over fallow's cyclomatic and cognitive
+thresholds in a changed file, so a function that goes over the limit is caught
+in the commit that does it rather than at pre-push. It reads the thresholds
+from your own fallow config and leaves CRAP to pre-push and CI, where coverage
+is fresh. Set `"complexity": "required"` to turn it on.
+
 ## Verifying the live agent loop
 
 The headless tests prove verify → gate → delegate → audit → re-verify →
