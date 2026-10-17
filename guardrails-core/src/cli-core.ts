@@ -734,10 +734,12 @@ function isShellGitWrite(input: HookInput): boolean {
 /**
  * Deny a foreground wait (see `foreground-wait.ts`), and say whether it did.
  *
- * Claude Code only, and only its `Bash` tool: that is the shell whose
- * `run_in_background` wakes the agent once, when the command exits. Telling a
- * Codex or Copilot agent to background a command its shell cannot background
- * would leave it no way to run the command at all.
+ * On Claude Code, only its `Bash` tool, and `run_in_background` allows: that
+ * wakes the agent once, when the command exits. Codex and Copilot have no such
+ * wake, so a check is another model call; their shell tools are denied too,
+ * unless the command hands the job off (`nohup`/`setsid` with a trailing `&`,
+ * which `foregroundWait` reads as not a wait), and the message says to detach
+ * and finish instead.
  *
  * The config is read from the checkout the command runs in, the way
  * `decidingHook` reads its deadline -- by walking the filesystem, because this
@@ -749,10 +751,11 @@ function didDenyForegroundWait(
   input: HookInput,
   dialect: Dialect,
 ): boolean {
+  const isClaude = dialect === 'claude';
   if (
-    dialect !== 'claude' ||
-    input.toolName !== 'Bash' ||
-    input.runInBackground === true
+    isClaude
+      ? input.toolName !== 'Bash' || input.runInBackground === true
+      : !SHELL_TOOLS.test(input.toolName ?? '')
   ) {
     return false;
   }
@@ -764,7 +767,7 @@ function didDenyForegroundWait(
   if (wait === undefined) {
     return false;
   }
-  denyPreToolUse(dependencies, foregroundWaitDenial(wait), dialect);
+  denyPreToolUse(dependencies, foregroundWaitDenial(wait, dialect), dialect);
   return true;
 }
 

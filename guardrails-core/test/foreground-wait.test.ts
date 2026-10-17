@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { foregroundWait, withoutQuotedText } from '../src/foreground-wait.js';
+import {
+  foregroundWait,
+  foregroundWaitDenial,
+  withoutQuotedText,
+} from '../src/foreground-wait.js';
 
 const LIMIT = 120;
 
@@ -141,4 +145,108 @@ describe('withoutQuotedText', () => {
     expect(withoutQuotedText('a "')).toBe('a "');
     expect(withoutQuotedText("a '")).toBe("a '");
   });
+});
+
+describe('foregroundWait: a command that starts itself detached', () => {
+  it.each([
+    'nohup npx guardrails ship --body-file=pr.md > ship.log 2>&1 &',
+    'setsid gh run watch 99 > watch.log 2>&1 &',
+    'nohup sh -c "until ! kill -0 4242; do sleep 20; done" &',
+    'cd x && nohup gh pr checks --watch &',
+    'git push; nohup npx guardrails ship &',
+    'nohup sleep 600 &',
+  ])('is not a wait: %j', (command) => {
+    expect(foregroundWait(command, LIMIT)).toBeUndefined();
+  });
+
+  it.each([
+    ['gh run watch 99 &', 'gh run watch'],
+    ['npx guardrails ship > ship.log 2>&1 &', 'guardrails ship'],
+    ['sleep 600 &', 'sleep 600'],
+    ['nohup true & gh run watch 99', 'gh run watch'],
+    ['nohup true && sleep 600', 'sleep 600'],
+  ])('a bare background is still a wait: %j', (command, wait) => {
+    expect(foregroundWait(command, LIMIT)).toBe(wait);
+  });
+
+  // Review of #128: any leading word used to hide a wait from command
+  // position, so a wrapper that detaches nothing let it through.
+  it.each([
+    ['nice sleep 600 &', 'sleep 600'],
+    ['nice -n 10 gh run watch 99', 'gh run watch'],
+    ['time gh run watch 99 &', 'gh run watch'],
+    ['time -p sleep 600', 'sleep 600'],
+    ['env FOO=1 gh pr checks 42 --watch', 'gh pr checks --watch'],
+    ['GH_PAGER= gh run watch 99', 'gh run watch'],
+    ['command sleep 600', 'sleep 600'],
+    ['exec gh run watch 99', 'gh run watch'],
+    ['timeout 3600 gh pr checks 42 --watch', 'gh pr checks --watch'],
+    ['caffeinate -i npx guardrails ship', 'guardrails ship'],
+    ['do nice sleep 600', 'sleep 600'],
+  ])('sees through a wrapper that detaches nothing: %j', (command, wait) => {
+    expect(foregroundWait(command, LIMIT)).toBe(wait);
+  });
+
+  it.each([
+    ['nohup gh run watch 99', 'gh run watch'],
+    ['nohup gh run watch 99 > w.log 2>&1', 'gh run watch'],
+    ['setsid sleep 600', 'sleep 600'],
+    ['nohup sleep 600 && echo done', 'sleep 600'],
+  ])('nohup/setsid without a trailing & still waits: %j', (command, wait) => {
+    expect(foregroundWait(command, LIMIT)).toBe(wait);
+  });
+
+  // Second review of #128: nohup covers its own command only, so a wait
+  // later in the pipe or chain is still attached even with one trailing &.
+  it.each([
+    ['nohup true | gh run watch 99 &', 'gh run watch'],
+    ['nohup true && gh run watch 99 &', 'gh run watch'],
+    ['nohup true || sleep 600 &', 'sleep 600'],
+    ['setsid true | npx guardrails ship &', 'guardrails ship'],
+  ])('a wait chained after a nohup is still a wait: %j', (command, wait) => {
+    expect(foregroundWait(command, LIMIT)).toBe(wait);
+  });
+
+  it.each([
+    'nohup nice sleep 600 &',
+    'nohup gh run watch 99 >w.log 2>&1 & echo started',
+    'nohup gh run watch 99 &\necho started',
+    'setsid gh run watch 99 &;',
+    'env FOO=1 nohup gh run watch 99 &',
+    'GH_PAGER= nice nohup sleep 600 > s.log 2>&1 &',
+  ])('is not a wait once nohup/setsid and & both cover it: %j', (command) => {
+    expect(foregroundWait(command, LIMIT)).toBeUndefined();
+  });
+});
+
+describe('foregroundWaitDenial: per host', () => {
+  it('tells Claude to background and end the turn', () => {
+    expect(foregroundWaitDenial('sleep 600')).toContain('run_in_background');
+    expect(foregroundWaitDenial('sleep 600', 'claude')).toContain(
+      'end your turn',
+    );
+  });
+
+  it.each(['codex', 'copilot'] as const)('tells %s to detach', (dialect) => {
+    const text = foregroundWaitDenial('sleep 600', dialect);
+    expect(text).toContain('sleep 600 waits inside the agent');
+    expect(text).toContain('nohup');
+    expect(text).toContain('write its outcome to a file');
+    expect(text).not.toContain('run_in_background');
+    expect(text.split('\n').length).toBeLessThanOrEqual(3);
+  });
+
+  // Review of #128: only `guardrails ship` writes ship-status.json, so only
+  // its denial may point there.
+  it.each(['codex', 'copilot'] as const)(
+    'points %s at ship-status.json for guardrails ship alone',
+    (dialect) => {
+      expect(foregroundWaitDenial('guardrails ship', dialect)).toContain(
+        '.guardrails/state/ship-status.json',
+      );
+      expect(foregroundWaitDenial('gh run watch', dialect)).not.toContain(
+        'ship-status.json',
+      );
+    },
+  );
 });

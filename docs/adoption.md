@@ -546,8 +546,19 @@ each wake after the five-minute prompt-cache window re-reads its whole context.
 On the adoption where this was measured, background agents spent about 27% of a
 weekly usage limit waiting.
 
-The cheap shape already exists: run the wait with `run_in_background: true` and
-end the turn. Claude Code wakes the agent once, when the command exits.
+The cheap shape depends on the host:
+
+- **Claude Code:** run the wait with `run_in_background: true` and end the turn.
+  Claude Code wakes the agent once, when the command exits.
+- **Codex and Copilot CLI:** they can run a command in the background (Codex's
+  background terminals, checked with `write_stdin`; Copilot's async and detached
+  `bash` modes, checked with `read_bash`), but as far as we observed (Codex 0.154
+  and Copilot CLI, at time of writing) neither wakes the agent when it exits, so
+  every check is another model call that re-reads the whole context. Don't wait
+  inside the agent at all: start the job detached (`nohup npx guardrails ship … >
+ship.log 2>&1 &`), finish the task, and let whoever started the agent read
+  `.guardrails/state/ship-status.json`. If your host gains wake-on-exit, the
+  Claude pattern applies.
 
 - **`guardrails ship`** is the one command to background. It runs
   `git push -u origin HEAD` (and with it the pre-push gate), finds the branch's
@@ -560,12 +571,19 @@ end the turn. Claude Code wakes the agent once, when the command exits.
   authenticated, and checks that before pushing: a missing or logged-out `gh`
   is an `error` that says how to fix it, and nothing is pushed.
 - **The PreToolUse hook enforces it.** On Claude Code's `Bash`, without
-  `run_in_background: true`, it denies `gh pr checks … --watch`,
+  `run_in_background: true`, and on the Codex and Copilot shell tools, it denies `gh pr checks … --watch`,
   `gh run watch`, an `until`/`while` loop polling `kill -0` or `pgrep`, a
   `sleep` longer than `foregroundSleepLimitSeconds` (default 120), and
   `guardrails ship`. The denial says what to do instead. Set
   `"denyForegroundWaits": false` in `guardrails.config.json` to turn it off.
-  Codex and Copilot are left alone: their shells cannot background a command.
+  The denial is per host: Claude is told to background it and end the turn;
+  Codex and Copilot are told to start it detached and finish. Detached means
+  both halves: `nohup …` or `setsid …` at command position _and_ a trailing
+  `&`. A bare `… &` still ties the job to the shell, and `nohup` without the
+  `&` still waits, so both are denied. Wrappers that detach nothing (`nice`,
+  `time`, `env`, `command`, `exec`, `timeout`, `stdbuf`, `ionice`,
+  `caffeinate`, `VAR=value`) are seen through. `run_in_background` is a Claude
+  flag and excuses nothing elsewhere.
 - **A retried push is cheap.** The push gate remembers the last tree it passed,
   with its base, in `.guardrails/state/push-pass.json`. Pushing the same tree
   against the same base again (after a rejected ref, a dropped connection, a
@@ -597,6 +615,28 @@ A `CLAUDE.md` snippet for adopters:
   `sleep` loops, or `kill -0`/`pgrep` polling. Background it and end the turn.
 - Anything that may take over two minutes (the full test suite, mutation
   testing, a build) runs in the background too.
+```
+
+An `AGENTS.md` snippet for Codex and Copilot (both read it). Verify the
+wake-on-exit claim against your host version; if it gains one, use the Claude
+snippet instead:
+
+```markdown
+## Slow work: don't wait inside the agent
+
+As of Codex 0.154 / Copilot CLI at time of writing, neither wakes the agent when
+a background process exits, so each check of one is another model call that
+re-reads your whole context. Never poll a background terminal or loop in the
+foreground (`sleep`, `kill -0`/`pgrep`, `gh pr checks --watch`, `gh run watch`)
+for a job that takes minutes. Up to about 2 minutes is fine.
+
+- Commit your work first. Then start the slow part detached and finish the task:
+  `nohup npx guardrails ship --body-file=<f> > ship.log 2>&1 &`. It pushes,
+  opens or finds the PR, watches CI, and writes
+  `.guardrails/state/ship-status.json`.
+- End your reply by saying what is running and where its outcome will land.
+  The person or coordinator who started you reads that file; a failure goes to
+  a fresh task, given the failure output and the diff.
 ```
 
 **Coordinating several agents.** A lane agent's context is the expensive part,
