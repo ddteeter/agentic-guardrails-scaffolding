@@ -225,6 +225,41 @@ async function readChecks(
   return { checks, listing: output(listed) };
 }
 
+type Verdict = Omit<Outcome, 'pr' | 'url'>;
+
+/**
+ * What one watch-then-list round says, or `undefined` when it is too early to
+ * say and the caller should wait and watch again. `canWait` is false once the
+ * registration window has run out.
+ */
+function judgeChecks(
+  checks: readonly Check[],
+  watchText: string,
+  canWait: boolean,
+): Verdict | undefined {
+  if (checks.length === 0) {
+    return canWait
+      ? undefined
+      : { state: 'green', failing: [], tail: 'no checks reported' };
+  }
+  const tail = tailOf(watchText);
+  const failing = checks
+    .filter((check) => RED_BUCKETS.has(check.bucket))
+    .map((check) => check.name);
+  if (failing.length > 0) {
+    return { state: 'ci-red', failing, tail };
+  }
+  const isSettled = checks.every((check) => check.bucket !== 'pending');
+  // A watch that exited with "no checks reported" never watched: CI
+  // registered between it and the listing. Pending then means "watch now",
+  // not "the watch broke" -- the race seen on dialed.run #191.
+  const isWatchEmpty = watchText.includes(NO_CHECKS_YET);
+  if (!isSettled && isWatchEmpty && canWait) {
+    return undefined;
+  }
+  return { state: isSettled ? 'green' : 'error', failing, tail };
+}
+
 async function watchChecks(
   options: ShipOptions,
   pr: PullRequest,
@@ -241,38 +276,18 @@ async function watchChecks(
       },
     );
     const { checks, listing } = await readChecks(options, number);
-    const tail = tailOf(output(watch));
     if (checks === undefined) {
       return { ...found, state: 'error', failing: [], tail: tailOf(listing) };
     }
-    if (checks.length === 0 && attempt < NO_CHECKS_RETRIES) {
-      await delay(NO_CHECKS_DELAY_MS);
-      continue;
+    const verdict = judgeChecks(
+      checks,
+      output(watch),
+      attempt < NO_CHECKS_RETRIES,
+    );
+    if (verdict !== undefined) {
+      return { ...found, ...verdict };
     }
-    if (checks.length === 0) {
-      return {
-        ...found,
-        state: 'green',
-        failing: [],
-        tail: 'no checks reported',
-      };
-    }
-    const failing = checks
-      .filter((check) => RED_BUCKETS.has(check.bucket))
-      .map((check) => check.name);
-    if (failing.length > 0) {
-      return { ...found, state: 'ci-red', failing, tail };
-    }
-    const isSettled = checks.every((check) => check.bucket !== 'pending');
-    // A watch that exited with "no checks reported" never watched: CI
-    // registered between it and the listing. Pending then means "watch now",
-    // not "the watch broke" -- the race seen on dialed.run #191.
-    const isWatchEmpty = output(watch).includes(NO_CHECKS_YET);
-    if (!isSettled && isWatchEmpty && attempt < NO_CHECKS_RETRIES) {
-      await delay(NO_CHECKS_DELAY_MS);
-      continue;
-    }
-    return { ...found, state: isSettled ? 'green' : 'error', failing, tail };
+    await delay(NO_CHECKS_DELAY_MS);
   }
 }
 
