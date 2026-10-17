@@ -3369,3 +3369,44 @@ exactly these semantics via `targetMutatePatterns`, which intersects target
 patterns with the config's `mutate`. Only the mutation-server protocol passes
 it — `stryker.js` hardcodes `targetMutatePatterns: undefined` for the CLI path.
 Worth an upstream request for CLI access.
+
+## Complexity at the commit rung: the `complexity` analyzer (#122)
+
+Shipped. **Finding (#122):** a fix commit took `runCommitGate` to cyclomatic
+18 / cognitive 16. Every commit gate passed — `sonarjs/cognitive-complexity`
+uses the same limit (15) but counts differently, and did not flag it — and the
+pre-push `check:graph` then failed on `fallow health`, costing a full push
+cycle. fallow's health thresholds were enforced only at pre-push, which was the
+"fallow only at pre-push" gap: `dupes` had brought fallow to the commit rung for
+clones, but not for complexity.
+
+The new `complexity` analyzer runs `fallow health --complexity --format json
+--quiet` at commit, push and CI (provider `fallow`, default `off` like
+`dupes`; this repo sets it `required`). Plan:
+`docs/superpowers/plans/2026-10-17-complexity-analyzer.md`. The decisions worth
+restating:
+
+- **No thresholds, config or paths on the command line.** fallow reads the
+  adopter's own `health.maxCyclomatic`/`maxCognitive`/`ignore`, so the commit
+  rung and pre-push agree by construction.
+- **CRAP is dropped.** It needs fresh coverage. Measured in a fresh worktree
+  with no `coverage/` directory: fallow does not skip CRAP there, it
+  _estimates_ coverage (`coverage_source: "estimated"`) and reported nine
+  CRAP-only findings on a tree with zero complexity findings. So `fallow health`
+  exits 1 on a tree that is clean on complexity, which is why the runner uses
+  `withReportCheck` ("a parseable report") rather than the violation count to
+  tell findings from a crash.
+- **Rule ids route loose.** `fallow/high-{cyclomatic-,cognitive-,}complexity`
+  sit under the existing `fallow/` loose prefix; where to split a function is
+  judgment, and the obvious mechanical fix fallow suggests is a
+  `fallow-ignore-next-line complexity` suppression, which the diff-auditor
+  already flags.
+- **File-level diff scoping**, as for `dupes`: a touched file's pre-existing
+  over-limit function is reported. Line-level scoping is a possible follow-up.
+
+### Follow-up, not built here
+
+- **`init` could enable `complexity` automatically when the repo already
+  declares fallow** (it is a devDependency, or `check:graph`-style scripts call
+  it). Today an adopter has to opt in by hand, as for `dupes`. To be filed as
+  an issue.

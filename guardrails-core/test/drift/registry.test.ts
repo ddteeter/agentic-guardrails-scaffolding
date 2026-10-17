@@ -293,9 +293,15 @@ const entries: DriftEntry[] = [
     // The rule id the fallow adapter emits (RULE_ID in
     // guardrails-core/src/verify/fallow-adapter.ts) and the loose-rule prefix
     // it is classified under (LOOSE_PREFIXES in loose-rules.ts).
-    knownIds: ['fallow/code-duplication'],
+    knownIds: [
+      'fallow/code-duplication',
+      // The complexity analyzer's three ids (COMPLEXITY_RULE_IDS).
+      'fallow/high-cyclomatic-complexity',
+      'fallow/high-cognitive-complexity',
+      'fallow/high-complexity',
+    ],
     probe: fallowRuleIds,
-    hint: 'fallow renamed, removed, or moved behind its paid licence a rule id the dupes analyzer depends on — reconcile RULE_ID in guardrails-core/src/verify/fallow-adapter.ts and the fallow/ prefix in loose-rules.ts',
+    hint: 'fallow renamed, removed, or moved behind its paid licence a rule id the dupes or complexity analyzer depends on — reconcile RULE_ID / COMPLEXITY_RULE_IDS in guardrails-core/src/verify/fallow-adapter.ts and the fallow/ prefix in loose-rules.ts',
   },
   {
     tool: 'stryker',

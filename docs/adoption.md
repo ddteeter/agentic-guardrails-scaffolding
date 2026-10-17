@@ -143,9 +143,10 @@ Not every analyzer runs on every turn. `guardrails-core/src/verify/index.ts`'s
 | dependency-cruiser | commit, push and CI only                 | whole-project                                                                          |
 | stryker            | commit, push and CI only                 | diff-scoped to changed production files                                                |
 | dupes              | commit, push and CI only (opt-in)        | whole-tree discovery, diff-scoped reporting: clone groups touching a changed file      |
+| complexity         | commit, push and CI only (opt-in)        | whole-tree run, diff-scoped reporting: over-threshold functions in a changed file      |
 
-`dupes` is the one analyzer that is **`off` by default** rather than
-installed-means-enabled. It runs `fallow dupes`, which finds copy-paste across
+`dupes` and `complexity` are the two analyzers that are **`off` by default**
+rather than installed-means-enabled. `dupes` It runs `fallow dupes`, which finds copy-paste across
 files — the gap `eslint-plugin-sonarjs` looks like it covers and structurally
 cannot, because ESLint receives one file's AST at a time and holds no cross-file
 state. Its precision depends on an ignore list only you can write (generated
@@ -160,8 +161,27 @@ every commit; it surfaces the first time you touch a file involved in it. When
 it does report, it names **every** site in the group, including sides your diff
 never touched, because a fixer shown half a clone pair cannot deduplicate it.
 
+`complexity` runs `fallow health --complexity` and reports functions over
+fallow's cyclomatic and cognitive thresholds (20 and 15 unless you change them)
+in the commit that pushes them over, rather than at a pre-push
+`fallow --fail-on-issues` an hour later. ESLint's
+`sonarjs/cognitive-complexity` at the same limit does not close that gap: it
+counts differently, and a function it passes can still fail fallow. Turn it on
+with `"complexity": "required"`. The invocation passes no thresholds and no
+paths, so fallow reads `health.maxCyclomatic`, `health.maxCognitive` and
+`health.ignore` from your own fallow config, and the commit rung and your
+pre-push gate agree by construction.
+
+It reports cyclomatic and cognitive complexity only. **CRAP is excluded**:
+fallow folds coverage into a CRAP score, and at the commit rung coverage is
+stale or absent (fallow estimates it), so a CRAP finding there says little.
+Keep CRAP at pre-push and CI, where coverage is fresh. Findings route to the
+thorough fixer, which is told to extract helpers rather than add the
+`fallow-ignore-next-line complexity` comment fallow itself suggests; the
+diff-auditor flags that comment if a fixer adds it anyway.
+
 The practical read: eslint and tsc are cheap enough to run after every agent
-turn. knip, dependency-cruiser, stryker and dupes are whole-graph or mutation
+turn. knip, dependency-cruiser, stryker, dupes and complexity are whole-graph or mutation
 analysis — too slow for a per-turn gate — so they only fire at `git commit`
 (via `.githooks/pre-commit`), at `git push` (via `.githooks/pre-push`), and in
 CI.
@@ -652,6 +672,13 @@ so don't keep one alive to watch a push:
 ## Known limits
 
 Things worth knowing before you hit them, rather than after:
+
+- **`complexity` scopes by file, not by line.** A finding is kept when its
+  function's file is in your diff, so touching one line of a file that already
+  holds an over-threshold function reports that function, as ESLint does for a
+  touched file. Fix it, or add it to `health.ignore` in your fallow config if it
+  is a deliberate exception. Scoping to the changed lines is a possible
+  follow-up.
 
 - **In-repo trees that are not part of your module graph must be excluded
   yourself.** knip and dependency-cruiser walk the repository, so a vendored or

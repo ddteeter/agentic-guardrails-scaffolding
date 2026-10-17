@@ -111,6 +111,11 @@ export function decideAnalyzer(
  *   duplication worth fixing. Defaulting it to `auto` would also put it in
  *   `silentlySkippedAnalyzers` for every existing consumer, nagging them to
  *   install a tool they never asked for. Opting in is the adopter's decision.
+ * - **`complexity`** (`fallow health --complexity`): the second of those two
+ *   reasons applies unchanged. Its thresholds come from the adopter's own
+ *   fallow config, so precision is less of a concern than for `dupes`, but an
+ *   `auto` default would still nag every consumer without fallow about a tool
+ *   they never asked for.
  *
  * A table rather than a field on verify's `ANALYZERS` entries, deliberately:
  * the mode is consulted from three places (`selectAnalyzers`,
@@ -120,6 +125,7 @@ export function decideAnalyzer(
  */
 const DEFAULT_MODES: Readonly<Record<string, AnalyzerMode>> = {
   dupes: 'off',
+  complexity: 'off',
 };
 
 /**

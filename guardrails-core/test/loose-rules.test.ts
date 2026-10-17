@@ -24,6 +24,16 @@ describe('isBuiltinLoose', () => {
     expect(isBuiltinLoose('fallow/code-duplication')).toBe(true);
   });
 
+  it('classifies the complexity ids as loose (where to split is judgment)', () => {
+    // The tempting mechanical "fix" fallow itself suggests is a
+    // `fallow-ignore-next-line complexity` suppression, and a green split can
+    // still cut a function along the wrong seam -- so these route to the
+    // thorough fixer from attempt 1.
+    expect(isBuiltinLoose('fallow/high-cyclomatic-complexity')).toBe(true);
+    expect(isBuiltinLoose('fallow/high-cognitive-complexity')).toBe(true);
+    expect(isBuiltinLoose('fallow/high-complexity')).toBe(true);
+  });
+
   it('classifies behaviour-changing mechanical fixes as loose', () => {
     // Not analyzer categories -- plain lint rules whose *obvious* mechanical
     // fix is a behaviour change. `unicorn/no-null` is the measured one: the
