@@ -1,0 +1,11 @@
+# $3 is 1 for a branch checkout (switch, worktree add), 0 for a file checkout.
+[ "$3" = 1 ] || exit 0
+# A rebase fires this when it checks out the new base, then post-rewrite when
+# it finishes. post-rewrite covers the whole rebase from ORIG_HEAD; building
+# here too would double the cost of every rebasing pull.
+for state in rebase-merge rebase-apply; do
+  if [ -d "$(git rev-parse --git-path "$state")" ]; then
+    exit 0
+  fi
+done
+sh scripts/rebuild-if-changed.sh "$1" "$2"
