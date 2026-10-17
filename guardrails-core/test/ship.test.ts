@@ -86,6 +86,46 @@ function options(exec: Exec, over: Partial<ShipOptions> = {}): ShipOptions {
   };
 }
 
+describe('ship: gh is checked before anything is pushed', () => {
+  it('stops before pushing when gh is not installed', async () => {
+    const { exec, calls } = fakeExec({
+      ...HAPPY,
+      'gh auth status': {
+        stdout: '',
+        stderr: 'spawn gh ENOENT',
+        code: 1,
+        spawnFailed: true,
+      },
+    });
+    const status = await ship(options(exec));
+    expect(status.state).toBe('error');
+    expect(status.tail).toContain('gh (GitHub CLI) is not installed');
+    expect(calls.some((call) => call.line.startsWith('git push'))).toBe(false);
+  });
+
+  it('stops before pushing when gh is not logged in', async () => {
+    const { exec, calls } = fakeExec({
+      ...HAPPY,
+      'gh auth status': failed('You are not logged into any GitHub hosts.'),
+    });
+    const status = await ship(options(exec));
+    expect(status.state).toBe('error');
+    expect(status.tail).toContain('gh auth login');
+    expect(status.tail).toContain('You are not logged into any GitHub hosts.');
+    expect(calls.some((call) => call.line.startsWith('git push'))).toBe(false);
+  });
+
+  it('asks gh in the repository it ships', async () => {
+    const { exec, calls } = fakeExec(HAPPY);
+    await ship(options(exec));
+    const asked = calls.find((call) => call.line === 'gh auth status');
+    expect(asked?.cwd).toBe(root);
+    expect(
+      calls.findIndex((call) => call.line === 'gh auth status'),
+    ).toBeLessThan(calls.findIndex((call) => call.line.startsWith('git push')));
+  });
+});
+
 async function stateOf(exec: Exec): Promise<string> {
   const status = await ship(options(exec));
   return status.state;
@@ -229,7 +269,8 @@ describe('ship: a push that did not go through', () => {
       failing: [],
     });
     expect(status.tail).toContain('src/a.ts:1 [no-console]');
-    expect(calls.some((call) => call.line.startsWith('gh'))).toBe(false);
+    // Only the up-front `gh auth status`: no pull request after a blocked push.
+    expect(calls.some((call) => call.line.startsWith('gh pr'))).toBe(false);
   });
 
   it('reports a lock timeout apart from a block', async () => {

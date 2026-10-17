@@ -291,10 +291,42 @@ async function watchChecks(
   }
 }
 
+/**
+ * Why `gh` cannot ship from here, or `undefined` when it can. Asked BEFORE the
+ * push: everything after the push needs `gh`, and a branch pushed with no pull
+ * request and no watch is a half-done ship that reports only a shell error.
+ */
+async function ghUnavailable(
+  options: ShipOptions,
+): Promise<string | undefined> {
+  const auth = await options.exec('gh', ['auth', 'status'], {
+    cwd: options.repoRoot,
+  });
+  if (auth.spawnFailed === true) {
+    return (
+      'guardrails ship: gh (GitHub CLI) is not installed, and ship needs it ' +
+      'to open the pull request and watch its checks. Install it ' +
+      '(https://cli.github.com), run `gh auth login`, then ship again. ' +
+      'Nothing was pushed.'
+    );
+  }
+  if (auth.code !== 0) {
+    return (
+      'guardrails ship: gh is not logged in. Run `gh auth login`, then ship ' +
+      `again. Nothing was pushed.\n${output(auth)}`
+    );
+  }
+  return undefined;
+}
+
 async function shipOutcome(
   options: ShipOptions,
   branch: string,
 ): Promise<Outcome> {
+  const unavailable = await ghUnavailable(options);
+  if (unavailable !== undefined) {
+    return failure('error', unavailable);
+  }
   const pushed = await options.exec('git', ['push', '-u', 'origin', 'HEAD'], {
     cwd: options.repoRoot,
   });
