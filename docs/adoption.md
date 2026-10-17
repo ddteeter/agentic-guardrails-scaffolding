@@ -11,10 +11,10 @@ this doc is wrong until it is updated to match, not the other way around.
 `guardrails-core` ships as a GitHub Release tarball, not from npm:
 
 ```bash
-npm i -D https://github.com/ddteeter/agentic-guardrails-scaffolding/releases/download/v0.8.0/guardrails-core-0.8.0.tgz
+npm i -D https://github.com/ddteeter/agentic-guardrails-scaffolding/releases/download/v0.11.0/guardrails-core-0.11.0.tgz
 ```
 
-That URL resolves once `v0.8.0`'s release workflow has run — a release is a
+That URL resolves once `v0.11.0`'s release workflow has run — a release is a
 pushed `v*` tag, which packs the tarball and attaches it. A later version is a
 new tag, a new release asset, and a hand-edited URL — see the cost note below.
 
@@ -134,18 +134,21 @@ by your own tooling afterward. Harmless, but don't be surprised by the diff.
 Not every analyzer runs on every turn. `guardrails-core/src/verify/index.ts`'s
 `ANALYZERS` table gates each one by a minimum cadence rung:
 
-| Analyzer           | Runs at                                  | Scope                                                                                  |
-| ------------------ | ---------------------------------------- | -------------------------------------------------------------------------------------- |
-| eslint             | every turn (Stop gate), commit, push, CI | diff-scoped — only changed TypeScript files are linted                                 |
-| tsc                | every turn (Stop gate), commit, push, CI | triggered by a changed file, but checks the whole project (type errors are cross-file) |
-| knip               | commit, push and CI only                 | whole-project                                                                          |
-| npm-peers          | commit, push and CI only                 | whole-project — asks `npm ls` which installed versions violate a peer range            |
-| dependency-cruiser | commit, push and CI only                 | whole-project                                                                          |
-| stryker            | commit, push and CI only                 | diff-scoped to changed production files                                                |
-| dupes              | commit, push and CI only (opt-in)        | whole-tree discovery, diff-scoped reporting: clone groups touching a changed file      |
+| Analyzer           | Runs at                                   | Scope                                                                                  |
+| ------------------ | ----------------------------------------- | -------------------------------------------------------------------------------------- |
+| eslint             | every turn (Stop gate), commit, push, CI  | diff-scoped — only changed TypeScript files are linted                                 |
+| tsc                | every turn (Stop gate), commit, push, CI  | triggered by a changed file, but checks the whole project (type errors are cross-file) |
+| knip               | commit, push and CI only                  | whole-project                                                                          |
+| npm-peers          | commit, push and CI only                  | whole-project — asks `npm ls` which installed versions violate a peer range            |
+| dependency-cruiser | commit, push and CI only                  | whole-project                                                                          |
+| stryker            | commit, push and CI only                  | diff-scoped to changed production files                                                |
+| dupes              | commit, push and CI only (opt-in)         | whole-tree discovery, diff-scoped reporting: clone groups touching a changed file      |
+| complexity         | commit, push and CI only (on with fallow) | whole-tree run, diff-scoped reporting: over-threshold functions in a changed file      |
 
-`dupes` is the one analyzer that is **`off` by default** rather than
-installed-means-enabled. It runs `fallow dupes`, which finds copy-paste across
+`dupes` and `complexity` are the two analyzers whose default is not plain
+installed-means-enabled. `dupes` is **`off` by default**, and `complexity` is
+**on by default where `fallow` is declared** in your `package.json`, `off`
+otherwise. `dupes` runs `fallow dupes`, which finds copy-paste across
 files — the gap `eslint-plugin-sonarjs` looks like it covers and structurally
 cannot, because ESLint receives one file's AST at a time and holds no cross-file
 state. Its precision depends on an ignore list only you can write (generated
@@ -160,8 +163,33 @@ every commit; it surfaces the first time you touch a file involved in it. When
 it does report, it names **every** site in the group, including sides your diff
 never touched, because a fixer shown half a clone pair cannot deduplicate it.
 
+`complexity` runs `fallow health --complexity` and reports functions over
+fallow's cyclomatic and cognitive thresholds (20 and 15 unless you change them)
+in the commit that pushes them over, rather than at a pre-push
+`fallow --fail-on-issues` an hour later. ESLint's
+`sonarjs/cognitive-complexity` at the same limit does not close that gap: it
+counts differently, and a function it passes can still fail fallow. If your
+`package.json` declares `fallow`, it is on with no configuration: having fallow
+installed means your fallow config already says what "too complex" means. Where
+fallow is not declared it stays `off`, so it never shows up in the "enabled but
+not installed" warning. Opt out with `"complexity": "off"`, or set
+`"complexity": "required"` to make a missing fallow block. **Upgrading:** a repo
+that declares fallow and has no `complexity` key starts running it at commit,
+push and CI on upgrade. The invocation passes no thresholds and no
+paths, so fallow reads `health.maxCyclomatic`, `health.maxCognitive` and
+`health.ignore` from your own fallow config, and the commit rung and your
+pre-push gate agree by construction.
+
+It reports cyclomatic and cognitive complexity only. **CRAP is excluded**:
+fallow folds coverage into a CRAP score, and at the commit rung coverage is
+stale or absent (fallow estimates it), so a CRAP finding there says little.
+Keep CRAP at pre-push and CI, where coverage is fresh. Findings route to the
+thorough fixer, which is told to extract helpers rather than add the
+`fallow-ignore-next-line complexity` comment fallow itself suggests; the
+diff-auditor flags that comment if a fixer adds it anyway.
+
 The practical read: eslint and tsc are cheap enough to run after every agent
-turn. knip, dependency-cruiser, stryker and dupes are whole-graph or mutation
+turn. knip, dependency-cruiser, stryker, dupes and complexity are whole-graph or mutation
 analysis — too slow for a per-turn gate — so they only fire at `git commit`
 (via `.githooks/pre-commit`), at `git push` (via `.githooks/pre-push`), and in
 CI.
@@ -546,8 +574,19 @@ each wake after the five-minute prompt-cache window re-reads its whole context.
 On the adoption where this was measured, background agents spent about 27% of a
 weekly usage limit waiting.
 
-The cheap shape already exists: run the wait with `run_in_background: true` and
-end the turn. Claude Code wakes the agent once, when the command exits.
+The cheap shape depends on the host:
+
+- **Claude Code:** run the wait with `run_in_background: true` and end the turn.
+  Claude Code wakes the agent once, when the command exits.
+- **Codex and Copilot CLI:** they can run a command in the background (Codex's
+  background terminals, checked with `write_stdin`; Copilot's async and detached
+  `bash` modes, checked with `read_bash`), but as far as we observed (Codex 0.154
+  and Copilot CLI, at time of writing) neither wakes the agent when it exits, so
+  every check is another model call that re-reads the whole context. Don't wait
+  inside the agent at all: start the job detached (`nohup npx guardrails ship … >
+ship.log 2>&1 &`), finish the task, and let whoever started the agent read
+  `.guardrails/state/ship-status.json`. If your host gains wake-on-exit, the
+  Claude pattern applies.
 
 - **`guardrails ship`** is the one command to background. It runs
   `git push -u origin HEAD` (and with it the pre-push gate), finds the branch's
@@ -557,14 +596,22 @@ end the turn. Claude Code wakes the agent once, when the command exits.
   `{state, branch, pr, url, failing, tail, finishedAt}`. `state` is `green`,
   `gate-blocked`, `lock-timeout`, `ci-red` (with the failing check names) or
   `error`. It prints one line and exits 0 only on green. It needs `gh`,
-  authenticated.
+  authenticated, and checks that before pushing: a missing or logged-out `gh`
+  is an `error` that says how to fix it, and nothing is pushed.
 - **The PreToolUse hook enforces it.** On Claude Code's `Bash`, without
-  `run_in_background: true`, it denies `gh pr checks … --watch`,
+  `run_in_background: true`, and on the Codex and Copilot shell tools, it denies `gh pr checks … --watch`,
   `gh run watch`, an `until`/`while` loop polling `kill -0` or `pgrep`, a
   `sleep` longer than `foregroundSleepLimitSeconds` (default 120), and
   `guardrails ship`. The denial says what to do instead. Set
   `"denyForegroundWaits": false` in `guardrails.config.json` to turn it off.
-  Codex and Copilot are left alone: their shells cannot background a command.
+  The denial is per host: Claude is told to background it and end the turn;
+  Codex and Copilot are told to start it detached and finish. Detached means
+  both halves: `nohup …` or `setsid …` at command position _and_ a trailing
+  `&`. A bare `… &` still ties the job to the shell, and `nohup` without the
+  `&` still waits, so both are denied. Wrappers that detach nothing (`nice`,
+  `time`, `env`, `command`, `exec`, `timeout`, `stdbuf`, `ionice`,
+  `caffeinate`, `VAR=value`) are seen through. `run_in_background` is a Claude
+  flag and excuses nothing elsewhere.
 - **A retried push is cheap.** The push gate remembers the last tree it passed,
   with its base, in `.guardrails/state/push-pass.json`. Pushing the same tree
   against the same base again (after a rejected ref, a dropped connection, a
@@ -598,6 +645,28 @@ A `CLAUDE.md` snippet for adopters:
   testing, a build) runs in the background too.
 ```
 
+An `AGENTS.md` snippet for Codex and Copilot (both read it). Verify the
+wake-on-exit claim against your host version; if it gains one, use the Claude
+snippet instead:
+
+```markdown
+## Slow work: don't wait inside the agent
+
+As of Codex 0.154 / Copilot CLI at time of writing, neither wakes the agent when
+a background process exits, so each check of one is another model call that
+re-reads your whole context. Never poll a background terminal or loop in the
+foreground (`sleep`, `kill -0`/`pgrep`, `gh pr checks --watch`, `gh run watch`)
+for a job that takes minutes. Up to about 2 minutes is fine.
+
+- Commit your work first. Then start the slow part detached and finish the task:
+  `nohup npx guardrails ship --body-file=<f> > ship.log 2>&1 &`. It pushes,
+  opens or finds the PR, watches CI, and writes
+  `.guardrails/state/ship-status.json`.
+- End your reply by saying what is running and where its outcome will land.
+  The person or coordinator who started you reads that file; a failure goes to
+  a fresh task, given the failure output and the diff.
+```
+
 **Coordinating several agents.** A lane agent's context is the expensive part,
 so don't keep one alive to watch a push:
 
@@ -611,6 +680,13 @@ so don't keep one alive to watch a push:
 ## Known limits
 
 Things worth knowing before you hit them, rather than after:
+
+- **`complexity` scopes by file, not by line.** A finding is kept when its
+  function's file is in your diff, so touching one line of a file that already
+  holds an over-threshold function reports that function, as ESLint does for a
+  touched file. Fix it, or add it to `health.ignore` in your fallow config if it
+  is a deliberate exception. Scoping to the changed lines is a possible
+  follow-up.
 
 - **In-repo trees that are not part of your module graph must be excluded
   yourself.** knip and dependency-cruiser walk the repository, so a vendored or

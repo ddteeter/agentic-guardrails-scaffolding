@@ -351,10 +351,23 @@ What changed:
   effective pre-push hook (`git rev-parse --git-path hooks/pre-push`) is
   executable and runs `gate --mode=push`; every way of not knowing keeps the
   pre-run.
-- **Foreground waits are denied at PreToolUse** (Claude Code's `Bash` only):
+- **Foreground waits are denied at PreToolUse** (Claude Code's `Bash`; extended
+  to the Codex and Copilot shell tools below):
   `gh pr checks --watch`, `gh run watch`, `kill -0`/`pgrep` wait loops, a
   `sleep` over `foregroundSleepLimitSeconds`, and `guardrails ship`.
   `denyForegroundWaits: false` turns it off.
+- **Other hosts** (follow-up): Codex and Copilot CLI can background a command
+  but, as observed (Codex 0.154, Copilot CLI), do not wake the agent on exit,
+  so each check is another model call. The same denial now applies on the
+  `codex` and `copilot` dialects with a host message: start it detached
+  (`nohup … &`), finish the task, and read `ship-status.json` from outside.
+  Detached is the narrow definition: `nohup`/`setsid` at command position
+  closed by a lone `&`; a bare `… &` or `nohup` alone is denied, wrappers that
+  detach nothing (`nice`, `time`, `env`, …) are seen through (review of #128:
+  any leading word used to hide a wait), and
+  `run_in_background` excuses nothing off Claude. Docs gain an `AGENTS.md`
+  snippet. Not done: no Copilot async/detach payload field is read, because no
+  PreToolUse fixture carries one.
 - **`guardrails ship`** pushes, finds or opens the PR, watches its checks, and
   writes one status file in one of five states -- the command to background.
 - **The machine-wide lock moved into the template** `.githooks/pre-push`, with a
@@ -3356,3 +3369,52 @@ exactly these semantics via `targetMutatePatterns`, which intersects target
 patterns with the config's `mutate`. Only the mutation-server protocol passes
 it — `stryker.js` hardcodes `targetMutatePatterns: undefined` for the CLI path.
 Worth an upstream request for CLI access.
+
+## Complexity at the commit rung: the `complexity` analyzer (#122)
+
+Shipped. **Finding (#122):** a fix commit took `runCommitGate` to cyclomatic
+18 / cognitive 16. Every commit gate passed — `sonarjs/cognitive-complexity`
+uses the same limit (15) but counts differently, and did not flag it — and the
+pre-push `check:graph` then failed on `fallow health`, costing a full push
+cycle. fallow's health thresholds were enforced only at pre-push, which was the
+"fallow only at pre-push" gap: `dupes` had brought fallow to the commit rung for
+clones, but not for complexity.
+
+The new `complexity` analyzer runs `fallow health --complexity --format json
+--quiet` at commit, push and CI (provider `fallow`; shipped with default `off`
+like `dupes`, now on by default where fallow is declared — see the follow-up
+below; this repo sets it `required`). Plan:
+`docs/superpowers/plans/2026-10-17-complexity-analyzer.md`. The decisions worth
+restating:
+
+- **No thresholds, config or paths on the command line.** fallow reads the
+  adopter's own `health.maxCyclomatic`/`maxCognitive`/`ignore`, so the commit
+  rung and pre-push agree by construction.
+- **CRAP is dropped.** It needs fresh coverage. Measured in a fresh worktree
+  with no `coverage/` directory: fallow does not skip CRAP there, it
+  _estimates_ coverage (`coverage_source: "estimated"`) and reported nine
+  CRAP-only findings on a tree with zero complexity findings. So `fallow health`
+  exits 1 on a tree that is clean on complexity, which is why the runner uses
+  `withReportCheck` ("a parseable report") rather than the violation count to
+  tell findings from a crash.
+- **Rule ids route loose.** `fallow/high-{cyclomatic-,cognitive-,}complexity`
+  sit under the existing `fallow/` loose prefix; where to split a function is
+  judgment, and the obvious mechanical fix fallow suggests is a
+  `fallow-ignore-next-line complexity` suppression, which the diff-auditor
+  already flags.
+- **File-level diff scoping**, as for `dupes`: a touched file's pre-existing
+  over-limit function is reported. Line-level scoping is a possible follow-up.
+
+### Follow-up, not built here
+
+- **Done: `complexity` defaults on when the repo declares fallow.** Built as a
+  provider-conditional default in `analyzer-policy.ts` (`auto-if-declared`:
+  `auto` where fallow is declared, `off` otherwise) rather than in `init`,
+  because `guardrails.config.json` is seed-once and an `init`-only change would
+  never reach existing adopters. `silentlySkippedAnalyzers` fires only for
+  `auto`-and-undeclared, so the default can never nag. `dupes` stays `off`: its
+  reason is noise only an adopter-written ignore list fixes, which installing
+  fallow does not supply. Behaviour change for release notes: a repo that
+  declares fallow with no `complexity` key now runs it; `"complexity": "off"`
+  restores the old behaviour. Plan:
+  `docs/superpowers/plans/2026-10-17-complexity-default-when-fallow.md`.

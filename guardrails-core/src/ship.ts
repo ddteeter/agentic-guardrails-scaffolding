@@ -14,7 +14,7 @@
  * classification is tested without a network.
  */
 
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { accessSync, constants, mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 import type { Exec, ExecResult } from './exec.js';
@@ -165,17 +165,56 @@ function failure(state: ShipState, tail: string): Outcome {
   return { state, pr: null, url: null, failing: [], tail: tailOf(tail) };
 }
 
+/**
+Run gh in the repository being shipped.
+*/
+function gh(options: ShipOptions, args: string[]): Promise<ExecResult> {
+  return options.exec('gh', args, { cwd: options.repoRoot });
+}
+
+/**
+ * The branch's pull request, or `undefined` when gh names none. Read-only:
+ * it never opens one.
+ */
+async function viewPullRequest(
+  options: ShipOptions,
+  branch: string,
+): Promise<{ pr: PullRequest | undefined; result: ExecResult }> {
+  const result = await gh(options, [
+    'pr',
+    'view',
+    branch,
+    '--json',
+    'number,url',
+  ]);
+  return { pr: parsePullRequest(result.stdout), result };
+}
+
+/**
+ * A failed push, still naming the pull request the branch already has: the
+ * push failing does not make an open PR disappear (deferred from #122).
+ */
+async function pushFailure(
+  options: ShipOptions,
+  branch: string,
+  pushed: ExecResult,
+): Promise<Outcome> {
+  const outcome = failure(classifyPushFailure(pushed), output(pushed));
+  const { pr } = await viewPullRequest(options, branch);
+  return pr === undefined
+    ? outcome
+    : { ...outcome, pr: pr.number, url: pr.url };
+}
+
 async function findOrOpenPullRequest(
   options: ShipOptions,
   branch: string,
 ): Promise<PullRequest | string> {
   const run = (command: string, args: string[]) =>
     options.exec(command, args, { cwd: options.repoRoot });
-  const viewArguments = ['pr', 'view', branch, '--json', 'number,url'];
-  const viewed = await run('gh', viewArguments);
-  const existing = parsePullRequest(viewed.stdout);
-  if (existing !== undefined) {
-    return existing;
+  const existing = await viewPullRequest(options, branch);
+  if (existing.pr !== undefined) {
+    return existing.pr;
   }
   let body = ['--fill'];
   if (options.bodyFile !== undefined) {
@@ -193,20 +232,80 @@ async function findOrOpenPullRequest(
   if (created.code !== 0) {
     return output(created);
   }
-  const opened = await run('gh', viewArguments);
-  return parsePullRequest(opened.stdout) ?? output(opened);
+  const opened = await viewPullRequest(options, branch);
+  return opened.pr ?? output(opened.result);
+}
+
+function defaultDelay(ms: number): Promise<void> {
+  return new Promise<void>((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+/**
+ * The checks as `gh pr checks --json` lists them right now, with the listing's
+ * text for the error tail. `checks` is `undefined` when the listing was
+ * unreadable.
+ */
+async function readChecks(
+  options: ShipOptions,
+  number: string,
+): Promise<{ checks: Check[] | undefined; listing: string }> {
+  const listed = await gh(options, [
+    'pr',
+    'checks',
+    number,
+    '--json',
+    'name,bucket',
+  ]);
+  // Before CI registers, gh does not print an empty list: it exits 1 with
+  // this sentence on stderr. That is "none yet", not "unreadable".
+  const checks = output(listed).includes(NO_CHECKS_YET)
+    ? []
+    : parseChecks(listed.stdout);
+  return { checks, listing: output(listed) };
+}
+
+type Verdict = Omit<Outcome, 'pr' | 'url'>;
+
+/**
+ * What one watch-then-list round says, or `undefined` when it is too early to
+ * say and the caller should wait and watch again. `canWait` is false once the
+ * registration window has run out.
+ */
+function judgeChecks(
+  checks: readonly Check[],
+  watchText: string,
+  canWait: boolean,
+): Verdict | undefined {
+  if (checks.length === 0) {
+    return canWait
+      ? undefined
+      : { state: 'green', failing: [], tail: 'no checks reported' };
+  }
+  const tail = tailOf(watchText);
+  const failing = checks
+    .filter((check) => RED_BUCKETS.has(check.bucket))
+    .map((check) => check.name);
+  if (failing.length > 0) {
+    return { state: 'ci-red', failing, tail };
+  }
+  const isSettled = checks.every((check) => check.bucket !== 'pending');
+  // A watch that exited with "no checks reported" never watched: CI
+  // registered between it and the listing. Pending then means "watch now",
+  // not "the watch broke" -- the race seen on dialed.run #191.
+  const isWatchEmpty = watchText.includes(NO_CHECKS_YET);
+  if (!isSettled && isWatchEmpty && canWait) {
+    return undefined;
+  }
+  return { state: isSettled ? 'green' : 'error', failing, tail };
 }
 
 async function watchChecks(
   options: ShipOptions,
   pr: PullRequest,
 ): Promise<Outcome> {
-  const delay =
-    options.delay ??
-    ((ms: number) =>
-      new Promise<void>((resolve) => {
-        setTimeout(resolve, ms);
-      }));
+  const delay = options.delay ?? defaultDelay;
   const number = String(pr.number);
   const found = { pr: pr.number, url: pr.url };
   for (let attempt = 0; ; attempt += 1) {
@@ -217,45 +316,69 @@ async function watchChecks(
         cwd: options.repoRoot,
       },
     );
-    const listed = await options.exec(
-      'gh',
-      ['pr', 'checks', number, '--json', 'name,bucket'],
-      { cwd: options.repoRoot },
-    );
-    // Before CI registers, gh does not print an empty list: it exits 1 with
-    // this sentence on stderr. That is "none yet", not "unreadable".
-    const checks = output(listed).includes(NO_CHECKS_YET)
-      ? []
-      : parseChecks(listed.stdout);
-    const tail = tailOf(output(watch));
+    const { checks, listing } = await readChecks(options, number);
     if (checks === undefined) {
-      return {
-        ...found,
-        state: 'error',
-        failing: [],
-        tail: tailOf(output(listed)),
-      };
+      return { ...found, state: 'error', failing: [], tail: tailOf(listing) };
     }
-    if (checks.length === 0 && attempt < NO_CHECKS_RETRIES) {
-      await delay(NO_CHECKS_DELAY_MS);
-      continue;
+    const verdict = judgeChecks(
+      checks,
+      output(watch),
+      attempt < NO_CHECKS_RETRIES,
+    );
+    if (verdict !== undefined) {
+      return { ...found, ...verdict };
     }
-    if (checks.length === 0) {
-      return {
-        ...found,
-        state: 'green',
-        failing: [],
-        tail: 'no checks reported',
-      };
-    }
-    const failing = checks
-      .filter((check) => RED_BUCKETS.has(check.bucket))
-      .map((check) => check.name);
-    if (failing.length > 0) {
-      return { ...found, state: 'ci-red', failing, tail };
-    }
-    const isSettled = checks.every((check) => check.bucket !== 'pending');
-    return { ...found, state: isSettled ? 'green' : 'error', failing, tail };
+    await delay(NO_CHECKS_DELAY_MS);
+  }
+}
+
+/**
+ * Why `gh` cannot ship from here, or `undefined` when it can. Asked BEFORE the
+ * push: everything after the push needs `gh`, and a branch pushed with no pull
+ * request and no watch is a half-done ship that reports only a shell error.
+ */
+async function ghUnavailable(
+  options: ShipOptions,
+): Promise<string | undefined> {
+  const auth = await options.exec('gh', ['auth', 'status'], {
+    cwd: options.repoRoot,
+  });
+  if (auth.spawnFailed === true) {
+    return (
+      'guardrails ship: gh (GitHub CLI) is not installed, and ship needs it ' +
+      'to open the pull request and watch its checks. Install it ' +
+      '(https://cli.github.com), run `gh auth login`, then ship again. ' +
+      'Nothing was pushed.'
+    );
+  }
+  if (auth.code !== 0) {
+    return (
+      'guardrails ship: gh is not logged in. Run `gh auth login`, then ship ' +
+      `again. Nothing was pushed.\n${output(auth)}`
+    );
+  }
+  return undefined;
+}
+
+/**
+ * Why the `--body-file` cannot be used, or `undefined` when it can (or none
+ * was given). Asked BEFORE the push for the same reason as `ghUnavailable`:
+ * `gh pr create` reads it only after the gate has run, and a missing file
+ * then leaves a pushed branch with no pull request (dialed.run #194).
+ */
+function bodyFileUnreadable(options: ShipOptions): string | undefined {
+  const { bodyFile } = options;
+  if (bodyFile === undefined) {
+    return undefined;
+  }
+  try {
+    accessSync(bodyFile, constants.R_OK);
+    return undefined;
+  } catch {
+    return (
+      `guardrails ship: --body-file ${bodyFile} does not exist (or is not ` +
+      'readable). Nothing was pushed.'
+    );
   }
 }
 
@@ -263,11 +386,16 @@ async function shipOutcome(
   options: ShipOptions,
   branch: string,
 ): Promise<Outcome> {
+  const unavailable =
+    (await ghUnavailable(options)) ?? bodyFileUnreadable(options);
+  if (unavailable !== undefined) {
+    return failure('error', unavailable);
+  }
   const pushed = await options.exec('git', ['push', '-u', 'origin', 'HEAD'], {
     cwd: options.repoRoot,
   });
   if (pushed.code !== 0) {
-    return failure(classifyPushFailure(pushed), output(pushed));
+    return pushFailure(options, branch, pushed);
   }
   const pr = await findOrOpenPullRequest(options, branch);
   return typeof pr === 'string'

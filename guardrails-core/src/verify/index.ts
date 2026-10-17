@@ -66,7 +66,10 @@ import {
 } from './analyzer-policy.js';
 import { parseDepcruiseJson } from './depcruise-adapter.js';
 import { parseEslintJson } from './eslint-adapter.js';
-import { parseFallowDupesJson } from './fallow-adapter.js';
+import {
+  parseFallowDupesJson,
+  parseFallowHealthJson,
+} from './fallow-adapter.js';
 import {
   isConfigFile,
   isInsideNestedWorktree,
@@ -359,11 +362,32 @@ function withExitCodeCheck(
   execResult: ExecResult,
   violations: Violation[],
 ): Violation[] {
+  return withReportCheck(tool, execResult, {
+    violations,
+    isReport: violations.length > 0,
+  });
+}
+
+/**
+ * `withExitCodeCheck` with "something parsed" supplied by the adapter instead
+ * of inferred from the violation count. The inference is right for a tool
+ * whose every finding becomes a violation; it is wrong for `fallow health`,
+ * which exits 1 on findings the adapter then DROPS (CRAP-only ones, and every
+ * finding outside the diff). There, a parsed report with nothing left in it
+ * is a clean check, and only an unparseable one alongside a non-zero exit is
+ * a crash.
+ */
+function withReportCheck(
+  tool: string,
+  execResult: ExecResult,
+  parsed: { violations: Violation[]; isReport: boolean },
+): Violation[] {
+  const { violations, isReport } = parsed;
   if (execResult.spawnFailed === true) {
     return violations;
   }
   const isKilled = execResult.signal !== undefined;
-  if (isKilled || (execResult.code !== 0 && violations.length === 0)) {
+  if (isKilled || (!isReport && execResult.code !== 0)) {
     return [...violations, analyzerFailedViolation(tool, execResult)];
   }
   return violations;
@@ -592,6 +616,18 @@ async function runDepcruise(
   });
 }
 
+/** The one spawn shape both fallow analyzers share: the `fallow` binary, run
+ *  from the repository root with no `--config` or path, so the adopter's own
+ *  fallow config decides everything else. Extracted when `dupes` reported
+ *  `runDupes`/`runComplexity` as a clone pair on the first run. */
+async function execFallow(
+  options: VerifyOptions,
+  resolveBin: (tool: string) => string,
+  args: string[],
+): Promise<ExecResult> {
+  return options.exec(resolveBin('fallow'), args, { cwd: options.repoRoot });
+}
+
 /**
  * Cross-file clone detection (issue #40). `eslint-plugin-sonarjs` ships
  * `sonarjs/no-identical-functions`, which reads as copy-paste coverage and is
@@ -621,13 +657,52 @@ async function runDupes(
   resolveBin: (tool: string) => string,
   files: string[],
 ): Promise<Violation[]> {
-  const { exec, repoRoot } = options;
-  const result = await exec(
-    resolveBin('fallow'),
-    ['dupes', '--format', 'json', '--quiet'],
-    { cwd: repoRoot },
-  );
+  const result = await execFallow(options, resolveBin, [
+    'dupes',
+    '--format',
+    'json',
+    '--quiet',
+  ]);
   return parseFallowDupesJson(result.stdout, files);
+}
+
+/**
+ * Function-level complexity against the adopter's own fallow thresholds, at
+ * the commit rung (#122: a commit took `runCommitGate` over cognitive 15, every
+ * commit gate passed because `sonarjs/cognitive-complexity` counts
+ * differently, and only the pre-push `fallow health` caught it).
+ *
+ * Changed-files-TRIGGERED, whole-tree-run, adapter-SCOPED — the same shape as
+ * `runDupes`, for the same reasons (see `fallow-adapter.ts`). It runs in well
+ * under a second over this repository.
+ *
+ * Config-agnostic and layout-generic: no thresholds, no `--config`, no paths.
+ * fallow reads `health.maxCyclomatic`/`maxCognitive` and `health.ignore` from
+ * the adopter's own config, so this rung and their pre-push gate agree by
+ * construction.
+ *
+ * `fallow health` exits 1 whenever it has ANY finding, including the CRAP-only
+ * and out-of-diff ones the adapter drops, so this goes through
+ * `withReportCheck` rather than `withExitCodeCheck`: the failure signal is a
+ * kill, or a non-zero exit with no parseable report.
+ */
+async function runComplexity(
+  options: VerifyOptions,
+  resolveBin: (tool: string) => string,
+  files: string[],
+): Promise<Violation[]> {
+  const result = await execFallow(options, resolveBin, [
+    'health',
+    '--complexity',
+    '--format',
+    'json',
+    '--quiet',
+  ]);
+  return withReportCheck(
+    'complexity',
+    result,
+    parseFallowHealthJson(result.stdout, files),
+  );
 }
 
 async function runEslint(
@@ -1841,6 +1916,15 @@ const ANALYZERS: Analyzer[] = [
     scope: 'changed-files',
     run: runDupes,
   },
+  {
+    // Default `off` too -- see DEFAULT_MODES. Separate from `dupes`, though
+    // both are fallow, so an adopter can enable either one alone.
+    tool: 'complexity',
+    provider: 'fallow',
+    minRung: 'commit',
+    scope: 'changed-files',
+    run: runComplexity,
+  },
 ];
 
 /** The npm packages a consumer repo must provide. Exported so a test can hold it
@@ -1913,8 +1997,12 @@ export function silentlySkippedAnalyzers(
   declared: ReadonlySet<string>,
 ): readonly (readonly [string, string])[] {
   return Object.entries(installableAnalyzerProviders()).filter(
-    ([tool, provider]) =>
-      analyzerMode(analyzers, tool) === 'auto' && !declared.has(provider),
+    ([tool, provider]) => {
+      const isDeclared = declared.has(provider);
+      return (
+        !isDeclared && analyzerMode(analyzers, tool, isDeclared) === 'auto'
+      );
+    },
   );
 }
 
@@ -2066,9 +2154,10 @@ function selectAnalyzers(
 ): SelectedAnalyzer[] {
   const selected: SelectedAnalyzer[] = [];
   for (const analyzer of ANALYZERS) {
+    const isDeclared = declared.has(analyzer.provider);
     const decision = decideAnalyzer(
-      analyzerMode(analyzers, analyzer.tool),
-      declared.has(analyzer.provider),
+      analyzerMode(analyzers, analyzer.tool, isDeclared),
+      isDeclared,
     );
     if (!decision.run) {
       continue;

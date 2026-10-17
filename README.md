@@ -25,12 +25,12 @@ analyzer costs, and the clean-baseline prerequisite.
 `guardrails-core` is delivered as a GitHub Release asset, not from npm:
 
 ```bash
-npm i -D https://github.com/ddteeter/agentic-guardrails-scaffolding/releases/download/v0.8.0/guardrails-core-0.8.0.tgz
+npm i -D https://github.com/ddteeter/agentic-guardrails-scaffolding/releases/download/v0.11.0/guardrails-core-0.11.0.tgz
 ```
 
 Each release is a pushed `v*` tag: `.github/workflows/release.yml` verifies the
 tag matches `guardrails-core`'s version, runs the tarball smoke test, and
-attaches the `.tgz`. The URL above resolves once `v0.8.0` has been through that.
+attaches the `.tgz`. The URL above resolves once `v0.11.0` has been through that.
 
 **What a URL dependency costs you, stated plainly:** no semver range, no dedupe,
 and Dependabot will not track it. Upgrading means editing the URL by hand. This
@@ -96,13 +96,15 @@ The push gate (serialized machine-wide by the scaffolded pre-push hook) and CI
 can take most of an hour. Agents should not watch them: run
 `guardrails ship` — push, find or open the PR, wait for its checks, write
 `.guardrails/state/ship-status.json` — with `run_in_background: true`, end the
-turn, and be woken once when it exits. On Claude Code the PreToolUse hook denies
-the foreground versions (`gh pr checks --watch`, `gh run watch`, `kill -0`/
-`pgrep` wait loops, long `sleep`s); `"denyForegroundWaits": false` turns that
-off. A coordinator keeps lanes at "ready to ship", runs `guardrails ship` itself
+turn, and be woken once when it exits. On Codex and Copilot CLI, which as
+observed do not wake the agent on exit, start it detached (`nohup … &`), finish
+the task, and let whoever started the agent read the status file. The
+PreToolUse hook denies the foreground versions on all three hosts (`gh pr
+checks --watch`, `gh run watch`, `kill -0`/`pgrep` wait loops, long `sleep`s)
+with a message for that host; `"denyForegroundWaits": false` turns that off. A coordinator keeps lanes at "ready to ship", runs `guardrails ship` itself
 in the background, and sends a failure to a fresh fixer rather than reviving the
 lane. [`docs/adoption.md`](./docs/adoption.md#agents-and-slow-work) has the
-details and a `CLAUDE.md` snippet for adopters.
+details and `CLAUDE.md` and `AGENTS.md` snippets for adopters.
 
 ## What's in Phase A
 
@@ -176,6 +178,15 @@ Its false positives are repo-specific (generated code, ORM schema DSLs,
 framework boilerplate), so it is opt-in: set `"dupes": "required"` and tune the
 `.fallowrc.jsonc` that `init` seeds. It discovers over the whole tree and
 reports only clone groups touching your diff.
+
+`complexity` is on by default where `fallow` is declared in your
+`package.json`, and `off` otherwise. It runs `fallow health --complexity` at
+the commit rung and reports functions over fallow's cyclomatic and cognitive
+thresholds in a changed file, so a function that goes over the limit is caught
+in the commit that does it rather than at pre-push. It reads the thresholds
+from your own fallow config and leaves CRAP to pre-push and CI, where coverage
+is fresh. Set `"complexity": "off"` to opt out, or `"required"` to make a
+missing fallow block.
 
 ## Verifying the live agent loop
 

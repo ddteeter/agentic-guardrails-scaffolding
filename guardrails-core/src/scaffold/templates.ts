@@ -480,9 +480,14 @@ function isAnalyzerAsked(
   facts: RepoFacts,
   decisions: ScaffoldDecisions,
 ): boolean {
+  const isDeclared = facts.declaredProviders.has(analyzer.provider);
   return decideAnalyzer(
-    analyzerMode(effectiveAnalyzers(facts, decisions.analyzers), analyzer.tool),
-    facts.declaredProviders.has(analyzer.provider),
+    analyzerMode(
+      effectiveAnalyzers(facts, decisions.analyzers),
+      analyzer.tool,
+      isDeclared,
+    ),
+    isDeclared,
   ).reportMissing;
 }
 

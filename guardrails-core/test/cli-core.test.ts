@@ -4921,7 +4921,7 @@ async function waitVerdict(
   return out.join('');
 }
 
-describe('pretooluse denies a foreground wait on Claude Code', () => {
+describe('pretooluse denies a foreground wait', () => {
   it.each([
     'gh pr checks 42 --watch',
     'gh run watch 99',
@@ -4983,14 +4983,71 @@ describe('pretooluse denies a foreground wait on Claude Code', () => {
     ).toContain('deny');
   });
 
-  it.each(['codex', 'copilot'])(
-    'leaves the %s dialect alone, whose shell cannot background',
-    async (dialect) => {
+  describe.each([
+    ['codex', 'Bash'],
+    ['codex', 'bash'],
+    ['copilot', 'bash'],
+    ['copilot', 'powershell'],
+  ])('on the %s dialect with the %s tool', (dialect, toolName) => {
+    it.each([
+      'gh pr checks 42 --watch',
+      'gh run watch 99',
+      'until ! kill -0 4242; do sleep 20; done',
+      'while pgrep -f stryker >/dev/null; do sleep 30; done',
+      'sleep 600',
+      'npx guardrails ship --body-file=pr.md',
+    ])('denies %j and says to detach', async (command) => {
+      const printed = await waitVerdict({ command }, { dialect, toolName });
+      expect(printed).toContain('deny');
+      expect(printed).toContain('start it detached');
+      expect(printed.includes('.guardrails/state/ship-status.json')).toBe(
+        command.includes('guardrails ship'),
+      );
+      expect(printed).not.toContain('run_in_background');
+    });
+
+    it.each([
+      'nohup npx guardrails ship --body-file=pr.md > ship.log 2>&1 &',
+      'setsid gh run watch 99 > w.log 2>&1 &',
+    ])('allows %j, already detached', async (command) => {
+      expect(await waitVerdict({ command }, { dialect, toolName })).toBe('');
+    });
+
+    it.each([
+      'git log --grep "gh pr checks --watch"',
+      "cat <<'EOF'\nsleep 600\nEOF",
+      'sleep 60',
+    ])('allows %j, which waits for nothing', async (command) => {
+      expect(await waitVerdict({ command }, { dialect, toolName })).toBe('');
+    });
+
+    it('allows everything when turned off', async () => {
       expect(
-        await waitVerdict({ command: 'gh pr checks 42 --watch' }, { dialect }),
+        await waitVerdict(
+          { command: 'gh pr checks 42 --watch' },
+          { dialect, toolName, config: { denyForegroundWaits: false } },
+        ),
       ).toBe('');
-    },
-  );
+    });
+  });
+
+  it('leaves a tool that is not a shell alone on the codex dialect', async () => {
+    expect(
+      await waitVerdict(
+        { command: 'sleep 600' },
+        { dialect: 'codex', toolName: 'apply_patch' },
+      ),
+    ).toBe('');
+  });
+
+  it('does not let run_in_background excuse a Codex wait', async () => {
+    expect(
+      await waitVerdict(
+        { command: 'sleep 600', run_in_background: true },
+        { dialect: 'codex', toolName: 'Bash' },
+      ),
+    ).toContain('deny');
+  });
 
   it('leaves a tool that is not Claude Code Bash alone', async () => {
     expect(
@@ -5137,6 +5194,8 @@ describe('runCommand — ship', () => {
       path.join(root, 'guardrails.config.json'),
       JSON.stringify({ baseBranch: 'develop' }),
     );
+    // ship checks the body file exists before it pushes.
+    writeFileSync(path.join(root, 'pr.md'), 'the body\n');
     const calls: string[] = [];
     const inner = shipExec('pass', calls);
     let views = 0;
