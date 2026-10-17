@@ -557,7 +557,8 @@ end the turn. Claude Code wakes the agent once, when the command exits.
   `{state, branch, pr, url, failing, tail, finishedAt}`. `state` is `green`,
   `gate-blocked`, `lock-timeout`, `ci-red` (with the failing check names) or
   `error`. It prints one line and exits 0 only on green. It needs `gh`,
-  authenticated.
+  authenticated, and checks that before pushing: a missing or logged-out `gh`
+  is an `error` that says how to fix it, and nothing is pushed.
 - **The PreToolUse hook enforces it.** On Claude Code's `Bash`, without
   `run_in_background: true`, it denies `gh pr checks … --watch`,
   `gh run watch`, an `until`/`while` loop polling `kill -0` or `pgrep`, a
