@@ -4943,7 +4943,9 @@ describe('pretooluse denies a foreground wait', () => {
       const printed = await waitVerdict({ command }, { dialect, toolName });
       expect(printed).toContain('deny');
       expect(printed).toContain('start it detached');
-      expect(printed).toContain('.guardrails/state/ship-status.json');
+      expect(printed.includes('.guardrails/state/ship-status.json')).toBe(
+        command.includes('guardrails ship'),
+      );
       expect(printed).not.toContain('run_in_background');
     });
 

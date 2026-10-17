@@ -361,8 +361,10 @@ What changed:
   so each check is another model call. The same denial now applies on the
   `codex` and `copilot` dialects with a host message: start it detached
   (`nohup … &`), finish the task, and read `ship-status.json` from outside.
-  Detached is the narrow definition: `nohup`/`setsid` at command position,
-  which the patterns already skip; a bare `… &` is denied, and
+  Detached is the narrow definition: `nohup`/`setsid` at command position
+  closed by a lone `&`; a bare `… &` or `nohup` alone is denied, wrappers that
+  detach nothing (`nice`, `time`, `env`, …) are seen through (review of #128:
+  any leading word used to hide a wait), and
   `run_in_background` excuses nothing off Claude. Docs gain an `AGENTS.md`
   snippet. Not done: no Copilot async/detach payload field is read, because no
   PreToolUse fixture carries one.

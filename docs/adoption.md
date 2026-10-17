@@ -576,10 +576,13 @@ ship.log 2>&1 &`), finish the task, and let whoever started the agent read
   `guardrails ship`. The denial says what to do instead. Set
   `"denyForegroundWaits": false` in `guardrails.config.json` to turn it off.
   The denial is per host: Claude is told to background it and end the turn;
-  Codex and Copilot are told to start it detached and finish. A command that
-  already starts itself detached (`nohup …` or `setsid …`, usually with a
-  trailing `&`) is allowed; a bare `… &` is not, since it still ties the job to
-  the shell. `run_in_background` is a Claude flag and excuses nothing elsewhere.
+  Codex and Copilot are told to start it detached and finish. Detached means
+  both halves: `nohup …` or `setsid …` at command position _and_ a trailing
+  `&`. A bare `… &` still ties the job to the shell, and `nohup` without the
+  `&` still waits, so both are denied. Wrappers that detach nothing (`nice`,
+  `time`, `env`, `command`, `exec`, `timeout`, `stdbuf`, `ionice`,
+  `caffeinate`, `VAR=value`) are seen through. `run_in_background` is a Claude
+  flag and excuses nothing elsewhere.
 - **A retried push is cheap.** The push gate remembers the last tree it passed,
   with its base, in `.guardrails/state/push-pass.json`. Pushing the same tree
   against the same base again (after a rejected ref, a dropped connection, a

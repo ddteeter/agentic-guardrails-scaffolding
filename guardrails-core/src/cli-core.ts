@@ -734,8 +734,9 @@ function isShellGitWrite(input: HookInput): boolean {
  * On Claude Code, only its `Bash` tool, and `run_in_background` allows: that
  * wakes the agent once, when the command exits. Codex and Copilot have no such
  * wake, so a check is another model call; their shell tools are denied too,
- * unless the command already starts itself detached (`nohup`/`setsid`, which
- * `foregroundWait` already reads as not a wait), and the message says to detach and finish instead.
+ * unless the command hands the job off (`nohup`/`setsid` with a trailing `&`,
+ * which `foregroundWait` reads as not a wait), and the message says to detach
+ * and finish instead.
  *
  * The config is read from the checkout the command runs in, the way
  * `decidingHook` reads its deadline -- by walking the filesystem, because this
