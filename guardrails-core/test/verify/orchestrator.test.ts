@@ -6,6 +6,7 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import type { Exec, ExecResult } from '../../src/exec.js';
+import type { Rung } from '../../src/verify/analyzer-policy.js';
 import { hasErrors, type Violation } from '../../src/violation.js';
 import {
   ANALYZER_TOOLS,
@@ -391,6 +392,7 @@ describe('runVerify', () => {
       'dependency-cruiser',
       'stryker',
       'dupes',
+      'complexity',
     ]);
   });
 
@@ -1003,8 +1005,8 @@ describe('stryker honours the project’s own mutate negations', () => {
  * Did `runVerify` at this profile spawn stryker?
  */
 async function didRunStrykerAt(
-  profile: 'stop' | 'commit' | 'push' | 'ci',
-  analyzerRungs?: Record<string, 'stop' | 'commit' | 'push' | 'ci'>,
+  profile: Rung,
+  analyzerRungs?: Record<string, Rung>,
 ): Promise<boolean> {
   const { exec, calls } = fakeExec({
     'git diff --name-only --diff-filter=ACM main': {
@@ -4546,6 +4548,185 @@ describe('runVerify: the dupes analyzer', () => {
   it('lists dupes among the known analyzer tools', () => {
     expect(ANALYZER_TOOLS).toContain('dupes');
   });
+});
+
+const complexityCommand = 'fallow health --complexity --format json --quiet';
+
+/**
+ * A `fallow health --complexity --format json` report. The fake exec's changed
+ * set is `src/foo.ts` + `src/new.ts`, so a finding at `src/new.ts` is in scope
+ * and one at `src/other.ts` is not.
+ */
+function complexityReport(paths: string[]): string {
+  return JSON.stringify({
+    kind: 'health',
+    schema_version: 7,
+    findings: paths.map((findingPath) => ({
+      path: findingPath,
+      name: 'tangled',
+      line: 12,
+      col: 0,
+      cyclomatic: 18,
+      cognitive: 16,
+      line_count: 60,
+      exceeded: 'cognitive',
+      severity: 'moderate',
+      actions: [],
+    })),
+    summary: { max_cyclomatic_threshold: 20, max_cognitive_threshold: 15 },
+  });
+}
+
+// fallow exits 1 whenever it has any finding at all.
+function complexityExec(
+  result: Partial<ExecResult>,
+): ReturnType<typeof fakeExec> {
+  return fakeExec({
+    [complexityCommand]: { stdout: '', stderr: '', code: 1, ...result },
+  });
+}
+
+async function verifyComplexity(
+  exec: Exec,
+  profile: Rung = 'commit',
+): Promise<Violation[]> {
+  const { violations } = await runVerify({
+    repoRoot: '/repo',
+    baseBranch: 'main',
+    exec,
+    profile,
+    analyzers: { complexity: 'required', stryker: 'off' },
+  });
+  return violations;
+}
+
+function complexityFailures(violations: Violation[]): Violation[] {
+  return violations.filter(
+    (violation) =>
+      violation.ruleId === 'guardrails/analyzer-failed' &&
+      violation.message.includes('complexity'),
+  );
+}
+
+describe('runVerify: the complexity analyzer', () => {
+  it('is off unless the repo opts in, so fallow health is never spawned', async () => {
+    const { exec, calls } = fakeExec();
+    await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      profile: 'commit',
+      analyzers: { stryker: 'off' },
+    });
+
+    expect(calls.some((call) => call.args[0] === 'health')).toBe(false);
+  });
+
+  it('runs a config-agnostic, layout-generic invocation and surfaces the finding', async () => {
+    // No thresholds, no --config and no paths: fallow reads the adopter's own
+    // thresholds and health.ignore, so this rung and pre-push agree.
+    const { exec, calls } = complexityExec({
+      stdout: complexityReport(['src/new.ts']),
+    });
+    const violations = await verifyComplexity(exec);
+
+    const healthCalls = calls.filter((call) => call.args[0] === 'health');
+    expect(healthCalls).toHaveLength(1);
+    expect(healthCalls[0]?.command).toBe('fallow');
+    expect(healthCalls[0]?.args).toEqual([
+      'health',
+      '--complexity',
+      '--format',
+      'json',
+      '--quiet',
+    ]);
+    expect(healthCalls[0]?.options?.cwd).toBe('/repo');
+    expect(
+      violations.filter((violation) => violation.tool === 'complexity'),
+    ).toEqual([
+      expect.objectContaining({
+        ruleId: 'fallow/high-cognitive-complexity',
+        file: 'src/new.ts',
+        line: 12,
+      }),
+    ]);
+    expect(complexityFailures(violations)).toEqual([]);
+  });
+
+  it('reads exit 1 with only out-of-diff findings as clean, not as a crash', async () => {
+    const { exec } = complexityExec({
+      stdout: complexityReport(['src/other.ts']),
+    });
+    const violations = await verifyComplexity(exec);
+
+    expect(
+      violations.filter(
+        (violation) =>
+          violation.tool === 'complexity' ||
+          violation.message.includes('complexity'),
+      ),
+    ).toEqual([]);
+  });
+
+  it('reports analyzer-failed for a non-zero exit with garbage on stdout', async () => {
+    const { exec } = complexityExec({ stdout: 'panic: oh no', code: 2 });
+
+    expect(complexityFailures(await verifyComplexity(exec))).toHaveLength(1);
+  });
+
+  it('reads exit 0 with unparseable stdout as clean', async () => {
+    // The conjunction, not either half: a zero exit is fallow saying it found
+    // nothing, whatever it printed.
+    const { exec } = complexityExec({ stdout: '', code: 0 });
+
+    expect(complexityFailures(await verifyComplexity(exec))).toEqual([]);
+  });
+
+  it('reports analyzer-failed for a killed process even when its report parsed', async () => {
+    const { exec } = complexityExec({
+      stdout: complexityReport(['src/new.ts']),
+      code: 0,
+      signal: 'SIGKILL',
+    });
+    const violations = await verifyComplexity(exec);
+
+    const failures = complexityFailures(violations);
+    expect(failures).toHaveLength(1);
+    expect(failures[0]?.message).toContain('SIGKILL');
+  });
+
+  it('reports a missing fallow rather than a clean complexity check', async () => {
+    const { exec } = complexityExec({ spawnFailed: true });
+    const violations = await verifyComplexity(exec);
+
+    expect(complexityFailures(violations)).toEqual([]);
+    expect(
+      violations.find(
+        (violation) => violation.ruleId === 'guardrails/analyzer-missing',
+      )?.message,
+    ).toContain('fallow');
+  });
+
+  it('does NOT run at the stop profile', async () => {
+    const { exec, calls } = complexityExec({
+      stdout: complexityReport(['src/new.ts']),
+    });
+    await verifyComplexity(exec, 'stop');
+
+    expect(calls.some((call) => call.args[0] === 'health')).toBe(false);
+  });
+
+  it.each(['commit', 'push', 'ci'] as const)(
+    'runs at the %s profile',
+    async (profile) => {
+      const { exec, calls } = complexityExec({
+        stdout: complexityReport(['src/new.ts']),
+      });
+      await verifyComplexity(exec, profile);
+
+      expect(calls.some((call) => call.args[0] === 'health')).toBe(true);
+    },
+  );
 });
 
 /**

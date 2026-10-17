@@ -65,6 +65,19 @@ describe('analyzerMode', () => {
     expect(analyzerMode({ dupes: 'required' }, 'dupes')).toBe('required');
     expect(analyzerMode({ dupes: 'auto' }, 'dupes')).toBe('auto');
   });
+
+  it('defaults complexity to off rather than auto', () => {
+    // Same reason as dupes: under `auto`, every consumer without fallow would
+    // get a silently-skipped nag for a tool they never asked for.
+    expect(analyzerMode({}, 'complexity')).toBe('off');
+  });
+
+  it('lets an explicit complexity setting win over its default', () => {
+    expect(analyzerMode({ complexity: 'required' }, 'complexity')).toBe(
+      'required',
+    );
+    expect(analyzerMode({ complexity: 'auto' }, 'complexity')).toBe('auto');
+  });
 });
 
 describe('isRung', () => {
