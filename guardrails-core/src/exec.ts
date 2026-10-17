@@ -87,7 +87,14 @@ export function signalFromExitCode(code: number): NodeJS.Signals | undefined {
 export type Exec = (
   command: string,
   args: string[],
-  options?: { cwd?: string; env?: NodeJS.ProcessEnv },
+  options?: {
+    cwd?: string;
+    env?: NodeJS.ProcessEnv;
+    /**
+    Written to the child's stdin, which is then closed.
+    */
+    input?: string;
+  },
 ) => Promise<ExecResult>;
 
 /**
@@ -129,6 +136,9 @@ export const spawnExec: Exec = (command, args, options) =>
       shell: false,
     });
     live.add(child);
+    if (options?.input !== undefined) {
+      child.stdin.end(options.input);
+    }
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', (chunk: Buffer) => {

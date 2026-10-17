@@ -15,7 +15,7 @@ import process from 'node:process';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { type CliDependencies, runCommand } from '../src/cli-core.js';
-import type { Exec, ExecResult } from '../src/exec.js';
+import { type Exec, type ExecResult, spawnExec } from '../src/exec.js';
 import {
   appendDecision,
   isAgentIdentityReported,
@@ -1098,6 +1098,9 @@ function dirtyExec(): Exec {
 }
 
 async function runPreToolUse(stdin: string): Promise<string> {
+  // A repository root, so a write a `cd` or `git -C` moves into a
+  // subdirectory still resolves here (#123).
+  mkdirSync(path.join(root, '.git'), { recursive: true });
   // These trigger-condition tests are about the shell-tool + git-write
   // self-filter, not about enforcement, so make that assumption explicit:
   // without it the default 'warn' would route the deny to stderr instead.
@@ -1261,7 +1264,9 @@ describe('pretooluse gate trigger conditions', () => {
       'git -c a=b -c c=d commit -m x',
       'git --no-pager commit -m x',
       'git -C packages/web commit -m x',
-      'cd /tmp && git -c core.hooksPath=/dev/null commit -m x',
+      // Into a subdirectory of this repo: since #123 a `cd` elsewhere gates
+      // THAT repository, which here has no config to block with.
+      'cd packages && git -c core.hooksPath=/dev/null commit -m x',
       // A config VALUE that itself starts with `-`. The linearity fix stops the
       // value slot accepting a `-`-leading token, so this one is read as two
       // flags instead of flag-plus-value -- a different internal parse, same
@@ -4367,14 +4372,29 @@ describe('session-scoped rungs anchor on the session root (CLAUDE_PROJECT_DIR)',
 });
 
 /**
-An exec that answers only after any test has long finished.
+A result that arrives only after any test has long finished.
 */
-const hanging: Exec = () =>
-  new Promise<ExecResult>((resolve) => {
+function eventually(): Promise<ExecResult> {
+  return new Promise<ExecResult>((resolve) => {
     setTimeout(() => {
       resolve(ok(''));
     }, 60_000).unref();
   });
+}
+
+/**
+An exec that answers only after any test has long finished.
+*/
+const hanging: Exec = eventually;
+
+/**
+The SIGTERM listeners added since `before` was taken.
+*/
+function addedSigtermListeners(before: readonly unknown[]) {
+  return process
+    .listeners('SIGTERM')
+    .filter((listener) => !before.includes(listener));
+}
 
 describe('hook gates finish before the host gives up on them', () => {
   /**
@@ -4501,6 +4521,43 @@ describe('hook gates finish before the host gives up on them', () => {
     }
 
     expect(exits).toEqual([0]);
+  });
+
+  it('stops its own analyzers when it is terminated itself', async () => {
+    // A delegating run's deadline SIGTERMs the delegate; its default
+    // disposition would die and orphan the analyzers IT spawned.
+    const before = process.listeners('SIGTERM');
+    const added: number[] = [];
+    const terminatedMidGate: Exec = () => {
+      const listeners = addedSigtermListeners(before);
+      added.push(listeners.length);
+      for (const listener of listeners) {
+        listener('SIGTERM');
+      }
+      return eventually();
+    };
+
+    await runCommand(
+      'gate',
+      ['--mode=stop'],
+      deadlined(JSON.stringify({ cwd: root }), terminatedMidGate),
+    );
+
+    expect(added[0]).toBe(1);
+    expect(exitCodes[0]).toBe(143);
+    expect(terminated).toBe(2);
+  });
+
+  it('stops listening for SIGTERM once the gate has decided', async () => {
+    const before = process.listeners('SIGTERM');
+
+    await runCommand(
+      'gate',
+      ['--mode=pretooluse'],
+      deadlined(shellStdin('git commit -m x')),
+    );
+
+    expect(addedSigtermListeners(before)).toEqual([]);
   });
 
   it('reads the deadline from the repository root, not the directory it ran in', async () => {
@@ -5167,5 +5224,366 @@ describe('runCommand — ship', () => {
     expect(errors.join('')).toContain(
       'ship [--body-file=<f>] [--status-file=<f>] [--base=<ref>]',
     );
+  });
+});
+
+/**
+ * Run the pretooluse gate on `command`, with the hook payload naming
+ * `payloadCwd` and every exec call recorded.
+ */
+async function gateIn(
+  command: string,
+  payloadCwd: string,
+  over: Partial<CliDependencies> = {},
+): Promise<{ printed: string; calls: { args: string[]; cwd?: string }[] }> {
+  mkdirSync(path.join(root, '.git'), { recursive: true });
+  writeFileSync(
+    path.join(root, 'guardrails.config.json'),
+    JSON.stringify({ enforcement: 'block' }),
+  );
+  const calls: { args: string[]; cwd?: string }[] = [];
+  const dirty = dirtyExec();
+  await runCommand(
+    'gate',
+    ['--mode=pretooluse', '--dialect=copilot'],
+    dependencies({
+      exec: (name, args, options) => {
+        calls.push({
+          args,
+          ...(options?.cwd !== undefined && { cwd: options.cwd }),
+        });
+        return dirty(name, args, options);
+      },
+      readStdin: () =>
+        Promise.resolve(
+          JSON.stringify({
+            toolName: 'bash',
+            toolArgs: { command },
+            cwd: payloadCwd,
+          }),
+        ),
+      ...over,
+    }),
+  );
+  return { printed: out.join(''), calls };
+}
+
+describe('pretooluse gates the repository the git write lands in (#123)', () => {
+  it('gates a plain git commit in the payload cwd, as before', async () => {
+    const { printed, calls } = await gateIn('git commit -m x', root);
+    expect(printed).toContain('deny');
+    expect(calls.length).toBeGreaterThan(0);
+    expect(calls.every((call) => call.cwd === root)).toBe(true);
+  });
+
+  it('gates the repository a cd moves the write into, not the payload cwd', async () => {
+    const elsewhere = mkdtempSync(path.join(tmpdir(), 'guardrails-session-'));
+    try {
+      const { printed, calls } = await gateIn(
+        `cd ${root} && git commit -m x`,
+        elsewhere,
+        { cwd: elsewhere },
+      );
+      expect(printed).toContain('deny');
+      expect(calls.every((call) => call.cwd === root)).toBe(true);
+    } finally {
+      rmSync(elsewhere, { recursive: true, force: true });
+    }
+  });
+
+  it('gates the repository root when the cd lands in a subdirectory', async () => {
+    mkdirSync(path.join(root, 'packages', 'web'), { recursive: true });
+    const { printed, calls } = await gateIn(
+      'cd packages/web && git commit -m x',
+      root,
+    );
+    expect(printed).toContain('deny');
+    expect(calls.every((call) => call.cwd === root)).toBe(true);
+  });
+
+  it('reads the pre-push hook of the repository the push lands in', async () => {
+    const elsewhere = mkdtempSync(path.join(tmpdir(), 'guardrails-session-'));
+    try {
+      const { calls } = await gateIn(`git -C ${root} push`, elsewhere, {
+        cwd: elsewhere,
+      });
+      const hookLookup = calls.find((call) =>
+        call.args.includes('hooks/pre-push'),
+      );
+      expect(hookLookup?.cwd).toBe(root);
+    } finally {
+      rmSync(elsewhere, { recursive: true, force: true });
+    }
+  });
+
+  it('denies a write whose target it cannot tell, with the remedy, and checks nothing', async () => {
+    const { printed, calls } = await gateIn('cd "$X" && git commit -m x', root);
+    const reason = denyReason(JSON.parse(printed));
+    expect(reason).toContain('which repository this git write lands in');
+    expect(reason).toContain('not a literal');
+    expect(reason).toContain('git -C <dir>');
+    expect(calls).toEqual([]);
+  });
+
+  it('starts from the payload cwd, not the process cwd', async () => {
+    const elsewhere = mkdtempSync(path.join(tmpdir(), 'guardrails-process-'));
+    try {
+      mkdirSync(path.join(root, 'sub'));
+      const { calls } = await gateIn('cd sub && git commit -m x', root, {
+        cwd: elsewhere,
+      });
+      expect(calls.length).toBeGreaterThan(0);
+      expect(calls.every((call) => call.cwd === root)).toBe(true);
+    } finally {
+      rmSync(elsewhere, { recursive: true, force: true });
+    }
+  });
+
+  it('stays silent on a command that writes nothing', async () => {
+    const { printed, calls } = await gateIn('cd "$X" && git status', root);
+    expect(printed).toBe('');
+    expect(calls).toEqual([]);
+  });
+});
+
+/**
+ * A stub guardrails-core CLI: it answers every call with a deny naming the
+ * marker it was given, the payload cwd it read, and its arguments.
+ */
+const STUB_CLI = [
+  "let input = '';",
+  'for await (const chunk of process.stdin) input += chunk;',
+  'const reason = `stub ${process.env.GUARDRAILS_PRETOOLUSE_TARGET} ` +',
+  '  `${JSON.parse(input).cwd} ${process.argv.slice(2).join(" ")}`;',
+  "process.stdout.write(JSON.stringify({ permissionDecision: 'deny', permissionDecisionReason: reason }));",
+].join('\n');
+
+/**
+Install the stub guardrails-core inside `directory`.
+*/
+function installStub(directory: string): void {
+  const installed = path.join(directory, 'node_modules', 'guardrails-core');
+  mkdirSync(path.join(installed, 'dist'), { recursive: true });
+  writeFileSync(
+    path.join(installed, 'package.json'),
+    JSON.stringify({
+      name: 'guardrails-core',
+      type: 'module',
+      exports: { './cli': './dist/cli.mjs' },
+    }),
+  );
+  writeFileSync(path.join(installed, 'dist', 'cli.mjs'), STUB_CLI);
+}
+
+const DELEGATE_REPLY: ExecResult = {
+  stdout: '{"delegated":true}',
+  stderr: 'note\n',
+  code: 0,
+};
+
+describe('pretooluse delegates a write in another repository to its install (#123)', () => {
+  let temporary: string[];
+
+  beforeEach(() => {
+    temporary = [];
+    mkdirSync(path.join(root, '.git'));
+  });
+
+  afterEach(() => {
+    for (const directory of temporary) {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  /**
+  A second repository; `adopted` gives it a config, `installed` a CLI.
+  */
+  function otherRepo(
+    options: { adopted: boolean; installed: boolean },
+    parent = mkdtempSync(path.join(tmpdir(), 'guardrails-other-')),
+  ): string {
+    temporary.push(parent);
+    const repo = path.join(parent, 'repository');
+    mkdirSync(path.join(repo, '.git'), { recursive: true });
+    if (options.adopted) {
+      writeFileSync(
+        path.join(repo, 'guardrails.config.json'),
+        JSON.stringify({ enforcement: 'block' }),
+      );
+    }
+    if (options.installed) {
+      installStub(repo);
+    }
+    return repo;
+  }
+
+  interface Call {
+    command: string;
+    args: string[];
+    options?: Parameters<Exec>[2];
+  }
+
+  async function gateFromRoot(
+    command: string,
+    reply: ExecResult = DELEGATE_REPLY,
+    over: Partial<CliDependencies> = {},
+  ): Promise<Call[]> {
+    const calls: Call[] = [];
+    const dirty = dirtyExec();
+    await runCommand(
+      'gate',
+      ['--mode=pretooluse', '--dialect=copilot'],
+      dependencies({
+        exec: (name, args, options) => {
+          calls.push({
+            command: name,
+            args,
+            ...(options !== undefined && { options }),
+          });
+          return name === process.execPath
+            ? Promise.resolve(reply)
+            : dirty(name, args, options);
+        },
+        readStdin: () =>
+          Promise.resolve(
+            JSON.stringify({
+              toolName: 'bash',
+              toolArgs: { command },
+              cwd: root,
+              sessionId: 's1',
+            }),
+          ),
+        ...over,
+      }),
+    );
+    return calls;
+  }
+
+  it('spawns the target install with the marker and the rewritten payload, and relays it', async () => {
+    const other = otherRepo({ adopted: true, installed: true });
+    const calls = await gateFromRoot(`cd ${other} && git commit -m x`);
+    expect(calls).toEqual([
+      {
+        command: process.execPath,
+        args: [
+          '-e',
+          "import('guardrails-core/cli')",
+          'guardrails',
+          'gate',
+          '--mode=pretooluse',
+          '--dialect=copilot',
+        ],
+        options: {
+          cwd: other,
+          env: { GUARDRAILS_PRETOOLUSE_TARGET: other },
+          input: JSON.stringify({
+            toolName: 'bash',
+            toolArgs: { command: `cd ${other} && git commit -m x` },
+            cwd: other,
+            sessionId: 's1',
+          }),
+        },
+      },
+    ]);
+    expect(out.join('')).toBe('{"delegated":true}');
+    expect(errors.join('')).toBe('note\n');
+  });
+
+  it('delegates a git -C write the same way', async () => {
+    const other = otherRepo({ adopted: true, installed: true });
+    const calls = await gateFromRoot(`git -C ${other} commit -m x`);
+    expect(calls.map((call) => call.options?.cwd)).toEqual([other]);
+  });
+
+  it('gates the marker root in-process, without parsing or delegating', async () => {
+    const other = otherRepo({ adopted: true, installed: true });
+    const calls = await gateFromRoot('cd "$X" && git commit -m x', undefined, {
+      env: { GUARDRAILS_PRETOOLUSE_TARGET: other },
+    });
+    expect(calls.length).toBeGreaterThan(0);
+    expect(calls.some((call) => call.command === process.execPath)).toBe(false);
+    const gitCalls = calls.filter((call) => call.command === 'git');
+    expect(gitCalls.length).toBeGreaterThan(0);
+    expect(gitCalls.every((call) => call.options?.cwd === other)).toBe(true);
+    expect(denyReason(JSON.parse(out.join('')))).not.toContain(
+      'which repository',
+    );
+  });
+
+  it.each([
+    ['exits non-zero', { stdout: '', stderr: 'boom\n', code: 2 }, 'exited 2:'],
+    [
+      'is killed',
+      { stdout: '', stderr: 'boom\n', code: 0, signal: 'SIGTERM' },
+      'exited 0 on SIGTERM:',
+    ],
+    [
+      'cannot be started',
+      { stdout: '', stderr: 'boom\n', code: 1, spawnFailed: true },
+      'exited 1:',
+    ],
+  ] as const)(
+    'denies the write when the delegate %s',
+    async (_case, reply: ExecResult, exit) => {
+      const other = otherRepo({ adopted: true, installed: true });
+      await gateFromRoot(`cd ${other} && git commit -m x`, reply);
+      const reason = denyReason(JSON.parse(out.join('')));
+      expect(reason).toContain('failed before it could decide');
+      expect(reason).toContain(`${other} ${exit} boom)`);
+    },
+  );
+
+  it('denies a write into an adopted repository with no install, naming it', async () => {
+    const other = otherRepo({ adopted: true, installed: false });
+    const calls = await gateFromRoot(`cd ${other} && git commit -m x`);
+    const reason = denyReason(JSON.parse(out.join('')));
+    expect(reason).toContain(`npm ci\` in ${other}`);
+    expect(calls).toEqual([]);
+  });
+
+  it('does not count an install in an enclosing directory', async () => {
+    const parent = mkdtempSync(path.join(tmpdir(), 'guardrails-parent-'));
+    installStub(parent);
+    const other = otherRepo({ adopted: true, installed: false }, parent);
+    const calls = await gateFromRoot(`cd ${other} && git commit -m x`);
+    expect(denyReason(JSON.parse(out.join('')))).toContain(
+      `npm ci\` in ${other}`,
+    );
+    expect(calls).toEqual([]);
+  });
+
+  it('allows a write into a repository that never adopted guardrails', async () => {
+    const other = otherRepo({ adopted: false, installed: false });
+    const calls = await gateFromRoot(`cd ${other} && git commit -m x`);
+    expect(out.join('')).toBe('');
+    expect(calls).toEqual([]);
+  });
+
+  it('relays the real target install end to end (integration)', async () => {
+    const other = otherRepo({ adopted: true, installed: true });
+    for (const command of [
+      `cd ${other} && git commit -m x`,
+      `git -C ${other} commit -m x`,
+    ]) {
+      out.length = 0;
+      await runCommand(
+        'gate',
+        ['--mode=pretooluse', '--dialect=copilot'],
+        dependencies({
+          exec: spawnExec,
+          readStdin: () =>
+            Promise.resolve(
+              JSON.stringify({
+                toolName: 'bash',
+                toolArgs: { command },
+                cwd: root,
+              }),
+            ),
+        }),
+      );
+      expect(denyReason(JSON.parse(out.join('')))).toBe(
+        `stub ${other} ${other} gate --mode=pretooluse --dialect=copilot`,
+      );
+    }
   });
 });

@@ -11,10 +11,10 @@ this doc is wrong until it is updated to match, not the other way around.
 `guardrails-core` ships as a GitHub Release tarball, not from npm:
 
 ```bash
-npm i -D https://github.com/ddteeter/agentic-guardrails-scaffolding/releases/download/v0.7.0/guardrails-core-0.7.0.tgz
+npm i -D https://github.com/ddteeter/agentic-guardrails-scaffolding/releases/download/v0.8.0/guardrails-core-0.8.0.tgz
 ```
 
-That URL resolves once `v0.7.0`'s release workflow has run — a release is a
+That URL resolves once `v0.8.0`'s release workflow has run — a release is a
 pushed `v*` tag, which packs the tarball and attaches it. A later version is a
 new tag, a new release asset, and a hand-edited URL — see the cost note below.
 
@@ -568,7 +568,8 @@ ship.log 2>&1 &`), finish the task, and let whoever started the agent read
   `{state, branch, pr, url, failing, tail, finishedAt}`. `state` is `green`,
   `gate-blocked`, `lock-timeout`, `ci-red` (with the failing check names) or
   `error`. It prints one line and exits 0 only on green. It needs `gh`,
-  authenticated.
+  authenticated, and checks that before pushing: a missing or logged-out `gh`
+  is an `error` that says how to fix it, and nothing is pushed.
 - **The PreToolUse hook enforces it.** On Claude Code's `Bash`, without
   `run_in_background: true`, and on the Codex and Copilot shell tools, it denies `gh pr checks … --watch`,
   `gh run watch`, an `until`/`while` loop polling `kill -0` or `pgrep`, a
@@ -700,6 +701,31 @@ Things worth knowing before you hit them, rather than after:
   and Codex that means the session is confined to the commit manifest's files
   (and the tests the manifest names) until a commit passes, or for at most 30
   minutes, after which the loop is treated as abandoned.
+
+- **A git write is gated in the repository it lands in, which the hook has to
+  work out from the command.** The hook payload names the directory the shell
+  started in, but `cd ../other && git commit` commits in `../other`. The
+  PreToolUse gate reads a narrow set of literal shapes to find the target:
+  a `cd` chain joined to the write by `&&`, `;` or a newline (absolute,
+  relative, quoted, `~`), and every `git -C <dir>`. Same-install writes, such
+  as a `cd` into a subdirectory, gate in-process as before. A write that lands
+  in another repository is handed to that repository's own guardrails-core,
+  so its config, its pinned version and its tree decide. If that repository
+  has a `guardrails.config.json` but no install of its own, the write is
+  denied with an `npm ci` remedy naming it. If it never adopted guardrails,
+  the write is allowed, and its own git hooks still run.
+
+  Anything it cannot read for certain is denied rather than guessed at, since
+  a guess gates the wrong repository. That covers a `cd` to a variable or a
+  substitution, `cd -`, `pushd`/`popd`, a `cd` inside a subshell, group,
+  pipeline, `||` or `&`, `--git-dir`/`--work-tree` and
+  `GIT_DIR=`/`GIT_WORK_TREE=`, and one command writing into two directories.
+  The remedy is always a literal path: `cd <dir> && git ...` or
+  `git -C <dir> ...`. `$(...)` and backticks elsewhere in the command, such as
+  a `-m "$(cat <<'EOF' ...)"` message, do not affect the answer. Out of reach,
+  as they always were: `xargs git commit`, `sh -c '...'` and git aliases. The
+  Stop gate and the git hooks need none of this, because they already run in
+  the repository being written.
 
 - **Every host lets a timed-out hook through.** Claude Code, Codex and Copilot
   all treat a hook timeout as fail-open, so a gate that is still running when

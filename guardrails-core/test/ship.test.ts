@@ -86,6 +86,46 @@ function options(exec: Exec, over: Partial<ShipOptions> = {}): ShipOptions {
   };
 }
 
+describe('ship: gh is checked before anything is pushed', () => {
+  it('stops before pushing when gh is not installed', async () => {
+    const { exec, calls } = fakeExec({
+      ...HAPPY,
+      'gh auth status': {
+        stdout: '',
+        stderr: 'spawn gh ENOENT',
+        code: 1,
+        spawnFailed: true,
+      },
+    });
+    const status = await ship(options(exec));
+    expect(status.state).toBe('error');
+    expect(status.tail).toContain('gh (GitHub CLI) is not installed');
+    expect(calls.some((call) => call.line.startsWith('git push'))).toBe(false);
+  });
+
+  it('stops before pushing when gh is not logged in', async () => {
+    const { exec, calls } = fakeExec({
+      ...HAPPY,
+      'gh auth status': failed('You are not logged into any GitHub hosts.'),
+    });
+    const status = await ship(options(exec));
+    expect(status.state).toBe('error');
+    expect(status.tail).toContain('gh auth login');
+    expect(status.tail).toContain('You are not logged into any GitHub hosts.');
+    expect(calls.some((call) => call.line.startsWith('git push'))).toBe(false);
+  });
+
+  it('asks gh in the repository it ships', async () => {
+    const { exec, calls } = fakeExec(HAPPY);
+    await ship(options(exec));
+    const asked = calls.find((call) => call.line === 'gh auth status');
+    expect(asked?.cwd).toBe(root);
+    expect(
+      calls.findIndex((call) => call.line === 'gh auth status'),
+    ).toBeLessThan(calls.findIndex((call) => call.line.startsWith('git push')));
+  });
+});
+
 async function stateOf(exec: Exec): Promise<string> {
   const status = await ship(options(exec));
   return status.state;
@@ -229,7 +269,8 @@ describe('ship: a push that did not go through', () => {
       failing: [],
     });
     expect(status.tail).toContain('src/a.ts:1 [no-console]');
-    expect(calls.some((call) => call.line.startsWith('gh'))).toBe(false);
+    // Only the up-front `gh auth status`: no pull request after a blocked push.
+    expect(calls.some((call) => call.line.startsWith('gh pr'))).toBe(false);
   });
 
   it('reports a lock timeout apart from a block', async () => {
@@ -311,6 +352,84 @@ describe('ship: CI', () => {
       ),
     });
     expect(await stateOf(exec)).toBe('error');
+  });
+
+  it('watches again when checks register just after the watch gave up', async () => {
+    // The race seen on dialed.run #191: the watch ran before CI registered
+    // anything and exited with "no checks reported", then the listing a moment
+    // later found every check pending. That watch never watched, so a pending
+    // check there means "start watching", not "the watch broke".
+    const delays: number[] = [];
+    const { exec, calls } = fakeExec({
+      ...HAPPY,
+      'gh pr checks 42 --watch': [
+        failed("no checks reported on the 'feat/x' branch"),
+        ok('build\tpass'),
+      ],
+      'gh pr checks 42 --json': [
+        ok(JSON.stringify([{ name: 'build', bucket: 'pending' }])),
+        ok(JSON.stringify([{ name: 'build', bucket: 'pass' }])),
+      ],
+    });
+    const status = await ship(
+      options(exec, {
+        delay: (ms) => {
+          delays.push(ms);
+          return Promise.resolve();
+        },
+      }),
+    );
+    expect(status.state).toBe('green');
+    expect(delays).toEqual([15_000]);
+    expect(
+      calls.filter((call) => call.line === 'gh pr checks 42 --watch'),
+    ).toHaveLength(2);
+  });
+
+  it('does not wait again when the checks had already settled', async () => {
+    const delays: number[] = [];
+    const { exec } = fakeExec({
+      ...HAPPY,
+      'gh pr checks 42 --watch': failed(
+        "no checks reported on the 'feat/x' branch",
+      ),
+      'gh pr checks 42 --json': ok(
+        JSON.stringify([{ name: 'build', bucket: 'pass' }]),
+      ),
+    });
+    const status = await ship(
+      options(exec, {
+        delay: (ms) => {
+          delays.push(ms);
+          return Promise.resolve();
+        },
+      }),
+    );
+    expect(status.state).toBe('green');
+    expect(delays).toEqual([]);
+  });
+
+  it('gives up as an error when checks stay pending past the registration wait', async () => {
+    const delays: number[] = [];
+    const { exec } = fakeExec({
+      ...HAPPY,
+      'gh pr checks 42 --watch': failed(
+        "no checks reported on the 'feat/x' branch",
+      ),
+      'gh pr checks 42 --json': ok(
+        JSON.stringify([{ name: 'build', bucket: 'pending' }]),
+      ),
+    });
+    const status = await ship(
+      options(exec, {
+        delay: (ms) => {
+          delays.push(ms);
+          return Promise.resolve();
+        },
+      }),
+    );
+    expect(status.state).toBe('error');
+    expect(delays).toHaveLength(8);
   });
 
   it('is an error when the checks cannot be read', async () => {

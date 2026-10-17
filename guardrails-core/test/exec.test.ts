@@ -58,6 +58,29 @@ describe('spawnExec', () => {
     expect(result.stdout).toBe('undefined');
   });
 
+  it('writes input to the child on stdin, then closes it', async () => {
+    // Closing matters as much as writing: a child reading stdin to its end
+    // would otherwise wait forever.
+    const result = await spawnExec(
+      node,
+      ['-e', 'process.stdin.pipe(process.stdout)'],
+      { input: '{"cwd":"/x"}' },
+    );
+    expect(result.stdout).toBe('{"cwd":"/x"}');
+  });
+
+  it('leaves stdin open when there is no input', async () => {
+    const result = await spawnExec(node, [
+      '-e',
+      [
+        'process.stdin.resume();',
+        "process.stdin.on('end', () => { process.stdout.write('closed'); process.exit(0); });",
+        "setTimeout(() => { process.stdout.write('open'); process.exit(0); }, 300);",
+      ].join(' '),
+    ]);
+    expect(result.stdout).toBe('open');
+  });
+
   it('resolves (does not reject) when the command does not exist', async () => {
     const result = await spawnExec('definitely-not-a-real-binary-xyz', []);
     expect(result.code).toBe(1);
