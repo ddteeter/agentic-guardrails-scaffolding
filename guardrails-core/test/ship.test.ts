@@ -313,6 +313,84 @@ describe('ship: CI', () => {
     expect(await stateOf(exec)).toBe('error');
   });
 
+  it('watches again when checks register just after the watch gave up', async () => {
+    // The race seen on dialed.run #191: the watch ran before CI registered
+    // anything and exited with "no checks reported", then the listing a moment
+    // later found every check pending. That watch never watched, so a pending
+    // check there means "start watching", not "the watch broke".
+    const delays: number[] = [];
+    const { exec, calls } = fakeExec({
+      ...HAPPY,
+      'gh pr checks 42 --watch': [
+        failed("no checks reported on the 'feat/x' branch"),
+        ok('build\tpass'),
+      ],
+      'gh pr checks 42 --json': [
+        ok(JSON.stringify([{ name: 'build', bucket: 'pending' }])),
+        ok(JSON.stringify([{ name: 'build', bucket: 'pass' }])),
+      ],
+    });
+    const status = await ship(
+      options(exec, {
+        delay: (ms) => {
+          delays.push(ms);
+          return Promise.resolve();
+        },
+      }),
+    );
+    expect(status.state).toBe('green');
+    expect(delays).toEqual([15_000]);
+    expect(
+      calls.filter((call) => call.line === 'gh pr checks 42 --watch'),
+    ).toHaveLength(2);
+  });
+
+  it('does not wait again when the checks had already settled', async () => {
+    const delays: number[] = [];
+    const { exec } = fakeExec({
+      ...HAPPY,
+      'gh pr checks 42 --watch': failed(
+        "no checks reported on the 'feat/x' branch",
+      ),
+      'gh pr checks 42 --json': ok(
+        JSON.stringify([{ name: 'build', bucket: 'pass' }]),
+      ),
+    });
+    const status = await ship(
+      options(exec, {
+        delay: (ms) => {
+          delays.push(ms);
+          return Promise.resolve();
+        },
+      }),
+    );
+    expect(status.state).toBe('green');
+    expect(delays).toEqual([]);
+  });
+
+  it('gives up as an error when checks stay pending past the registration wait', async () => {
+    const delays: number[] = [];
+    const { exec } = fakeExec({
+      ...HAPPY,
+      'gh pr checks 42 --watch': failed(
+        "no checks reported on the 'feat/x' branch",
+      ),
+      'gh pr checks 42 --json': ok(
+        JSON.stringify([{ name: 'build', bucket: 'pending' }]),
+      ),
+    });
+    const status = await ship(
+      options(exec, {
+        delay: (ms) => {
+          delays.push(ms);
+          return Promise.resolve();
+        },
+      }),
+    );
+    expect(status.state).toBe('error');
+    expect(delays).toHaveLength(8);
+  });
+
   it('is an error when the checks cannot be read', async () => {
     const { exec } = fakeExec({
       ...HAPPY,
