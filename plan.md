@@ -1072,7 +1072,7 @@ core/src/audit.ts`) surfaced that it was a context-free text scan: it flagged
   at it (their L4). Not built.
 
 - **`init` treats a consumer's formatter as a hand edit, so owned files stop
-  upgrading (dialed.run, 2026-10-24, unfixed).** Bumping dialed.run to 0.11.1,
+  upgrading (dialed.run, 2026-10-24, fixed).** Bumping dialed.run to 0.11.1,
   `init --apply` skipped `guardrail-fixer.md` as drifted. The only difference
   was Prettier's quote style, which their lint-staged applies at commit:
   Prettier formats the prompt's fenced `ts` block as code. Drift is an exact
@@ -1082,7 +1082,11 @@ core/src/audit.ts`) surfaced that it was a context-free text scan: it flagged
   **Fix direction:** a formatter-agnostic fingerprint (letters and digits
   only), recorded in the manifest. Existing installs get a bundled
   checksum→fingerprint table built from the release tags. Plan:
-  `docs/superpowers/plans/2026-10-24-formatter-agnostic-drift.md`.
+  `docs/superpowers/plans/2026-10-24-formatter-agnostic-drift.md`. **Fixed:**
+  as planned. The table ships in `guardrails-core/scaffold-data/`, because the
+  build regenerates `guidance/`. A live check took the 0.11.0 fixer, ran it
+  through default Prettier with a 0.11.0 manifest, and got `update` from a
+  packed build where the old code gave `drift`.
 
 ## Roadmap: analyzer opt-in (pack composition, not all-or-nothing) — shipped
 

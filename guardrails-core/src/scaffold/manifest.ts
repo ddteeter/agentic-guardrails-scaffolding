@@ -129,7 +129,7 @@ export function parseManifest(parsed: unknown): ScaffoldManifest | undefined {
 /**
 The string-valued entries of `record`; anything else is dropped.
 */
-function stringEntries(
+export function stringEntries(
   record: Readonly<Record<string, unknown>>,
 ): Record<string, string> {
   const checked: Record<string, string> = {};

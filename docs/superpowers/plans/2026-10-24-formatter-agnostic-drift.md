@@ -123,10 +123,14 @@ legacyTable)` in `manifest.ts`. It returns true on an exact checksum match,
    - rebuild the `.claude/skills/*/SKILL.md` entries with the current
      `claudeSkillEntries` from that tag's guidance tree.
 
-   It emits `{ checksum: fingerprint }` to `guardrails-core/guidance/fingerprints.json`,
-   sorted and deterministic like `index.json`. A rebuilt skill that differs from
-   what the tag really wrote only fails to match, which is safe. `init` loads the
-   table through `guidanceRoot()`.
+   It emits `{ checksum: fingerprint }` to
+   `guardrails-core/scaffold-data/legacy-fingerprints.json`. (Not `guidance/`,
+   as first planned: `sync-agents.mjs` deletes and regenerates `guidance/` on
+   every build. `scaffold-data/` is added to the package's `files`.)
+   The output is sorted and deterministic like `index.json`. A rebuilt skill that
+   differs from what the tag really wrote only fails to match, which is safe.
+   `init` and the session-start warning load the table through
+   `legacyFingerprints()` in `templates.ts`.
    - Tests:
      - the table holds an entry for the 0.11.0 `guardrail-fixer.md` checksum;
      - a 0.11.0 manifest plus a Prettier-reformatted fixer gives `update`.

@@ -57,7 +57,8 @@ writes. `init` prints this path too.
 `init` is re-runnable: on a fresh repo it creates the Claude, Codex, and Copilot
 fixer agents, `.githooks/pre-commit`, host hook configuration, and a seeded
 `guardrails.config.json`; on a repo it already scaffolded, an untouched file
-is upgraded in place, and a file you edited is reported as drifted and left
+is upgraded in place (so is one your formatter only reformatted), and a file
+you edited is reported as drifted and left
 alone (pass `--force` to overwrite it anyway) — except `guardrails.config.json`
 itself, which holds your policy and your sanctioned suppressions and is never
 overwritten again once it exists, `--force` included. A file you own outright —
