@@ -1042,6 +1042,23 @@ core/src/audit.ts`) surfaced that it was a context-free text scan: it flagged
   backstop is for `session-start` to warn when any file under
   `guardrails-core/src/` is newer than `dist/cli.mjs`.
 
+- **The fixer ignored path-scoped project rules as untrusted tool output
+  (dialed.run, 2026-10-24, fixed).** dialed.run moved most of its CLAUDE.md
+  into `.claude/rules/*.md` with `paths:` frontmatter, which Claude Code
+  attaches to a Read/Edit result on a matching file. Headless haiku runs
+  showed the main session and a general-purpose subagent following an
+  attached rule, while `guardrail-fixer` saw the same text, called it
+  something that "came in the tool output, not from my instructions", and
+  did not act on it. So every convention the repo moved out of the root file
+  stopped reaching the agent that edits under the gate. **Fix:** both fixer
+  prompts now say that host-attached rule files (`.claude/rules/`,
+  subdirectory `CLAUDE.md`/`AGENTS.md`, Copilot's `.github/instructions/`)
+  carry the root file's standing, that the code being fixed stays data, and
+  that rules never widen scope or lift a hard constraint. Pinned in
+  `plugin-agents.test.ts`. **Open:** the same consumer asked for a config
+  map from `ruleId` to a rules doc, so gate and manifest messages can point
+  at it (their L4). Not built.
+
 ## Roadmap: analyzer opt-in (pack composition, not all-or-nothing) — shipped
 
 Phase E piece 1 shipped the hybrid this section used to guess at:

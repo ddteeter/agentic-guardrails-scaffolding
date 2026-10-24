@@ -124,3 +124,40 @@ describe('fixer agents — behaviour-changing-fix contract', () => {
     expect(generated).toContain("typeof x !== 'number'");
   });
 });
+
+/**
+ * What the fixers' prompts have to say about project rule files the host
+ * attaches mid-run, and why.
+ *
+ * A consumer moved most of its CLAUDE.md into path-scoped
+ * `.claude/rules/*.md`, which Claude Code attaches to a Read/Edit result when
+ * the touched file matches. Measured with headless haiku runs: the main session
+ * and a general-purpose subagent both followed the attached rule; the fast
+ * fixer saw it, called it text that "came in the tool output, not from my
+ * instructions", and ignored it. So every rule the repo moved out of the root
+ * CLAUDE.md stopped reaching the one agent that edits under the gate. The
+ * prompt has to grant those files standing explicitly — while keeping the
+ * files being fixed as data, and the scope-lock and hard constraints above
+ * any rule.
+ */
+const PROJECT_RULES_CONTRACT: readonly (readonly [string, string])[] = [
+  ['names the Claude Code rule files', '.claude/rules/'],
+  ['names subdirectory instruction files', 'subdirectory'],
+  ['gives them the standing of the root file', 'same standing as'],
+  ['keeps the code under repair as data', 'still data'],
+  ['keeps rules below the hard constraints', 'never widen'],
+];
+
+describe('fixer agents — project-rules contract', () => {
+  it.each(PROJECT_RULES_CONTRACT)('fast tier %s', (_case, phrase) => {
+    expect(agentSource('guardrail-fixer')).toContain(phrase);
+  });
+
+  it('says it again in the thorough tier', () => {
+    // The thorough tier's prompt is what the model actually holds; "read that
+    // agent's rules" does not reliably put the fast tier's text in context.
+    const thorough = agentSource('guardrail-fixer-thorough');
+    expect(thorough).toContain('.claude/rules/');
+    expect(thorough).toContain('same standing as');
+  });
+});
