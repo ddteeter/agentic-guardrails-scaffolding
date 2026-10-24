@@ -14,6 +14,7 @@
   "scaffoldVersion": "1.2.0",
   "scripts": {
     "build": "npm run build --workspace guardrails-core && node scripts/sync-agents.mjs",
+    "gen:legacy-fingerprints": "node scripts/legacy-fingerprints.mjs",
     "lint": "eslint .",
     "lint:fix": "eslint --fix .",
     "format": "prettier --write .",

@@ -48,7 +48,11 @@ import {
   type ScaffoldDecisions,
   type ScaffoldPlan,
 } from './plan.js';
-import { buildDesiredFiles, canonicalKey } from './templates.js';
+import {
+  buildDesiredFiles,
+  canonicalKey,
+  legacyFingerprints,
+} from './templates.js';
 
 export interface InitDependencies {
   readonly exec: Exec;
@@ -426,6 +430,7 @@ export async function initCommand(
     decisions,
     desired,
     current: readCurrent(facts.repoRoot, desired),
+    legacyFingerprints: legacyFingerprints(),
   });
   if (!parsed.options.apply) {
     printPlan(dependencies, facts, plan, parsed.options.shouldPrintJson);
