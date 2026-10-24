@@ -1071,6 +1071,19 @@ core/src/audit.ts`) surfaced that it was a context-free text scan: it flagged
   map from `ruleId` to a rules doc, so gate and manifest messages can point
   at it (their L4). Not built.
 
+- **`init` treats a consumer's formatter as a hand edit, so owned files stop
+  upgrading (dialed.run, 2026-10-24, unfixed).** Bumping dialed.run to 0.11.1,
+  `init --apply` skipped `guardrail-fixer.md` as drifted. The only difference
+  was Prettier's quote style, which their lint-staged applies at commit:
+  Prettier formats the prompt's fenced `ts` block as code. Drift is an exact
+  checksum compare (`decideOwned`, `staleArtifacts`), so from a consumer's
+  first commit on, any owned file their formatter touches never upgrades
+  again. #141 reached dialed.run only because the fix was copied over by hand.
+  **Fix direction:** a formatter-agnostic fingerprint (letters and digits
+  only), recorded in the manifest. Existing installs get a bundled
+  checksum→fingerprint table built from the release tags. Plan:
+  `docs/superpowers/plans/2026-10-24-formatter-agnostic-drift.md`.
+
 ## Roadmap: analyzer opt-in (pack composition, not all-or-nothing) — shipped
 
 Phase E piece 1 shipped the hybrid this section used to guess at:
