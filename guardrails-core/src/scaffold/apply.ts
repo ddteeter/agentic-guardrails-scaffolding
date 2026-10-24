@@ -32,6 +32,7 @@ import {
 } from './merge.js';
 import {
   checksum,
+  fingerprint,
   MANIFEST_PATH,
   parseManifest,
   serializeManifest,
@@ -65,6 +66,7 @@ interface ApplyAccumulator {
   readonly skipped: string[];
   readonly warnings: string[];
   readonly manifestUpdates: Record<string, string>;
+  readonly fingerprintUpdates: Record<string, string>;
 }
 
 /**
@@ -133,6 +135,7 @@ function applyDirectAction(
   accumulator.written.push(action.path);
   if (action.fileClass === 'owned') {
     accumulator.manifestUpdates[action.path] = checksum(desiredContent);
+    accumulator.fingerprintUpdates[action.path] = fingerprint(desiredContent);
   }
   if (action.path === GIT_HOOKS_SCRIPT_PATH) {
     dependencies.setHooksPath();
@@ -180,6 +183,7 @@ function readExistingManifest(
 function writeManifest(
   repoRoot: string,
   manifestUpdates: Readonly<Record<string, string>>,
+  fingerprintUpdates: Readonly<Record<string, string>>,
   version: string,
   dependencies: ApplyDependencies,
   warnings: string[],
@@ -193,6 +197,7 @@ function writeManifest(
   const manifest: ScaffoldManifest = {
     guardrailsVersion: version,
     files: { ...existing?.files, ...manifestUpdates },
+    fingerprints: { ...existing?.fingerprints, ...fingerprintUpdates },
   };
   dependencies.writeFile(manifestFullPath, serializeManifest(manifest));
 }
@@ -209,6 +214,7 @@ export function applyScaffold(
     skipped: [],
     warnings: [],
     manifestUpdates: {},
+    fingerprintUpdates: {},
   };
 
   for (const action of plan.actions) {
@@ -253,6 +259,7 @@ export function applyScaffold(
     writeManifest(
       repoRoot,
       accumulator.manifestUpdates,
+      accumulator.fingerprintUpdates,
       version,
       dependencies,
       accumulator.warnings,

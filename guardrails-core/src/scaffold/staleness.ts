@@ -31,7 +31,7 @@
  *   command nobody runs.
  */
 
-import { checksum, type ScaffoldManifest } from './manifest.js';
+import { isUnmodified, type ScaffoldManifest } from './manifest.js';
 
 /**
 The shipped content for a scaffolded path: `[repo-relative path, content]`.
@@ -62,6 +62,11 @@ export function staleArtifacts(
    * rather than a check anything relies on.
    */
   readSource: (file: string) => string | undefined,
+  /**
+  Recorded checksum -> fingerprint, for manifests written before fingerprints
+  were (see `modificationOf`).
+  */
+  legacyFingerprints: Readonly<Record<string, string>> = {},
 ): StaleArtifacts {
   const updatable: string[] = [];
   const drifted: string[] = [];
@@ -79,8 +84,8 @@ export function staleArtifacts(
       updatable.push(path);
       continue;
     }
-    if (checksum(onDisk) !== recorded) {
-      // Edited since. Reported whether or not an upgrade is available: the
+    if (!isUnmodified(path, onDisk, manifest, legacyFingerprints)) {
+      // Edited since. A reformat by the consumer's formatter is not an edit. Reported whether or not an upgrade is available: the
       // file is opted out of FUTURE upgrades too, which is the part worth
       // hearing early.
       drifted.push(path);

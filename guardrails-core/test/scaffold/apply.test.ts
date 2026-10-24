@@ -9,6 +9,7 @@ import {
 import type { RepoFacts } from '../../src/scaffold/detect.js';
 import {
   checksum,
+  fingerprint,
   MANIFEST_PATH,
   parseManifest,
 } from '../../src/scaffold/manifest.js';
@@ -570,6 +571,48 @@ describe('applyScaffold', () => {
       // A manifest that reads back successfully is not a corrupted file --
       // no warning should be raised for it.
       expect(result.warnings).toEqual([]);
+    });
+
+    it('records a fingerprint beside each owned checksum, keeping earlier ones', () => {
+      // The fingerprint is what lets a later init tell a consumer's formatter
+      // from a consumer's edit -- see manifest.ts's `fingerprint`.
+      const existingManifest = JSON.stringify({
+        guardrailsVersion: '1.2.3',
+        files: { 'kept.md': checksum('kept') },
+        fingerprints: { 'kept.md': fingerprint('kept') },
+      });
+      const { deps, files } = makeHarness({
+        [MANIFEST_PATH]: existingManifest,
+      });
+      const plan = planOf(
+        action({
+          path: '.githooks/pre-commit',
+          fileClass: 'owned',
+          kind: 'create',
+        }),
+        action({
+          path: 'guardrails.config.json',
+          fileClass: 'seed-once',
+          kind: 'create',
+        }),
+      );
+      applyScaffold(
+        plan,
+        {
+          '.githooks/pre-commit': 'hook script',
+          'guardrails.config.json': '{}',
+        },
+        REPO_ROOT,
+        deps,
+        VERSION,
+      );
+      const manifest = JSON.parse(files.get(fullPath(MANIFEST_PATH)) ?? '') as {
+        fingerprints: Record<string, string>;
+      };
+      expect(manifest.fingerprints).toEqual({
+        '.githooks/pre-commit': fingerprint('hook script'),
+        'kept.md': fingerprint('kept'),
+      });
     });
 
     it('treats an unparseable existing manifest as absent rather than failing', () => {

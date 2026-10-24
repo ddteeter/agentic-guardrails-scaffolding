@@ -18,7 +18,7 @@ import {
 import { effectiveAnalyzers, type RepoFacts } from './detect.js';
 import { foreignHooksPath, foreignHooksPathWarning } from './hooks-path.js';
 import { isSharedPath } from './merge.js';
-import { checksum, type ScaffoldManifest } from './manifest.js';
+import { modificationOf, type ScaffoldManifest } from './manifest.js';
 
 export type FileClass = 'owned' | 'shared' | 'seed-once';
 
@@ -59,6 +59,11 @@ export interface PlanInput {
   Repo-relative path -> the content on disk, absent when the file is missing.
   */
   readonly current: Readonly<Record<string, string>>;
+  /**
+  Recorded checksum -> fingerprint, for manifests written before fingerprints
+  were (see `modificationOf`). Defaults to none.
+  */
+  readonly legacyFingerprints?: Readonly<Record<string, string>>;
 }
 
 /**
@@ -114,6 +119,7 @@ function decideOwned(
   desiredContent: string,
   currentContent: string | undefined,
   manifest: ScaffoldManifest | undefined,
+  legacyFingerprints: Readonly<Record<string, string>>,
   shouldForce: boolean,
 ): FileDecision {
   if (currentContent === undefined) {
@@ -128,15 +134,22 @@ function decideOwned(
       reason: `${path} already matches the current template`,
     };
   }
-  // No `recordedChecksum !== undefined` guard: `undefined === checksum(...)`
-  // is always false in JavaScript, so the guard would be a dead branch a
-  // mutation test cannot distinguish from `if (true)` -- see the module
-  // comment on `noUncheckedIndexedAccess` equivalent mutants.
-  const recordedChecksum = manifest?.files[path];
-  if (recordedChecksum === checksum(currentContent)) {
+  const modification = modificationOf(
+    path,
+    currentContent,
+    manifest,
+    legacyFingerprints,
+  );
+  if (modification === 'unmodified') {
     return {
       kind: 'update',
       reason: `${path} is unmodified since it was scaffolded; upgrading it`,
+    };
+  }
+  if (modification === 'reformatted') {
+    return {
+      kind: 'update',
+      reason: `${path} was only reformatted since it was scaffolded; upgrading it`,
     };
   }
   if (shouldForce) {
@@ -212,6 +225,7 @@ function decideFile(
   desiredContent: string,
   currentContent: string | undefined,
   manifest: ScaffoldManifest | undefined,
+  legacyFingerprints: Readonly<Record<string, string>>,
   shouldForce: boolean,
 ): FileDecision {
   if (fileClass === 'seed-once') {
@@ -225,6 +239,7 @@ function decideFile(
     desiredContent,
     currentContent,
     manifest,
+    legacyFingerprints,
     shouldForce,
   );
 }
@@ -252,6 +267,7 @@ export function planScaffold(input: PlanInput): ScaffoldPlan {
       desiredContent,
       currentContent,
       input.facts.manifest,
+      input.legacyFingerprints ?? {},
       input.decisions.shouldForce,
     );
     actions.push({

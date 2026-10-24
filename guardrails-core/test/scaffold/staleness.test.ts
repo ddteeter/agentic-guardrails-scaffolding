@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { checksum } from '../../src/scaffold/manifest.js';
+import { checksum, fingerprint } from '../../src/scaffold/manifest.js';
 import { staleArtifacts } from '../../src/scaffold/staleness.js';
 
 const SHIPPED = 'the current guidance\n';
@@ -47,6 +47,44 @@ describe('staleArtifacts', () => {
         reader({ 'docs/guardrails/crushing-mutants.md': SHIPPED }),
       ),
     ).toEqual({ updatable: [], drifted: [] });
+  });
+
+  it("reports a file the consumer's formatter only reformatted as updatable", () => {
+    const reformatted = '  the guidance  as it\nwas written';
+    expect(
+      staleArtifacts(
+        [['docs/guardrails/crushing-mutants.md', SHIPPED]],
+        {
+          guardrailsVersion: '0.12.0',
+          files: {
+            'docs/guardrails/crushing-mutants.md': checksum(SCAFFOLDED),
+          },
+          fingerprints: {
+            'docs/guardrails/crushing-mutants.md': fingerprint(SCAFFOLDED),
+          },
+        },
+        reader({ 'docs/guardrails/crushing-mutants.md': reformatted }),
+      ),
+    ).toEqual({
+      updatable: ['docs/guardrails/crushing-mutants.md'],
+      drifted: [],
+    });
+  });
+
+  it('reports a reformat of a pre-fingerprint install as updatable via the legacy table', () => {
+    expect(
+      staleArtifacts(
+        [['docs/guardrails/crushing-mutants.md', SHIPPED]],
+        manifestFor({
+          'docs/guardrails/crushing-mutants.md': checksum(SCAFFOLDED),
+        }),
+        reader({ 'docs/guardrails/crushing-mutants.md': ` ${SCAFFOLDED}` }),
+        { [checksum(SCAFFOLDED)]: fingerprint(SCAFFOLDED) },
+      ),
+    ).toEqual({
+      updatable: ['docs/guardrails/crushing-mutants.md'],
+      drifted: [],
+    });
   });
 
   it('reports a file the consumer edited as drifted, not updatable', () => {
