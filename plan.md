@@ -1023,7 +1023,7 @@ core/src/audit.ts`) surfaced that it was a context-free text scan: it flagged
   the local gate missed.
 
 - **The hooks in this checkout run a stale `dist/`, so a `git pull` that brings
-  a gate fix does not reach the gate (found 2026-10-17, unfixed).** Every hook
+  a gate fix does not reach the gate (found 2026-10-17, fixed in #139).** Every hook
   in `.claude/settings.json` and `.husky/` runs `guardrails-core/dist`, which is
   gitignored and rebuilt only by `npm install` (`prepare`) or `npm run build`.
   The main checkout had last been built on 2026-10-10. Several pulls later,
@@ -1036,11 +1036,23 @@ core/src/audit.ts`) surfaced that it was a context-free text scan: it flagged
   self-hosting checkout runs its own build. **This is a recurrence**, not a first
   discovery: the Phase-C-era entry "The gate had never actually run" (below)
   records the same root cause — `dist/` is gitignored and nothing detects the
-  staleness. Two incidents now; the fix below is what that entry lacked. **Fix direction:** a
-  `post-merge` / `post-checkout` hook here that runs `npm run build` when
-  `guardrails-core/src/` changed between the old and new HEAD. A cheaper
-  backstop is for `session-start` to warn when any file under
-  `guardrails-core/src/` is newer than `dist/cli.mjs`.
+  staleness. Two incidents now; the fix below is what that entry lacked.
+  **Fix (#139):** husky `post-merge`, `post-checkout` and `post-rewrite` hooks
+  call `scripts/rebuild-if-changed.sh <old> <new>`, which runs `npm run build`
+  only when `git diff` shows a build input changed between the two (src, the
+  tsup/tsconfig/package files, the lockfile, `sync-agents.mjs`, and the plugin
+  agents/skills it syncs into gitignored `.claude/`). Probed on git 2.50.1
+  rather than assumed: a `pull --rebase` with nothing local fast-forwards and
+  fires post-merge; with local commits it fires post-checkout _mid-rebase_ and
+  then post-rewrite, so post-checkout stands down while `rebase-merge/` or
+  `rebase-apply/` exists and the rebase builds once, from `ORIG_HEAD`.
+  `git worktree add` passes a null old sha and is skipped (its `npm install`
+  builds). Measured: build 3.0–4.9 s when it fires; the no-change diff ~70 ms;
+  a no-change switch round trip adds ~50 ms. Tested through real git
+  operations in `guardrails-core/test/rebuild-hooks.test.ts`. **Still open:**
+  uncommitted `src/` edits are invisible to git hooks, so the `session-start`
+  "src newer than `dist/cli.mjs`" warning remains the backstop for that case —
+  product code, not done here.
 
 - **The fixer ignored path-scoped project rules as untrusted tool output
   (dialed.run, 2026-10-24, fixed).** dialed.run moved most of its CLAUDE.md

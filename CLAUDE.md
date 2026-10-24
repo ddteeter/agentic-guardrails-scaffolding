@@ -45,6 +45,13 @@ is gitignored, so a fresh worktree needs a build — `npm install` does it (the
 `prepare` script builds after install). If a hook errors with
 `ERR_MODULE_NOT_FOUND` for `guardrails-core`, run `npm run build`.
 
+After that, husky's `post-merge`, `post-checkout` and `post-rewrite` hooks keep
+`dist/` current: when a pull, switch, rebase or amend moves HEAD across a change
+to a build input, they run `npm run build` (`scripts/rebuild-if-changed.sh`
+holds the input list — add to it when the build reads something new). They do
+not see uncommitted edits to `src/`: after changing the machinery yourself,
+rebuild before trusting the gate.
+
 **Kill-switch:** if the loop bricks development, comment out the `Stop` (and/or
 `PostToolUse`) entry in `.claude/settings.json`. Husky pre-push + CI remain the
 hard backstops regardless; `.claude/hooks/post-edit-lint.sh` is the old
