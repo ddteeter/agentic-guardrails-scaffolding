@@ -26,8 +26,8 @@
     "build": "tsup && tsc -p tsconfig.build.json"
   },
   "devDependencies": {
-    "@eslint/js": "^9.39.5",
-    "mutation-testing-report-schema": "^3.7.3"
+    "@eslint/js": "^10.0.1",
+    "mutation-testing-report-schema": "^3.9.0"
   },
   "peerDependencies": {
     "eslint": ">=9",
