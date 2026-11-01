@@ -427,6 +427,31 @@ directories in one command. Unchanged, and still outside the matcher:
 
 ## Roadmap: fixer-loop hardening (from the dogfooding live proof)
 
+- **The husky advice dropped the lock, and the lock serialized pushes that
+  had nothing to protect (2026-11-01, fixed; plan:
+  `docs/superpowers/plans/2026-11-01-push-lock-skip.md`).** Two findings
+  from one question: "can a push with no stryker work skip the lock queue?"
+  - **The lock queued pushes that run no mutation testing.** A docs-only
+    push waited behind another worktree's stryker run. The new
+    `guardrails gate-lock` command answers whether a push needs the lock
+    using the gate's own rules (the push memo, `isAnalyzerSelected`,
+    `strykerScope`). `.githooks/pre-push` skips the lock only on exit 0, so
+    an older CLI, which doesn't know the command, still queues.
+  - **This repo never took the lock at all.** Husky owns `core.hooksPath`,
+    so `.githooks/pre-push` was inert, and `.husky/pre-push` called
+    `gate --mode=push` directly. That is what `foreignHooksPathWarning` told
+    every husky user to do, and it only named pre-commit. The warning and
+    both hook headers now say to chain `sh .githooks/<hook>`, and
+    `.husky/pre-push` does.
+  - **Not fixed here: stryker on the commit rung is never serialized.**
+    Stryker's floor is `commit`, and the lock wraps only the push rung. On
+    2026-11-01 two dialed.run worktrees ran stryker at the same time
+    (machine load around 34) while five pushes queued on the lock. So the
+    lock bounds the push rung's share of mutation testing, not mutation
+    testing itself. The likely fix is to take the same lock around stryker
+    wherever it runs. That needs a design pass first: a commit cannot wait
+    hours the way a background push can.
+
 - **The dialed.run transcript audit (2026-09-25 → 10-09) found fail-open paths
   that only appear with parallel agents in nested worktrees (fixed; plan:
   `docs/superpowers/plans/2026-10-09-worktree-fail-closed.md`).** One
