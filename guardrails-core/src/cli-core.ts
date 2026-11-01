@@ -698,6 +698,20 @@ const GIT_WRITE = new RegExp(
 const GIT_COMMIT = new RegExp(
   `${COMMAND_START}git${GIT_GLOBAL_OPTIONS}[ \t]+commit\\b`,
 );
+const GIT_PUSH = new RegExp(
+  `${COMMAND_START}git${GIT_GLOBAL_OPTIONS}[ \t]+push\\b`,
+);
+
+/**
+ * Which change set this git write is judged over. A commit alone is the commit
+ * rung, which is staged-scoped like `.husky/pre-commit`; anything with a push
+ * in it is judged over the whole branch, as the push rung is.
+ */
+function writeScope(command: string): 'staged' | 'branch' {
+  return GIT_PUSH.test(withoutQuotedHeredocBodies(command))
+    ? 'branch'
+    : 'staged';
+}
 
 /**
  * What takes a push out of reach of its pre-push hook: the flag that skips it,
@@ -974,6 +988,10 @@ async function gatePreToolUseCommand(
         base.base,
       ),
       sessionId: input.sessionId,
+      // Staged for a commit, as `.husky/pre-commit` asks for: under branch
+      // scope every agent commit re-mutated the whole branch -- untracked
+      // files included -- until it outgrew the hook deadline.
+      changedScope: writeScope(input.command ?? ''),
     });
   if (!blocked) {
     return; // allow (silent)

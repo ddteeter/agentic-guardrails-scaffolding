@@ -1119,6 +1119,61 @@ async function runPreToolUse(stdin: string): Promise<string> {
   return out.join('');
 }
 
+/**
+The git argv lines a pretooluse gate run over `command` spawned.
+*/
+async function preToolUseGitLines(command: string): Promise<string[]> {
+  mkdirSync(path.join(root, '.git'), { recursive: true });
+  writeFileSync(
+    path.join(root, 'guardrails.config.json'),
+    JSON.stringify({ enforcement: 'block' }),
+  );
+  const lines: string[] = [];
+  const inner = dirtyExec();
+  const exec: Exec = (spawned, args, options) => {
+    lines.push([spawned, ...args].join(' '));
+    return inner(spawned, args, options);
+  };
+  await runCommand(
+    'gate',
+    ['--mode=pretooluse', '--dialect=copilot'],
+    dependencies({
+      exec,
+      readStdin: () => Promise.resolve(preToolUseStdin('bash', command)),
+    }),
+  );
+  return lines;
+}
+
+const STAGED_FILES = 'git diff --cached --name-only --diff-filter=ACM';
+
+describe('pretooluse commit gate scope', () => {
+  it('keeps branch scope for a push it gates itself', async () => {
+    // A push the pre-push hook will not see (--no-verify) is checked here, and
+    // a push is judged over the whole branch.
+    expect(await preToolUseGitLines('git push --no-verify')).not.toContain(
+      STAGED_FILES,
+    );
+  });
+
+  it('keeps branch scope when a push rides along with the commit', async () => {
+    expect(
+      await preToolUseGitLines('git commit -m x && git push --no-verify'),
+    ).not.toContain(STAGED_FILES);
+  });
+
+  it('checks only the staged files, like the git pre-commit hook', async () => {
+    // The commit rung is staged-scoped by design (see `gateCommitCommand`):
+    // under branch scope stryker re-mutates everything the branch has touched
+    // -- untracked files included -- on every commit. The PreToolUse gate fell
+    // back to branch scope, so every agent commit on a long branch outgrew
+    // `hookDeadlineSeconds` (found 2026-11-01, dogfooding the mutation lock).
+    const lines = await preToolUseGitLines('git commit -m x');
+    expect(lines).toContain(STAGED_FILES);
+    expect(lines).not.toContain('git ls-files --others --exclude-standard');
+  });
+});
+
 describe('pretooluse gate trigger conditions', () => {
   it('fires only for an exact shell tool name, case-insensitively', async () => {
     // Kills the SHELL_TOOLS anchor mutants: unanchored, any tool whose name
