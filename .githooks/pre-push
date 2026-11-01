@@ -42,6 +42,14 @@
 # The probe before the lock only prints: both lockers are silent while they
 # wait, and a quiet half hour looks like a hang. With neither `lockf` (BSD,
 # macOS) nor `flock` (util-linux) present, the gate still runs, unserialized.
+#
+# A push that will run no mutation testing skips the queue altogether.
+# `guardrails gate-lock` answers that from the gate's own rules -- stryker
+# off or moved above this rung, no changed file in its `mutate` scope, or a
+# tree that already passed -- and exits 0 only when it is sure. Everything
+# else, including an older CLI that does not know the command, queues as
+# before. What still runs unserialized (eslint, tsc, the graph checks) is
+# cheap beside mutation testing, which is what the lock is for.
 cli="./node_modules/guardrails-core/dist/cli.mjs"
 # See .githooks/pre-commit: an uninstalled checkout is said as such, and still
 # blocks. Checked before the lock, so a fresh worktree is not told to queue for
@@ -56,7 +64,10 @@ ceiling="${GUARDRAILS_GATE_LOCK_TIMEOUT:-10800}"
 gate="node $cli gate --mode=push"
 waiting="guardrails: another checkout is running the gate — waiting for the lock (up to ${ceiling}s)…"
 
-if command -v lockf >/dev/null 2>&1; then
+if node "$cli" gate-lock; then
+  /bin/sh -c "$gate"
+  status=$?
+elif command -v lockf >/dev/null 2>&1; then
   lockf -k -s -t 0 "$lock" true 2>/dev/null || echo "$waiting" >&2
   lockf -k -s -t "$ceiling" "$lock" /bin/sh -c "$gate"
   status=$?

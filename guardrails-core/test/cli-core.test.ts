@@ -4684,6 +4684,56 @@ describe('gate --mode=push: a tree that already passed is not re-checked', () =>
 });
 
 /**
+`pushExec`, with `changed` as the branch diff.
+*/
+function changedExec(changed: string): Exec {
+  return (command, args) =>
+    args.includes('--name-only')
+      ? Promise.resolve(ok(changed))
+      : pushExec(command, args);
+}
+
+describe('gate-lock: does this push need the machine-wide lock?', () => {
+  beforeEach(() => {
+    writeFileSync(
+      path.join(root, 'package.json'),
+      JSON.stringify({ devDependencies: { '@stryker-mutator/core': '*' } }),
+    );
+    mkdirSync(path.join(root, 'src'), { recursive: true });
+    writeFileSync(path.join(root, 'src', 'feature.ts'), 'export {};\n');
+  });
+
+  it('exits 0 and says why when stryker has nothing to mutate', async () => {
+    const exec = changedExec('README.md');
+    expect(await runCommand('gate-lock', [], dependencies({ exec }))).toBe(0);
+    expect(errors.join('')).toBe(
+      'guardrails: no mutation testing on this push (stryker does not run ' +
+        'for this push) — running the gate without the machine lock.\n',
+    );
+  });
+
+  it('exits 1, silently, when stryker will mutate a changed file', async () => {
+    const exec = changedExec('src/feature.ts');
+    expect(await runCommand('gate-lock', [], dependencies({ exec }))).toBe(1);
+    expect(errors.join('')).toBe('');
+  });
+
+  it('reads the analyzer opt-in from guardrails.config.json', async () => {
+    writeFileSync(
+      path.join(root, 'guardrails.config.json'),
+      JSON.stringify({ analyzers: { stryker: 'off' } }),
+    );
+    const exec = changedExec('src/feature.ts');
+    expect(await runCommand('gate-lock', [], dependencies({ exec }))).toBe(0);
+  });
+
+  it('is listed in the usage text', async () => {
+    await runCommand('no-such-command', [], dependencies({}));
+    expect(errors.join('')).toContain('gate-lock');
+  });
+});
+
+/**
  * `dirtyExec`, plus a git that names `hookPath` as the effective pre-push hook.
  * The gate DENIES whenever it runs, so "did pretooluse pre-run the push?" is
  * observable as a deny.

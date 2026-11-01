@@ -290,7 +290,9 @@ describe('consumer templates', () => {
 
 /**
  * A checkout whose installed CLI is a stub exiting with `FAKE_EXIT`, so the
- * real pre-push hook can be run end to end without a gate behind it.
+ * real pre-push hook can be run end to end without a gate behind it. Its
+ * `gate-lock` probe exits `FAKE_LOCK_EXIT`, defaulting to 1 ("take the lock")
+ * -- which is also what an older CLI without the command answers.
  */
 function stubbedCheckout(): string {
   const checkout = mkdtempSync(path.join(tmpdir(), 'guardrails-push-hook-'));
@@ -303,7 +305,9 @@ function stubbedCheckout(): string {
   mkdirSync(cliDirectory, { recursive: true });
   writeFileSync(
     path.join(cliDirectory, 'cli.mjs'),
-    "process.exit(Number(process.env.FAKE_EXIT ?? '0'));\n",
+    "const probe = process.argv[2] === 'gate-lock';\n" +
+      "if (probe) process.stderr.write('PROBED\\n');\n" +
+      "process.exit(Number(probe ? (process.env.FAKE_LOCK_EXIT ?? '1') : (process.env.FAKE_EXIT ?? '0')));\n",
   );
   return checkout;
 }
@@ -428,6 +432,86 @@ describe('the pre-push hook serializes the gate machine-wide', () => {
       expect(result.stderr).not.toContain('guardrails: push blocked');
     } finally {
       holder?.kill('SIGKILL');
+      rmSync(checkout, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('the pre-push hook skips the lock when the push runs no stryker', () => {
+  it('asks gate-lock after the install check and before the lock', () => {
+    const hook = readFileSync(
+      path.join(templates, 'githooks', 'pre-push'),
+      'utf8',
+    );
+    const probe = hook.indexOf('node "$cli" gate-lock');
+    expect(probe).toBeGreaterThan(-1);
+    expect(probe).toBeGreaterThan(hook.indexOf('not installed'));
+    expect(probe).toBeLessThan(hook.indexOf('lockf -k -s -t 0'));
+  });
+
+  it('runs the gate without waiting on a held lock when the probe says so', async () => {
+    const tool = locker();
+    const checkout = stubbedCheckout();
+    const lock = path.join(checkout, 'gate.lock');
+    const holdArguments =
+      tool === 'lockf' ? ['-k', lock, 'sleep', '30'] : [lock, 'sleep', '30'];
+    const holder = tool === undefined ? undefined : spawn(tool, holdArguments);
+    try {
+      const deadline = Date.now() + 5000;
+      while (
+        tool !== undefined &&
+        !isHeld(tool, lock) &&
+        Date.now() < deadline
+      ) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      const passed = runPushHook(checkout, {
+        GUARDRAILS_GATE_LOCK: lock,
+        GUARDRAILS_GATE_LOCK_TIMEOUT: '1',
+        FAKE_LOCK_EXIT: '0',
+      });
+      expect(passed.status).toBe(0);
+      expect(passed.stderr).toContain('PROBED');
+      expect(passed.stderr).not.toContain('waiting for the lock');
+      const blocked = runPushHook(checkout, {
+        GUARDRAILS_GATE_LOCK: lock,
+        FAKE_LOCK_EXIT: '0',
+        FAKE_EXIT: '1',
+      });
+      expect(blocked.status).toBe(1);
+      expect(blocked.stderr).toContain('guardrails: push blocked');
+    } finally {
+      holder?.kill('SIGKILL');
+      rmSync(checkout, { recursive: true, force: true });
+    }
+  });
+
+  it('queues as before when the probe fails in any way', async () => {
+    const tool = locker();
+    if (tool === undefined) {
+      expect(locker()).toBeUndefined();
+      return;
+    }
+    const checkout = stubbedCheckout();
+    const lock = path.join(checkout, 'gate.lock');
+    const holdArguments =
+      tool === 'lockf' ? ['-k', lock, 'sleep', '30'] : [lock, 'sleep', '30'];
+    const holder = spawn(tool, holdArguments);
+    try {
+      const deadline = Date.now() + 5000;
+      while (!isHeld(tool, lock) && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      const result = runPushHook(checkout, {
+        GUARDRAILS_GATE_LOCK: lock,
+        GUARDRAILS_GATE_LOCK_TIMEOUT: '1',
+        FAKE_LOCK_EXIT: '2',
+      });
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('PROBED');
+      expect(result.stderr).toContain(LOCK_TIMEOUT_MARKER);
+    } finally {
+      holder.kill('SIGKILL');
       rmSync(checkout, { recursive: true, force: true });
     }
   });

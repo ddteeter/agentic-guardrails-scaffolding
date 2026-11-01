@@ -77,6 +77,7 @@ import {
   HOOKS_DIRECTORY,
 } from './scaffold/hooks-path.js';
 import { initCommand } from './scaffold/init.js';
+import { pushLockDecision } from './push-lock.js';
 import { foregroundWait, foregroundWaitDenial } from './foreground-wait.js';
 import { commandTarget } from './command-target.js';
 import { isPushGatedByHook } from './push-hook.js';
@@ -2121,6 +2122,42 @@ function gateCommand(
   );
 }
 
+/**
+ * `gate-lock`: exit 0 when this push can skip the machine-wide gate lock,
+ * non-zero when it must queue. Read by `.githooks/pre-push` before it takes
+ * the lock; see `push-lock.ts`.
+ *
+ * A command of its own rather than a flag on `gate --mode=push`, so that a
+ * hook newer than its CLI fails SAFE: an unknown command prints the usage and
+ * exits 1 ("take the lock"), where an unknown flag would be ignored and the
+ * whole gate would run inside the probe.
+ *
+ * Silent when the lock is needed -- the hook's own "waiting" line already
+ * covers that case -- and one line when it is not, so a push that skipped the
+ * queue says so.
+ */
+async function gateLockCommand(
+  dependencies: CliDependencies,
+  rest: string[],
+): Promise<number> {
+  const { repoRoot, config, base } = await directContext(dependencies, rest);
+  const decision = await pushLockDecision({
+    repoRoot,
+    baseBranch: base.base,
+    exec: dependencies.exec,
+    analyzers: config.analyzers,
+    analyzerRungs: config.analyzerRungs,
+  });
+  if (decision.needed) {
+    return 1;
+  }
+  dependencies.stderr(
+    `guardrails: no mutation testing on this push (${decision.reason}) — ` +
+      'running the gate without the machine lock.\n',
+  );
+  return 0;
+}
+
 export async function runCommand(
   command: string | undefined,
   rest: string[],
@@ -2179,6 +2216,9 @@ export async function runCommand(
     case 'ship': {
       return shipCommand(dependencies, rest);
     }
+    case 'gate-lock': {
+      return gateLockCommand(dependencies, rest);
+    }
     default: {
       dependencies.stderr(
         'usage: guardrails-core <command>\n' +
@@ -2189,6 +2229,7 @@ export async function runCommand(
           '  verify [--base=<ref>]\n' +
           '  sanction [--from=<violations manifest>]\n' +
           '  ship [--body-file=<f>] [--status-file=<f>] [--base=<ref>]\n' +
+          '  gate-lock [--base=<ref>]\n' +
           '  autofix | audit | sanctions-check | install-hooks\n' +
           '  state | report | scope-check | session-start | session-end\n',
       );

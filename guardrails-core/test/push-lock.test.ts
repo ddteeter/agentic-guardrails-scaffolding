@@ -96,7 +96,7 @@ describe('pushLockDecision', () => {
     const decision = await decide(gitReporting(''));
     expect(decision).toEqual({
       needed: false,
-      reason: 'stryker does not run on the push rung',
+      reason: 'stryker does not run for this push',
     });
   });
 
@@ -122,13 +122,13 @@ describe('pushLockDecision', () => {
     });
   });
 
-  it('skips the lock when stryker does not run on the push rung', async () => {
+  it('skips the lock when stryker does not run for this push', async () => {
     const decision = await decide(gitReporting('src/feature.ts'), {
       analyzers: { stryker: 'off' },
     });
     expect(decision).toEqual({
       needed: false,
-      reason: 'stryker does not run on the push rung',
+      reason: 'stryker does not run for this push',
     });
   });
 

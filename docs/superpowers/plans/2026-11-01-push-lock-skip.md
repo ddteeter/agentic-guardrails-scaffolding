@@ -4,7 +4,7 @@ Branch / worktree: `worktree-push-lock-skip` (`.claude/worktrees/push-lock-skip`
 
 ## The problem
 
-`.githooks/pre-push` (template: `guardrails-core/templates/githooks/pre-push`)
+`.githooks/pre-push` (the source; `npm run build` copies it to `guardrails-core/templates/githooks/pre-push`)
 runs `gate --mode=push` under a machine-wide `lockf`/`flock` lock. The lock
 exists because mutation testing runs on this rung ("mutation testing lives on
 this rung"). Every push still queues, including pushes where stryker has
@@ -127,8 +127,9 @@ Each step is red → green → `guardrails verify` clean → commit.
      the waiting line); a probe exiting 1 or 2 behaves exactly like today
      (the existing timeout test, extended); and the probe is checked _after_
      the install check.
-   - Run `npm run build` so `scripts/sync-agents.mjs` mirrors the template to
-     `.githooks/pre-push`.
+   - Edit `.githooks/pre-push` (the source), then `npm run build`:
+     `scripts/sync-agents.mjs` copies it INTO the template, overwriting any
+     edit made to the template directly.
 
    **Done:** the hook tests pass on this machine's locker (lockf on macOS),
    and `.githooks/pre-push` is identical to the template.

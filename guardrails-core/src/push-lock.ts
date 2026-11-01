@@ -89,7 +89,7 @@ async function decide(options: PushLockOptions): Promise<PushLockDecision> {
     hasChangedFiles: files.length > 0,
   });
   if (!isSelected) {
-    return { needed: false, reason: 'stryker does not run on the push rung' };
+    return { needed: false, reason: 'stryker does not run for this push' };
   }
   const { inScope } = await strykerScope(files, repoRoot, (filePath) =>
     readFile(filePath, 'utf8'),
