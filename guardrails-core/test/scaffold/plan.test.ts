@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { RepoFacts } from '../../src/scaffold/detect.js';
 import {
   checksum,
+  fingerprint,
   type ScaffoldManifest,
 } from '../../src/scaffold/manifest.js';
 import {
@@ -54,6 +55,7 @@ interface OneFileOptions {
   readonly current?: string;
   readonly manifest?: ScaffoldManifest;
   readonly shouldForce?: boolean;
+  readonly legacyFingerprints?: Readonly<Record<string, string>>;
 }
 
 /**
@@ -70,6 +72,7 @@ function planOneFile(path: string, options: OneFileOptions): PlannedAction {
     },
     desired: { [path]: options.desired ?? 'desired content' },
     current: options.current === undefined ? {} : { [path]: options.current },
+    legacyFingerprints: options.legacyFingerprints ?? {},
   };
   const plan = planScaffold(input);
   const [action] = plan.actions;
@@ -143,6 +146,52 @@ describe('planScaffold — the decision table', () => {
       shouldForce: true,
     });
     expect(action.kind).toBe(UPDATE);
+  });
+
+  it('owned, present, only reformatted since written, no force -> update', () => {
+    // dialed.run, 2026-10-24: the consumer's Prettier rewrote quote style in
+    // the fixer prompt, and that alone used to read as an edit.
+    const written = "if (typeof x !== 'number') return;\n";
+    const manifest: ScaffoldManifest = {
+      guardrailsVersion: '0.12.0',
+      files: { [OWNED_PATH]: checksum(written) },
+      fingerprints: { [OWNED_PATH]: fingerprint(written) },
+    };
+    const action = planOneFile(OWNED_PATH, {
+      desired: 'a newer template',
+      current: 'if (typeof x !== "number") return;',
+      manifest,
+    });
+    expect(action.kind).toBe(UPDATE);
+    expect(action.reason).toContain('reformatted');
+  });
+
+  it('owned, present, reformatted, pre-fingerprint manifest -> update via the legacy table', () => {
+    const written = "if (typeof x !== 'number') return;\n";
+    const action = planOneFile(OWNED_PATH, {
+      desired: 'a newer template',
+      current: 'if (typeof x !== "number") return;',
+      manifest: {
+        guardrailsVersion: '0.11.1',
+        files: { [OWNED_PATH]: checksum(written) },
+      },
+      legacyFingerprints: { [checksum(written)]: fingerprint(written) },
+    });
+    expect(action.kind).toBe(UPDATE);
+  });
+
+  it('owned, present, reworded, with fingerprints recorded -> still drift', () => {
+    const written = "if (typeof x !== 'number') return;\n";
+    const action = planOneFile(OWNED_PATH, {
+      desired: 'a newer template',
+      current: "if (typeof x !== 'string') return;\n",
+      manifest: {
+        guardrailsVersion: '0.12.0',
+        files: { [OWNED_PATH]: checksum(written) },
+        fingerprints: { [OWNED_PATH]: fingerprint(written) },
+      },
+    });
+    expect(action.kind).toBe(DRIFT);
   });
 
   it('owned, present, not in manifest, no force -> drift', () => {

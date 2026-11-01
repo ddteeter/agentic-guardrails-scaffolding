@@ -20,7 +20,8 @@
   "files": [
     "dist",
     "guidance",
-    "templates"
+    "templates",
+    "scaffold-data"
   ],
   "scripts": {
     "build": "tsup && tsc -p tsconfig.build.json"

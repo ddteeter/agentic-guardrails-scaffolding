@@ -68,11 +68,11 @@ code path reads; it is a field a team declares for humans.
 `init` writes three kinds of files, and the difference matters the moment you
 edit one of them by hand.
 
-| Class         | Behavior                                                                                                                                                                                                                                                                                              | Examples                                                                                                                                                                                                                                                                  |
-| ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **OWNED**     | Absent → created. Unmodified since scaffolding (checksum in `.guardrails/scaffold.json` still matches) → silently rewritten on the next `init --apply`, so upgrades land automatically. Edited by you → left alone and reported as `drift` in the plan; `--force` overwrites it anyway.               | `.claude/agents/guardrail-fixer*.md`, `.codex/agents/guardrail-fixer*.toml`, `.github/agents/guardrail-fixer*.agent.md`, `.github/hooks/guardrails.json`, `.githooks/pre-commit`, `.github/workflows/guardrails.yml`, `docs/guardrails/*.md`, `.claude/skills/*/SKILL.md` |
-| **SHARED**    | Absent → the whole file is created. Present → always `merge`: guardrails splices in only its own entries (a hooks block, a gitignore stanza, the `prepare` script line, a marked doc section) and leaves everything else in your file untouched. Never reports `drift`, never sensitive to `--force`. | `.claude/settings.json`, `.codex/hooks.json`, `AGENTS.md`, `.gitignore`, `package.json`, `.github/copilot-instructions.md`                                                                                                                                                |
-| **SEED-ONCE** | Absent → created once. Present → left alone, forever — `--force` included.                                                                                                                                                                                                                            | `guardrails.config.json`, `.dependency-cruiser.cjs` (only if dependency-cruiser is enabled and no config exists yet), `stryker.conf.json` (same, for stryker), `knip.json` (same, for knip), `.fallowrc.jsonc` (same, for dupes)                                          |
+| Class         | Behavior                                                                                                                                                                                                                                                                                                                                               | Examples                                                                                                                                                                                                                                                                  |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **OWNED**     | Absent → created. Unmodified since scaffolding (checksum in `.guardrails/scaffold.json` still matches), or only reformatted by your formatter (same words, see below) → silently rewritten on the next `init --apply`, so upgrades land automatically. Edited by you → left alone and reported as `drift` in the plan; `--force` overwrites it anyway. | `.claude/agents/guardrail-fixer*.md`, `.codex/agents/guardrail-fixer*.toml`, `.github/agents/guardrail-fixer*.agent.md`, `.github/hooks/guardrails.json`, `.githooks/pre-commit`, `.github/workflows/guardrails.yml`, `docs/guardrails/*.md`, `.claude/skills/*/SKILL.md` |
+| **SHARED**    | Absent → the whole file is created. Present → always `merge`: guardrails splices in only its own entries (a hooks block, a gitignore stanza, the `prepare` script line, a marked doc section) and leaves everything else in your file untouched. Never reports `drift`, never sensitive to `--force`.                                                  | `.claude/settings.json`, `.codex/hooks.json`, `AGENTS.md`, `.gitignore`, `package.json`, `.github/copilot-instructions.md`                                                                                                                                                |
+| **SEED-ONCE** | Absent → created once. Present → left alone, forever — `--force` included.                                                                                                                                                                                                                                                                             | `guardrails.config.json`, `.dependency-cruiser.cjs` (only if dependency-cruiser is enabled and no config exists yet), `stryker.conf.json` (same, for stryker), `knip.json` (same, for knip), `.fallowrc.jsonc` (same, for dupes)                                          |
 
 `guardrails.config.json` is the one file `--force` can never touch: it holds
 your policy and your `sanctionedSuppressions`, and losing it is the worst
@@ -395,6 +395,7 @@ of:
 ```
 create: <path> — <path> does not exist yet; creating it
 update: <path> — <path> is unmodified since it was scaffolded; upgrading it
+update: <path> — <path> was only reformatted since it was scaffolded; upgrading it
 drift: <path> — <path> was edited after scaffolding; leaving it alone
 merge: <path> — <path> is shared; merging in guardrails' entries
 unchanged: <path> — ...
@@ -406,6 +407,14 @@ left exactly as you have it. It also prints a warning line:
 with --force to overwrite)`. Read the drift report before deciding whether to
 take the upgrade's version (`--force`, which only touches OWNED files) or keep
 your edit and manually reconcile.
+
+A file your formatter rewrote is not drift. Prettier, Biome or dprint running
+at commit changes whitespace, wrapping, quote characters and punctuation, but
+not words. `init` compares a fingerprint of the letters and digits alone, so a
+reformatted file still upgrades. The upgrade writes the template unformatted
+again, and your formatter reformats it at your next commit. The trade-off: an
+edit that changes only punctuation also reads as a reformat and is overwritten.
+Change a word, or move the change out of the owned file, to keep it.
 
 `--json` gives the same information as `{ actions, warnings }` for scripting.
 

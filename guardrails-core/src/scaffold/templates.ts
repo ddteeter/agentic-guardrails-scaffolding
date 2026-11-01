@@ -19,6 +19,7 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
+import { readJsonFile } from '../json-file.js';
 import { packageRoot } from '../package-root.js';
 import { analyzerMode, decideAnalyzer } from '../verify/analyzer-policy.js';
 import { effectiveAnalyzers, type RepoFacts } from './detect.js';
@@ -29,6 +30,8 @@ import {
   COPILOT_SKILLS_START,
 } from './merge.js';
 import type { SharedPath } from './merge.js';
+import { stringEntries } from './manifest.js';
+import { isRecord } from './record.js';
 import type { ScaffoldDecisions } from './plan.js';
 import {
   DEPENDENCY_CRUISER_SEED,
@@ -61,6 +64,23 @@ The consumer-facing template tree, shipped in the tarball (`files`).
 */
 export function templatesRoot(): string {
   return path.join(packageRoot(), 'templates');
+}
+
+/**
+ * Exact checksum -> fingerprint for every owned file a release up to 0.11.1
+ * could have written, for manifests from before fingerprints were recorded
+ * (see manifest.ts `modificationOf`). Generated once from the release tags by
+ * `scripts/legacy-fingerprints.mjs`, and shipped in `scaffold-data/` because
+ * the build regenerates `templates/` and `guidance/` from scratch.
+ *
+ * A missing or malformed table reads as empty: every reformat then reads as
+ * an edit, which is the behaviour before the table existed.
+ */
+export function legacyFingerprints(
+  file = path.join(packageRoot(), 'scaffold-data', 'legacy-fingerprints.json'),
+): Record<string, string> {
+  const { parsed } = readJsonFile(file);
+  return isRecord(parsed) ? stringEntries(parsed) : {};
 }
 
 /** Run-time guidance docs, shipped in the tarball and copied INTO the consumer

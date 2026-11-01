@@ -411,6 +411,24 @@ describe('init --apply — drift on a consumer-edited owned file', () => {
   });
 });
 
+describe("init --apply — a scaffolded file the consumer's formatter reformatted", () => {
+  it('upgrades it instead of reporting drift', async () => {
+    // dialed.run, 2026-10-24: lint-staged Prettier rewrote the fixer prompt's
+    // quote style, and init then treated the file as hand-edited forever.
+    await init('--apply');
+    const scaffolded = read(HOOK);
+    writeFileSync(
+      path.join(root, HOOK),
+      `${scaffolded.replaceAll("'", '"').replaceAll('\n', '\n\n')}  `,
+    );
+    errors = [];
+
+    expect(await init('--apply')).toBe(0);
+    expect(read(HOOK)).toBe(scaffolded);
+    expect(errors.join('')).not.toContain('drifted');
+  });
+});
+
 describe('init --apply — seed-once analyzer configs', () => {
   it('seeds .dependency-cruiser.cjs when the analyzer is required', async () => {
     expect(
