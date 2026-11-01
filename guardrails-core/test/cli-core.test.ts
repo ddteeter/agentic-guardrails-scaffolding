@@ -604,7 +604,17 @@ async function spawnedAt(mode: string): Promise<string[]> {
     }),
   );
   const { exec, spawned } = recordingExec();
-  await runCommand('gate', [`--mode=${mode}`], dependencies({ exec }));
+  // No locker on this machine, so stryker is spawned bare and the spawn list
+  // names it -- this is about which rung runs it, not the lock around it.
+  const noLocker: Exec = (command, args, options) =>
+    command === 'sh'
+      ? Promise.resolve({ stdout: '', stderr: '', code: 1 })
+      : exec(command, args, options);
+  await runCommand(
+    'gate',
+    [`--mode=${mode}`],
+    dependencies({ exec: noLocker }),
+  );
   return spawned;
 }
 
@@ -4747,6 +4757,70 @@ function changedExec(changed: string): Exec {
       ? Promise.resolve(ok(changed))
       : pushExec(command, args);
 }
+
+/**
+ * `changedExec`, on a machine with `lockf` whose lock never frees: every
+ * locked stryker run times out.
+ */
+function lockHeldExec(changed: string): Exec {
+  const inner = changedExec(changed);
+  return (command, args, options) => {
+    if (command === 'sh') {
+      return Promise.resolve({
+        stdout: '',
+        stderr: '',
+        code: args.at(-1)?.endsWith(' lockf') === true ? 0 : 1,
+      });
+    }
+    if (command === 'lockf') {
+      return Promise.resolve({ stdout: '', stderr: '', code: 75 });
+    }
+    return inner(command, args, options);
+  };
+}
+
+describe('gate --mode=push: a push that never gets the mutation lock', () => {
+  beforeEach(() => {
+    vi.stubEnv('GUARDRAILS_GATE_LOCK', path.join(root, 'gate.lock'));
+    writeFileSync(
+      path.join(root, 'package.json'),
+      JSON.stringify({ devDependencies: { '@stryker-mutator/core': '*' } }),
+    );
+    writeFileSync(
+      path.join(root, 'guardrails.config.json'),
+      JSON.stringify({
+        enforcement: 'warn',
+        mutationLock: { pushWaitSeconds: 5 },
+        analyzers: {
+          eslint: 'off',
+          tsc: 'off',
+          knip: 'off',
+          'dependency-cruiser': 'off',
+          dupes: 'off',
+        },
+      }),
+    );
+    mkdirSync(path.join(root, 'src'), { recursive: true });
+    writeFileSync(path.join(root, 'src', 'feature.ts'), 'export {};\n');
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('blocks even under warn, names no fixer, and says what to do', async () => {
+    const exec = lockHeldExec('src/feature.ts');
+    expect(
+      await runCommand('gate', ['--mode=push'], dependencies({ exec })),
+    ).toBe(1);
+    const said = errors.join('');
+    expect(said).toContain(
+      'guardrails: gave up waiting for the gate lock after 5s',
+    );
+    expect(said).toContain('Re-run the push to re-queue');
+    expect(said).not.toContain('subagent');
+  });
+});
 
 describe('gate-lock: does this push need the machine-wide lock?', () => {
   beforeEach(() => {

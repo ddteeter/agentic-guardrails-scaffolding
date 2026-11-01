@@ -78,6 +78,7 @@ import {
 } from './scaffold/hooks-path.js';
 import { initCommand } from './scaffold/init.js';
 import { pushLockDecision } from './push-lock.js';
+import { MUTATION_LOCK_TIMEOUT_RULE, machineLock } from './mutation-lock.js';
 import { foregroundWait, foregroundWaitDenial } from './foreground-wait.js';
 import { commandTarget } from './command-target.js';
 import { isPushGatedByHook } from './push-hook.js';
@@ -172,6 +173,7 @@ function commitGateOptionsFromConfig(
   | 'analyzers'
   | 'analyzerRungs'
   | 'config'
+  | 'mutationLock'
 > {
   return {
     repoRoot,
@@ -183,6 +185,7 @@ function commitGateOptionsFromConfig(
     analyzers: config.analyzers,
     analyzerRungs: config.analyzerRungs,
     config: toGateConfig(config),
+    mutationLock: machineLock(config.mutationLock),
   };
 }
 
@@ -473,6 +476,7 @@ async function gateStopCommand(
     analyzers: config.analyzers,
     analyzerRungs: config.analyzerRungs,
     isRetry: input.stopHookActive,
+    mutationLock: machineLock(config.mutationLock),
   });
   const output =
     dialect === 'claude'
@@ -587,6 +591,18 @@ async function gateCommitCommand(
     // rather than a finding. A killed diff reported as a zero exit is the
     // fail-open this closes (#92).
     dependencies.stderr(`guardrails: ${unreadableDiffMessage(unreadable)}\n`);
+    return 1;
+  }
+  if (
+    violations.some(
+      (violation) => violation.ruleId === MUTATION_LOCK_TIMEOUT_RULE,
+    )
+  ) {
+    // The push never got the mutation lock, so mutation testing did not run.
+    // Same footing as an unreadable diff: no verdict, so no `warn` softening,
+    // and no fixer pointer -- no edit resolves a held lock, and the message
+    // printed above already says what to do. Only the push rung can time out
+    // (commit and stop defer), so this is the one surface that needs it.
     return 1;
   }
   if (!blocked) {

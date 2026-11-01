@@ -20,6 +20,7 @@ import path from 'node:path';
 import type { Exec, ExecResult } from './exec.js';
 import { isRecord } from './is-record.js';
 import { parseJsonText } from './json-file.js';
+import { LOCK_TIMEOUT_MARKER } from './mutation-lock.js';
 
 type ShipState = 'green' | 'gate-blocked' | 'lock-timeout' | 'ci-red' | 'error';
 
@@ -62,8 +63,6 @@ export interface ShipOptions {
  * machine-wide gate lock. Exported so the template and this classifier are
  * pinned to one string by a test, not by memory.
  */
-export const LOCK_TIMEOUT_MARKER =
-  'guardrails: gave up waiting for the gate lock';
 
 /**
  * What the scaffolded pre-push hook prints when guardrails-core is missing
@@ -452,3 +451,5 @@ export function shipSummary(status: ShipStatus, statusPath: string): string {
     `(status: ${statusPath})`
   );
 }
+
+export { LOCK_TIMEOUT_MARKER } from './mutation-lock.js';

@@ -48,8 +48,15 @@ import {
   stat as fsStat,
 } from 'node:fs/promises';
 import path from 'node:path';
+import process from 'node:process';
 
 import { CONFIG_FILE_NAME } from '../config.js';
+import {
+  LOCK_TIMEOUT_MARKER,
+  MUTATION_LOCK_TIMEOUT_RULE,
+  type MutationLock,
+  runUnderLock,
+} from '../mutation-lock.js';
 import { type Exec, type ExecResult, signalFromExitCode } from '../exec.js';
 import { parseJsonText, readJsonFile } from '../json-file.js';
 import { repoSourceReader } from '../repo-source.js';
@@ -126,6 +133,17 @@ export interface VerifyOptions {
   /** File reader seam (stryker writes its JSON report to disk, not stdout).
    *  Defaults to node:fs/promises readFile; injected in tests. */
   readFile?: (filePath: string) => Promise<string>;
+  /**
+   * The machine-wide mutation lock stryker runs under (see `mutation-lock.ts`).
+   * Absent means no lock: stryker runs bare, which is what every caller got
+   * before the lock moved out of the shell hook and what tests that are not
+   * about the lock still get.
+   */
+  mutationLock?: MutationLock | undefined;
+  /**
+  Where the lock's own lines go (waiting, unserialized). Defaults to stderr.
+  */
+  progress?: (line: string) => void;
   /** File removal seam: `runStryker` deletes stryker's report path before
    *  every run, so a stale report from a prior run can never be mistaken for
    *  this one's, and its incremental cache whenever that cache may not be
@@ -1080,6 +1098,62 @@ function strykerReportMissingViolation(reportPath: string): Violation {
  * crushing-mutants guidance — a fix method for a file nobody is being asked to
  * mutate. `guardrails/analyzer-unknown` is the precedent for this shape.
  */
+/**
+ * A changed file this rung did NOT mutate, because another checkout held the
+ * machine lock past this rung's wait. A warning: the next rung re-mutates the
+ * whole branch, so nothing escapes -- and the message says so in as many words,
+ * because an agent told only "lock busy" retries in a loop or waits in the
+ * foreground, and neither helps.
+ */
+function mutationDeferredViolation(file: string, rung: Rung): Violation {
+  return {
+    ruleId: 'guardrails/mutation-deferred',
+    file,
+    message:
+      `mutation testing deferred: another checkout holds the machine-wide ` +
+      `mutation lock. This file will be mutation-tested at the ` +
+      `${nextRungAfter(rung)} rung. Nothing to do — do not retry to force it, ` +
+      `and do not wait for the lock.`,
+    severity: 'warn',
+    fixable: false,
+    tool: 'guardrails',
+  };
+}
+
+/**
+Where a deferred mutation run is picked up again.
+*/
+function nextRungAfter(rung: Rung): string {
+  return rung === 'stop' ? 'commit' : 'push';
+}
+
+/**
+ * The push rung waited its whole wait and never got the lock. Not a code
+ * violation -- no edit resolves it -- so the gate reports it apart from a block
+ * and names no fixer (see `runCommitGate`). The marker is the string `ship`
+ * classifies as a lock timeout.
+ */
+function mutationLockTimeoutViolation(
+  file: string,
+  lock: MutationLock,
+): Violation {
+  const wait = lock.config.pushWaitSeconds;
+  const lockPath = lock.path;
+  return {
+    ruleId: MUTATION_LOCK_TIMEOUT_RULE,
+    file,
+    message:
+      `${LOCK_TIMEOUT_MARKER} after ${String(wait)}s — another checkout still ` +
+      `holds it. Re-run the push to re-queue (in the background if your ` +
+      `harness supports it); never bypass it with --no-verify. The lock is ` +
+      `held on a file descriptor, so it frees itself if its holder dies: if ` +
+      `nothing is running, report it rather than deleting ${lockPath}.`,
+    severity: 'error',
+    fixable: false,
+    tool: 'guardrails',
+  };
+}
+
 function strykerOutOfScopeViolation(file: string): Violation {
   return {
     ruleId: 'guardrails/stryker-out-of-scope',
@@ -1776,7 +1850,8 @@ async function runStryker(
   // production files at all" case too: an empty changed set intersects to an
   // empty scope and warns about nothing. A separate guard in front of the
   // config read would be one no test could distinguish.
-  if (inScope.length === 0) {
+  const [firstInScope] = inScope;
+  if (firstInScope === undefined) {
     return outOfScope;
   }
   const removeFile =
@@ -1807,9 +1882,13 @@ async function runStryker(
     canReportPerTestCoverage(strykerConfig),
   );
 
-  const result = await exec(
-    resolveBin('stryker'),
-    [
+  const rung = options.profile ?? 'stop';
+  const locked = await runUnderLock({
+    exec,
+    rung,
+    lock: options.mutationLock,
+    command: resolveBin('stryker'),
+    args: [
       'run',
       '--incremental',
       '--reporters',
@@ -1817,12 +1896,58 @@ async function runStryker(
       '--mutate',
       [...inScope, ...negations].join(','),
     ],
-    { cwd: repoRoot },
-  );
+    cwd: repoRoot,
+    progress:
+      options.progress ??
+      ((line) => {
+        process.stderr.write(`${line}\n`);
+      }),
+  });
+  if (locked.kind === 'deferred') {
+    return [
+      ...outOfScope,
+      ...inScope.map((file) => mutationDeferredViolation(file, rung)),
+    ];
+  }
+  if (locked.kind === 'timed-out') {
+    return [
+      ...outOfScope,
+      mutationLockTimeoutViolation(firstInScope, locked.lock),
+    ];
+  }
+  return strykerRunVerdict(locked.result, {
+    readFile,
+    repoRoot,
+    inScope,
+    outOfScope,
+  });
+}
+
+/**
+What `strykerRunVerdict` reads a finished run against.
+*/
+interface StrykerRunContext {
+  readFile: (filePath: string) => Promise<string>;
+  repoRoot: string;
+  inScope: string[];
+  outOfScope: Violation[];
+}
+
+/**
+ * What a stryker run that actually ran amounts to: its report's findings, or
+ * the reason there is no report to read. Split out of `runStryker` so the
+ * lock-and-defer half and the verdict half each stay readable.
+ */
+async function strykerRunVerdict(
+  result: ExecResult,
+  context: StrykerRunContext,
+): Promise<Violation[]> {
+  const { readFile, repoRoot, inScope, outOfScope } = context;
   if (result.spawnFailed === true) {
     // Reported separately as guardrails/analyzer-missing by the caller.
     return [];
   }
+  const reportPath = STRYKER_REPORT_PATH;
   // `''` rather than `string | undefined`, so "no file there" and "the file is
   // not a report" reach the one decision below as the same thing. A separate
   // `report !== undefined` guard in front of that decision would be an
