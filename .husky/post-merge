@@ -1,0 +1,3 @@
+# A pull: a merge, a fast-forward, or a `--rebase` with no local commits to
+# replay (git fast-forwards those and fires this, not post-rewrite).
+sh scripts/rebuild-if-changed.sh ORIG_HEAD HEAD

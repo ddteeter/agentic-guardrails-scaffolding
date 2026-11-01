@@ -66,6 +66,7 @@ import { detect } from './scaffold/detect.js';
 import {
   claudeSkillEntries,
   guidanceEntries,
+  legacyFingerprints,
   guidanceRoot,
 } from './scaffold/templates.js';
 import { parseManifest, MANIFEST_PATH } from './scaffold/manifest.js';
@@ -1807,7 +1808,12 @@ function warnAboutStaleGuidance(
     ...guidanceEntries(guidanceRoot()),
     ...claudeSkillEntries(guidanceRoot()),
   ];
-  const { updatable, drifted } = staleArtifacts(shipped, manifest, readSource);
+  const { updatable, drifted } = staleArtifacts(
+    shipped,
+    manifest,
+    readSource,
+    legacyFingerprints(),
+  );
   if (updatable.length > 0) {
     dependencies.stderr(
       `guardrails: ${updatable.length} scaffolded file(s) are behind the ` +

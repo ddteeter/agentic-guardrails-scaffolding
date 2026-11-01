@@ -1022,6 +1022,72 @@ core/src/audit.ts`) surfaced that it was a context-free text scan: it flagged
   commit; until then, `format:check` in CI is the backstop that catches what
   the local gate missed.
 
+- **The hooks in this checkout run a stale `dist/`, so a `git pull` that brings
+  a gate fix does not reach the gate (found 2026-10-17, fixed in #139).** Every hook
+  in `.claude/settings.json` and `.husky/` runs `guardrails-core/dist`, which is
+  gitignored and rebuilt only by `npm install` (`prepare`) or `npm run build`.
+  The main checkout had last been built on 2026-10-10. Several pulls later,
+  with the #118 EISDIR fix (#119) and #133 (the `complexity` analyzer) on `main`,
+  the Stop gate failed with `EISDIR: illegal operation on a directory` — the
+  pre-#119 bug — and the 0.10.0 release push was blocked by a pre-push gate
+  that both crashed the same way and rejected `"complexity"` as an unknown
+  analyzer. Each looked like a regression until a rebuild made it disappear.
+  Consumers are not affected: they install the built release tarball. Only a
+  self-hosting checkout runs its own build. **This is a recurrence**, not a first
+  discovery: the Phase-C-era entry "The gate had never actually run" (below)
+  records the same root cause — `dist/` is gitignored and nothing detects the
+  staleness. Two incidents now; the fix below is what that entry lacked.
+  **Fix (#139):** husky `post-merge`, `post-checkout` and `post-rewrite` hooks
+  call `scripts/rebuild-if-changed.sh <old> <new>`, which runs `npm run build`
+  only when `git diff` shows a build input changed between the two (src, the
+  tsup/tsconfig/package files, the lockfile, `sync-agents.mjs`, and the plugin
+  agents/skills it syncs into gitignored `.claude/`). Probed on git 2.50.1
+  rather than assumed: a `pull --rebase` with nothing local fast-forwards and
+  fires post-merge; with local commits it fires post-checkout _mid-rebase_ and
+  then post-rewrite, so post-checkout stands down while `rebase-merge/` or
+  `rebase-apply/` exists and the rebase builds once, from `ORIG_HEAD`.
+  `git worktree add` passes a null old sha and is skipped (its `npm install`
+  builds). Measured: build 3.0–4.9 s when it fires; the no-change diff ~70 ms;
+  a no-change switch round trip adds ~50 ms. Tested through real git
+  operations in `guardrails-core/test/rebuild-hooks.test.ts`. **Still open:**
+  uncommitted `src/` edits are invisible to git hooks, so the `session-start`
+  "src newer than `dist/cli.mjs`" warning remains the backstop for that case —
+  product code, not done here.
+
+- **The fixer ignored path-scoped project rules as untrusted tool output
+  (dialed.run, 2026-10-24, fixed).** dialed.run moved most of its CLAUDE.md
+  into `.claude/rules/*.md` with `paths:` frontmatter, which Claude Code
+  attaches to a Read/Edit result on a matching file. Headless haiku runs
+  showed the main session and a general-purpose subagent following an
+  attached rule, while `guardrail-fixer` saw the same text, called it
+  something that "came in the tool output, not from my instructions", and
+  did not act on it. So every convention the repo moved out of the root file
+  stopped reaching the agent that edits under the gate. **Fix:** both fixer
+  prompts now say that host-attached rule files (`.claude/rules/`,
+  subdirectory `CLAUDE.md`/`AGENTS.md`, Copilot's `.github/instructions/`)
+  carry the root file's standing, that the code being fixed stays data, and
+  that rules never widen scope or lift a hard constraint. Pinned in
+  `plugin-agents.test.ts`. **Open:** the same consumer asked for a config
+  map from `ruleId` to a rules doc, so gate and manifest messages can point
+  at it (their L4). Not built.
+
+- **`init` treats a consumer's formatter as a hand edit, so owned files stop
+  upgrading (dialed.run, 2026-10-24, fixed).** Bumping dialed.run to 0.11.1,
+  `init --apply` skipped `guardrail-fixer.md` as drifted. The only difference
+  was Prettier's quote style, which their lint-staged applies at commit:
+  Prettier formats the prompt's fenced `ts` block as code. Drift is an exact
+  checksum compare (`decideOwned`, `staleArtifacts`), so from a consumer's
+  first commit on, any owned file their formatter touches never upgrades
+  again. #141 reached dialed.run only because the fix was copied over by hand.
+  **Fix direction:** a formatter-agnostic fingerprint (letters and digits
+  only), recorded in the manifest. Existing installs get a bundled
+  checksum→fingerprint table built from the release tags. Plan:
+  `docs/superpowers/plans/2026-10-24-formatter-agnostic-drift.md`. **Fixed:**
+  as planned. The table ships in `guardrails-core/scaffold-data/`, because the
+  build regenerates `guidance/`. A live check took the 0.11.0 fixer, ran it
+  through default Prettier with a 0.11.0 manifest, and got `update` from a
+  packed build where the old code gave `drift`.
+
 ## Roadmap: analyzer opt-in (pack composition, not all-or-nothing) — shipped
 
 Phase E piece 1 shipped the hybrid this section used to guess at:

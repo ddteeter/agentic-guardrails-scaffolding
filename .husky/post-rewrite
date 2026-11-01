@@ -1,0 +1,7 @@
+# `git pull --rebase` with local commits, or `git commit --amend`.
+case $1 in
+  rebase) old=$(git rev-parse -q --verify ORIG_HEAD) || exit 0 ;;
+  # stdin is one "<old> <new>" line per rewritten commit.
+  *) read -r old _ || exit 0 ;;
+esac
+sh scripts/rebuild-if-changed.sh "$old" HEAD
