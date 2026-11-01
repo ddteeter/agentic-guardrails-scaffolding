@@ -59,6 +59,11 @@ import {
 } from '../mutation-lock.js';
 import { type Exec, type ExecResult, signalFromExitCode } from '../exec.js';
 import { parseJsonText, readJsonFile } from '../json-file.js';
+import {
+  holderEnvironment,
+  PROGRESS_REPORTER,
+  progressPluginBeside,
+} from '../lock-holder.js';
 import { repoSourceReader } from '../repo-source.js';
 import { sanctionIntegrity, toIntegrityViolations } from '../sanctions.js';
 import type { Violation } from '../violation.js';
@@ -144,6 +149,11 @@ export interface VerifyOptions {
   Where the lock's own lines go (waiting, unserialized). Defaults to stderr.
   */
   progress?: (line: string) => void;
+  /**
+  The built stryker progress plugin to load while holding the mutation lock.
+  Defaults to the one beside this module, when there is one.
+  */
+  strykerProgressPlugin?: string | undefined;
   /** File removal seam: `runStryker` deletes stryker's report path before
    *  every run, so a stale report from a prior run can never be mistaken for
    *  this one's, and its incremental cache whenever that cache may not be
@@ -1883,19 +1893,38 @@ async function runStryker(
   );
 
   const rung = options.profile ?? 'stop';
+  const mutate = [...inScope, ...negations].join(',');
+  const strykerArguments = (reporters: string): string[] => [
+    'run',
+    '--incremental',
+    '--reporters',
+    reporters,
+    '--mutate',
+    mutate,
+  ];
+  const lock = options.mutationLock;
+  const plugin =
+    options.strykerProgressPlugin ?? progressPluginBeside(import.meta.url);
   const locked = await runUnderLock({
     exec,
     rung,
-    lock: options.mutationLock,
+    lock,
     command: resolveBin('stryker'),
-    args: [
-      'run',
-      '--incremental',
-      '--reporters',
-      'json',
-      '--mutate',
-      [...inScope, ...negations].join(','),
-    ],
+    args: strykerArguments('json'),
+    ...(plugin !== undefined &&
+      lock !== undefined && {
+        locked: {
+          args: [
+            ...strykerArguments(`json,${PROGRESS_REPORTER}`),
+            '--appendPlugins',
+            plugin,
+          ],
+          env: {
+            ...process.env,
+            ...holderEnvironment(lock.path, rung, repoRoot),
+          },
+        },
+      }),
     cwd: repoRoot,
     progress:
       options.progress ??

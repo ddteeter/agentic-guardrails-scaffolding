@@ -4,7 +4,10 @@ import { type JsonFileResult, parseJsonText } from '../src/json-file.js';
 import {
   describeHolder,
   type Holder,
+  holderEnvironment,
   holderPath,
+  progressPluginBeside,
+  PROGRESS_REPORTER,
   readHolder,
   waitingCount,
 } from '../src/lock-holder.js';
@@ -290,5 +293,39 @@ describe('waitingCount', () => {
 
   it('counts none in empty output', () => {
     expect(waitingCount('', lock, 500)).toBe(0);
+  });
+});
+
+describe('holderEnvironment', () => {
+  it('names the holder file beside the lock, the rung and the repo', () => {
+    expect(holderEnvironment('/locks/gate.lock', 'push', '/r/app')).toEqual({
+      GUARDRAILS_LOCK_HOLDER_FILE: '/locks/gate.lock.holder.json',
+      GUARDRAILS_LOCK_RUNG: 'push',
+      GUARDRAILS_LOCK_REPO: '/r/app',
+    });
+  });
+});
+
+describe('PROGRESS_REPORTER', () => {
+  it('is the name the plugin registers', () => {
+    expect(PROGRESS_REPORTER).toBe('guardrails-progress');
+  });
+});
+
+describe('progressPluginBeside', () => {
+  it('finds the built plugin next to the running module', () => {
+    const asked: string[] = [];
+    const found = progressPluginBeside('file:///pkg/dist/cli.mjs', (file) => {
+      asked.push(file);
+      return true;
+    });
+    expect(found).toBe('/pkg/dist/stryker-progress-plugin.mjs');
+    expect(asked).toEqual(['/pkg/dist/stryker-progress-plugin.mjs']);
+  });
+
+  it('gives undefined when no built plugin is there', () => {
+    expect(
+      progressPluginBeside('file:///pkg/src/verify/index.ts', () => false),
+    ).toBeUndefined();
   });
 });

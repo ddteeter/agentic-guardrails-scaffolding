@@ -17,7 +17,7 @@
 import { renameSync, rmSync, writeFileSync } from 'node:fs';
 import process from 'node:process';
 
-import type { Holder } from './lock-holder.js';
+import { type Holder, PROGRESS_REPORTER } from './lock-holder.js';
 import { isRung } from './verify/analyzer-policy.js';
 
 /**
@@ -240,7 +240,7 @@ What `--appendPlugins` loads: the object `declareClassPlugin` would return.
 export const strykerPlugins = [
   {
     kind: 'Reporter',
-    name: 'guardrails-progress',
+    name: PROGRESS_REPORTER,
     injectableClass: GuardrailsProgressReporter,
   },
 ] as const;

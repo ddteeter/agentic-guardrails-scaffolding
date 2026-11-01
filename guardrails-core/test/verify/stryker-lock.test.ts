@@ -55,7 +55,8 @@ const report = JSON.stringify({
  */
 function machine(lock: { busy: boolean; timesOut?: boolean }) {
   const strykerRuns: string[][] = [];
-  const exec: Exec = (command, args) => {
+  const lockedEnvironments: (NodeJS.ProcessEnv | undefined)[] = [];
+  const exec: Exec = (command, args, options) => {
     if (args.includes('--name-only')) return Promise.resolve(ok('src/foo.ts'));
     if (command === 'sh') {
       return Promise.resolve({
@@ -76,6 +77,7 @@ function machine(lock: { busy: boolean; timesOut?: boolean }) {
         return Promise.resolve({ stdout: '', stderr: '', code: 75 });
       }
       strykerRuns.push(args.slice(6));
+      lockedEnvironments.push(options?.env);
       return Promise.resolve(ok(''));
     }
     if (command === 'stryker') {
@@ -84,7 +86,7 @@ function machine(lock: { busy: boolean; timesOut?: boolean }) {
     }
     return Promise.resolve(ok(''));
   };
-  return { exec, strykerRuns };
+  return { exec, strykerRuns, lockedEnvironments };
 }
 
 function verify(
@@ -230,5 +232,52 @@ describe('runStryker under the mutation lock', () => {
     );
     expect(waiting).toHaveLength(1);
     expect(waiting[0]?.endsWith('\n')).toBe(true);
+  });
+
+  it('runs the plain stryker args when no built progress plugin is found', async () => {
+    const { exec, strykerRuns, lockedEnvironments } = machine({ busy: false });
+    await verify(exec, 'commit');
+    expect(strykerRuns).toEqual([
+      ['run', '--incremental', '--reporters', 'json', '--mutate', 'src/foo.ts'],
+    ]);
+    expect(lockedEnvironments).toEqual([undefined]);
+  });
+});
+
+describe('runStryker loads the progress plugin while it holds the lock', () => {
+  it('adds the reporter and the plugin to the locked run', async () => {
+    const { exec, strykerRuns } = machine({ busy: false });
+    await runVerify({
+      ...verifyOptions(exec, 'commit'),
+      strykerProgressPlugin: '/pkg/dist/stryker-progress-plugin.mjs',
+    });
+    expect(strykerRuns).toEqual([
+      [
+        'run',
+        '--incremental',
+        '--reporters',
+        'json,guardrails-progress',
+        '--mutate',
+        'src/foo.ts',
+        '--appendPlugins',
+        '/pkg/dist/stryker-progress-plugin.mjs',
+      ],
+    ]);
+  });
+
+  it('tells the plugin where the holder file is, on top of the inherited env', async () => {
+    const { exec, lockedEnvironments } = machine({ busy: false });
+    await runVerify({
+      ...verifyOptions(exec, 'push'),
+      strykerProgressPlugin: '/pkg/dist/stryker-progress-plugin.mjs',
+    });
+    expect(lockedEnvironments).toEqual([
+      {
+        ...process.env,
+        GUARDRAILS_LOCK_HOLDER_FILE: `${lockPath}.holder.json`,
+        GUARDRAILS_LOCK_RUNG: 'push',
+        GUARDRAILS_LOCK_REPO: '/repo',
+      },
+    ]);
   });
 });

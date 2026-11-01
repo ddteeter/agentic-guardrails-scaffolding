@@ -173,6 +173,13 @@ export interface LockedRunOptions {
   Seam for the lock-file check. Defaults to opening it for append.
   */
   canOpenLock?: (lockPath: string) => boolean;
+  /**
+  What the command runs with once it HOLDS the lock, in place of `args`, and
+  the environment it gets then. Every bare path -- no locker, an unusable lock,
+  ci -- keeps `args` and the inherited environment, so whatever these add (the
+  progress plugin that writes the holder file) speaks only for the holder.
+  */
+  locked?: { args: string[]; env: NodeJS.ProcessEnv };
 }
 
 /**
@@ -228,10 +235,18 @@ export async function runUnderLock(
         `for the mutation lock (up to ${String(wait.waitSeconds)}s)…`,
     );
   }
-  const run = lockerArgv(locker, lockPath, wait.waitSeconds, command, args);
+  const holding = options.locked;
+  const run = lockerArgv(
+    locker,
+    lockPath,
+    wait.waitSeconds,
+    command,
+    holding?.args ?? args,
+  );
   const result = await exec(run.command, run.args, {
     cwd,
     processGroup: true,
+    ...(holding !== undefined && { env: holding.env }),
   });
   if (isMissingCommand(result, command)) {
     // The locker started but its command did not exist. Re-asked bare so the

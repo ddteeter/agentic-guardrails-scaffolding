@@ -10,7 +10,9 @@
  * Everything here is pure. The file read, the liveness check and the `ps`
  * call are the caller's, so the decisions can be proved without any of them.
  */
+import { existsSync } from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import type { JsonFileResult } from './json-file.js';
 import { isRung, type Rung } from './verify/analyzer-policy.js';
@@ -50,6 +52,44 @@ Where the holder file for `lockPath` lives: beside the lock.
 */
 export function holderPath(lockPath: string): string {
   return `${lockPath}.holder.json`;
+}
+
+/**
+The reporter name the progress plugin registers, and `--reporters` asks for.
+*/
+export const PROGRESS_REPORTER = 'guardrails-progress';
+
+/**
+ * What the progress plugin reads to know it runs for the lock's holder: the
+ * holder file beside `lockPath`, the rung, and the repo. Set only on the run
+ * that holds the lock, so a plugin that finds them is the holder.
+ */
+export function holderEnvironment(
+  lockPath: string,
+  rung: Rung,
+  repo: string,
+): Record<string, string> {
+  return {
+    GUARDRAILS_LOCK_HOLDER_FILE: holderPath(lockPath),
+    GUARDRAILS_LOCK_RUNG: rung,
+    GUARDRAILS_LOCK_REPO: repo,
+  };
+}
+
+/**
+ * The built progress plugin beside the module at `moduleUrl`, or `undefined`
+ * when there is none. Stryker loads it by path, so it must be a file; from
+ * `dist/` it is a sibling of the bundle running this, and from `src/` (tests,
+ * a checkout before its build) there is none and the run simply goes without.
+ */
+export function progressPluginBeside(
+  moduleUrl: string,
+  isFile: (filePath: string) => boolean = existsSync,
+): string | undefined {
+  const plugin = fileURLToPath(
+    new URL('stryker-progress-plugin.mjs', moduleUrl),
+  );
+  return isFile(plugin) ? plugin : undefined;
 }
 
 /**

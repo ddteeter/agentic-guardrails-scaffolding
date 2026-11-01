@@ -507,3 +507,86 @@ describe('machineLock', () => {
     },
   );
 });
+
+/**
+Every call `exec` sees, with the environment it was given.
+*/
+function noteEnvironment(exec: Exec) {
+  const seen: { line: string; env: NodeJS.ProcessEnv | undefined }[] = [];
+  const wrapped: Exec = (command, args, options) => {
+    seen.push({ line: [command, ...args].join(' '), env: options?.env });
+    return exec(command, args, options);
+  };
+  return { wrapped, seen };
+}
+
+const HOLDING = {
+  args: ['run', '--appendPlugins', '/dist/plugin.mjs'],
+  env: { GUARDRAILS_LOCK_HOLDER_FILE: '/locks/gate.lock.holder.json' },
+};
+
+function holdingOptions(exec: Exec, canOpen: boolean) {
+  return {
+    exec,
+    rung: 'push' as const,
+    lock: { path: '/locks/gate.lock', config: lockConfig },
+    command: 'stryker',
+    args: ['run'],
+    cwd: '/repo',
+    progress: ignoreLine,
+    canOpenLock: () => canOpen,
+    locked: HOLDING,
+  };
+}
+
+describe('runUnderLock runs the holder-only args only while holding the lock', () => {
+  it('runs the locked args with the locked env once it holds the lock', async () => {
+    const { wrapped, seen } = noteEnvironment(
+      lockfMachine({ busy: false }).exec,
+    );
+    await runUnderLock(holdingOptions(wrapped, true));
+    expect(seen.at(-1)).toEqual({
+      line: 'lockf -k -s -t 10800 /locks/gate.lock stryker run --appendPlugins /dist/plugin.mjs',
+      env: HOLDING.env,
+    });
+  });
+
+  it('gives the probe neither the locked args nor the env', async () => {
+    const { wrapped, seen } = noteEnvironment(
+      lockfMachine({ busy: false }).exec,
+    );
+    await runUnderLock(holdingOptions(wrapped, true));
+    expect(seen.at(-2)).toEqual({
+      line: 'lockf -k -s -t 0 /locks/gate.lock true',
+      env: undefined,
+    });
+  });
+
+  it('runs the plain args when the lock file cannot be opened', async () => {
+    const { wrapped, seen } = noteEnvironment(
+      lockfMachine({ busy: false }).exec,
+    );
+    await runUnderLock(holdingOptions(wrapped, false));
+    expect(seen.at(-1)).toEqual({ line: 'stryker run', env: undefined });
+  });
+
+  it('runs the plain args with no locker on the machine', async () => {
+    const { wrapped, seen } = noteEnvironment(noLockerMachine);
+    await runUnderLock(holdingOptions(wrapped, true));
+    expect(seen.at(-1)).toEqual({ line: 'stryker run', env: undefined });
+  });
+
+  it('re-runs a missing command with the plain args', async () => {
+    const { wrapped, seen } = noteEnvironment(missingStrykerMachine([]));
+    await runUnderLock(holdingOptions(wrapped, true));
+    expect(seen.at(-1)).toEqual({ line: 'stryker run', env: undefined });
+  });
+
+  it('runs the plain args on ci, which takes no lock', async () => {
+    const { wrapped, seen } = noteEnvironment(
+      lockfMachine({ busy: false }).exec,
+    );
+    await runUnderLock({ ...holdingOptions(wrapped, true), rung: 'ci' });
+    expect(seen).toEqual([{ line: 'stryker run', env: undefined }]);
+  });
+});
