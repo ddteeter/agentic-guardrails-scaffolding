@@ -4,6 +4,12 @@
   // spawns knip against directly; not reachable from any real entry point, so
   // it reads as dead code to fallow's whole-graph scan. Excluded the same way
   // it's excluded from knip.json/tsconfig.json/eslint.config.js.
+  // The stryker progress reporter (guardrails-core/src/stryker-progress-plugin.ts)
+  // is loaded by stryker through `--appendPlugins <dist path>`, so nothing
+  // imports it and its exports are read by stryker's plugin loader. knip finds
+  // it through its tsup plugin (it is a tsup entry); fallow does not, so it is
+  // named here.
+  "entry": ["guardrails-core/src/stryker-progress-plugin.ts"],
   "ignorePatterns": [
     "dist/",
     "coverage/",
