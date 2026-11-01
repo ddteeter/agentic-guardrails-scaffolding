@@ -69,57 +69,87 @@ hook source is `.githooks/pre-push`; the build copies it into the template.
      Remove whichever is no longer used.
    - **Done when:** the build mirror is identical and the suite is green.
 
-## Part B: who holds the lock, and what the agent is told
+## Part B+C: who holds the lock, its progress, the queue, and the advice
 
-6. **Holder file.**
-   - Once the lock is acquired, the holder writes `<lock>.holder.json`
-     (repo, rung, pid, startedAt), atomically. It is removed on exit.
-   - The write happens INSIDE the locked command, so only the holder ever
-     writes it: the locker runs a tiny `node <dist>/lock-holder.mjs` wrapper
-     that writes the file and then execs stryker.
-   - `readHolder(lock)` returns the holder, or `unknown` when the file is
-     missing, stale (dead pid) or unparseable.
-   - Tests: write/read/stale/garbage, plus the wrapper's live round trip.
-7. **Advice wording, one message per outcome.**
-   - All lock messages are built in `mutation-lock.ts`, with `<holder>` and
-     `<n>` filled in.
-   - `abandonGate` gains the "was waiting for the mutation lock" clause when
-     a lock wait was in progress.
-   - The wording is consumer-generic: no host tool names.
-   - Tests: one per spec table row.
-   - Add one line about `mutation-deferred` to the `crushing-mutants` skill
-     and to the fixer prompts in `guardrails-plugin/agents/`, then rebuild
-     and commit the regenerated `.github/agents/`.
+**Revised 2026-11-01.** One mechanism replaces the plan's separate
+holder-writer wrapper (old step 6) and progress plugin (old step 8): the
+progress reporter plugin also writes the holder file. The plugin runs inside
+stryker, and stryker only starts once the lock is held, so what it writes
+belongs to the holder by construction.
 
-## Part C: progress and the queue
+Verified against stryker 10.0.0: `--appendPlugins` accepts an absolute path
+and loads it with `import()`. A plugin is the plain object
+`{ kind: 'Reporter', name, injectableClass }` (that is all
+`declareClassPlugin` returns), exported as `strykerPlugins`. The plugin
+therefore needs no runtime import of `@stryker-mutator/api`. The reporter
+events are:
 
-8. **Reporter plugin.**
-   - `src/stryker-progress-plugin.ts` builds to `dist/stryker-progress-plugin.mjs`.
-   - It implements the four reporter events and writes progress into the
-     holder file, atomically, at most every 5s. It never throws.
-   - `runStryker` passes `--appendPlugins <dist path>` and adds its reporter
-     to `--reporters json,…`.
-   - Unit tests drive the events directly.
-   - The drift guard (`test/drift/stryker-runner.test.ts`) asserts that the
-     progress file appears on a real run.
-9. **Queue count.**
-   - `waitingCount(exec, lock, holderPid)` uses
-     `ps -Ao pid=,command=` and counts lines containing the locker and the
-     lock path, excluding the holder.
-   - Tests use canned `ps` output, including another lock's waiters, which
-     must not be counted.
-10. **Live progress while waiting.**
-    - While the lock wait is pending, `runStryker` prints
-      `still waiting (<k> ahead): <holder> (<rung>) is <phase>, <pct>%
-(<tested>/<total>), ~<eta> left` every 60s (an interval that can be
-      injected in tests), and clears the timer on settle.
-    - The holder prints its own progress lines.
-    - Tests use a fake clock.
+- `onDryRunCompleted`
+- `onMutationTestingPlanReady({ mutantPlans })`: each plan is `'Run'` or
+  `'EarlyResult'`
+- `onMutantTested(result)`: `result.status` is `'Survived'`,
+  `'NoCoverage'`, …
+- `onMutationTestReportReady`
+
+6. **`src/lock-holder.ts`, pure.**
+   - `holderPath(lockPath)` returns `<lock>.holder.json`.
+   - `Holder` has the fields `{ repo, rung, pid, startedAt, phase:
+'starting'|'dry-run'|'mutating', tested, total, reused, survived,
+mutatingSince? }`.
+   - `readHolder(path, readFile, isAlive)` returns `Holder | undefined`.
+     Missing, garbage, or a dead pid all give `undefined`, which callers
+     word as "another checkout".
+   - `describeHolder(holder, now)` gives e.g. `dialed-163 (push) is
+mutating, 62% (160/258), ~4m left`. The estimate is the rate since
+     `mutatingSince` applied to the mutants remaining. With no estimate yet,
+     the time-left clause is omitted.
+   - Tests cover each phase, the estimate, the repo label (basename of the
+     repo path), stale, and garbage.
+7. **`src/stryker-progress-plugin.ts` → `dist/stryker-progress-plugin.mjs`**
+   (add it as a tsup entry and a knip entry, and reconcile fallow).
+   - Reads `GUARDRAILS_LOCK_HOLDER_FILE`, `GUARDRAILS_LOCK_RUNG` and
+     `GUARDRAILS_LOCK_REPO` from the env. Unset means it does nothing.
+   - Writes the holder file on construction, then updates it on each event,
+     throttled to one write per 5s (the last write is always flushed).
+     Writes are atomic (temp file + rename). It removes the file on
+     `onMutationTestReportReady` and on process `exit`.
+   - Every fs error is swallowed: the plugin never fails a run.
+   - The class takes an injectable writer and clock for tests, and its
+     `static inject` is `[]`.
+   - Unit tests drive the events.
+8. **`runStryker` loads the plugin when the run is locked.**
+   - `runUnderLock` gains an optional `holder` (plugin path, repo, rung). For
+     the locked spawn only, it appends `--appendPlugins <plugin>`, adds the
+     reporter to `--reporters json,guardrails-progress`, and sets the three
+     env vars (`env: { ...process.env, … }`).
+   - The plugin path resolves next to the running module
+     (`new URL('./stryker-progress-plugin.mjs', import.meta.url)`). Tests
+     stub exec.
+   - The drift guard (`test/drift/stryker-runner.test.ts`) runs real stryker
+     with the BUILT plugin and asserts that the holder file appeared during
+     the run (and is gone after). It uses a config with a `plugins` entry.
+9. **Queue count.** `waitingCount(exec, lockPath, holderPid)` runs
+   `ps -Ao pid=,ppid=,command=` and counts `lockf`/`flock` lines that
+   contain the lock path. It excludes the holder's own locker (the holder
+   pid's ppid) and the zero-wait probes (`… true`). Tests use canned `ps`
+   output, including another lock's waiters, which must not be counted.
+10. **Messages name the holder and the queue.**
+    - The deferred, waiting and timeout messages use `describeHolder` and
+      fall back to "another checkout".
+    - While the real wait is pending, `runUnderLock` prints `still waiting
+(<k> ahead): <describeHolder>` every 60s. The interval and clock are
+      injectable. The timer is cleared on settle.
+    - `abandonGate` gains "it was waiting for the mutation lock (held by
+      …)" when a wait was in progress.
+    - A config warning when `commitWaitSeconds` ≥ `hookDeadlineSeconds`.
+    - The skills and fixer prompts get one line each on `mutation-deferred`:
+      `crushing-mutants`, and `guardrails-plugin/agents/` → rebuild → commit
+      `.github/agents/`.
 11. **`guardrails lock-status`.**
-    - Prints the holder, rung, progress, ETA and number waiting, or "free".
-      Exits 0.
-    - Listed in the usage text.
-    - Tests are CLI tests over a temporary lock path.
+    - Prints the holder description and the number waiting, or `the
+mutation lock is free`. Exits 0.
+    - Says to run it once for an estimate and not to poll it.
+    - Listed in the usage text, with CLI tests over a temporary lock path.
 
 ## Part D: dogfood and record
 
