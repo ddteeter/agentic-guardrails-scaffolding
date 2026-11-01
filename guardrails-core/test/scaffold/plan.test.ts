@@ -418,8 +418,8 @@ describe('plan — an existing foreign core.hooksPath', () => {
   it('warns, naming the value found and the hook left uninstalled', () => {
     const warnings = planWithHooksPath(FOREIGN).join('\n');
     expect(warnings).toContain(FOREIGN);
-    expect(warnings).toContain('.githooks/pre-commit');
-    expect(warnings).toContain('gate --mode=commit');
+    expect(warnings).toContain('sh .githooks/pre-commit');
+    expect(warnings).toContain('sh .githooks/pre-push');
   });
 
   it('says nothing when git has no core.hooksPath at all', () => {

@@ -11,6 +11,7 @@ import {
   foreignHooksPathWarning,
   HOOKS_DIRECTORY,
   HOOKS_SCRIPT_PATH,
+  PUSH_HOOK_SCRIPT_PATH,
 } from '../../src/scaffold/hooks-path.js';
 
 describe('foreignHooksPath', () => {
@@ -42,8 +43,20 @@ describe('foreignHooksPathWarning', () => {
     expect(warning).toContain(HOOKS_SCRIPT_PATH);
   });
 
-  it('says what to do about it, as a command that can be pasted', () => {
-    expect(warning).toContain('gate --mode=commit');
+  it('names the pre-push hook too, which is inert for the same reason', () => {
+    expect(warning).toContain(PUSH_HOOK_SCRIPT_PATH);
+  });
+
+  it('says to chain each hook script, as lines that can be pasted', () => {
+    expect(warning).toContain(`sh ${HOOKS_SCRIPT_PATH}`);
+    expect(warning).toContain(`sh ${PUSH_HOOK_SCRIPT_PATH}`);
     expect(warning).toContain('pre-commit hook');
+    expect(warning).toContain('pre-push hook');
+  });
+
+  it('does not suggest the bare gate line, which drops the push lock', () => {
+    // Chaining `gate --mode=push` directly is how this repo's own husky
+    // pre-push ran the gate unserialized: the lock lives in the script.
+    expect(warning).not.toContain('gate --mode=');
   });
 });
