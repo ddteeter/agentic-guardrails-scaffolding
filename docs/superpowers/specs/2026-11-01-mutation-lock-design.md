@@ -100,6 +100,35 @@ names the next action.
   fixer prompts get one line each: a `mutation-deferred` warning is not
   theirs to act on.
 
+**Progress and the queue are visible.** Other agents are often left
+wondering how far along the lock holder is.
+
+- **A guardrails stryker reporter plugin** lives in `dist/` and is loaded
+  with `--appendPlugins`, which adds to a consumer's plugin list rather than
+  replacing it. It uses stryker 10's reporter events:
+  `onDryRunCompleted`, `onMutationTestingPlanReady` (how many mutants will
+  run versus be reused from the incremental cache), `onMutantTested` and
+  `onMutationTestReportReady`.
+  - It writes phase, tested/total, survivors so far, elapsed time and an
+    estimate of time left into `<lock>.holder.json`. Writes are atomic
+    (temp file + rename) and happen at most every 5s.
+  - It never fails a run: every write error is swallowed.
+  - It does not parse stryker's built-in text progress output, which can
+    change between versions.
+- **Queue count from `ps`.** Every waiter is a `lockf`/`flock` process with
+  the lock path in its argv. Once the lock wraps only stryker, every one of
+  them is a stryker run, so counting them (minus the holder's pid) is exact
+  and needs no registration.
+- **Waiters print a line every 60s** while their background lock wait runs,
+  e.g. `still waiting (2 ahead): dialed-163 (push) is mutating, 62%
+(160/258), ~4m left`. The holder prints its own progress lines to stderr.
+- **`guardrails lock-status`** prints the holder, its rung, progress, time
+  left and the number waiting. The advice says to run it once when an
+  estimate is needed, not to poll it.
+- **Drift guard.** `test/drift/stryker-runner.test.ts` also asserts the
+  plugin's progress file appears. If a stryker upgrade breaks the plugin
+  API, the build fails rather than going quiet.
+
 **What is removed:**
 
 - The `gate-lock` command, `push-lock.ts`, and the lock branches in
@@ -117,12 +146,14 @@ entry. The entry gets updated, since the commit-rung finding is now fixed.
 
 ## Risks to measure before relying on them
 
-1. **An abandoned gate leaves an orphaned stryker.** `abandonGate` sends
-   SIGTERM to its direct children, which is now the locker rather than
-   stryker. Does `lockf`/`flock` pass the signal on, or does stryker keep
-   running unlocked? To check: spawn under each locker, SIGTERM the locker,
-   and see whether stryker survives. If it does, spawn the locker in its own
-   process group and kill the group.
+1. **An abandoned gate leaves an orphaned stryker. MEASURED 2026-11-01: it
+   does, and the lock is freed.** I sent SIGTERM to `lockf -k … sh -c
+'sleep 30'`. The child survived, and the lock was immediately free, so a
+   killed gate would leave stryker running unlocked. That is the worst case.
+   **Fix:** spawn the locker in its own process group (`detached: true`) and
+   kill the group (`process.kill(-pid)`). A detached group no longer gets
+   the terminal's Ctrl-C, so the CLI must forward SIGINT/SIGTERM to the
+   groups it owns. There is a live test for both.
 2. **An agent commit may run commit-rung stryker twice**, once at PreToolUse
    and once in husky's pre-commit. Incremental mode should make the second
    run cheap, but under the lock it also queues twice. To check on a real
@@ -146,7 +177,7 @@ entry. The entry gets updated, since the commit-rung finding is now fixed.
 - **Live, with a real locker** (the pattern from `templates.test.ts`): while
   another process holds the lock, a commit-rung run defers within its wait,
   and a push-rung run waits.
-- **Risk 1** as a live test once the fix exists.
+- **Risk 1** as a live test: kill the gate and assert no stryker survives. Ctrl-C is forwarded.
 - **One test per row of the outcomes table.** Each pins the message's
   next-action clause, not just that a message appears. The push timeout row
   also pins the `ship` marker.
