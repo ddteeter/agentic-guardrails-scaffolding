@@ -34,19 +34,34 @@ by construction.
 
 **How long each rung waits:**
 
-| Rung   | Wait for the lock                                       | If the wait runs out                                                                                     |
-| ------ | ------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| push   | `GUARDRAILS_GATE_LOCK_TIMEOUT` (default 10800s, as now) | block, with the existing "gave up waiting" wording that `ship` reads                                     |
-| commit | `GUARDRAILS_GATE_LOCK_COMMIT_TIMEOUT` (default 60s)     | **defer**: skip stryker for this commit and report a non-blocking `guardrails/mutation-deferred` warning |
-| ci     | no lock                                                 | —                                                                                                        |
+| Rung   | Wait for the lock                              | If the wait runs out                                                     |
+| ------ | ---------------------------------------------- | ------------------------------------------------------------------------ |
+| stop   | 0s: try once                                   | **defer** to commit (`guardrails/mutation-deferred`, non-blocking)       |
+| commit | `mutationLock.commitWaitSeconds` (default 60)  | **defer** to push (same warning)                                         |
+| push   | `mutationLock.pushWaitSeconds` (default 10800) | **block**, with the existing "gave up waiting" wording that `ship` reads |
+| ci     | no lock                                        | n/a                                                                      |
 
+- **Where the waits are set.** `guardrails.config.json`, under a
+  `mutationLock` object. These are per-repo policy, so they live in the
+  repo's checked-in policy file.
+  - The lock **path** stays the `GUARDRAILS_GATE_LOCK` env var. Which lock
+    to share is a fact about the machine, not the repo, and a repo-level
+    path would split the one queue the lock exists for.
+  - `GUARDRAILS_GATE_LOCK_TIMEOUT` is read as a fallback for
+    `pushWaitSeconds`, with a note saying so, so existing setups keep
+    working.
+- **Stop never waits.** Stryker is off this rung by default. A consumer who
+  moves it here wants per-turn mutation feedback, but a busy machine should
+  not hold up every turn. Waiting would stall the agent and race the 240s
+  hook deadline, which ends in "turn not checked", a worse outcome than a
+  clean deferral. The commit rung picks the files up next. The deferral is
+  a warning, not a violation, so it never writes a manifest or names a
+  fixer.
 - **Why deferring a commit is safe.** Push and CI re-run mutation testing
-  over the whole branch, so a deferred commit escapes nothing. The commit
-  also can't afford to wait: the PreToolUse gate is abandoned at
+  over the whole branch, so a deferred commit escapes nothing. A commit also
+  cannot afford to wait: the PreToolUse gate is abandoned at
   `hookDeadlineSeconds` (240), which happened twice in this session under
-  load. The 60s default leaves room for the run itself.
-- **Not silent.** The warning names the lock and says the push will check
-  these files.
+  load.
 - **CI has no lock.** A runner has no other gates to contend with, and a
   locker may not be installed there.
 
@@ -56,6 +71,34 @@ existing "another checkout is running the gate — waiting…" line, and only
 then waits for real. That is the same order the hook uses today, moved into
 Node. With no locker installed, stryker runs unserialized with the existing
 note.
+
+**Every lock outcome tells the agent what to do next.** An agent that is
+just told "lock busy" retries in a loop, waits in the foreground, or reaches
+for `--no-verify`. So each outcome has one message, pinned by a test, that
+names the next action.
+
+| Outcome                         | Rungs        | What the agent is told                                                                                                                                                                                                                                                                                           |
+| ------------------------------- | ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Got the lock straight away      | all          | Nothing.                                                                                                                                                                                                                                                                                                         |
+| Waited, then got it             | commit, push | `waited <n>s for the mutation lock (held by <holder>).` Informational.                                                                                                                                                                                                                                           |
+| Deferred                        | stop, commit | `mutation testing deferred: <holder> holds the machine lock. <files> will be mutation-tested at <next rung>. Nothing to do — do not retry to force it, and do not wait for the lock.`                                                                                                                            |
+| Push gave up waiting            | push         | The existing `ship` marker, plus `<holder> still holds it. Re-run the push to re-queue — in the background if your harness supports it. Never --no-verify. If <holder> is not running, the lock is free on its own (it is held on a file descriptor) — report it rather than deleting <lock>.`                   |
+| No locker installed             | all          | `no lockf or flock — mutation testing runs unserialized. Install util-linux (flock) to serialize.` Once per run.                                                                                                                                                                                                 |
+| Lock file unusable              | all          | A locker error that is not a timeout (unwritable `$HOME`, a sandbox). Stryker runs **unserialized** with `could not open <lock> (<error>) — running unserialized; set GUARDRAILS_GATE_LOCK to a writable path.` A broken lock must never read as a stryker failure or a block.                                   |
+| Hook deadline hit while waiting | stop, commit | The existing abandon message gains: `it was waiting for the mutation lock (held by <holder>); <n>s commit wait plus the run exceeded hookDeadlineSeconds.` This should only happen when `commitWaitSeconds` is set close to the deadline. A config check warns when `commitWaitSeconds` ≥ `hookDeadlineSeconds`. |
+
+- **`<holder>`.** The run that gets the lock writes
+  `<lock>.holder.json` (repo path, rung, pid, start time) and removes it when
+  it finishes. A waiter reads it to name who it is waiting on.
+  - If the pid is dead, the file is stale. The waiter reports it as
+    "unknown holder" and does not trust it.
+  - Never trusted for locking: the advisory lock itself stays the only
+    authority. The file only labels it.
+- **The wording is consumer-generic.** No Claude Code tool names. "In the
+  background if your harness supports it" covers Codex and Copilot as well.
+- **The skills and fixers learn the deferral.** `crushing-mutants` and the
+  fixer prompts get one line each: a `mutation-deferred` warning is not
+  theirs to act on.
 
 **What is removed:**
 
@@ -104,12 +147,15 @@ entry. The entry gets updated, since the commit-rung finding is now fixed.
   another process holds the lock, a commit-rung run defers within its wait,
   and a push-rung run waits.
 - **Risk 1** as a live test once the fix exists.
+- **One test per row of the outcomes table.** Each pins the message's
+  next-action clause, not just that a message appears. The push timeout row
+  also pins the `ship` marker.
+- **The config check.** It warns when `commitWaitSeconds` ≥
+  `hookDeadlineSeconds`.
 
-## Open questions
+## Decisions (2026-11-01)
 
-1. The 60s commit wait: should it be configurable in
-   `guardrails.config.json` rather than an env var? Env matches the
-   existing lock knobs, so the plan uses env.
-2. Should the Stop rung ever run stryker? Today it never does (floor is
-   `commit`), but a consumer can move it with `analyzerRungs`. Proposal:
-   treat it like commit (short wait, then defer).
+- The commit wait is set in `guardrails.config.json` (`mutationLock`), not
+  an env var. The lock path stays an env var, because it is a property of
+  the machine.
+- The stop rung tries the lock once and then defers. It never waits.
