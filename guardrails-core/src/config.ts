@@ -7,6 +7,7 @@
 
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
+import process from 'node:process';
 
 import { auditKinds, type AuditKind } from './audit.js';
 import type { GateConfig } from './gate-decision.js';
@@ -80,6 +81,14 @@ export interface SanctionParseResult {
   */
   files: SanctionedFile[];
   malformed: string[];
+}
+
+/**
+See `RepoConfig.mutationLock`.
+*/
+export interface MutationLockConfig {
+  commitWaitSeconds: number;
+  pushWaitSeconds: number;
 }
 
 export interface RepoConfig {
@@ -193,6 +202,16 @@ export interface RepoConfig {
    */
   hookDeadlineSeconds: number;
   /**
+   * How long a stryker run waits for the machine-wide mutation lock, per rung
+   * (see `mutation-lock.ts`). Commit is short because a commit cannot wait
+   * hours and a deferred commit escapes nothing -- push and CI re-mutate the
+   * whole branch. Push is long because it is the rung that must not defer.
+   * The lock PATH is deliberately not here: which lock to share is a property
+   * of the machine (`GUARDRAILS_GATE_LOCK`), and a per-repo path would split
+   * the one queue the lock exists for.
+   */
+  mutationLock: MutationLockConfig;
+  /**
    * Deny a Claude Code Bash call that WAITS in the foreground -- `gh pr checks
    * --watch`, `gh run watch`, a `kill -0`/`pgrep` wait loop, a long `sleep`,
    * `guardrails ship` -- unless it runs with `run_in_background`. See
@@ -232,6 +251,7 @@ export function defaultConfig(): RepoConfig {
     distribution: 'solo',
     enforcement: 'warn',
     hookDeadlineSeconds: 240,
+    mutationLock: { commitWaitSeconds: 60, pushWaitSeconds: 10_800 },
     denyForegroundWaits: true,
     foregroundSleepLimitSeconds: 120,
   };
@@ -556,6 +576,31 @@ function pickPositive(value: unknown, fallback: number): number {
   return number > 0 ? number : fallback;
 }
 
+/**
+ * `mutationLock`, key by key. `GUARDRAILS_GATE_LOCK_TIMEOUT` was the push
+ * wait's only knob while the lock lived in the shell hook, so it is still
+ * read -- below the config key, above the default -- and a setup that relied
+ * on it keeps working.
+ */
+function pickMutationLock(
+  value: unknown,
+  defaults: MutationLockConfig,
+  environment: Readonly<Record<string, string | undefined>>,
+): MutationLockConfig {
+  const section = isRecord(value) ? value : {};
+  const legacyPush = pickPositive(
+    Number(environment.GUARDRAILS_GATE_LOCK_TIMEOUT),
+    defaults.pushWaitSeconds,
+  );
+  return {
+    commitWaitSeconds: pickPositive(
+      section.commitWaitSeconds,
+      defaults.commitWaitSeconds,
+    ),
+    pushWaitSeconds: pickPositive(section.pushWaitSeconds, legacyPush),
+  };
+}
+
 /** The policy file's name, exported so the modules that read it, name it in a
  *  message, or file a violation against it cannot drift on the spelling. */
 export const CONFIG_FILE_NAME = 'guardrails.config.json';
@@ -574,8 +619,17 @@ export function readConfigText(repoRoot: string): string | undefined {
   return existsSync(filePath) ? readFileSync(filePath, 'utf8') : undefined;
 }
 
-export function loadConfig(repoRoot: string): RepoConfig {
-  const defaults = defaultConfig();
+export function loadConfig(
+  repoRoot: string,
+  environment: Readonly<Record<string, string | undefined>> = process.env,
+): RepoConfig {
+  const base = defaultConfig();
+  // The environment fallback applies with or without a config file: a repo
+  // that never wrote one still honours its old GUARDRAILS_GATE_LOCK_TIMEOUT.
+  const defaults: RepoConfig = {
+    ...base,
+    mutationLock: pickMutationLock(undefined, base.mutationLock, environment),
+  };
   let raw: unknown;
   // Equivalent mutants: emptying either block leaves `raw` undefined, which the
   // `isRecord` guard below rejects — the function still returns `defaults`. A
@@ -616,6 +670,11 @@ export function loadConfig(repoRoot: string): RepoConfig {
     hookDeadlineSeconds: pickPositive(
       raw.hookDeadlineSeconds,
       defaults.hookDeadlineSeconds,
+    ),
+    mutationLock: pickMutationLock(
+      raw.mutationLock,
+      base.mutationLock,
+      environment,
     ),
     denyForegroundWaits: raw.denyForegroundWaits !== false,
     foregroundSleepLimitSeconds: pickPositive(

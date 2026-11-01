@@ -673,6 +673,66 @@ describe('hookDeadlineSeconds', () => {
   });
 });
 
+describe('mutationLock', () => {
+  it('waits a minute at commit and three hours at push by default', () => {
+    expect(defaultConfig().mutationLock).toEqual({
+      commitWaitSeconds: 60,
+      pushWaitSeconds: 10_800,
+    });
+  });
+
+  it('reads both waits', () => {
+    writeFileSync(
+      path.join(root, 'guardrails.config.json'),
+      JSON.stringify({
+        mutationLock: { commitWaitSeconds: 30, pushWaitSeconds: 600 },
+      }),
+    );
+    expect(loadConfig(root).mutationLock).toEqual({
+      commitWaitSeconds: 30,
+      pushWaitSeconds: 600,
+    });
+  });
+
+  it.each([0, -5, 'soon'])('ignores a wait of %s', (value) => {
+    writeFileSync(
+      path.join(root, 'guardrails.config.json'),
+      JSON.stringify({
+        mutationLock: { commitWaitSeconds: value, pushWaitSeconds: value },
+      }),
+    );
+    expect(loadConfig(root).mutationLock).toEqual({
+      commitWaitSeconds: 60,
+      pushWaitSeconds: 10_800,
+    });
+  });
+
+  it('falls back to GUARDRAILS_GATE_LOCK_TIMEOUT for the push wait', () => {
+    expect(
+      loadConfig(root, { GUARDRAILS_GATE_LOCK_TIMEOUT: '900' }).mutationLock
+        .pushWaitSeconds,
+    ).toBe(900);
+  });
+
+  it('prefers the config key over the environment', () => {
+    writeFileSync(
+      path.join(root, 'guardrails.config.json'),
+      JSON.stringify({ mutationLock: { pushWaitSeconds: 600 } }),
+    );
+    expect(
+      loadConfig(root, { GUARDRAILS_GATE_LOCK_TIMEOUT: '900' }).mutationLock
+        .pushWaitSeconds,
+    ).toBe(600);
+  });
+
+  it('ignores an environment timeout that is not a positive number', () => {
+    expect(
+      loadConfig(root, { GUARDRAILS_GATE_LOCK_TIMEOUT: 'later' }).mutationLock
+        .pushWaitSeconds,
+    ).toBe(10_800);
+  });
+});
+
 describe('denyForegroundWaits and foregroundSleepLimitSeconds', () => {
   it('denies foreground waits by default, with a two-minute sleep limit', () => {
     expect(defaultConfig().denyForegroundWaits).toBe(true);
