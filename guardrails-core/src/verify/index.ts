@@ -411,7 +411,7 @@ function didGitCallFail(result: ExecResult): boolean {
   return result.signal !== undefined || result.code !== 0;
 }
 
-async function changedTypeScriptFiles(
+export async function changedTypeScriptFiles(
   options: VerifyOptions,
 ): Promise<{ files: string[]; violations: Violation[] }> {
   const { exec, repoRoot, baseBranch } = options;
@@ -1693,14 +1693,45 @@ async function discardUnusableIncrementalCache(
   await seams.removeFile(cachePath);
 }
 
-async function runStryker(
-  options: VerifyOptions,
-  resolveBin: (tool: string) => string,
-  files: string[],
-): Promise<Violation[]> {
-  const { exec, repoRoot } = options;
-  const readFile =
-    options.readFile ?? ((filePath) => fsReadFile(filePath, 'utf8'));
+/**
+What `strykerScope` decided about one change set.
+*/
+export interface StrykerScope {
+  /**
+  The changed files stryker will mutate. Empty means it will not run.
+  */
+  inScope: string[];
+  /**
+  Changed production files outside every positive `mutate` glob.
+  */
+  outOfScope: Violation[];
+  /**
+  The raw stryker config, `''` when none could be read.
+  */
+  config: string;
+  /**
+  The config's `!` exclusions, passed through to `--mutate`.
+  */
+  negations: string[];
+}
+
+/**
+ * Which of `files` stryker would mutate, before anything is spawned.
+ *
+ * Split out of `runStryker` so the pre-push lock probe asks the SAME question
+ * the run does: a probe with its own copy of this filter could decide "no
+ * mutation testing" for a change set the gate then mutates, unlocked.
+ *
+ * One config read, two decisions: the `!` exclusions the project declared, and
+ * (for the caller) whether the run can spot a stale cached verdict. A read that
+ * fails is not distinguished from a config without negations — both mean
+ * "nothing to exclude".
+ */
+export async function strykerScope(
+  files: readonly string[],
+  repoRoot: string,
+  readFile: (filePath: string) => Promise<string>,
+): Promise<StrykerScope> {
   const candidates = files.filter(
     (file) =>
       isTypeScriptFile(file) && !isTestFile(file) && !isConfigFile(file),
@@ -1710,25 +1741,37 @@ async function runStryker(
     repoRoot,
     readFile,
   );
-  // One read, two decisions: the `!` exclusions the project declared, and
-  // whether this run will be able to spot a stale cached verdict. A read that
-  // fails is not distinguished from a config without negations — both mean
-  // "nothing to exclude" — but it IS distinguished for coverage, where an
-  // unreadable config must refuse reuse rather than assume it.
-  const strykerConfig = (await readStrykerConfig(repoRoot, readFile)) ?? '';
-  const negations = strykerMutateNegations(strykerConfig);
+  const config = (await readStrykerConfig(repoRoot, readFile)) ?? '';
+  const negations = strykerMutateNegations(config);
   // The project's DECLARED scope, and the changed files that fall inside it
   // (#69). A file outside every positive glob is not untested, it is not in
-  // scope — reported below rather than mutated and blocked.
+  // scope — reported rather than mutated and blocked.
   const inScope = applyMutateScope(
     production,
-    strykerMutatePositives(strykerConfig),
+    strykerMutatePositives(config),
     repoRoot,
   );
   const outOfScope = applyMutateNegations(
     production.filter((file) => !inScope.includes(file)),
     negations,
   ).map((file) => strykerOutOfScopeViolation(file));
+  return { inScope, outOfScope, config, negations };
+}
+
+async function runStryker(
+  options: VerifyOptions,
+  resolveBin: (tool: string) => string,
+  files: string[],
+): Promise<Violation[]> {
+  const { exec, repoRoot } = options;
+  const readFile =
+    options.readFile ?? ((filePath) => fsReadFile(filePath, 'utf8'));
+  const {
+    inScope,
+    outOfScope,
+    config: strykerConfig,
+    negations,
+  } = await strykerScope(files, repoRoot, readFile);
   // Nothing in scope, nothing to run — which subsumes the "no changed
   // production files at all" case too: an empty changed set intersects to an
   // empty scope and warns about nothing. A separate guard in front of the
@@ -2180,6 +2223,35 @@ function selectAnalyzers(
     });
   }
   return selected;
+}
+
+/**
+The inputs `selectAnalyzers` decides from, named for callers outside it.
+*/
+export interface AnalyzerSelection {
+  analyzers: Readonly<Record<string, AnalyzerMode>>;
+  analyzerRungs: Readonly<Record<string, Rung>>;
+  declared: ReadonlySet<string>;
+  profile: Rung;
+  hasChangedFiles: boolean;
+}
+
+/**
+ * Would `runVerify` run `tool` on this pass? A view over `selectAnalyzers`
+ * rather than a second copy of its rules, so a caller deciding something ahead
+ * of the run (the pre-push lock probe) cannot disagree with the run itself.
+ */
+export function isAnalyzerSelected(
+  tool: string,
+  selection: AnalyzerSelection,
+): boolean {
+  return selectAnalyzers(
+    selection.analyzers,
+    selection.analyzerRungs,
+    selection.declared,
+    selection.profile,
+    selection.hasChangedFiles,
+  ).some(({ analyzer }) => analyzer.tool === tool);
 }
 
 export async function runVerify(options: VerifyOptions): Promise<VerifyResult> {

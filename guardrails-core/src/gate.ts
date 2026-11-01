@@ -838,8 +838,11 @@ function rememberPushPass(
  * what it checked; and CI is the authoritative twin that must never trust a
  * local file.
  */
-async function pushPassKey(
-  options: CommitGateOptions,
+export async function pushPassKey(
+  options: Pick<
+    CommitGateOptions,
+    'profile' | 'exec' | 'repoRoot' | 'baseBranch'
+  >,
 ): Promise<PushPass | undefined> {
   if (options.profile !== 'push') {
     return undefined;
@@ -858,6 +861,22 @@ async function pushPassKey(
   return fingerprint === undefined ? undefined : { fingerprint, base };
 }
 
+/**
+ * Does the memo on disk cover the tree about to be pushed? Shared by the gate
+ * and the pre-push lock probe (`push-lock.ts`), so a probe that answers "this
+ * tree already passed" is exactly a gate that will return `cached: true`.
+ */
+export function isRememberedPass(
+  pass: PushPass | undefined,
+  remembered: PushPass | undefined,
+): boolean {
+  return (
+    pass !== undefined &&
+    remembered?.fingerprint === pass.fingerprint &&
+    remembered.base === pass.base
+  );
+}
+
 export async function runCommitGate(
   options: CommitGateOptions,
 ): Promise<CommitGateResult> {
@@ -865,12 +884,7 @@ export async function runCommitGate(
   // Taken BEFORE the analyzers run: what is remembered must be the tree that
   // was checked, not whatever an agent left behind while the gate ran.
   const pass = await pushPassKey(options);
-  const remembered = loadPushPass(directory);
-  if (
-    pass !== undefined &&
-    remembered?.fingerprint === pass.fingerprint &&
-    remembered.base === pass.base
-  ) {
+  if (isRememberedPass(pass, loadPushPass(directory))) {
     return {
       violations: [],
       findings: [],
