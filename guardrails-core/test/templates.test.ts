@@ -5,7 +5,7 @@
  * hooks never got written — which looks like a working install right up until
  * the loop does not fire. These assertions are the contract.
  */
-import { spawn, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import {
   existsSync,
   mkdirSync,
@@ -290,9 +290,7 @@ describe('consumer templates', () => {
 
 /**
  * A checkout whose installed CLI is a stub exiting with `FAKE_EXIT`, so the
- * real pre-push hook can be run end to end without a gate behind it. Its
- * `gate-lock` probe exits `FAKE_LOCK_EXIT`, defaulting to 1 ("take the lock")
- * -- which is also what an older CLI without the command answers.
+ * real pre-push hook can be run end to end without a gate behind it.
  */
 function stubbedCheckout(): string {
   const checkout = mkdtempSync(path.join(tmpdir(), 'guardrails-push-hook-'));
@@ -305,9 +303,8 @@ function stubbedCheckout(): string {
   mkdirSync(cliDirectory, { recursive: true });
   writeFileSync(
     path.join(cliDirectory, 'cli.mjs'),
-    "const probe = process.argv[2] === 'gate-lock';\n" +
-      "if (probe) process.stderr.write('PROBED\\n');\n" +
-      "process.exit(Number(probe ? (process.env.FAKE_LOCK_EXIT ?? '1') : (process.env.FAKE_EXIT ?? '0')));\n",
+    "process.stderr.write(`ARGS ${process.argv.slice(2).join(' ')}\\n`);\n" +
+      "process.exit(Number(process.env.FAKE_EXIT ?? '0'));\n",
   );
   return checkout;
 }
@@ -323,78 +320,35 @@ function runPushHook(
   });
 }
 
-/**
-Which locker this machine has -- the hook picks the same one.
-*/
-function locker(): 'lockf' | 'flock' | undefined {
-  for (const tool of ['lockf', 'flock'] as const) {
-    if (spawnSync('sh', ['-c', `command -v ${tool}`]).status === 0) {
-      return tool;
-    }
-  }
-  return undefined;
+function pushHook(): string {
+  return readFileSync(path.join(templates, 'githooks', 'pre-push'), 'utf8');
 }
 
-/**
-Is `lock` held by someone else right now?
-*/
-function isHeld(tool: 'lockf' | 'flock', lock: string): boolean {
-  const probe =
-    tool === 'lockf'
-      ? spawnSync('lockf', ['-k', '-s', '-t', '0', lock, 'true'])
-      : spawnSync('flock', ['-n', lock, 'true']);
-  return probe.status !== 0;
-}
-
-describe('the pre-push hook serializes the gate machine-wide', () => {
-  it('runs the push gate under a lock named by GUARDRAILS_GATE_LOCK', () => {
-    const hook = readFileSync(
-      path.join(templates, 'githooks', 'pre-push'),
-      'utf8',
-    );
-    expect(hook).toContain(
-      'lock="${GUARDRAILS_GATE_LOCK:-$HOME/.guardrails-gate.lock}"',
-    );
-    expect(hook).toContain('ceiling="${GUARDRAILS_GATE_LOCK_TIMEOUT:-10800}"');
+describe('the pre-push hook', () => {
+  it('runs the push gate itself, with no shell lock around it', () => {
+    const hook = pushHook();
     expect(hook).toContain('gate --mode=push');
-  });
-
-  it('checks the install before it queues for the lock', () => {
-    const hook = readFileSync(
-      path.join(templates, 'githooks', 'pre-push'),
-      'utf8',
-    );
-    expect(hook.indexOf('not installed')).toBeLessThan(hook.indexOf('lock="'));
-  });
-
-  it('says its lock-timeout in the words `guardrails ship` reads', () => {
-    const hook = readFileSync(
-      path.join(templates, 'githooks', 'pre-push'),
-      'utf8',
-    );
-    expect(hook).toContain(LOCK_TIMEOUT_MARKER);
+    // The mutation lock moved into the gate, around stryker alone.
+    const lines = hook.split('\n').map((line) => line.trimStart());
+    expect(
+      lines.filter(
+        (line) => line.startsWith('lockf ') || line.startsWith('flock '),
+      ),
+    ).toEqual([]);
+    expect(hook).not.toContain('gate-lock');
   });
 
   it('says an uninstalled checkout in the words `guardrails ship` reads', () => {
-    const hook = readFileSync(
-      path.join(templates, 'githooks', 'pre-push'),
-      'utf8',
-    );
-    expect(hook).toContain(NOT_INSTALLED_MARKER);
+    expect(pushHook()).toContain(NOT_INSTALLED_MARKER);
   });
 
   it('passes a passing gate and blocks a failing one', () => {
     const checkout = stubbedCheckout();
-    const lock = path.join(checkout, 'gate.lock');
     try {
-      expect(
-        runPushHook(checkout, { GUARDRAILS_GATE_LOCK: lock, FAKE_EXIT: '0' })
-          .status,
-      ).toBe(0);
-      const blocked = runPushHook(checkout, {
-        GUARDRAILS_GATE_LOCK: lock,
-        FAKE_EXIT: '1',
-      });
+      const passed = runPushHook(checkout, { FAKE_EXIT: '0' });
+      expect(passed.status).toBe(0);
+      expect(passed.stderr).toContain('ARGS gate --mode=push');
+      const blocked = runPushHook(checkout, { FAKE_EXIT: '1' });
       expect(blocked.status).toBe(1);
       expect(blocked.stderr).toContain('guardrails: push blocked');
       expect(blocked.stderr).not.toContain(LOCK_TIMEOUT_MARKER);
@@ -403,115 +357,26 @@ describe('the pre-push hook serializes the gate machine-wide', () => {
     }
   });
 
-  it('gives up on a held lock at the ceiling, and says so apart from a block', async () => {
-    const tool = locker();
+  it('words a gate that timed out on the mutation lock apart from a block', () => {
     const checkout = stubbedCheckout();
-    const lock = path.join(checkout, 'gate.lock');
-    const holdArguments =
-      tool === 'lockf' ? ['-k', lock, 'sleep', '30'] : [lock, 'sleep', '30'];
-    const holder = tool === undefined ? undefined : spawn(tool, holdArguments);
     try {
-      if (tool === undefined) {
-        // No locker on this machine: the hook must still run the gate.
-        const result = runPushHook(checkout, { GUARDRAILS_GATE_LOCK: lock });
-        expect(result.status).toBe(0);
-        expect(result.stderr).toContain('running the gate unserialized');
-        return;
-      }
-      const deadline = Date.now() + 5000;
-      while (!isHeld(tool, lock) && Date.now() < deadline) {
-        await new Promise((resolve) => setTimeout(resolve, 50));
-      }
-      const result = runPushHook(checkout, {
-        GUARDRAILS_GATE_LOCK: lock,
-        GUARDRAILS_GATE_LOCK_TIMEOUT: '1',
-      });
+      const result = runPushHook(checkout, { FAKE_EXIT: '75' });
       expect(result.status).toBe(1);
-      expect(result.stderr).toContain('waiting for the lock (up to 1s)');
       expect(result.stderr).toContain(LOCK_TIMEOUT_MARKER);
+      expect(result.stderr).toContain('push again to re-queue');
       expect(result.stderr).not.toContain('guardrails: push blocked');
     } finally {
-      holder?.kill('SIGKILL');
-      rmSync(checkout, { recursive: true, force: true });
-    }
-  });
-});
-
-describe('the pre-push hook skips the lock when the push runs no stryker', () => {
-  it('asks gate-lock after the install check and before the lock', () => {
-    const hook = readFileSync(
-      path.join(templates, 'githooks', 'pre-push'),
-      'utf8',
-    );
-    const probe = hook.indexOf('node "$cli" gate-lock');
-    expect(probe).toBeGreaterThan(-1);
-    expect(probe).toBeGreaterThan(hook.indexOf('not installed'));
-    expect(probe).toBeLessThan(hook.indexOf('lockf -k -s -t 0'));
-  });
-
-  it('runs the gate without waiting on a held lock when the probe says so', async () => {
-    const tool = locker();
-    const checkout = stubbedCheckout();
-    const lock = path.join(checkout, 'gate.lock');
-    const holdArguments =
-      tool === 'lockf' ? ['-k', lock, 'sleep', '30'] : [lock, 'sleep', '30'];
-    const holder = tool === undefined ? undefined : spawn(tool, holdArguments);
-    try {
-      const deadline = Date.now() + 5000;
-      while (
-        tool !== undefined &&
-        !isHeld(tool, lock) &&
-        Date.now() < deadline
-      ) {
-        await new Promise((resolve) => setTimeout(resolve, 50));
-      }
-      const passed = runPushHook(checkout, {
-        GUARDRAILS_GATE_LOCK: lock,
-        GUARDRAILS_GATE_LOCK_TIMEOUT: '1',
-        FAKE_LOCK_EXIT: '0',
-      });
-      expect(passed.status).toBe(0);
-      expect(passed.stderr).toContain('PROBED');
-      expect(passed.stderr).not.toContain('waiting for the lock');
-      const blocked = runPushHook(checkout, {
-        GUARDRAILS_GATE_LOCK: lock,
-        FAKE_LOCK_EXIT: '0',
-        FAKE_EXIT: '1',
-      });
-      expect(blocked.status).toBe(1);
-      expect(blocked.stderr).toContain('guardrails: push blocked');
-    } finally {
-      holder?.kill('SIGKILL');
       rmSync(checkout, { recursive: true, force: true });
     }
   });
 
-  it('queues as before when the probe fails in any way', async () => {
-    const tool = locker();
-    if (tool === undefined) {
-      expect(locker()).toBeUndefined();
-      return;
-    }
-    const checkout = stubbedCheckout();
-    const lock = path.join(checkout, 'gate.lock');
-    const holdArguments =
-      tool === 'lockf' ? ['-k', lock, 'sleep', '30'] : [lock, 'sleep', '30'];
-    const holder = spawn(tool, holdArguments);
+  it('blocks an uninstalled checkout without running anything', () => {
+    const checkout = mkdtempSync(path.join(tmpdir(), 'guardrails-push-hook-'));
     try {
-      const deadline = Date.now() + 5000;
-      while (!isHeld(tool, lock) && Date.now() < deadline) {
-        await new Promise((resolve) => setTimeout(resolve, 50));
-      }
-      const result = runPushHook(checkout, {
-        GUARDRAILS_GATE_LOCK: lock,
-        GUARDRAILS_GATE_LOCK_TIMEOUT: '1',
-        FAKE_LOCK_EXIT: '2',
-      });
+      const result = runPushHook(checkout, {});
       expect(result.status).toBe(1);
-      expect(result.stderr).toContain('PROBED');
-      expect(result.stderr).toContain(LOCK_TIMEOUT_MARKER);
+      expect(result.stderr).toContain(NOT_INSTALLED_MARKER);
     } finally {
-      holder.kill('SIGKILL');
       rmSync(checkout, { recursive: true, force: true });
     }
   });

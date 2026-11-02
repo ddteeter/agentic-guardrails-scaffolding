@@ -848,7 +848,7 @@ function rememberPushPass(
  * what it checked; and CI is the authoritative twin that must never trust a
  * local file.
  */
-export async function pushPassKey(
+async function pushPassKey(
   options: Pick<
     CommitGateOptions,
     'profile' | 'exec' | 'repoRoot' | 'baseBranch'
@@ -872,11 +872,9 @@ export async function pushPassKey(
 }
 
 /**
- * Does the memo on disk cover the tree about to be pushed? Shared by the gate
- * and the pre-push lock probe (`push-lock.ts`), so a probe that answers "this
- * tree already passed" is exactly a gate that will return `cached: true`.
+ * Does the memo on disk cover the tree about to be pushed?
  */
-export function isRememberedPass(
+function isRememberedPass(
   pass: PushPass | undefined,
   remembered: PushPass | undefined,
 ): boolean {

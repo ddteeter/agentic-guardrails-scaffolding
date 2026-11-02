@@ -5,9 +5,8 @@
 # cannot -- a commit that breaks something in a file it does not touch.
 #
 # Chained as the SCRIPT, not the bare `gate --mode=push` line, so this repo
-# takes the same machine-wide gate lock consumers do (and skips it when the
-# push runs no mutation testing). Until 2026-11-01 this called the gate line
-# directly and never queued -- see plan.md, "the husky advice dropped the lock".
+# runs exactly the hook consumers do, timeout wording included. The
+# machine-wide mutation lock is inside the gate now, around stryker alone.
 sh .githooks/pre-push
 npm run test:coverage
 npm run check:graph

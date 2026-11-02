@@ -439,7 +439,7 @@ function didGitCallFail(result: ExecResult): boolean {
   return result.signal !== undefined || result.code !== 0;
 }
 
-export async function changedTypeScriptFiles(
+async function changedTypeScriptFiles(
   options: VerifyOptions,
 ): Promise<{ files: string[]; violations: Violation[] }> {
   const { exec, repoRoot, baseBranch } = options;

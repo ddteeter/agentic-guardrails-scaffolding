@@ -53,7 +53,7 @@ export const MUTATION_LOCK_TIMEOUT_RULE = 'guardrails/mutation-lock-timeout';
 /**
 The exit code both lockers give for a wait that ran out.
 */
-const LOCK_TIMEOUT_EXIT = 75;
+export const LOCK_TIMEOUT_EXIT = 75;
 
 /**
 How one rung waits for the lock, and what a wait that runs out means.

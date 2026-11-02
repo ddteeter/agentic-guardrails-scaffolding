@@ -4808,11 +4808,11 @@ describe('gate --mode=push: a push that never gets the mutation lock', () => {
     vi.unstubAllEnvs();
   });
 
-  it('blocks even under warn, names no fixer, and says what to do', async () => {
+  it('blocks even under warn, exits 75, names no fixer, and says what to do', async () => {
     const exec = lockHeldExec('src/feature.ts');
     expect(
       await runCommand('gate', ['--mode=push'], dependencies({ exec })),
-    ).toBe(1);
+    ).toBe(75);
     const said = errors.join('');
     expect(said).toContain(
       'guardrails: gave up waiting for the gate lock after 5s',
@@ -4822,43 +4822,10 @@ describe('gate --mode=push: a push that never gets the mutation lock', () => {
   });
 });
 
-describe('gate-lock: does this push need the machine-wide lock?', () => {
-  beforeEach(() => {
-    writeFileSync(
-      path.join(root, 'package.json'),
-      JSON.stringify({ devDependencies: { '@stryker-mutator/core': '*' } }),
-    );
-    mkdirSync(path.join(root, 'src'), { recursive: true });
-    writeFileSync(path.join(root, 'src', 'feature.ts'), 'export {};\n');
-  });
-
-  it('exits 0 and says why when stryker has nothing to mutate', async () => {
-    const exec = changedExec('README.md');
-    expect(await runCommand('gate-lock', [], dependencies({ exec }))).toBe(0);
-    expect(errors.join('')).toBe(
-      'guardrails: no mutation testing on this push (stryker does not run ' +
-        'for this push) — running the gate without the machine lock.\n',
-    );
-  });
-
-  it('exits 1, silently, when stryker will mutate a changed file', async () => {
-    const exec = changedExec('src/feature.ts');
-    expect(await runCommand('gate-lock', [], dependencies({ exec }))).toBe(1);
-    expect(errors.join('')).toBe('');
-  });
-
-  it('reads the analyzer opt-in from guardrails.config.json', async () => {
-    writeFileSync(
-      path.join(root, 'guardrails.config.json'),
-      JSON.stringify({ analyzers: { stryker: 'off' } }),
-    );
-    const exec = changedExec('src/feature.ts');
-    expect(await runCommand('gate-lock', [], dependencies({ exec }))).toBe(0);
-  });
-
-  it('is listed in the usage text', async () => {
+describe('gate-lock is gone with the shell lock', () => {
+  it('is not listed in the usage text', async () => {
     await runCommand('no-such-command', [], dependencies({}));
-    expect(errors.join('')).toContain('gate-lock');
+    expect(errors.join('')).not.toContain('gate-lock');
   });
 });
 
