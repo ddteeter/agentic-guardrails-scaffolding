@@ -79,6 +79,7 @@ import {
 import { initCommand } from './scaffold/init.js';
 import {
   LOCK_TIMEOUT_EXIT,
+  lockWaitInProgress,
   MUTATION_LOCK_TIMEOUT_RULE,
   machineLock,
 } from './mutation-lock.js';
@@ -140,6 +141,11 @@ export interface CliDependencies {
    * a gate that is still pending.
    */
   exit?: (code: number) => void;
+  /**
+  Who a mutation-lock wait in progress is waiting on; defaults to
+  `lockWaitInProgress`. Read when the hook deadline gives up on a gate.
+  */
+  lockWait?: () => string | undefined;
   stdout: (text: string) => void;
   stderr: (text: string) => void;
 }
@@ -1936,12 +1942,21 @@ function abandonGate(
   seconds: number,
 ): void {
   if (mode === 'pretooluse') {
+    const holding = (dependencies.lockWait ?? lockWaitInProgress)();
+    const why =
+      holding === undefined
+        ? `Something else is likely loading the machine (another gate, a ` +
+          `test run); retry when it is quieter.`
+        : `It was waiting for the mutation lock: ${holding}. Retry once that ` +
+          `run finishes; for commits to defer mutation testing rather than ` +
+          `wait this long, ask the developer to set ` +
+          `mutationLock.commitWaitSeconds below hookDeadlineSeconds in ` +
+          `guardrails.config.json.`;
     denyGitWrite(
       dependencies,
       input,
       `guardrails: the commit gate did not finish within ${seconds}s, so ` +
-        `this git command was not checked. Something else is likely loading ` +
-        `the machine (another gate, a test run); retry when it is quieter.`,
+        `this git command was not checked. ${why}`,
       dialect,
     );
   } else {

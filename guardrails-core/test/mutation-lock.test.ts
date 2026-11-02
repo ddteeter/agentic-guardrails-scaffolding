@@ -10,6 +10,7 @@ import {
   detectLocker,
   everyInterval,
   lockerArgv,
+  lockWaitInProgress,
   machineLock,
   runUnderLock,
   waitFor,
@@ -913,5 +914,47 @@ describe('everyInterval', () => {
     } finally {
       spy.mockRestore();
     }
+  });
+});
+
+describe('lockWaitInProgress', () => {
+  it('names the holder while a real wait is pending, and nothing after', async () => {
+    const machine = pendingMachine();
+    const { options } = watchedOptions(machine.exec, 'push');
+    expect(lockWaitInProgress()).toBeUndefined();
+    const run = runUnderLock(options);
+    await flush();
+    expect(lockWaitInProgress()).toBe(
+      'dialed-164 (push) is running the dry run',
+    );
+    machine.finish(0);
+    await run;
+    expect(lockWaitInProgress()).toBeUndefined();
+  });
+
+  it('follows the holder as it changes, minute by minute', async () => {
+    const machine = pendingMachine();
+    const { options, ticks } = watchedOptions(machine.exec, 'push');
+    const run = runUnderLock(options);
+    await flush();
+    machine.setPs(queuePs(false).replace('500 400', '501 400'));
+    ticks[0]?.();
+    await flush();
+    expect(lockWaitInProgress()).toBe('another checkout holds it');
+    machine.finish(0);
+    await run;
+  });
+
+  it('clears once its own run holds the lock', async () => {
+    const machine = pendingMachine();
+    const { options, ticks } = watchedOptions(machine.exec, 'push');
+    const run = runUnderLock(options);
+    await flush();
+    machine.setPs(queuePs(true));
+    ticks[0]?.();
+    await flush();
+    expect(lockWaitInProgress()).toBeUndefined();
+    machine.finish(0);
+    await run;
   });
 });

@@ -231,6 +231,20 @@ interface LockSighting {
 const STILL_WAITING_INTERVAL_MS = 60_000;
 
 /**
+Who the wait in progress is waiting on, or `undefined` when none is.
+*/
+const pendingWait: { holding: string | undefined } = { holding: undefined };
+
+/**
+ * Who this process's mutation-lock wait is waiting on, while one is pending.
+ * Read by the hook deadline, so a gate abandoned mid-wait can say it was
+ * queued rather than slow. One gate per process, so one wait at a time.
+ */
+export function lockWaitInProgress(): string | undefined {
+  return pendingWait.holding;
+}
+
+/**
  * Look once at who holds `lockPath` and who queues for it: `ps` for the queue
  * (see `lockQueue`), the holder file for who and how far. A holder whose pid
  * `ps` no longer lists is stale -- a killed holder leaves its file behind --
@@ -380,6 +394,7 @@ async function watchTheWait(
   seams: LockWatchSeams = {},
 ): Promise<() => void> {
   const first = await look();
+  pendingWait.holding = first.holding;
   progress(
     `guardrails: waiting for the mutation lock (up to ${String(waitSeconds)}s): ` +
       `${first.holding}${queueClause(first.waiting)}.`,
@@ -392,9 +407,11 @@ async function watchTheWait(
       }
       if (sighting.isHeldBySelf) {
         isWatching = false;
+        pendingWait.holding = undefined;
         stop();
         return;
       }
+      pendingWait.holding = sighting.holding;
       progress(
         `guardrails: still waiting for the mutation lock: ` +
           `${sighting.holding}${queueClause(sighting.waiting)}.`,
@@ -403,6 +420,7 @@ async function watchTheWait(
   });
   return () => {
     isWatching = false;
+    pendingWait.holding = undefined;
     stop();
   };
 }

@@ -4515,6 +4515,32 @@ describe('hook gates finish before the host gives up on them', () => {
     expect(exitCodes).toEqual([0]);
   });
 
+  it('says it was waiting for the mutation lock, and on whom, when it was', async () => {
+    await runCommand('gate', ['--mode=pretooluse'], {
+      ...deadlined(shellStdin('git commit -m x')),
+      lockWait: () => 'dialed-164 (push) is mutating, 62% (160/258)',
+    });
+
+    const output = out.join('');
+    expect(output).toContain(
+      'It was waiting for the mutation lock: dialed-164 (push) is mutating, 62% (160/258).',
+    );
+    expect(output).toContain(
+      'mutationLock.commitWaitSeconds below hookDeadlineSeconds',
+    );
+  });
+
+  it('names no lock when it was not waiting on one', async () => {
+    // No `lockWait` seam: the real one, and this gate never waited.
+    await runCommand(
+      'gate',
+      ['--mode=pretooluse'],
+      deadlined(shellStdin('git commit -m x')),
+    );
+
+    expect(out.join('')).not.toContain('mutation lock');
+  });
+
   it('lets a stop end when the gate runs out of time, saying so', async () => {
     await runCommand(
       'gate',
