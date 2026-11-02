@@ -160,9 +160,11 @@ describe('ProgressReporter', () => {
   ])('does nothing without %s', (_missing, environment) => {
     const f = fake(environment);
     const reporter = new ProgressReporter(f.io);
+    expect(f.exitListeners()).toBe(0);
     reporter.onMutationTestingPlanReady(plans(2, 0));
     reporter.onMutantTested({ status: 'Survived' });
     f.advance(10_000);
+    expect(f.exitListeners()).toBe(0);
     reporter.onMutationTestReportReady(...report);
     f.runExit();
     expect(f.writes).toEqual([]);

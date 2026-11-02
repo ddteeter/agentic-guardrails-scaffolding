@@ -233,7 +233,7 @@ const STILL_WAITING_INTERVAL_MS = 60_000;
 /**
 Who the wait in progress is waiting on, or `undefined` when none is.
 */
-const pendingWait: { holding: string | undefined } = { holding: undefined };
+const pendingWait = new Map<'holding', string>();
 
 /**
  * Who this process's mutation-lock wait is waiting on, while one is pending.
@@ -241,7 +241,7 @@ const pendingWait: { holding: string | undefined } = { holding: undefined };
  * queued rather than slow. One gate per process, so one wait at a time.
  */
 export function lockWaitInProgress(): string | undefined {
-  return pendingWait.holding;
+  return pendingWait.get('holding');
 }
 
 /**
@@ -394,7 +394,7 @@ async function watchTheWait(
   seams: LockWatchSeams = {},
 ): Promise<() => void> {
   const first = await look();
-  pendingWait.holding = first.holding;
+  pendingWait.set('holding', first.holding);
   progress(
     `guardrails: waiting for the mutation lock (up to ${String(waitSeconds)}s): ` +
       `${first.holding}${queueClause(first.waiting)}.`,
@@ -407,11 +407,11 @@ async function watchTheWait(
       }
       if (sighting.isHeldBySelf) {
         isWatching = false;
-        pendingWait.holding = undefined;
+        pendingWait.clear();
         stop();
         return;
       }
-      pendingWait.holding = sighting.holding;
+      pendingWait.set('holding', sighting.holding);
       progress(
         `guardrails: still waiting for the mutation lock: ` +
           `${sighting.holding}${queueClause(sighting.waiting)}.`,
@@ -420,7 +420,7 @@ async function watchTheWait(
   });
   return () => {
     isWatching = false;
-    pendingWait.holding = undefined;
+    pendingWait.clear();
     stop();
   };
 }

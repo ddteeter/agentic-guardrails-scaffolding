@@ -268,6 +268,18 @@ describe('runStryker loads the progress plugin while it holds the lock', () => {
     ]);
   });
 
+  it('runs plain stryker, without the plugin, when there is no lock at all', async () => {
+    const { exec, strykerRuns } = machine({ busy: false });
+    await runVerify({
+      ...verifyOptions(exec, 'commit'),
+      mutationLock: undefined,
+      strykerProgressPlugin: '/pkg/dist/stryker-progress-plugin.mjs',
+    });
+    expect(strykerRuns).toEqual([
+      ['run', '--incremental', '--reporters', 'json', '--mutate', 'src/foo.ts'],
+    ]);
+  });
+
   it('tells the plugin where the holder file is, on top of the inherited env', async () => {
     const { exec, lockedEnvironments } = machine({ busy: false });
     await runVerify({

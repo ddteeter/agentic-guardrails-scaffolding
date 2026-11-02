@@ -800,6 +800,22 @@ describe('runUnderLock names who holds the lock and the queue', () => {
     expect(cancelled).toEqual([true, true]);
   });
 
+  it('stays quiet on later ticks once its own run held the lock', async () => {
+    const machine = pendingMachine();
+    const { options, lines, ticks } = watchedOptions(machine.exec, 'push');
+    const run = runUnderLock(options);
+    await flush();
+    machine.setPs(queuePs(true));
+    ticks[0]?.();
+    await flush();
+    machine.setPs(queuePs(false));
+    ticks[0]?.();
+    await flush();
+    expect(lines).toHaveLength(1);
+    machine.finish(0);
+    await run;
+  });
+
   it('stops the still-waiting timer when the wait settles', async () => {
     const machine = pendingMachine();
     const { options, lines, ticks, cancelled } = watchedOptions(
