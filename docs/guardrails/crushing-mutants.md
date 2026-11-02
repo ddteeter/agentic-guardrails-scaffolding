@@ -36,6 +36,14 @@ block — instead of as a wall of `no-coverage` mutants. If you are looking at
 `no-coverage` violations, the project has claimed that file. Cover it; do not
 reach for a negation to make it stop.
 
+**A file whose mutation run was deferred is not a mutant either.** Stryker runs
+under one machine-wide lock. When another checkout holds it, the stop and
+commit rungs report `guardrails/mutation-deferred` — a warning naming who holds
+the lock — and the file is mutation-tested at the next rung. There is nothing to
+fix: do not retry the commit to force a run, and do not wait for the lock. Only
+the push rung waits, and it blocks with `gave up waiting for the gate lock` if
+the wait runs out; re-run the push to re-queue, and never use `--no-verify`.
+
 ## When stryker will not start at all
 
 `guardrails/stryker-dry-run-failed` is not a mutation finding and not a
