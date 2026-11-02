@@ -468,6 +468,15 @@ directories in one command. Unchanged, and still outside the matcher:
     guards outside the lock**, so a push here can still run stryker next to
     another checkout's. The fixtures are small, but it is the case the lock
     exists for.
+  - **Open: a push that waits long for the lock loses its connection.** git
+    connects to the remote before it runs the pre-push hook, so a push that
+    queued behind another checkout's stryker (here about an hour) found
+    `Connection to github.com closed by remote host.` when its own gate
+    finished. The old shell lock had the same exposure. A gate that passed
+    leaves its memo, so re-pushing the same tree is `cached: true` and
+    quick, but the agent has to know to do that. Candidates: `ship` waits
+    for the lock (or re-pushes once after a cached pass) before it lets git
+    connect.
   - **A repo that sets its own `GUARDRAILS_GATE_LOCK` splits the queue.**
     dialed.run points it at `~/.dialed-gate.lock`, so its runs and this
     repo's never queue behind each other. The lock is meant to be one per
