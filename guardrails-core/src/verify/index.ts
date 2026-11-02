@@ -1115,13 +1115,17 @@ function strykerReportMissingViolation(reportPath: string): Violation {
  * because an agent told only "lock busy" retries in a loop or waits in the
  * foreground, and neither helps.
  */
-function mutationDeferredViolation(file: string, rung: Rung): Violation {
+function mutationDeferredViolation(
+  file: string,
+  rung: Rung,
+  holding: string,
+): Violation {
   return {
     ruleId: 'guardrails/mutation-deferred',
     file,
     message:
-      `mutation testing deferred: another checkout holds the machine-wide ` +
-      `mutation lock. This file will be mutation-tested at the ` +
+      `mutation testing deferred: the machine-wide mutation lock is busy ` +
+      `(${holding}). This file will be mutation-tested at the ` +
       `${nextRungAfter(rung)} rung. Nothing to do — do not retry to force it, ` +
       `and do not wait for the lock.`,
     severity: 'warn',
@@ -1146,6 +1150,7 @@ function nextRungAfter(rung: Rung): string {
 function mutationLockTimeoutViolation(
   file: string,
   lock: MutationLock,
+  holding: string,
 ): Violation {
   const wait = lock.config.pushWaitSeconds;
   const lockPath = lock.path;
@@ -1153,8 +1158,7 @@ function mutationLockTimeoutViolation(
     ruleId: MUTATION_LOCK_TIMEOUT_RULE,
     file,
     message:
-      `${LOCK_TIMEOUT_MARKER} after ${String(wait)}s — another checkout still ` +
-      `holds it. Re-run the push to re-queue (in the background if your ` +
+      `${LOCK_TIMEOUT_MARKER} after ${String(wait)}s (${holding}). Re-run the push to re-queue (in the background if your ` +
       `harness supports it); never bypass it with --no-verify. The lock is ` +
       `held on a file descriptor, so it frees itself if its holder dies: if ` +
       `nothing is running, report it rather than deleting ${lockPath}.`,
@@ -1935,13 +1939,15 @@ async function runStryker(
   if (locked.kind === 'deferred') {
     return [
       ...outOfScope,
-      ...inScope.map((file) => mutationDeferredViolation(file, rung)),
+      ...inScope.map((file) =>
+        mutationDeferredViolation(file, rung, locked.holding),
+      ),
     ];
   }
   if (locked.kind === 'timed-out') {
     return [
       ...outOfScope,
-      mutationLockTimeoutViolation(firstInScope, locked.lock),
+      mutationLockTimeoutViolation(firstInScope, locked.lock, locked.holding),
     ];
   }
   return strykerRunVerdict(locked.result, {

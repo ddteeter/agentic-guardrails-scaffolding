@@ -251,18 +251,45 @@ function isLockerOn(command: string, lockPath: string): boolean {
 }
 
 /**
- * How many runs wait for `lockPath`, from `ps -Ao pid=,ppid=,command=`.
- * Every waiter is a `lockf`/`flock` process with the lock path in its argv;
- * the one holding the lock is the holder's parent, so it is left out.
+Is `pid` in this `ps -Ao pid=,ppid=,command=` listing -- is it still running?
+*/
+export function isListed(psOutput: string, pid: number): boolean {
+  return parsePs(psOutput).some((line) => line.pid === pid);
+}
+
+/**
+What `ps` says about the queue for one lock, as seen from one process.
+*/
+export interface LockQueue {
+  /**
+  Runs waiting for the lock, not counting the holder or this process's own.
+  */
+  waiting: number;
+  /**
+  This process's own locker holds the lock: its run has started.
+  */
+  isHeldBySelf: boolean;
+}
+
+/**
+ * The queue for `lockPath`, from `ps -Ao pid=,ppid=,command=`, as `selfPid`
+ * sees it. Every party is a `lockf`/`flock` process with the lock path in its
+ * argv. The one HOLDING it is the one with a child -- a waiting locker has not
+ * started its command yet -- which needs no holder file, so it reads a lock
+ * held by any gate, old or new. A locker whose parent is `selfPid` is ours.
  */
-export function waitingCount(
+export function lockQueue(
   psOutput: string,
   lockPath: string,
-  holderPid: number,
-): number {
+  selfPid: number,
+): LockQueue {
   const lines = parsePs(psOutput);
-  const holdingLocker = lines.find((line) => line.pid === holderPid)?.ppid;
-  return lines.filter(
-    (line) => line.pid !== holdingLocker && isLockerOn(line.command, lockPath),
-  ).length;
+  const parents = new Set(lines.map((line) => line.ppid));
+  const lockers = lines.filter((line) => isLockerOn(line.command, lockPath));
+  const isHolding = (line: PsLine): boolean => parents.has(line.pid);
+  const isOurs = (line: PsLine): boolean => line.ppid === selfPid;
+  return {
+    waiting: lockers.filter((line) => !isHolding(line) && !isOurs(line)).length,
+    isHeldBySelf: lockers.some((line) => isHolding(line) && isOurs(line)),
+  };
 }

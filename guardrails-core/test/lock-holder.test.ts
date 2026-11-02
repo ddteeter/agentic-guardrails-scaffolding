@@ -6,10 +6,10 @@ import {
   type Holder,
   holderEnvironment,
   holderPath,
+  lockQueue,
   progressPluginBeside,
   PROGRESS_REPORTER,
   readHolder,
-  waitingCount,
 } from '../src/lock-holder.js';
 
 const MINUTE = 60_000;
@@ -247,52 +247,79 @@ describe('describeHolder', () => {
   });
 });
 
-describe('waitingCount', () => {
-  const lock = '/Users/me/.guardrails-gate.lock';
-  // The holder is stryker, pid 500, started by lockf 400. Two other lockf
-  // waiters queue behind it, one flock waiter too; a zero-wait probe and a
-  // waiter on a different lock must not count.
-  const ps = [
-    '  400   300 lockf -k -s -t 10800 /Users/me/.guardrails-gate.lock npx stryker run',
-    '  500   400 node /repo/node_modules/.bin/stryker run',
-    '  401   301 lockf -k -s -t 60 /Users/me/.guardrails-gate.lock npx stryker run',
-    '  402   302 /usr/bin/lockf -k -s -t 10800 /Users/me/.guardrails-gate.lock npx stryker run',
-    '  403   303 flock -w 60 -E 75 /Users/me/.guardrails-gate.lock npx stryker run',
-    '  404   304 lockf -k -s -t 0 /Users/me/.guardrails-gate.lock true',
-    '  405   305 lockf -k -s -t 60 /locks/other.lock npx stryker run',
-    '  406   306 lockf -k -s -t 60 /Users/me/.guardrails-gate.lock2 npx stryker run',
-    '  407   307 vim /Users/me/.guardrails-gate.lock notes',
-    '',
-  ].join('\n');
+const QUEUE_LOCK = '/Users/me/.guardrails-gate.lock';
 
-  it('counts the waiters on this lock, excluding the holder and probes', () => {
-    expect(waitingCount(ps, lock, 500)).toBe(3);
+// lockf 400 holds the lock: its child 500 is stryker. Three others wait (401
+// with a lockf path, 402 with flock, 403 ours: its parent is pid 99). A
+// zero-wait probe, a waiter on a different lock and on a lock whose path
+// merely starts with this one, and an editor naming the lock never count.
+const QUEUE_PS = [
+  '  400   300 lockf -k -s -t 10800 /Users/me/.guardrails-gate.lock /bin/sh -c node gate --mode=push',
+  '  500   400 node /repo/node_modules/.bin/stryker run',
+  '  401   301 /usr/bin/lockf -k -s -t 60 /Users/me/.guardrails-gate.lock stryker run',
+  '  402   302 flock -w 60 -E 75 /Users/me/.guardrails-gate.lock stryker run',
+  '  403    99 lockf -k -s -t 10800 /Users/me/.guardrails-gate.lock stryker run',
+  '  404   304 lockf -k -s -t 0 /Users/me/.guardrails-gate.lock true',
+  '  405   305 lockf -k -s -t 60 /locks/other.lock stryker run',
+  '  406   306 lockf -k -s -t 60 /Users/me/.guardrails-gate.lock2 stryker run',
+  '  407   307 vim /Users/me/.guardrails-gate.lock notes',
+  '',
+].join('\n');
+
+describe('lockQueue', () => {
+  it('counts the others waiting, leaving out the holder, us and probes', () => {
+    expect(lockQueue(QUEUE_PS, QUEUE_LOCK, 99)).toEqual({
+      waiting: 2,
+      isHeldBySelf: false,
+    });
   });
 
-  it('counts none when only the holder holds the lock', () => {
-    const alone = [ps.split('\n', 1)[0], ps.split('\n', 2)[1]].join('\n');
-    expect(waitingCount(alone, lock, 500)).toBe(0);
+  it('counts every waiter for a process with none of its own', () => {
+    expect(lockQueue(QUEUE_PS, QUEUE_LOCK, 1)).toEqual({
+      waiting: 3,
+      isHeldBySelf: false,
+    });
   });
 
-  it('counts every locker when the holder pid is not in the listing', () => {
-    expect(waitingCount(ps, lock, 9999)).toBe(4);
+  it('knows when our own locker is the one holding the lock', () => {
+    expect(lockQueue(QUEUE_PS, QUEUE_LOCK, 300)).toEqual({
+      waiting: 3,
+      isHeldBySelf: true,
+    });
+  });
+
+  it('does not take our waiting locker for the holder', () => {
+    expect(lockQueue(QUEUE_PS, QUEUE_LOCK, 301).isHeldBySelf).toBe(false);
+  });
+
+  it('does not take a child of a locker on another lock as holding this one', () => {
+    expect(lockQueue(QUEUE_PS, '/locks/other.lock', 305)).toEqual({
+      waiting: 0,
+      isHeldBySelf: false,
+    });
   });
 
   it('counts the waiters on another lock for that lock', () => {
-    expect(waitingCount(ps, '/locks/other.lock', 9999)).toBe(1);
+    expect(lockQueue(QUEUE_PS, '/locks/other.lock', 1).waiting).toBe(1);
   });
 
   it('skips lines that do not start with a pid and a ppid', () => {
     const garbled = [
-      '500 400 node /repo/node_modules/.bin/stryker run',
-      'x 300 lockf -k -s -t 60 /Users/me/.guardrails-gate.lock npx stryker run',
-      '401 y lockf -k -s -t 60 /Users/me/.guardrails-gate.lock npx stryker run',
+      'x 300 lockf -k -s -t 60 /Users/me/.guardrails-gate.lock stryker run',
+      '401 y lockf -k -s -t 60 /Users/me/.guardrails-gate.lock stryker run',
+      '402 x node child',
     ].join('\n');
-    expect(waitingCount(garbled, lock, 500)).toBe(0);
+    expect(lockQueue(garbled, QUEUE_LOCK, 300)).toEqual({
+      waiting: 0,
+      isHeldBySelf: false,
+    });
   });
 
   it('counts none in empty output', () => {
-    expect(waitingCount('', lock, 500)).toBe(0);
+    expect(lockQueue('', QUEUE_LOCK, 99)).toEqual({
+      waiting: 0,
+      isHeldBySelf: false,
+    });
   });
 });
 

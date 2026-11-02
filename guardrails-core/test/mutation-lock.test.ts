@@ -2,11 +2,13 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { Exec } from '../src/exec.js';
+import { parseJsonText } from '../src/json-file.js';
 import {
   detectLocker,
+  everyInterval,
   lockerArgv,
   machineLock,
   runUnderLock,
@@ -216,14 +218,20 @@ describe('runUnderLock', () => {
   it('defers on the stop rung without waiting at all', async () => {
     const { exec, calls } = lockfMachine({ busy: true });
     const { run } = locked(exec, 'stop');
-    expect(await run).toEqual({ kind: 'deferred' });
+    expect(await run).toEqual({
+      kind: 'deferred',
+      holding: 'another checkout holds it',
+    });
     expect(calls.some((call) => call.line.includes('stryker'))).toBe(false);
   });
 
   it('defers on the commit rung when the wait runs out', async () => {
     const { exec } = lockfMachine({ busy: true, timesOut: true });
     const { run } = locked(exec, 'commit');
-    expect(await run).toEqual({ kind: 'deferred' });
+    expect(await run).toEqual({
+      kind: 'deferred',
+      holding: 'another checkout holds it',
+    });
   });
 
   it('times out on the push rung when the wait runs out', async () => {
@@ -232,6 +240,7 @@ describe('runUnderLock', () => {
     expect(await run).toEqual({
       kind: 'timed-out',
       lock: { path: '/locks/gate.lock', config: lockConfig },
+      holding: 'another checkout holds it',
     });
   });
 
@@ -588,5 +597,321 @@ describe('runUnderLock runs the holder-only args only while holding the lock', (
     );
     await runUnderLock({ ...holdingOptions(wrapped, true), rung: 'ci' });
     expect(seen).toEqual([{ line: 'stryker run', env: undefined }]);
+  });
+});
+
+const HOLDER_JSON = JSON.stringify({
+  repo: '/Users/me/dev/dialed-164',
+  rung: 'push',
+  pid: 500,
+  startedAt: 0,
+  phase: 'dry-run',
+  tested: 0,
+  total: 0,
+  reused: 0,
+  survived: 0,
+});
+
+/**
+`ps` on a machine where lockf 400 holds the lock for stryker 500, and two
+others wait; with `isSelfHolding`, our own locker (parent 99) holds it instead.
+*/
+function queuePs(isSelfHolding: boolean): string {
+  return [
+    `400 ${isSelfHolding ? '99' : '300'} lockf -k -s -t 10800 /locks/gate.lock stryker run`,
+    '500 400 node stryker run',
+    '401 301 lockf -k -s -t 60 /locks/gate.lock stryker run',
+    '402 302 lockf -k -s -t 60 /locks/gate.lock stryker run',
+  ].join('\n');
+}
+
+/**
+ * A busy lockf machine whose locked run stays pending until `finish` is
+ * called with its exit code, so a test can look at what happens mid-wait.
+ */
+function pendingMachine() {
+  let finish: (code: number) => void = ignoreCode;
+  let ps = queuePs(false);
+  const exec: Exec = (command, args) => {
+    if (command === 'sh') {
+      return Promise.resolve({ stdout: '', stderr: '', code: 0 });
+    }
+    if (command === 'ps') {
+      return Promise.resolve({ stdout: ps, stderr: '', code: 0 });
+    }
+    if (args.at(-1) === 'true') {
+      return Promise.resolve({ stdout: '', stderr: '', code: 75 });
+    }
+    return new Promise((resolve) => {
+      finish = (code) => {
+        resolve({ stdout: '', stderr: '', code });
+      };
+    });
+  };
+  return {
+    exec,
+    finish: (code: number) => {
+      finish(code);
+    },
+    setPs: (text: string) => {
+      ps = text;
+    },
+  };
+}
+
+function readHolderJson() {
+  return parseJsonText(HOLDER_JSON);
+}
+
+function atZero(): number {
+  return 0;
+}
+
+function ignoreCode(code: number): void {
+  expect(code).toBeTypeOf('number');
+}
+
+/**
+`runUnderLock` options with every lock-watching seam pinned.
+*/
+function watchedOptions(exec: Exec, rung: 'stop' | 'commit' | 'push') {
+  const lines: string[] = [];
+  const ticks: (() => void)[] = [];
+  const cancelled: boolean[] = [];
+  const cancel = (): void => {
+    cancelled.push(true);
+  };
+  const options = {
+    exec,
+    rung,
+    lock: { path: '/locks/gate.lock', config: lockConfig },
+    command: 'stryker',
+    args: ['run'],
+    cwd: '/repo',
+    progress: (line: string) => {
+      lines.push(line);
+    },
+    canOpenLock: () => true,
+    watch: {
+      readJson: readHolderJson,
+      now: atZero,
+      selfPid: 99,
+      every: (milliseconds: number, tick: () => void) => {
+        expect(milliseconds).toBe(60_000);
+        ticks.push(tick);
+        return cancel;
+      },
+    },
+  };
+  return { options, lines, ticks, cancelled };
+}
+
+/**
+Let every pending promise callback run.
+*/
+async function flush(): Promise<void> {
+  for (let turn = 0; turn < 10; turn += 1) {
+    await Promise.resolve();
+  }
+}
+
+describe('runUnderLock names who holds the lock and the queue', () => {
+  it('says who holds it and how many others wait, before a real wait', async () => {
+    const machine = pendingMachine();
+    const { options, lines } = watchedOptions(machine.exec, 'push');
+    const run = runUnderLock(options);
+    await flush();
+    machine.finish(0);
+    await run;
+    expect(lines[0]).toBe(
+      'guardrails: waiting for the mutation lock (up to 10800s): ' +
+        'dialed-164 (push) is running the dry run; 2 others waiting.',
+    );
+  });
+
+  it('says another checkout holds it when the holder file names a dead pid', async () => {
+    const machine = pendingMachine();
+    const { options, lines } = watchedOptions(machine.exec, 'push');
+    machine.setPs(queuePs(false).replace('500 400', '501 400'));
+    const run = runUnderLock(options);
+    await flush();
+    machine.finish(0);
+    await run;
+    expect(lines[0]).toBe(
+      'guardrails: waiting for the mutation lock (up to 10800s): ' +
+        'another checkout holds it; 2 others waiting.',
+    );
+  });
+
+  it('drops the queue clause when nobody else waits, and says "other" for one', async () => {
+    const machine = pendingMachine();
+    const { options, lines } = watchedOptions(machine.exec, 'commit');
+    machine.setPs(queuePs(false).split('\n').slice(0, 2).join('\n'));
+    const run = runUnderLock(options);
+    await flush();
+    machine.finish(0);
+    await run;
+    expect(lines[0]).toBe(
+      'guardrails: waiting for the mutation lock (up to 60s): ' +
+        'dialed-164 (push) is running the dry run.',
+    );
+    const one = pendingMachine();
+    const second = watchedOptions(one.exec, 'commit');
+    one.setPs(queuePs(false).split('\n').slice(0, 3).join('\n'));
+    const again = runUnderLock(second.options);
+    await flush();
+    one.finish(0);
+    await again;
+    expect(second.lines[0]).toContain('; 1 other waiting.');
+  });
+
+  it('repeats a still-waiting line each minute while it waits', async () => {
+    const machine = pendingMachine();
+    const { options, lines, ticks } = watchedOptions(machine.exec, 'push');
+    const run = runUnderLock(options);
+    await flush();
+    expect(ticks).toHaveLength(1);
+    ticks[0]?.();
+    await flush();
+    machine.finish(0);
+    await run;
+    expect(lines[1]).toBe(
+      'guardrails: still waiting for the mutation lock: ' +
+        'dialed-164 (push) is running the dry run; 2 others waiting.',
+    );
+  });
+
+  it('stops the still-waiting line once its own run holds the lock', async () => {
+    const machine = pendingMachine();
+    const { options, lines, ticks, cancelled } = watchedOptions(
+      machine.exec,
+      'push',
+    );
+    const run = runUnderLock(options);
+    await flush();
+    machine.setPs(queuePs(true));
+    ticks[0]?.();
+    await flush();
+    expect(lines).toHaveLength(1);
+    expect(cancelled).toEqual([true]);
+    machine.finish(0);
+    await run;
+    expect(cancelled).toEqual([true, true]);
+  });
+
+  it('stops the still-waiting timer when the wait settles', async () => {
+    const machine = pendingMachine();
+    const { options, lines, ticks, cancelled } = watchedOptions(
+      machine.exec,
+      'push',
+    );
+    const run = runUnderLock(options);
+    await flush();
+    machine.finish(0);
+    await run;
+    expect(cancelled).toEqual([true]);
+    ticks[0]?.();
+    await flush();
+    expect(lines).toHaveLength(1);
+  });
+
+  it('starts no timer when the lock was free', async () => {
+    const { exec } = lockfMachine({ busy: false });
+    const { options, ticks } = watchedOptions(exec, 'push');
+    await runUnderLock(options);
+    expect(ticks).toEqual([]);
+  });
+
+  it('carries who held it on a deferral', async () => {
+    const machine = pendingMachine();
+    const { options } = watchedOptions(machine.exec, 'stop');
+    expect(await runUnderLock(options)).toEqual({
+      kind: 'deferred',
+      holding: 'dialed-164 (push) is running the dry run',
+    });
+  });
+
+  it('carries who held it when a commit wait runs out', async () => {
+    const machine = pendingMachine();
+    const { options } = watchedOptions(machine.exec, 'commit');
+    const run = runUnderLock(options);
+    await flush();
+    machine.finish(75);
+    expect(await run).toEqual({
+      kind: 'deferred',
+      holding: 'dialed-164 (push) is running the dry run',
+    });
+  });
+
+  it('carries who held it when a push wait runs out', async () => {
+    const machine = pendingMachine();
+    const { options } = watchedOptions(machine.exec, 'push');
+    const run = runUnderLock(options);
+    await flush();
+    machine.finish(75);
+    expect(await run).toEqual({
+      kind: 'timed-out',
+      lock: options.lock,
+      holding: 'dialed-164 (push) is running the dry run',
+    });
+  });
+
+  it('asks ps for every process with its parent', async () => {
+    const asked: string[] = [];
+    const machine = pendingMachine();
+    const exec: Exec = (command, args, execOptions) => {
+      if (command === 'ps') {
+        asked.push([command, ...args].join(' '));
+      }
+      return machine.exec(command, args, execOptions);
+    };
+    await runUnderLock(watchedOptions(exec, 'stop').options);
+    expect(asked).toEqual(['ps -Ao pid=,ppid=,command=']);
+  });
+
+  it('reads no queue from a ps that failed', async () => {
+    const machine = pendingMachine();
+    const exec: Exec = (command, args, execOptions) =>
+      command === 'ps'
+        ? Promise.resolve({ stdout: queuePs(false), stderr: '', code: 1 })
+        : machine.exec(command, args, execOptions);
+    expect(await runUnderLock(watchedOptions(exec, 'stop').options)).toEqual({
+      kind: 'deferred',
+      holding: 'another checkout holds it',
+    });
+  });
+});
+
+describe('everyInterval', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('ticks once per interval until it is stopped', () => {
+    vi.useFakeTimers();
+    const ticks: number[] = [];
+    const stop = everyInterval(1000, () => {
+      ticks.push(Date.now());
+    });
+    vi.advanceTimersByTime(999);
+    expect(ticks).toHaveLength(0);
+    vi.advanceTimersByTime(1001);
+    expect(ticks).toHaveLength(2);
+    stop();
+    vi.advanceTimersByTime(5000);
+    expect(ticks).toHaveLength(2);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('never keeps the process alive on its own', () => {
+    const spy = vi.spyOn(globalThis, 'setInterval');
+    try {
+      const stop = everyInterval(1000, ignoreLine);
+      const timer = spy.mock.results[0]?.value;
+      expect(timer?.hasRef()).toBe(false);
+      stop();
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

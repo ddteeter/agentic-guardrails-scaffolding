@@ -172,6 +172,9 @@ describe('runStryker under the mutation lock', () => {
       }),
     ]);
     const message = deferred[0]?.message ?? '';
+    expect(message).toContain(
+      'the machine-wide mutation lock is busy (another checkout holds it)',
+    );
     expect(message).toContain('will be mutation-tested at the push rung');
     expect(message).toContain('do not retry to force it');
     expect(message).toContain('do not wait for the lock');
@@ -199,7 +202,7 @@ describe('runStryker under the mutation lock', () => {
       }),
     ]);
     const message = timeout[0]?.message ?? '';
-    expect(message).toContain('after 10800s');
+    expect(message).toContain('after 10800s (another checkout holds it)');
     expect(message).toContain(LOCK_TIMEOUT_MARKER);
     expect(message).toContain('Re-run the push to re-queue');
     expect(message).toContain('never bypass it with --no-verify');

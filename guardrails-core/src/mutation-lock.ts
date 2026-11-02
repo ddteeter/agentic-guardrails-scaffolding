@@ -21,6 +21,14 @@ import process from 'node:process';
 
 import type { MutationLockConfig } from './config.js';
 import type { Exec, ExecResult } from './exec.js';
+import { type JsonFileResult, readJsonFile } from './json-file.js';
+import {
+  describeHolder,
+  holderPath,
+  isListed,
+  lockQueue,
+  readHolder,
+} from './lock-holder.js';
 import type { Rung } from './verify/analyzer-policy.js';
 
 /**
@@ -148,12 +156,12 @@ export type LockedRun =
   /**
   The lock stayed busy on a rung that defers: nothing ran.
   */
-  | { kind: 'deferred' }
+  | { kind: 'deferred'; holding: string }
   /**
   The lock stayed busy on a rung that blocks: nothing ran. Carries the lock, so
   the report that names it never has to guess whether there was one.
   */
-  | { kind: 'timed-out'; lock: MutationLock };
+  | { kind: 'timed-out'; lock: MutationLock; holding: string };
 
 export interface LockedRunOptions {
   exec: Exec;
@@ -180,6 +188,98 @@ export interface LockedRunOptions {
   progress plugin that writes the holder file) speaks only for the holder.
   */
   locked?: { args: string[]; env: NodeJS.ProcessEnv };
+  /**
+  Seams for looking at who holds the lock while this run waits.
+  */
+  watch?: LockWatchSeams;
+}
+
+interface LockWatchSeams {
+  /**
+  Reads the holder file. Defaults to `readJsonFile`.
+  */
+  readJson?: (filePath: string) => JsonFileResult;
+  now?: () => number;
+  /**
+  Whose locker is "ours". Defaults to this process.
+  */
+  selfPid?: number;
+  /**
+  Calls `tick` every `milliseconds` until the returned function is called.
+  */
+  every?: (milliseconds: number, tick: () => void) => () => void;
+}
+
+/**
+What a look at the lock found.
+*/
+interface LockSighting {
+  /**
+  A clause naming the holder and its progress, or `another checkout holds it`.
+  */
+  holding: string;
+  /**
+  Runs waiting besides the holder and this process's own.
+  */
+  waiting: number;
+  /**
+  This process's own run holds the lock now.
+  */
+  isHeldBySelf: boolean;
+}
+
+const STILL_WAITING_INTERVAL_MS = 60_000;
+
+/**
+ * Look once at who holds `lockPath` and who queues for it: `ps` for the queue
+ * (see `lockQueue`), the holder file for who and how far. A holder whose pid
+ * `ps` no longer lists is stale -- a killed holder leaves its file behind --
+ * and reads as `another checkout`, as does a gate too old to write one.
+ */
+async function lookAtLock(
+  exec: Exec,
+  lockPath: string,
+  seams: LockWatchSeams = {},
+): Promise<LockSighting> {
+  const listed = await exec('ps', ['-Ao', 'pid=,ppid=,command=']);
+  const ps = listed.code === 0 ? listed.stdout : '';
+  const holder = readHolder(
+    holderPath(lockPath),
+    seams.readJson ?? readJsonFile,
+    (pid) => isListed(ps, pid),
+  );
+  const now = seams.now ?? Date.now;
+  return {
+    holding:
+      holder === undefined
+        ? 'another checkout holds it'
+        : describeHolder(holder, now()),
+    ...lockQueue(ps, lockPath, seams.selfPid ?? process.pid),
+  };
+}
+
+/**
+`; 2 others waiting`, `; 1 other waiting`, or nothing when nobody else waits.
+*/
+function queueClause(waiting: number): string {
+  if (waiting === 0) {
+    return '';
+  }
+  return `; ${String(waiting)} ${waiting === 1 ? 'other' : 'others'} waiting`;
+}
+
+/**
+`setInterval` that never keeps the process alive on its own.
+*/
+export function everyInterval(
+  milliseconds: number,
+  tick: () => void,
+): () => void {
+  const timer = setInterval(tick, milliseconds);
+  timer.unref();
+  return () => {
+    clearInterval(timer);
+  };
 }
 
 /**
@@ -226,15 +326,15 @@ export async function runUnderLock(
   const probe = lockerArgv(locker, lockPath, 0, 'true', []);
   const probed = await exec(probe.command, probe.args, { cwd });
   const isBusy = probed.code === LOCK_TIMEOUT_EXIT;
+  const look = (): Promise<LockSighting> =>
+    lookAtLock(exec, lockPath, options.watch);
   if (isBusy && wait.waitSeconds === 0) {
-    return { kind: 'deferred' };
+    const { holding: busyWith } = await look();
+    return { kind: 'deferred', holding: busyWith };
   }
-  if (isBusy) {
-    progress(
-      `guardrails: another checkout is running mutation testing — waiting ` +
-        `for the mutation lock (up to ${String(wait.waitSeconds)}s)…`,
-    );
-  }
+  const stopWatching = isBusy
+    ? await watchTheWait(look, wait.waitSeconds, progress, options.watch)
+    : undefined;
   const holding = options.locked;
   const run = lockerArgv(
     locker,
@@ -243,11 +343,16 @@ export async function runUnderLock(
     command,
     holding?.args ?? args,
   );
-  const result = await exec(run.command, run.args, {
-    cwd,
-    processGroup: true,
-    ...(holding !== undefined && { env: holding.env }),
-  });
+  let result: ExecResult;
+  try {
+    result = await exec(run.command, run.args, {
+      cwd,
+      processGroup: true,
+      ...(holding !== undefined && { env: holding.env }),
+    });
+  } finally {
+    stopWatching?.();
+  }
   if (isMissingCommand(result, command)) {
     // The locker started but its command did not exist. Re-asked bare so the
     // spawn failure is a real one -- that is what `runVerify`'s tracker reads
@@ -257,9 +362,49 @@ export async function runUnderLock(
   if (result.code !== LOCK_TIMEOUT_EXIT) {
     return { kind: 'ran', result };
   }
+  const { holding: heldBy } = await look();
   return wait.onTimeout === 'defer'
-    ? { kind: 'deferred' }
-    : { kind: 'timed-out', lock };
+    ? { kind: 'deferred', holding: heldBy }
+    : { kind: 'timed-out', lock, holding: heldBy };
+}
+
+/**
+ * Say who holds the lock before a real wait, then again each minute until our
+ * own run holds it or the wait settles: both lockers are silent while they
+ * wait, and a quiet half hour reads as a hang. Returns the stop function.
+ */
+async function watchTheWait(
+  look: () => Promise<LockSighting>,
+  waitSeconds: number,
+  progress: (line: string) => void,
+  seams: LockWatchSeams = {},
+): Promise<() => void> {
+  const first = await look();
+  progress(
+    `guardrails: waiting for the mutation lock (up to ${String(waitSeconds)}s): ` +
+      `${first.holding}${queueClause(first.waiting)}.`,
+  );
+  let isWatching = true;
+  const stop = (seams.every ?? everyInterval)(STILL_WAITING_INTERVAL_MS, () => {
+    void look().then((sighting) => {
+      if (!isWatching) {
+        return;
+      }
+      if (sighting.isHeldBySelf) {
+        isWatching = false;
+        stop();
+        return;
+      }
+      progress(
+        `guardrails: still waiting for the mutation lock: ` +
+          `${sighting.holding}${queueClause(sighting.waiting)}.`,
+      );
+    });
+  });
+  return () => {
+    isWatching = false;
+    stop();
+  };
 }
 
 const NO_LOCKER_NOTE =
