@@ -30,6 +30,7 @@
  * reported nothing at all, which would satisfy the first check vacuously.
  */
 
+import { existsSync } from 'node:fs';
 import { mkdtemp, mkdir, readFile, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -38,6 +39,12 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import { spawnExec } from '../../src/exec.js';
+import { readJsonFile } from '../../src/json-file.js';
+import {
+  holderEnvironment,
+  holderPath,
+  PROGRESS_REPORTER,
+} from '../../src/lock-holder.js';
 import {
   parseStrykerJson,
   unrunSurvivedMutants,
@@ -47,6 +54,13 @@ import { isUnderMutationRun } from './under-mutation.js';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '../../..');
 const strykerBin = path.join(repoRoot, 'node_modules', '.bin', 'stryker');
+/**
+The BUILT plugin, as a consumer's gate loads it -- not the source.
+*/
+const builtPlugin = path.resolve(
+  here,
+  '../../dist/stryker-progress-plugin.mjs',
+);
 
 /** How stryker names the mutated file in its report — relative to the run's
  *  cwd, which is the fixture directory. */
@@ -149,6 +163,48 @@ describe.skipIf(isUnderMutationRun(here))(
       // leaves nothing for us to raise. Without this, a runner that reported no
       // mutants at all would satisfy the check above vacuously.
       expect(parseStrykerJson(report, MUTATED), diagnostic).toEqual([]);
+    }, 300_000);
+
+    it('writes the holder file while the built progress plugin runs, and removes it after', async () => {
+      expect(
+        existsSync(builtPlugin),
+        `no built plugin at ${builtPlugin} -- run npm run build`,
+      ).toBe(true);
+      const directory = await buildFixture();
+      const lockPath = path.join(directory, 'gate.lock');
+      const holderFile = holderPath(lockPath);
+      const seen: unknown[] = [];
+      const watch = setInterval(() => {
+        const { parsed } = readJsonFile(holderFile);
+        if (parsed !== undefined) {
+          seen.push(parsed);
+        }
+      }, 25);
+      try {
+        const result = await spawnExec(
+          strykerBin,
+          [
+            'run',
+            '--reporters',
+            `json,${PROGRESS_REPORTER}`,
+            '--appendPlugins',
+            builtPlugin,
+          ],
+          {
+            cwd: directory,
+            env: {
+              ...process.env,
+              ...holderEnvironment(lockPath, 'push', directory),
+            },
+          },
+        );
+        expect(result.code, `${result.stdout}\n${result.stderr}`).toBe(0);
+      } finally {
+        clearInterval(watch);
+      }
+      expect(seen.length).toBeGreaterThan(0);
+      expect(seen[0]).toMatchObject({ repo: directory, rung: 'push' });
+      expect(existsSync(holderFile)).toBe(false);
     }, 300_000);
   },
 );
