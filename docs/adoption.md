@@ -631,14 +631,22 @@ ship.log 2>&1 &`), finish the task, and let whoever started the agent read
   commit-rung gate before a `git push` whose pre-push hook (as git resolves it,
   `core.hooksPath` included) runs `gate --mode=push`. A push that also commits,
   carries `--no-verify` or overrides the hooks path is still gated there.
-- **One push gate at a time, per machine.** The scaffolded `.githooks/pre-push`
-  takes a file-descriptor lock (`lockf` or `flock`) before running the gate, so
-  agents in several worktrees queue instead of thrashing the machine together.
-  `GUARDRAILS_GATE_LOCK` names the lock file (default
-  `$HOME/.guardrails-gate.lock`, shared by every repo on the machine) and
-  `GUARDRAILS_GATE_LOCK_TIMEOUT` the ceiling in seconds (default 10800). A
-  timeout prints `guardrails: gave up waiting for the gate lock`, which
-  `guardrails ship` reports as `lock-timeout` rather than as a block.
+- **One mutation run at a time, per machine.** The gate holds a
+  file-descriptor lock (`lockf` or `flock`) around the stryker run itself, on
+  every rung that runs it, so agents in several worktrees queue for mutation
+  testing instead of thrashing the machine together -- and a commit or push
+  with nothing to mutate never queues at all. `GUARDRAILS_GATE_LOCK` names the
+  lock file (default `$HOME/.guardrails-gate.lock`, shared by every repo on the
+  machine). How long each rung waits is `mutationLock` in
+  `guardrails.config.json`: the stop rung tries once and defers to commit,
+  commit waits `commitWaitSeconds` (60) and defers to push, push waits
+  `pushWaitSeconds` (10800; `GUARDRAILS_GATE_LOCK_TIMEOUT` still sets it when
+  the key is absent) and then blocks with `guardrails: gave up waiting for the
+gate lock`, which `guardrails ship` reports as `lock-timeout` rather than as
+  a block. While a run waits it names the holder and its progress -- e.g.
+  `dialed-163 (push) is mutating, 62% (160/258), ~4m left` -- and how many
+  others queue, once a minute. `guardrails lock-status` shows the same once,
+  from anywhere on the machine.
 
 A `CLAUDE.md` snippet for adopters:
 

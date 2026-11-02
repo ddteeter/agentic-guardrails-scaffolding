@@ -4,7 +4,9 @@ import { defineConfig } from 'tsup';
 // the CLI with a single cross-platform `node`/`guardrails` command — no bash,
 // no loader. Entries are added here as modules are built (TDD).
 export default defineConfig({
-  entry: ['src/index.ts', 'src/cli.ts'],
+  // The stryker progress plugin is its own entry: stryker loads it by path
+  // (`--appendPlugins`), so it must exist as a file in dist, not inside cli.
+  entry: ['src/index.ts', 'src/cli.ts', 'src/stryker-progress-plugin.ts'],
   format: ['esm'],
   outExtension: () => ({ js: '.mjs' }),
   target: 'node24',

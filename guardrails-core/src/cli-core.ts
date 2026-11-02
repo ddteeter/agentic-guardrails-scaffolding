@@ -77,6 +77,13 @@ import {
   HOOKS_DIRECTORY,
 } from './scaffold/hooks-path.js';
 import { initCommand } from './scaffold/init.js';
+import {
+  LOCK_TIMEOUT_EXIT,
+  lockStatus,
+  lockWaitInProgress,
+  MUTATION_LOCK_TIMEOUT_RULE,
+  machineLock,
+} from './mutation-lock.js';
 import { foregroundWait, foregroundWaitDenial } from './foreground-wait.js';
 import { commandTarget } from './command-target.js';
 import { isPushGatedByHook } from './push-hook.js';
@@ -135,6 +142,11 @@ export interface CliDependencies {
    * a gate that is still pending.
    */
   exit?: (code: number) => void;
+  /**
+  Who a mutation-lock wait in progress is waiting on; defaults to
+  `lockWaitInProgress`. Read when the hook deadline gives up on a gate.
+  */
+  lockWait?: () => string | undefined;
   stdout: (text: string) => void;
   stderr: (text: string) => void;
 }
@@ -171,6 +183,7 @@ function commitGateOptionsFromConfig(
   | 'analyzers'
   | 'analyzerRungs'
   | 'config'
+  | 'mutationLock'
 > {
   return {
     repoRoot,
@@ -182,6 +195,7 @@ function commitGateOptionsFromConfig(
     analyzers: config.analyzers,
     analyzerRungs: config.analyzerRungs,
     config: toGateConfig(config),
+    mutationLock: machineLock(config.mutationLock),
   };
 }
 
@@ -472,6 +486,7 @@ async function gateStopCommand(
     analyzers: config.analyzers,
     analyzerRungs: config.analyzerRungs,
     isRetry: input.stopHookActive,
+    mutationLock: machineLock(config.mutationLock),
   });
   const output =
     dialect === 'claude'
@@ -588,6 +603,19 @@ async function gateCommitCommand(
     dependencies.stderr(`guardrails: ${unreadableDiffMessage(unreadable)}\n`);
     return 1;
   }
+  if (
+    violations.some(
+      (violation) => violation.ruleId === MUTATION_LOCK_TIMEOUT_RULE,
+    )
+  ) {
+    // The push never got the mutation lock, so mutation testing did not run.
+    // Same footing as an unreadable diff: no verdict, so no `warn` softening,
+    // and no fixer pointer -- no edit resolves a held lock, and the message
+    // printed above already says what to do. Only the push rung can time out
+    // (commit and stop defer), so this is the one surface that needs it.
+    // 75 (EX_TEMPFAIL), not 1: the pre-push hook words it apart from a block.
+    return LOCK_TIMEOUT_EXIT;
+  }
   if (!blocked) {
     return 0;
   }
@@ -697,6 +725,20 @@ const GIT_WRITE = new RegExp(
 const GIT_COMMIT = new RegExp(
   `${COMMAND_START}git${GIT_GLOBAL_OPTIONS}[ \t]+commit\\b`,
 );
+const GIT_PUSH = new RegExp(
+  `${COMMAND_START}git${GIT_GLOBAL_OPTIONS}[ \t]+push\\b`,
+);
+
+/**
+ * Which change set this git write is judged over. A commit alone is the commit
+ * rung, which is staged-scoped like `.husky/pre-commit`; anything with a push
+ * in it is judged over the whole branch, as the push rung is.
+ */
+function writeScope(command: string): 'staged' | 'branch' {
+  return GIT_PUSH.test(withoutQuotedHeredocBodies(command))
+    ? 'branch'
+    : 'staged';
+}
 
 /**
  * What takes a push out of reach of its pre-push hook: the flag that skips it,
@@ -973,6 +1015,10 @@ async function gatePreToolUseCommand(
         base.base,
       ),
       sessionId: input.sessionId,
+      // Staged for a commit, as `.husky/pre-commit` asks for: under branch
+      // scope every agent commit re-mutated the whole branch -- untracked
+      // files included -- until it outgrew the hook deadline.
+      changedScope: writeScope(input.command ?? ''),
     });
   if (!blocked) {
     return; // allow (silent)
@@ -1897,12 +1943,21 @@ function abandonGate(
   seconds: number,
 ): void {
   if (mode === 'pretooluse') {
+    const holding = (dependencies.lockWait ?? lockWaitInProgress)();
+    const why =
+      holding === undefined
+        ? `Something else is likely loading the machine (another gate, a ` +
+          `test run); retry when it is quieter.`
+        : `It was waiting for the mutation lock: ${holding}. Retry once that ` +
+          `run finishes; for commits to defer mutation testing rather than ` +
+          `wait this long, ask the developer to set ` +
+          `mutationLock.commitWaitSeconds below hookDeadlineSeconds in ` +
+          `guardrails.config.json.`;
     denyGitWrite(
       dependencies,
       input,
       `guardrails: the commit gate did not finish within ${seconds}s, so ` +
-        `this git command was not checked. Something else is likely loading ` +
-        `the machine (another gate, a test run); retry when it is quieter.`,
+        `this git command was not checked. ${why}`,
       dialect,
     );
   } else {
@@ -2121,6 +2176,23 @@ function gateCommand(
   );
 }
 
+/**
+ * `lock-status`: who holds the machine-wide mutation lock and how many wait,
+ * looked at once. Always exits 0 -- it reports, it never gates.
+ */
+async function lockStatusCommand(
+  dependencies: CliDependencies,
+): Promise<number> {
+  const lines = await lockStatus(
+    dependencies.exec,
+    dependencies.env ?? process.env,
+  );
+  for (const line of lines) {
+    dependencies.stdout(`${line}\n`);
+  }
+  return 0;
+}
+
 export async function runCommand(
   command: string | undefined,
   rest: string[],
@@ -2179,6 +2251,9 @@ export async function runCommand(
     case 'ship': {
       return shipCommand(dependencies, rest);
     }
+    case 'lock-status': {
+      return lockStatusCommand(dependencies);
+    }
     default: {
       dependencies.stderr(
         'usage: guardrails-core <command>\n' +
@@ -2189,6 +2264,7 @@ export async function runCommand(
           '  verify [--base=<ref>]\n' +
           '  sanction [--from=<violations manifest>]\n' +
           '  ship [--body-file=<f>] [--status-file=<f>] [--base=<ref>]\n' +
+          '  lock-status\n' +
           '  autofix | audit | sanctions-check | install-hooks\n' +
           '  state | report | scope-check | session-start | session-end\n',
       );

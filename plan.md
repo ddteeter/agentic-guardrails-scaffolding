@@ -427,6 +427,88 @@ directories in one command. Unchanged, and still outside the matcher:
 
 ## Roadmap: fixer-loop hardening (from the dogfooding live proof)
 
+- **The machine lock now wraps stryker itself, on every rung (2026-11-01,
+  fixed; spec `docs/superpowers/specs/2026-11-01-mutation-lock-design.md`,
+  plan `docs/superpowers/plans/2026-11-01-mutation-lock.md`).** It replaces
+  the shell lock around the whole push gate, and the `gate-lock` probe that
+  let a no-stryker push skip it (below). The gate takes the lock around the
+  stryker run alone: stop tries once and defers to commit, commit waits
+  `mutationLock.commitWaitSeconds` (60) and defers to push, push waits
+  `pushWaitSeconds` (10800) and blocks. A deferral is a `warn` that tells
+  the agent there is nothing to do. A waiting run names the holder and its
+  progress from a holder file, which a stryker reporter plugin writes on the
+  run that holds the lock, and counts the queue from `ps`.
+  `guardrails lock-status` shows the same once. Follow-ups: #147 (queue
+  order), #148 (aborting a long holder early). Found on the way:
+  - **The PreToolUse commit gate checked the whole branch, not the staged
+    files.** `runCommitGate` was called without a scope and fell back to
+    `branch`, so every agent commit re-mutated every file the branch had
+    touched. On a long branch it hit the 240s hook deadline every time,
+    which is what stalled this work before the reboot. It now passes
+    `staged`, or `branch` when the command also pushes. Fixed TDD-first.
+  - **`child.kill()` on a spawn that has not started signals the caller's
+    process group** (Node 24). A spawn that will fail with ENOENT has no pid
+    until its `error` event, and killing it before then sent SIGTERM to the
+    whole group, including the shell that ran the tests.
+    `terminateChildren` now skips a child with no pid. Its test runs in its
+    own session, so a regression cannot kill the runner.
+  - **SIGTERM to `lockf` frees the lock and orphans its command**
+    (measured). That is why the locked spawn runs as its own process group,
+    is killed as one, and why the CLI forwards SIGINT/SIGTERM to the groups
+    it owns.
+  - **Open: the PreToolUse hook resolves guardrails-core from the session's
+    cwd, not the checkout the command runs in.** A session started in the
+    main checkout gated this worktree's commits with the main checkout's
+    older install, until each commit command started with an explicit
+    `cd <worktree>`. The #123 delegation sees a `cd` or `git -C` in the
+    command, not a shell already inside another checkout.
+  - **Open, cosmetic: a line-less violation prints as `file:?`.** Every
+    `mutation-deferred` warning shows that way.
+  - **Open: this repo's own `npm run test:coverage` runs the stryker drift
+    guards outside the lock**, so a push here can still run stryker next to
+    another checkout's. The fixtures are small, but it is the case the lock
+    exists for.
+  - **Open: a push that waits long for the lock loses its connection.** git
+    connects to the remote before it runs the pre-push hook, so a push that
+    queued behind another checkout's stryker (here about an hour) found
+    `Connection to github.com closed by remote host.` when its own gate
+    finished. The old shell lock had the same exposure. A gate that passed
+    leaves its memo, so re-pushing the same tree is `cached: true` and
+    quick, but the agent has to know to do that. Candidates: `ship` waits
+    for the lock (or re-pushes once after a cached pass) before it lets git
+    connect.
+  - **A repo that sets its own `GUARDRAILS_GATE_LOCK` splits the queue.**
+    dialed.run points it at `~/.dialed-gate.lock`, so its runs and this
+    repo's never queue behind each other. The lock is meant to be one per
+    machine; that override should go.
+
+- **The husky advice dropped the lock, and the lock serialized pushes that
+  had nothing to protect (2026-11-01, fixed, then superseded by the entry
+  above, which removed `gate-lock` and the shell lock; plan:
+  `docs/superpowers/plans/2026-11-01-push-lock-skip.md`).** Two findings
+  from one question: "can a push with no stryker work skip the lock queue?"
+  - **The lock queued pushes that run no mutation testing.** A docs-only
+    push waited behind another worktree's stryker run. The new
+    `guardrails gate-lock` command answers whether a push needs the lock
+    using the gate's own rules (the push memo, `isAnalyzerSelected`,
+    `strykerScope`). `.githooks/pre-push` skips the lock only on exit 0, so
+    an older CLI, which doesn't know the command, still queues.
+  - **This repo never took the lock at all.** Husky owns `core.hooksPath`,
+    so `.githooks/pre-push` was inert, and `.husky/pre-push` called
+    `gate --mode=push` directly. That is what `foreignHooksPathWarning` told
+    every husky user to do, and it only named pre-commit. The warning and
+    both hook headers now say to chain `sh .githooks/<hook>`, and
+    `.husky/pre-push` does.
+  - **Since fixed by the entry above: stryker on the commit rung was never
+    serialized.**
+    Stryker's floor is `commit`, and the lock wraps only the push rung. On
+    2026-11-01 two dialed.run worktrees ran stryker at the same time
+    (machine load around 34) while five pushes queued on the lock. So the
+    lock bounds the push rung's share of mutation testing, not mutation
+    testing itself. The likely fix is to take the same lock around stryker
+    wherever it runs. That needs a design pass first: a commit cannot wait
+    hours the way a background push can.
+
 - **The dialed.run transcript audit (2026-09-25 → 10-09) found fail-open paths
   that only appear with parallel agents in nested worktrees (fixed; plan:
   `docs/superpowers/plans/2026-10-09-worktree-fail-closed.md`).** One

@@ -94,6 +94,17 @@ export type Exec = (
     Written to the child's stdin, which is then closed.
     */
     input?: string;
+    /**
+     * Start the child as the leader of its own process group, and terminate
+     * the whole group rather than the child alone.
+     *
+     * For a child that WRAPS the real work -- `lockf … stryker` -- and does not
+     * pass a SIGTERM on. Measured: killing `lockf -k` frees the lock and leaves
+     * its command running, so an abandoned gate would leave stryker mutating
+     * unlocked. A group is also out of reach of the terminal's Ctrl-C, which is
+     * why `forwardTerminationSignal` exists.
+     */
+    processGroup?: boolean;
   },
 ) => Promise<ExecResult>;
 
@@ -119,9 +130,78 @@ const live = new Set<ChildProcess>();
 export function terminateChildren(): number {
   const count = live.size;
   for (const child of live) {
-    child.kill('SIGTERM');
+    const { pid } = child;
+    if (pid === undefined) {
+      // Never started: its 'error' is still on its way. Measured (Node 24):
+      // `child.kill()` in this window signals the CALLER's whole process
+      // group, so a gate abandoned while an analyzer spawn was failing would
+      // kill itself and the hook that ran it. There is nothing to stop.
+      continue;
+    }
+    if (groups.has(child)) {
+      killGroup(pid);
+    } else {
+      child.kill('SIGTERM');
+    }
   }
   return count;
+}
+
+/**
+The live children started with `processGroup`. A subset of `live`.
+*/
+const groups = new Set<ChildProcess>();
+
+function killGroup(pid: number): void {
+  try {
+    // A negative pid addresses the group the child leads.
+    process.kill(-pid, 'SIGTERM');
+  } catch {
+    // Already gone -- the group exited between the check and the kill.
+  }
+}
+
+/**
+The exit code a shell reports for a run ended by `signal`.
+*/
+const SIGNAL_EXIT_CODES: Readonly<Record<'SIGINT' | 'SIGTERM', number>> = {
+  SIGINT: 130,
+  SIGTERM: 143,
+};
+
+/**
+ * What the CLI does on SIGINT or SIGTERM while process groups are live:
+ * terminate every child (groups included), then exit with the code a shell
+ * would report. Installed only while a group is running -- see `spawnExec` --
+ * so a CLI with none keeps Node's default handling.
+ */
+export function forwardTerminationSignal(
+  signal: 'SIGINT' | 'SIGTERM',
+  exit: (code: number) => void,
+): void {
+  terminateChildren();
+  exit(SIGNAL_EXIT_CODES[signal]);
+}
+
+function onSignal(signal: 'SIGINT' | 'SIGTERM'): void {
+  forwardTerminationSignal(signal, (code) => process.exit(code));
+}
+
+function trackGroup(child: ChildProcess): void {
+  if (groups.size === 0) {
+    process.on('SIGINT', onSignal);
+    process.on('SIGTERM', onSignal);
+  }
+  groups.add(child);
+}
+
+function untrackGroup(child: ChildProcess): void {
+  if (!(groups.delete(child) && groups.size === 0)) {
+    return;
+  }
+
+  process.off('SIGINT', onSignal);
+  process.off('SIGTERM', onSignal);
 }
 
 export const spawnExec: Exec = (command, args, options) =>
@@ -134,8 +214,12 @@ export const spawnExec: Exec = (command, args, options) =>
       // inside a hook would target the hook's repo regardless of `cwd`.
       ...(options?.env !== undefined && { env: options.env }),
       shell: false,
+      detached: options?.processGroup === true,
     });
     live.add(child);
+    if (options?.processGroup === true) {
+      trackGroup(child);
+    }
     if (options?.input !== undefined) {
       child.stdin.end(options.input);
     }
@@ -149,6 +233,7 @@ export const spawnExec: Exec = (command, args, options) =>
     });
     child.on('error', (error: Error) => {
       live.delete(child);
+      untrackGroup(child);
       resolve({
         stdout,
         stderr: `${stderr}${error.message}`,
@@ -158,6 +243,7 @@ export const spawnExec: Exec = (command, args, options) =>
     });
     child.on('close', (code, signal) => {
       live.delete(child);
+      untrackGroup(child);
       // `code ?? 0` is kept, but it is no longer the only thing a caller has to
       // go on: a kill sets `code` to null and `signal` to the name, so the
       // coalesced zero is now accompanied by the evidence that contradicts it.

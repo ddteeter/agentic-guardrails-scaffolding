@@ -79,11 +79,16 @@ import {
 } from './violation.js';
 import { parseFileList } from './verify/git.js';
 import { runVerify } from './verify/index.js';
+import type { MutationLock } from './mutation-lock.js';
 import { loadWorkspaceResolver, withPackages } from './workspaces.js';
 import { repoSourceReader } from './repo-source.js';
 import { resolveBaseReference } from './verify/git.js';
 
 export interface StopGateOptions {
+  /**
+  The machine-wide mutation lock, forwarded to `runVerify`.
+  */
+  mutationLock?: MutationLock | undefined;
   repoRoot: string;
   sessionId: string;
   baseBranch: string;
@@ -111,6 +116,10 @@ export interface StopGateResult {
 }
 
 export interface CommitGateOptions {
+  /**
+  The machine-wide mutation lock, forwarded to `runVerify`.
+  */
+  mutationLock?: MutationLock | undefined;
   repoRoot: string;
   /**
    * Session to key the manifest on, when the caller has one. The PreToolUse
@@ -662,6 +671,7 @@ export async function runStopGate(
     // `CommitGateOptions.sessionId` — a mutant avoided costs nothing, where a
     // mutant suppressed costs a sanction that has to be justified forever.
     analyzerRungs: options.analyzerRungs,
+    mutationLock: options.mutationLock,
   };
   // No open loop is the precondition: a fixer mid-flight has to have its
   // progress measured, never assumed from an earlier clean turn.
@@ -839,7 +849,10 @@ function rememberPushPass(
  * local file.
  */
 async function pushPassKey(
-  options: CommitGateOptions,
+  options: Pick<
+    CommitGateOptions,
+    'profile' | 'exec' | 'repoRoot' | 'baseBranch'
+  >,
 ): Promise<PushPass | undefined> {
   if (options.profile !== 'push') {
     return undefined;
@@ -858,6 +871,20 @@ async function pushPassKey(
   return fingerprint === undefined ? undefined : { fingerprint, base };
 }
 
+/**
+ * Does the memo on disk cover the tree about to be pushed?
+ */
+function isRememberedPass(
+  pass: PushPass | undefined,
+  remembered: PushPass | undefined,
+): boolean {
+  return (
+    pass !== undefined &&
+    remembered?.fingerprint === pass.fingerprint &&
+    remembered.base === pass.base
+  );
+}
+
 export async function runCommitGate(
   options: CommitGateOptions,
 ): Promise<CommitGateResult> {
@@ -865,12 +892,7 @@ export async function runCommitGate(
   // Taken BEFORE the analyzers run: what is remembered must be the tree that
   // was checked, not whatever an agent left behind while the gate ran.
   const pass = await pushPassKey(options);
-  const remembered = loadPushPass(directory);
-  if (
-    pass !== undefined &&
-    remembered?.fingerprint === pass.fingerprint &&
-    remembered.base === pass.base
-  ) {
+  if (isRememberedPass(pass, loadPushPass(directory))) {
     return {
       violations: [],
       findings: [],
@@ -889,6 +911,7 @@ export async function runCommitGate(
     // Straight through, not conditionally spread — see the stop gate's note.
     analyzerRungs: options.analyzerRungs,
     ...(options.changedScope && { changedScope: options.changedScope }),
+    mutationLock: options.mutationLock,
   });
   // The commit gate audits the branch's CUMULATIVE diff and has no per-loop
   // snapshot baseline (unlike runStopGate), so a deliberately-sanctioned

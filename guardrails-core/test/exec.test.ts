@@ -1,13 +1,24 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
+import { PassThrough } from 'node:stream';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  type Mock,
+  vi,
+} from 'vitest';
 
 import {
   signalFromExitCode,
   spawnExec,
+  forwardTerminationSignal,
   terminateChildren,
 } from '../src/exec.js';
 
@@ -285,4 +296,318 @@ describe('terminateChildren', () => {
     await spawnExec('definitely-not-a-real-binary-xyz', []);
     expect(terminateChildren()).toBe(0);
   });
+});
+
+/**
+ * Spawn `sh` as a process group whose grandchild writes its pid to `pidFile`
+ * and then runs forever -- the shape of `lockf … stryker`, without needing a
+ * locker on the machine.
+ */
+function groupWithGrandchild(pidFile: string) {
+  return spawnExec(
+    'sh',
+    [
+      '-c',
+      `${node} -e "setInterval(() => {}, 1000)" & echo $! > "${pidFile}"; wait`,
+    ],
+    { processGroup: true },
+  );
+}
+
+function isAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function readPid(pidFile: string): Promise<number> {
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    const text = existsSync(pidFile)
+      ? readFileSync(pidFile, 'utf8').trim()
+      : '';
+    if (text !== '') {
+      return Number(text);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error('grandchild never started');
+}
+
+const forever = 'setInterval(() => {}, 1000)';
+
+/**
+A child-side expression for the child's own process group, via `ps`.
+*/
+const groupLookup =
+  'require("node:child_process").execFileSync("ps", ["-o", "pgid=", "-p", String(process.pid)]).toString().trim()';
+
+/**
+The process group of `pid`, as `ps` reports it.
+*/
+function groupOf(pid: number): string {
+  return execFileSync('ps', ['-o', 'pgid=', '-p', String(pid)])
+    .toString()
+    .trim();
+}
+
+describe('processGroup decides whether a child leads its own group', () => {
+  it('starts a group child as the leader of a new group', async () => {
+    const result = await spawnExec(
+      node,
+      ['-e', `process.stdout.write(${groupLookup})`],
+      { processGroup: true },
+    );
+    expect(result.stdout).not.toBe(groupOf(process.pid));
+  });
+
+  it('leaves an ordinary child in the group it was started from', async () => {
+    const result = await spawnExec(node, [
+      '-e',
+      `process.stdout.write(${groupLookup})`,
+    ]);
+    expect(result.stdout).toBe(groupOf(process.pid));
+  });
+});
+
+describe('terminateChildren picks the right way to stop each child', () => {
+  it('addresses a process group only for a child that leads one', async () => {
+    const kill = vi.spyOn(process, 'kill');
+    try {
+      const plain = spawnExec(node, ['-e', forever]);
+      terminateChildren();
+      await plain;
+      expect(kill).not.toHaveBeenCalled();
+    } finally {
+      kill.mockRestore();
+    }
+  });
+});
+
+/**
+How many SIGINT and SIGTERM handlers the process has right now.
+*/
+function listeners(): number[] {
+  return [process.listenerCount('SIGINT'), process.listenerCount('SIGTERM')];
+}
+
+describe('termination handlers are installed only while a group is live', () => {
+  it('adds one handler per signal for a group, and removes it when the group ends', async () => {
+    const [interrupts = 0, terminations = 0] = listeners();
+    const running = spawnExec(node, ['-e', forever], { processGroup: true });
+    expect(listeners()).toEqual([interrupts + 1, terminations + 1]);
+    terminateChildren();
+    await running;
+    expect(listeners()).toEqual([interrupts, terminations]);
+  });
+
+  it('adds none for a child that is not a group', async () => {
+    const before = listeners();
+    const running = spawnExec(node, ['-e', forever]);
+    expect(listeners()).toEqual(before);
+    terminateChildren();
+    await running;
+    expect(listeners()).toEqual(before);
+  });
+
+  it('shares one handler across overlapping groups, until the last one ends', async () => {
+    const [interrupts = 0, terminations = 0] = listeners();
+    const short = spawnExec(node, ['-e', 'setTimeout(() => {}, 200)'], {
+      processGroup: true,
+    });
+    const long = spawnExec(node, ['-e', forever], { processGroup: true });
+    expect(listeners()).toEqual([interrupts + 1, terminations + 1]);
+    await short;
+    expect(listeners()).toEqual([interrupts + 1, terminations + 1]);
+    terminateChildren();
+    await long;
+    expect(listeners()).toEqual([interrupts, terminations]);
+  });
+
+  it('removes them when a group child fails to start', async () => {
+    const before = listeners();
+    await spawnExec('definitely-not-a-real-binary-xyz', [], {
+      processGroup: true,
+    });
+    expect(listeners()).toEqual(before);
+  });
+
+  it.each([
+    ['SIGINT', 130],
+    ['SIGTERM', 143],
+  ] as const)(
+    'ends the group and exits when the process receives %s',
+    async (signal, expected) => {
+      const exits: unknown[] = [];
+      const exit = vi.spyOn(process, 'exit').mockImplementation((code) => {
+        exits.push(code);
+        throw new Error('exit intercepted');
+      });
+      try {
+        const existing = process.listeners(signal);
+        const running = spawnExec(node, ['-e', forever], {
+          processGroup: true,
+        });
+        // Call only the handler this spawn installed: emitting the signal
+        // itself would also run whatever the test runner listens with.
+        const handler = process
+          .listeners(signal)
+          .find((listener) => !existing.includes(listener));
+        expect(handler).toBeDefined();
+        expect(() => handler?.(signal)).toThrow('exit intercepted');
+        const result = await running;
+        expect(result.signal).toBe('SIGTERM');
+        expect(exits).toEqual([expected]);
+      } finally {
+        exit.mockRestore();
+      }
+    },
+  );
+});
+
+describe('a process-group child takes its grandchildren with it', () => {
+  it('terminates the whole group, not just the direct child', async () => {
+    // Measured 2026-11-01: SIGTERM to `lockf -k … cmd` frees the lock AND
+    // leaves cmd running. An abandoned gate would leave stryker mutating
+    // unlocked -- the thrash the lock exists to prevent.
+    const directory = mkdtempSync(path.join(tmpdir(), 'guardrails-group-'));
+    const pidFile = path.join(directory, 'grandchild.pid');
+    try {
+      const running = groupWithGrandchild(pidFile);
+      const grandchild = await readPid(pidFile);
+      expect(terminateChildren()).toBe(1);
+      await running;
+      const deadline = Date.now() + 5000;
+      while (isAlive(grandchild) && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(isAlive(grandchild)).toBe(false);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('terminates the group on a forwarded signal, then exits with its code', async () => {
+    // A detached group no longer receives the terminal's Ctrl-C, so the CLI
+    // has to pass it on.
+    const directory = mkdtempSync(path.join(tmpdir(), 'guardrails-group-'));
+    const pidFile = path.join(directory, 'grandchild.pid');
+    const exits: number[] = [];
+    try {
+      const running = groupWithGrandchild(pidFile);
+      const grandchild = await readPid(pidFile);
+      forwardTerminationSignal('SIGINT', (code) => {
+        exits.push(code);
+      });
+      await running;
+      const deadline = Date.now() + 5000;
+      while (isAlive(grandchild) && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(isAlive(grandchild)).toBe(false);
+      expect(exits).toEqual([130]);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+});
+
+/**
+ * Run `terminateChildren` straight after spawning a binary that does not
+ * exist, before Node has reported the failure -- in a node of its OWN SESSION,
+ * and report whether that node survived.
+ *
+ * Measured 2026-11-01 (Node 24, macOS): `child.kill()` in that window sends
+ * SIGTERM to the caller's whole process group, grouped child or not. A gate
+ * abandoned at its deadline while an analyzer spawn is failing would kill
+ * itself and the hook that ran it. Isolated because a regression here kills
+ * whatever process group runs the test -- the test runner, or a push hook.
+ */
+function survivesTerminatingAnUnstartedSpawn(isGroup: boolean): string {
+  const exec = path.join(import.meta.dirname, '..', 'src', 'exec.ts');
+  const script = [
+    `import { spawnExec, terminateChildren } from ${JSON.stringify(exec)};`,
+    `void spawnExec('definitely-not-a-real-binary-xyz', [], { processGroup: ${String(isGroup)} });`,
+    'terminateChildren();',
+    "setTimeout(() => { process.stdout.write('survived'); }, 200);",
+  ].join('\n');
+  const result = spawnSync(
+    'python3',
+    [
+      '-c',
+      'import os, sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])',
+      node,
+      '--input-type=module',
+      '-e',
+      script,
+    ],
+    { encoding: 'utf8' },
+  );
+  return result.stdout;
+}
+
+/**
+ * A child whose spawn has not yet reported: no pid, 'error' still to come.
+ */
+function unstartedChild(stopChild: Mock) {
+  // Streams, not bare emitters: a stream IS an emitter with the `.on` the
+  // spawn wrapper listens with, and a child's stdout and stderr are streams.
+  return Object.assign(new PassThrough(), {
+    pid: undefined,
+    kill: stopChild,
+    stdout: new PassThrough(),
+    stderr: new PassThrough(),
+  });
+}
+
+describe('terminateChildren skips a child that has no pid yet', () => {
+  afterEach(() => {
+    vi.doUnmock('node:child_process');
+    vi.resetModules();
+  });
+
+  // Faked at the `spawn` seam, with a freshly imported copy of exec.ts, so no
+  // real process exists to signal: a real unstarted spawn killed in-process
+  // signals the test runner's whole group. The test above covers that
+  // end to end in its own session; this one pins the guard in-process.
+  it.each([false, true])(
+    'neither kills the child nor signals a group (processGroup: %s)',
+    async (isGroup) => {
+      const kill = vi.fn(() => true);
+      const child = unstartedChild(kill);
+      vi.resetModules();
+      vi.doMock('node:child_process', () => ({ spawn: () => child }));
+      const groupKill = vi
+        .spyOn(process, 'kill')
+        .mockImplementation(() => true);
+      const fresh = await import('../src/exec.js');
+
+      const pending = fresh.spawnExec('never-started', [], {
+        processGroup: isGroup,
+      });
+
+      // Counted as live, but there is nothing running to stop.
+      expect(fresh.terminateChildren()).toBe(1);
+      expect(kill).not.toHaveBeenCalled();
+      expect(groupKill).not.toHaveBeenCalled();
+
+      child.emit('error', new Error('spawn ENOENT'));
+      const result = await pending;
+      groupKill.mockRestore();
+      expect(result.spawnFailed).toBe(true);
+      expect(fresh.terminateChildren()).toBe(0);
+    },
+  );
+});
+
+describe('terminateChildren never signals its own process group', () => {
+  it.each([false, true])(
+    'leaves the caller alive after a spawn that never started (processGroup: %s)',
+    (isGroup) => {
+      expect(survivesTerminatingAnUnstartedSpawn(isGroup)).toBe('survived');
+    },
+  );
 });

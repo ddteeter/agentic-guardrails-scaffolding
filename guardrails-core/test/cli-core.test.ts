@@ -604,7 +604,17 @@ async function spawnedAt(mode: string): Promise<string[]> {
     }),
   );
   const { exec, spawned } = recordingExec();
-  await runCommand('gate', [`--mode=${mode}`], dependencies({ exec }));
+  // No locker on this machine, so stryker is spawned bare and the spawn list
+  // names it -- this is about which rung runs it, not the lock around it.
+  const noLocker: Exec = (command, args, options) =>
+    command === 'sh'
+      ? Promise.resolve({ stdout: '', stderr: '', code: 1 })
+      : exec(command, args, options);
+  await runCommand(
+    'gate',
+    [`--mode=${mode}`],
+    dependencies({ exec: noLocker }),
+  );
   return spawned;
 }
 
@@ -1118,6 +1128,61 @@ async function runPreToolUse(stdin: string): Promise<string> {
   );
   return out.join('');
 }
+
+/**
+The git argv lines a pretooluse gate run over `command` spawned.
+*/
+async function preToolUseGitLines(command: string): Promise<string[]> {
+  mkdirSync(path.join(root, '.git'), { recursive: true });
+  writeFileSync(
+    path.join(root, 'guardrails.config.json'),
+    JSON.stringify({ enforcement: 'block' }),
+  );
+  const lines: string[] = [];
+  const inner = dirtyExec();
+  const exec: Exec = (spawned, args, options) => {
+    lines.push([spawned, ...args].join(' '));
+    return inner(spawned, args, options);
+  };
+  await runCommand(
+    'gate',
+    ['--mode=pretooluse', '--dialect=copilot'],
+    dependencies({
+      exec,
+      readStdin: () => Promise.resolve(preToolUseStdin('bash', command)),
+    }),
+  );
+  return lines;
+}
+
+const STAGED_FILES = 'git diff --cached --name-only --diff-filter=ACM';
+
+describe('pretooluse commit gate scope', () => {
+  it('keeps branch scope for a push it gates itself', async () => {
+    // A push the pre-push hook will not see (--no-verify) is checked here, and
+    // a push is judged over the whole branch.
+    expect(await preToolUseGitLines('git push --no-verify')).not.toContain(
+      STAGED_FILES,
+    );
+  });
+
+  it('keeps branch scope when a push rides along with the commit', async () => {
+    expect(
+      await preToolUseGitLines('git commit -m x && git push --no-verify'),
+    ).not.toContain(STAGED_FILES);
+  });
+
+  it('checks only the staged files, like the git pre-commit hook', async () => {
+    // The commit rung is staged-scoped by design (see `gateCommitCommand`):
+    // under branch scope stryker re-mutates everything the branch has touched
+    // -- untracked files included -- on every commit. The PreToolUse gate fell
+    // back to branch scope, so every agent commit on a long branch outgrew
+    // `hookDeadlineSeconds` (found 2026-11-01, dogfooding the mutation lock).
+    const lines = await preToolUseGitLines('git commit -m x');
+    expect(lines).toContain(STAGED_FILES);
+    expect(lines).not.toContain('git ls-files --others --exclude-standard');
+  });
+});
 
 describe('pretooluse gate trigger conditions', () => {
   it('fires only for an exact shell tool name, case-insensitively', async () => {
@@ -4450,6 +4515,32 @@ describe('hook gates finish before the host gives up on them', () => {
     expect(exitCodes).toEqual([0]);
   });
 
+  it('says it was waiting for the mutation lock, and on whom, when it was', async () => {
+    await runCommand('gate', ['--mode=pretooluse'], {
+      ...deadlined(shellStdin('git commit -m x')),
+      lockWait: () => 'dialed-164 (push) is mutating, 62% (160/258)',
+    });
+
+    const output = out.join('');
+    expect(output).toContain(
+      'It was waiting for the mutation lock: dialed-164 (push) is mutating, 62% (160/258).',
+    );
+    expect(output).toContain(
+      'mutationLock.commitWaitSeconds below hookDeadlineSeconds',
+    );
+  });
+
+  it('names no lock when it was not waiting on one', async () => {
+    // No `lockWait` seam: the real one, and this gate never waited.
+    await runCommand(
+      'gate',
+      ['--mode=pretooluse'],
+      deadlined(shellStdin('git commit -m x')),
+    );
+
+    expect(out.join('')).not.toContain('mutation lock');
+  });
+
   it('lets a stop end when the gate runs out of time, saying so', async () => {
     await runCommand(
       'gate',
@@ -4680,6 +4771,203 @@ describe('gate --mode=push: a tree that already passed is not re-checked', () =>
       'guardrails: push gate skipped — this exact tree already passed it ' +
         'against the same base (cached: true).',
     );
+  });
+});
+
+/**
+`pushExec`, with `changed` as the branch diff.
+*/
+function changedExec(changed: string): Exec {
+  return (command, args) =>
+    args.includes('--name-only')
+      ? Promise.resolve(ok(changed))
+      : pushExec(command, args);
+}
+
+/**
+ * `changedExec`, on a machine with `lockf` whose lock never frees: every
+ * locked stryker run times out.
+ */
+function lockHeldExec(changed: string): Exec {
+  const inner = changedExec(changed);
+  return (command, args, options) => {
+    if (command === 'sh') {
+      return Promise.resolve({
+        stdout: '',
+        stderr: '',
+        code: args.at(-1)?.endsWith(' lockf') === true ? 0 : 1,
+      });
+    }
+    if (command === 'lockf') {
+      return Promise.resolve({ stdout: '', stderr: '', code: 75 });
+    }
+    return inner(command, args, options);
+  };
+}
+
+describe('gate --mode=push: a push that never gets the mutation lock', () => {
+  beforeEach(() => {
+    vi.stubEnv('GUARDRAILS_GATE_LOCK', path.join(root, 'gate.lock'));
+    writeFileSync(
+      path.join(root, 'package.json'),
+      JSON.stringify({ devDependencies: { '@stryker-mutator/core': '*' } }),
+    );
+    writeFileSync(
+      path.join(root, 'guardrails.config.json'),
+      JSON.stringify({
+        enforcement: 'warn',
+        mutationLock: { pushWaitSeconds: 5 },
+        analyzers: {
+          eslint: 'off',
+          tsc: 'off',
+          knip: 'off',
+          'dependency-cruiser': 'off',
+          dupes: 'off',
+        },
+      }),
+    );
+    mkdirSync(path.join(root, 'src'), { recursive: true });
+    writeFileSync(path.join(root, 'src', 'feature.ts'), 'export {};\n');
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('blocks even under warn, exits 75, names no fixer, and says what to do', async () => {
+    const exec = lockHeldExec('src/feature.ts');
+    expect(
+      await runCommand('gate', ['--mode=push'], dependencies({ exec })),
+    ).toBe(75);
+    const said = errors.join('');
+    expect(said).toContain(
+      'guardrails: gave up waiting for the gate lock after 5s',
+    );
+    expect(said).toContain('Re-run the push to re-queue');
+    expect(said).not.toContain('subagent');
+  });
+});
+
+/**
+ * A machine with `lockf`, whose lock is busy or free, and whose `ps` lists
+ * lockf 400 holding the lock for stryker 500 with `waiting` others queued.
+ */
+function lockStatusExec(lock: string, isBusy: boolean, waiting: number): Exec {
+  const ps = [
+    `400 300 lockf -k -s -t 10800 ${lock} stryker run`,
+    '500 400 node stryker run',
+    ...Array.from(
+      { length: waiting },
+      (_, index) =>
+        `${String(401 + index)} 301 lockf -k -s -t 60 ${lock} stryker run`,
+    ),
+  ].join('\n');
+  return (command, args) => {
+    if (command === 'sh') {
+      return Promise.resolve({
+        stdout: '',
+        stderr: '',
+        code: args.at(-1)?.endsWith(' lockf') === true ? 0 : 1,
+      });
+    }
+    if (command === 'ps') {
+      return Promise.resolve(ok(ps));
+    }
+    if (command === 'lockf') {
+      return Promise.resolve({ stdout: '', stderr: '', code: isBusy ? 75 : 0 });
+    }
+    return Promise.resolve(ok(''));
+  };
+}
+
+/**
+A machine where every command is missing.
+*/
+const nothingInstalled: Exec = () =>
+  Promise.resolve({ stdout: '', stderr: '', code: 1 });
+
+describe('lock-status: who holds the mutation lock, and who waits', () => {
+  let lock: string;
+
+  beforeEach(() => {
+    lock = path.join(root, 'gate.lock');
+  });
+
+  function statusOf(exec: Exec): Promise<number> {
+    return runCommand(
+      'lock-status',
+      [],
+      dependencies({ exec, env: { GUARDRAILS_GATE_LOCK: lock } }),
+    );
+  }
+
+  it('says the lock is free, and where it is', async () => {
+    expect(await statusOf(lockStatusExec(lock, false, 0))).toBe(0);
+    expect(out.join('')).toBe(
+      `guardrails: the mutation lock is free (${lock}).\n`,
+    );
+  });
+
+  it('names the holder from its holder file, and counts the queue', async () => {
+    writeFileSync(
+      `${lock}.holder.json`,
+      JSON.stringify({
+        repo: '/Users/me/dev/dialed-164',
+        rung: 'push',
+        pid: 500,
+        startedAt: 0,
+        phase: 'dry-run',
+        tested: 0,
+        total: 0,
+        reused: 0,
+        survived: 0,
+      }),
+    );
+    expect(await statusOf(lockStatusExec(lock, true, 2))).toBe(0);
+    expect(out.join('')).toBe(
+      'guardrails: the mutation lock is busy: dialed-164 (push) is running ' +
+        'the dry run; 2 others waiting.\n' +
+        'guardrails: run this once for an estimate; do not poll it. A ' +
+        'waiting gate prints who holds the lock itself, once a minute.\n',
+    );
+  });
+
+  it('says another checkout holds it when there is no holder file', async () => {
+    expect(await statusOf(lockStatusExec(lock, true, 0))).toBe(0);
+    expect(out.join('')).toContain(
+      'guardrails: the mutation lock is busy: another checkout holds it.\n',
+    );
+  });
+
+  it('says there is no lock to look at on a machine without a locker', async () => {
+    expect(await statusOf(nothingInstalled)).toBe(0);
+    expect(out.join('')).toBe(
+      'guardrails: no lockf or flock on this machine — mutation testing runs ' +
+        'unserialized. Install util-linux (flock) to serialize it.\n',
+    );
+  });
+
+  it('probes the lock without waiting on it', async () => {
+    const asked: string[] = [];
+    const inner = lockStatusExec(lock, false, 0);
+    const exec: Exec = (command, args, options) => {
+      asked.push([command, ...args].join(' '));
+      return inner(command, args, options);
+    };
+    await statusOf(exec);
+    expect(asked).toContain(`lockf -k -s -t 0 ${lock} true`);
+  });
+
+  it('is listed in the usage text', async () => {
+    await runCommand('no-such-command', [], dependencies({}));
+    expect(errors.join('')).toContain('lock-status');
+  });
+});
+
+describe('gate-lock is gone with the shell lock', () => {
+  it('is not listed in the usage text', async () => {
+    await runCommand('no-such-command', [], dependencies({}));
+    expect(errors.join('')).not.toContain('gate-lock');
   });
 });
 

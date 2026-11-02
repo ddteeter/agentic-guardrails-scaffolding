@@ -5,8 +5,9 @@
 #   git config core.hooksPath .githooks
 # `guardrails init --apply` and `guardrails install-hooks` do that for you --
 # UNLESS core.hooksPath already points at another hooks directory, which they
-# will not overwrite. In that case call the line below from the pre-commit hook
-# you already have, and this file stays inert.
+# will not overwrite. In that case add `sh .githooks/pre-commit` to the pre-commit
+# hook you already have -- not the gate line inside it,
+# which would leave the install check behind.
 cli="./node_modules/guardrails-core/dist/cli.mjs"
 # A checkout with no install (a fresh clone or worktree) cannot run the gate.
 # Say that, rather than "resolve violations": there are none to find. Still

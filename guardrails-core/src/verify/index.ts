@@ -48,10 +48,22 @@ import {
   stat as fsStat,
 } from 'node:fs/promises';
 import path from 'node:path';
+import process from 'node:process';
 
 import { CONFIG_FILE_NAME } from '../config.js';
+import {
+  LOCK_TIMEOUT_MARKER,
+  MUTATION_LOCK_TIMEOUT_RULE,
+  type MutationLock,
+  runUnderLock,
+} from '../mutation-lock.js';
 import { type Exec, type ExecResult, signalFromExitCode } from '../exec.js';
 import { parseJsonText, readJsonFile } from '../json-file.js';
+import {
+  holderEnvironment,
+  PROGRESS_REPORTER,
+  progressPluginBeside,
+} from '../lock-holder.js';
 import { repoSourceReader } from '../repo-source.js';
 import { sanctionIntegrity, toIntegrityViolations } from '../sanctions.js';
 import type { Violation } from '../violation.js';
@@ -126,6 +138,22 @@ export interface VerifyOptions {
   /** File reader seam (stryker writes its JSON report to disk, not stdout).
    *  Defaults to node:fs/promises readFile; injected in tests. */
   readFile?: (filePath: string) => Promise<string>;
+  /**
+   * The machine-wide mutation lock stryker runs under (see `mutation-lock.ts`).
+   * Absent means no lock: stryker runs bare, which is what every caller got
+   * before the lock moved out of the shell hook and what tests that are not
+   * about the lock still get.
+   */
+  mutationLock?: MutationLock | undefined;
+  /**
+  Where the lock's own lines go (waiting, unserialized). Defaults to stderr.
+  */
+  progress?: (line: string) => void;
+  /**
+  The built stryker progress plugin to load while holding the mutation lock.
+  Defaults to the one beside this module, when there is one.
+  */
+  strykerProgressPlugin?: string | undefined;
   /** File removal seam: `runStryker` deletes stryker's report path before
    *  every run, so a stale report from a prior run can never be mistaken for
    *  this one's, and its incremental cache whenever that cache may not be
@@ -1080,6 +1108,66 @@ function strykerReportMissingViolation(reportPath: string): Violation {
  * crushing-mutants guidance — a fix method for a file nobody is being asked to
  * mutate. `guardrails/analyzer-unknown` is the precedent for this shape.
  */
+/**
+ * A changed file this rung did NOT mutate, because another checkout held the
+ * machine lock past this rung's wait. A warning: the next rung re-mutates the
+ * whole branch, so nothing escapes -- and the message says so in as many words,
+ * because an agent told only "lock busy" retries in a loop or waits in the
+ * foreground, and neither helps.
+ */
+function mutationDeferredViolation(
+  file: string,
+  rung: Rung,
+  holding: string,
+): Violation {
+  return {
+    ruleId: 'guardrails/mutation-deferred',
+    file,
+    message:
+      `mutation testing deferred: the machine-wide mutation lock is busy ` +
+      `(${holding}). This file will be mutation-tested at the ` +
+      `${nextRungAfter(rung)} rung. Nothing to do — do not retry to force it, ` +
+      `and do not wait for the lock.`,
+    severity: 'warn',
+    fixable: false,
+    tool: 'guardrails',
+  };
+}
+
+/**
+Where a deferred mutation run is picked up again.
+*/
+function nextRungAfter(rung: Rung): string {
+  return rung === 'stop' ? 'commit' : 'push';
+}
+
+/**
+ * The push rung waited its whole wait and never got the lock. Not a code
+ * violation -- no edit resolves it -- so the gate reports it apart from a block
+ * and names no fixer (see `runCommitGate`). The marker is the string `ship`
+ * classifies as a lock timeout.
+ */
+function mutationLockTimeoutViolation(
+  file: string,
+  lock: MutationLock,
+  holding: string,
+): Violation {
+  const wait = lock.config.pushWaitSeconds;
+  const lockPath = lock.path;
+  return {
+    ruleId: MUTATION_LOCK_TIMEOUT_RULE,
+    file,
+    message:
+      `${LOCK_TIMEOUT_MARKER} after ${String(wait)}s (${holding}). Re-run the push to re-queue (in the background if your ` +
+      `harness supports it); never bypass it with --no-verify. The lock is ` +
+      `held on a file descriptor, so it frees itself if its holder dies: if ` +
+      `nothing is running, report it rather than deleting ${lockPath}.`,
+    severity: 'error',
+    fixable: false,
+    tool: 'guardrails',
+  };
+}
+
 function strykerOutOfScopeViolation(file: string): Violation {
   return {
     ruleId: 'guardrails/stryker-out-of-scope',
@@ -1693,14 +1781,45 @@ async function discardUnusableIncrementalCache(
   await seams.removeFile(cachePath);
 }
 
-async function runStryker(
-  options: VerifyOptions,
-  resolveBin: (tool: string) => string,
-  files: string[],
-): Promise<Violation[]> {
-  const { exec, repoRoot } = options;
-  const readFile =
-    options.readFile ?? ((filePath) => fsReadFile(filePath, 'utf8'));
+/**
+What `strykerScope` decided about one change set.
+*/
+export interface StrykerScope {
+  /**
+  The changed files stryker will mutate. Empty means it will not run.
+  */
+  inScope: string[];
+  /**
+  Changed production files outside every positive `mutate` glob.
+  */
+  outOfScope: Violation[];
+  /**
+  The raw stryker config, `''` when none could be read.
+  */
+  config: string;
+  /**
+  The config's `!` exclusions, passed through to `--mutate`.
+  */
+  negations: string[];
+}
+
+/**
+ * Which of `files` stryker would mutate, before anything is spawned.
+ *
+ * Split out of `runStryker` so the pre-push lock probe asks the SAME question
+ * the run does: a probe with its own copy of this filter could decide "no
+ * mutation testing" for a change set the gate then mutates, unlocked.
+ *
+ * One config read, two decisions: the `!` exclusions the project declared, and
+ * (for the caller) whether the run can spot a stale cached verdict. A read that
+ * fails is not distinguished from a config without negations — both mean
+ * "nothing to exclude".
+ */
+export async function strykerScope(
+  files: readonly string[],
+  repoRoot: string,
+  readFile: (filePath: string) => Promise<string>,
+): Promise<StrykerScope> {
   const candidates = files.filter(
     (file) =>
       isTypeScriptFile(file) && !isTestFile(file) && !isConfigFile(file),
@@ -1710,30 +1829,43 @@ async function runStryker(
     repoRoot,
     readFile,
   );
-  // One read, two decisions: the `!` exclusions the project declared, and
-  // whether this run will be able to spot a stale cached verdict. A read that
-  // fails is not distinguished from a config without negations — both mean
-  // "nothing to exclude" — but it IS distinguished for coverage, where an
-  // unreadable config must refuse reuse rather than assume it.
-  const strykerConfig = (await readStrykerConfig(repoRoot, readFile)) ?? '';
-  const negations = strykerMutateNegations(strykerConfig);
+  const config = (await readStrykerConfig(repoRoot, readFile)) ?? '';
+  const negations = strykerMutateNegations(config);
   // The project's DECLARED scope, and the changed files that fall inside it
   // (#69). A file outside every positive glob is not untested, it is not in
-  // scope — reported below rather than mutated and blocked.
+  // scope — reported rather than mutated and blocked.
   const inScope = applyMutateScope(
     production,
-    strykerMutatePositives(strykerConfig),
+    strykerMutatePositives(config),
     repoRoot,
   );
   const outOfScope = applyMutateNegations(
     production.filter((file) => !inScope.includes(file)),
     negations,
   ).map((file) => strykerOutOfScopeViolation(file));
+  return { inScope, outOfScope, config, negations };
+}
+
+async function runStryker(
+  options: VerifyOptions,
+  resolveBin: (tool: string) => string,
+  files: string[],
+): Promise<Violation[]> {
+  const { exec, repoRoot } = options;
+  const readFile =
+    options.readFile ?? ((filePath) => fsReadFile(filePath, 'utf8'));
+  const {
+    inScope,
+    outOfScope,
+    config: strykerConfig,
+    negations,
+  } = await strykerScope(files, repoRoot, readFile);
   // Nothing in scope, nothing to run — which subsumes the "no changed
   // production files at all" case too: an empty changed set intersects to an
   // empty scope and warns about nothing. A separate guard in front of the
   // config read would be one no test could distinguish.
-  if (inScope.length === 0) {
+  const [firstInScope] = inScope;
+  if (firstInScope === undefined) {
     return outOfScope;
   }
   const removeFile =
@@ -1764,22 +1896,93 @@ async function runStryker(
     canReportPerTestCoverage(strykerConfig),
   );
 
-  const result = await exec(
-    resolveBin('stryker'),
-    [
-      'run',
-      '--incremental',
-      '--reporters',
-      'json',
-      '--mutate',
-      [...inScope, ...negations].join(','),
-    ],
-    { cwd: repoRoot },
-  );
+  const rung = options.profile ?? 'stop';
+  const mutate = [...inScope, ...negations].join(',');
+  const strykerArguments = (reporters: string): string[] => [
+    'run',
+    '--incremental',
+    '--reporters',
+    reporters,
+    '--mutate',
+    mutate,
+  ];
+  const lock = options.mutationLock;
+  const plugin =
+    options.strykerProgressPlugin ?? progressPluginBeside(import.meta.url);
+  const locked = await runUnderLock({
+    exec,
+    rung,
+    lock,
+    command: resolveBin('stryker'),
+    args: strykerArguments('json'),
+    ...(plugin !== undefined &&
+      lock !== undefined && {
+        locked: {
+          args: [
+            ...strykerArguments(`json,${PROGRESS_REPORTER}`),
+            '--appendPlugins',
+            plugin,
+          ],
+          env: {
+            ...process.env,
+            ...holderEnvironment(lock.path, rung, repoRoot),
+          },
+        },
+      }),
+    cwd: repoRoot,
+    progress:
+      options.progress ??
+      ((line) => {
+        process.stderr.write(`${line}\n`);
+      }),
+  });
+  if (locked.kind === 'deferred') {
+    return [
+      ...outOfScope,
+      ...inScope.map((file) =>
+        mutationDeferredViolation(file, rung, locked.holding),
+      ),
+    ];
+  }
+  if (locked.kind === 'timed-out') {
+    return [
+      ...outOfScope,
+      mutationLockTimeoutViolation(firstInScope, locked.lock, locked.holding),
+    ];
+  }
+  return strykerRunVerdict(locked.result, {
+    readFile,
+    repoRoot,
+    inScope,
+    outOfScope,
+  });
+}
+
+/**
+What `strykerRunVerdict` reads a finished run against.
+*/
+interface StrykerRunContext {
+  readFile: (filePath: string) => Promise<string>;
+  repoRoot: string;
+  inScope: string[];
+  outOfScope: Violation[];
+}
+
+/**
+ * What a stryker run that actually ran amounts to: its report's findings, or
+ * the reason there is no report to read. Split out of `runStryker` so the
+ * lock-and-defer half and the verdict half each stay readable.
+ */
+async function strykerRunVerdict(
+  result: ExecResult,
+  context: StrykerRunContext,
+): Promise<Violation[]> {
+  const { readFile, repoRoot, inScope, outOfScope } = context;
   if (result.spawnFailed === true) {
     // Reported separately as guardrails/analyzer-missing by the caller.
     return [];
   }
+  const reportPath = STRYKER_REPORT_PATH;
   // `''` rather than `string | undefined`, so "no file there" and "the file is
   // not a report" reach the one decision below as the same thing. A separate
   // `report !== undefined` guard in front of that decision would be an
@@ -2180,6 +2383,35 @@ function selectAnalyzers(
     });
   }
   return selected;
+}
+
+/**
+The inputs `selectAnalyzers` decides from, named for callers outside it.
+*/
+export interface AnalyzerSelection {
+  analyzers: Readonly<Record<string, AnalyzerMode>>;
+  analyzerRungs: Readonly<Record<string, Rung>>;
+  declared: ReadonlySet<string>;
+  profile: Rung;
+  hasChangedFiles: boolean;
+}
+
+/**
+ * Would `runVerify` run `tool` on this pass? A view over `selectAnalyzers`
+ * rather than a second copy of its rules, so a caller deciding something ahead
+ * of the run (the pre-push lock probe) cannot disagree with the run itself.
+ */
+export function isAnalyzerSelected(
+  tool: string,
+  selection: AnalyzerSelection,
+): boolean {
+  return selectAnalyzers(
+    selection.analyzers,
+    selection.analyzerRungs,
+    selection.declared,
+    selection.profile,
+    selection.hasChangedFiles,
+  ).some(({ analyzer }) => analyzer.tool === tool);
 }
 
 export async function runVerify(options: VerifyOptions): Promise<VerifyResult> {

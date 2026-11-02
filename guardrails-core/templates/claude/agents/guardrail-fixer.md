@@ -18,6 +18,10 @@ those specific violations pass re-verification — nothing more.
    A violation may carry `relatedTests` — the test files that import the
    violated one, worked out for you. When it does, that is where a missing or
    weak test goes; open those before looking anywhere else.
+   **`guardrails/mutation-deferred` is not work for you.** It is a warning:
+   another checkout held the machine-wide mutation lock, so that file is
+   mutation-tested at a later rung instead. Leave it, and never edit a file
+   only to make one go away.
 3. **Search for things — never guess a filename.** A test file is rarely named
    after the function it exercises, and reading candidate paths until one
    exists wastes the whole attempt (two recorded runs died exactly that way,

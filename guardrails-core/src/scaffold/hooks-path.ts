@@ -55,17 +55,24 @@ export function foreignHooksPath(
 
 /**
  * What a consumer whose `core.hooksPath` we refused to touch is told: the
- * value we found, the hook that is therefore inert, why we left it that way,
- * and the one-line way to get the check running inside the hooks they already
- * have. Chaining is the honest suggestion -- their hook stays theirs, and the
- * guardrails check becomes one more line in it.
+ * value we found, the hooks that are therefore inert, why we left it that way,
+ * and the one line per hook that gets the checks running inside the hooks they
+ * already have. Chaining is the honest suggestion -- their hook stays theirs,
+ * and the guardrails check becomes one more line in it.
+ *
+ * The line to chain is the SCRIPT, not the bare `gate` command inside it. The
+ * pre-push script is where the machine-wide gate lock lives (and the
+ * install check both scripts make), so a consumer told to chain
+ * `gate --mode=push` got the gate with none of that around it. This repo's
+ * own husky pre-push ran that way until the lock-skip work found it.
  */
 export function foreignHooksPathWarning(existing: string): string {
   return (
     `core.hooksPath is already set to "${existing}", so ${HOOKS_SCRIPT_PATH} ` +
-    `was NOT activated: repointing it at ${HOOKS_DIRECTORY} would silently ` +
-    `disable every hook you already have there. To run the guardrails check ` +
-    `too, add \`node ./node_modules/guardrails-core/dist/cli.mjs gate ` +
-    `--mode=commit\` to your existing pre-commit hook.`
+    `and ${PUSH_HOOK_SCRIPT_PATH} were NOT activated: repointing it at ` +
+    `${HOOKS_DIRECTORY} would silently disable every hook you already have ` +
+    `there. To run the guardrails checks too, add \`sh ${HOOKS_SCRIPT_PATH}\` ` +
+    `to your existing pre-commit hook and \`sh ${PUSH_HOOK_SCRIPT_PATH}\` to ` +
+    `your existing pre-push hook.`
   );
 }

@@ -4,7 +4,9 @@
 # whole branch diff once, catching what a per-commit scope structurally
 # cannot -- a commit that breaks something in a file it does not touch.
 #
-# Consumers get the same rung from the scaffolded `.githooks/pre-push`.
-node ./node_modules/guardrails-core/dist/cli.mjs gate --mode=push
+# Chained as the SCRIPT, not the bare `gate --mode=push` line, so this repo
+# runs exactly the hook consumers do, timeout wording included. The
+# machine-wide mutation lock is inside the gate now, around stryker alone.
+sh .githooks/pre-push
 npm run test:coverage
 npm run check:graph
