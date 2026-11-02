@@ -79,6 +79,7 @@ import {
 import { initCommand } from './scaffold/init.js';
 import {
   LOCK_TIMEOUT_EXIT,
+  lockStatus,
   lockWaitInProgress,
   MUTATION_LOCK_TIMEOUT_RULE,
   machineLock,
@@ -2175,6 +2176,23 @@ function gateCommand(
   );
 }
 
+/**
+ * `lock-status`: who holds the machine-wide mutation lock and how many wait,
+ * looked at once. Always exits 0 -- it reports, it never gates.
+ */
+async function lockStatusCommand(
+  dependencies: CliDependencies,
+): Promise<number> {
+  const lines = await lockStatus(
+    dependencies.exec,
+    dependencies.env ?? process.env,
+  );
+  for (const line of lines) {
+    dependencies.stdout(`${line}\n`);
+  }
+  return 0;
+}
+
 export async function runCommand(
   command: string | undefined,
   rest: string[],
@@ -2233,6 +2251,9 @@ export async function runCommand(
     case 'ship': {
       return shipCommand(dependencies, rest);
     }
+    case 'lock-status': {
+      return lockStatusCommand(dependencies);
+    }
     default: {
       dependencies.stderr(
         'usage: guardrails-core <command>\n' +
@@ -2243,6 +2264,7 @@ export async function runCommand(
           '  verify [--base=<ref>]\n' +
           '  sanction [--from=<violations manifest>]\n' +
           '  ship [--body-file=<f>] [--status-file=<f>] [--base=<ref>]\n' +
+          '  lock-status\n' +
           '  autofix | audit | sanctions-check | install-hooks\n' +
           '  state | report | scope-check | session-start | session-end\n',
       );

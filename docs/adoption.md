@@ -645,7 +645,8 @@ ship.log 2>&1 &`), finish the task, and let whoever started the agent read
 gate lock`, which `guardrails ship` reports as `lock-timeout` rather than as
   a block. While a run waits it names the holder and its progress -- e.g.
   `dialed-163 (push) is mutating, 62% (160/258), ~4m left` -- and how many
-  others queue, once a minute.
+  others queue, once a minute. `guardrails lock-status` shows the same once,
+  from anywhere on the machine.
 
 A `CLAUDE.md` snippet for adopters:
 

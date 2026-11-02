@@ -469,12 +469,42 @@ export function machineLock(
   config: MutationLockConfig,
   environment: Readonly<Record<string, string | undefined>> = process.env,
 ): MutationLock {
+  return { path: machineLockPath(environment), config };
+}
+
+function machineLockPath(
+  environment: Readonly<Record<string, string | undefined>>,
+): string {
   const configured = environment.GUARDRAILS_GATE_LOCK;
-  return {
-    path:
-      configured === undefined || configured === ''
-        ? path.join(homedir(), '.guardrails-gate.lock')
-        : configured,
-    config,
-  };
+  return configured === undefined || configured === ''
+    ? path.join(homedir(), '.guardrails-gate.lock')
+    : configured;
+}
+
+/**
+ * `guardrails lock-status`: whether this machine's mutation lock is free, and
+ * if not, who holds it and how many wait -- one look, as lines to print. The
+ * probe takes the lock for as long as `true` runs, so it never queues.
+ */
+export async function lockStatus(
+  exec: Exec,
+  environment: Readonly<Record<string, string | undefined>>,
+): Promise<string[]> {
+  const lockPath = machineLockPath(environment);
+  const locker = await detectLocker(exec);
+  if (locker === undefined) {
+    return [NO_LOCKER_NOTE];
+  }
+  const probe = lockerArgv(locker, lockPath, 0, 'true', []);
+  const probed = await exec(probe.command, probe.args);
+  if (probed.code !== LOCK_TIMEOUT_EXIT) {
+    return [`guardrails: the mutation lock is free (${lockPath}).`];
+  }
+  const sighting = await lookAtLock(exec, lockPath);
+  return [
+    `guardrails: the mutation lock is busy: ` +
+      `${sighting.holding}${queueClause(sighting.waiting)}.`,
+    'guardrails: run this once for an estimate; do not poll it. A waiting ' +
+      'gate prints who holds the lock itself, once a minute.',
+  ];
 }

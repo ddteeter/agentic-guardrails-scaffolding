@@ -4848,6 +4848,122 @@ describe('gate --mode=push: a push that never gets the mutation lock', () => {
   });
 });
 
+/**
+ * A machine with `lockf`, whose lock is busy or free, and whose `ps` lists
+ * lockf 400 holding the lock for stryker 500 with `waiting` others queued.
+ */
+function lockStatusExec(lock: string, isBusy: boolean, waiting: number): Exec {
+  const ps = [
+    `400 300 lockf -k -s -t 10800 ${lock} stryker run`,
+    '500 400 node stryker run',
+    ...Array.from(
+      { length: waiting },
+      (_, index) =>
+        `${String(401 + index)} 301 lockf -k -s -t 60 ${lock} stryker run`,
+    ),
+  ].join('\n');
+  return (command, args) => {
+    if (command === 'sh') {
+      return Promise.resolve({
+        stdout: '',
+        stderr: '',
+        code: args.at(-1)?.endsWith(' lockf') === true ? 0 : 1,
+      });
+    }
+    if (command === 'ps') {
+      return Promise.resolve(ok(ps));
+    }
+    if (command === 'lockf') {
+      return Promise.resolve({ stdout: '', stderr: '', code: isBusy ? 75 : 0 });
+    }
+    return Promise.resolve(ok(''));
+  };
+}
+
+/**
+A machine where every command is missing.
+*/
+const nothingInstalled: Exec = () =>
+  Promise.resolve({ stdout: '', stderr: '', code: 1 });
+
+describe('lock-status: who holds the mutation lock, and who waits', () => {
+  let lock: string;
+
+  beforeEach(() => {
+    lock = path.join(root, 'gate.lock');
+  });
+
+  function statusOf(exec: Exec): Promise<number> {
+    return runCommand(
+      'lock-status',
+      [],
+      dependencies({ exec, env: { GUARDRAILS_GATE_LOCK: lock } }),
+    );
+  }
+
+  it('says the lock is free, and where it is', async () => {
+    expect(await statusOf(lockStatusExec(lock, false, 0))).toBe(0);
+    expect(out.join('')).toBe(
+      `guardrails: the mutation lock is free (${lock}).\n`,
+    );
+  });
+
+  it('names the holder from its holder file, and counts the queue', async () => {
+    writeFileSync(
+      `${lock}.holder.json`,
+      JSON.stringify({
+        repo: '/Users/me/dev/dialed-164',
+        rung: 'push',
+        pid: 500,
+        startedAt: 0,
+        phase: 'dry-run',
+        tested: 0,
+        total: 0,
+        reused: 0,
+        survived: 0,
+      }),
+    );
+    expect(await statusOf(lockStatusExec(lock, true, 2))).toBe(0);
+    expect(out.join('')).toBe(
+      'guardrails: the mutation lock is busy: dialed-164 (push) is running ' +
+        'the dry run; 2 others waiting.\n' +
+        'guardrails: run this once for an estimate; do not poll it. A ' +
+        'waiting gate prints who holds the lock itself, once a minute.\n',
+    );
+  });
+
+  it('says another checkout holds it when there is no holder file', async () => {
+    expect(await statusOf(lockStatusExec(lock, true, 0))).toBe(0);
+    expect(out.join('')).toContain(
+      'guardrails: the mutation lock is busy: another checkout holds it.\n',
+    );
+  });
+
+  it('says there is no lock to look at on a machine without a locker', async () => {
+    expect(await statusOf(nothingInstalled)).toBe(0);
+    expect(out.join('')).toBe(
+      'guardrails: no lockf or flock on this machine — mutation testing runs ' +
+        'unserialized. Install util-linux (flock) to serialize it.\n',
+    );
+  });
+
+  it('probes the lock without waiting on it', async () => {
+    const asked: string[] = [];
+    const inner = lockStatusExec(lock, false, 0);
+    const exec: Exec = (command, args, options) => {
+      asked.push([command, ...args].join(' '));
+      return inner(command, args, options);
+    };
+    await statusOf(exec);
+    expect(asked).toContain(`lockf -k -s -t 0 ${lock} true`);
+  });
+
+  it('is listed in the usage text', async () => {
+    await runCommand('no-such-command', [], dependencies({}));
+    expect(errors.join('')).toContain('lock-status');
+  });
+});
+
 describe('gate-lock is gone with the shell lock', () => {
   it('is not listed in the usage text', async () => {
     await runCommand('no-such-command', [], dependencies({}));
