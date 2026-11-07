@@ -56,8 +56,16 @@ import {
  * scaffolded repo -- installing this doc would put "how to adopt" inside the
  * very thing it explains how to adopt. A run-time skill that should be
  * installed needs a NEW name, not this one un-excluded.
+ *
+ * `upgrading-guardrails` (#151) is tarball-only for a sibling reason: it is
+ * read right after a version bump, when an installed copy would still be the
+ * PREVIOUS release's -- a skill that has never heard of the upgrade notes it
+ * exists to read. The copy in the tarball just installed is the new one.
  */
-const ADOPTION_TIME_SKILL = 'adopting-guardrails';
+const TARBALL_ONLY_SKILLS: ReadonlySet<string> = new Set([
+  'adopting-guardrails',
+  'upgrading-guardrails',
+]);
 
 /**
 The consumer-facing template tree, shipped in the tarball (`files`).
@@ -244,7 +252,7 @@ function templateEntries(): DesiredEntry[] {
  * tree happens to hold only Markdown (plus `index.json`, itself proof the
  * filter does something), which would otherwise make the filter invisible.
  *
- * Excludes `ADOPTION_TIME_SKILL` -- see that constant's comment; this is
+ * Excludes `TARBALL_ONLY_SKILLS` -- see that constant's comment; this is
  * install path 1 of 2 for spec §7.1's bootstrapping split.
  *
  * Deliberately unsorted: `planScaffold` sorts the whole desired map before it
@@ -253,7 +261,9 @@ function templateEntries(): DesiredEntry[] {
 export function guidanceEntries(directory: string): DesiredEntry[] {
   return readdirSync(directory)
     .filter(
-      (name) => name.endsWith('.md') && name !== `${ADOPTION_TIME_SKILL}.md`,
+      (name) =>
+        name.endsWith('.md') &&
+        !TARBALL_ONLY_SKILLS.has(name.slice(0, -'.md'.length)),
     )
     .map((name) => [
       `docs/guardrails/${name}`,
@@ -275,7 +285,7 @@ function skillIndex(directory: string): Record<string, string> {
 }
 
 /**
- * `skillIndex`, minus `ADOPTION_TIME_SKILL` -- the one lookup both
+ * `skillIndex`, minus `TARBALL_ONLY_SKILLS` -- the one lookup both
  * `claudeSkillEntries` and the Copilot index block need, so the exclusion is
  * applied once rather than separately at each of the two call sites.
  */
@@ -283,7 +293,7 @@ function runtimeSkillIndex(directory: string): Record<string, string> {
   const runtime: Record<string, string> = {};
   const indexed = Object.entries(skillIndex(directory));
   for (const [name, description] of indexed) {
-    if (name !== ADOPTION_TIME_SKILL) {
+    if (!TARBALL_ONLY_SKILLS.has(name)) {
       runtime[name] = description;
     }
   }
@@ -327,7 +337,7 @@ function skillMarkdown(
 /**
  * Spec §6.4 OWNED / §7.1 run-time half: `crushing-mutants` and
  * `boundary-validation` installed as `.claude/skills/<name>/SKILL.md`,
- * install path 2 of 2 for the bootstrapping split (`ADOPTION_TIME_SKILL` is
+ * install path 2 of 2 for the bootstrapping split (`TARBALL_ONLY_SKILLS` is
  * excluded via `runtimeSkillIndex`). The packaged `guidance/` tree is the
  * source: it ships each skill's body plus (since Task 3) an `index.json` of
  * descriptions, which is exactly enough to reconstruct a loadable SKILL.md
@@ -355,7 +365,7 @@ export function claudeSkillEntries(directory: string): DesiredEntry[] {
  * `merge.ts`'s `mergeCopilotInstructions` expects (its `block` argument
  * already carries its own markers) -- reusing `COPILOT_SKILLS_START/END`
  * rather than restating the literal strings, so this and that module cannot
- * grow two dialects of the same idea. Excludes `ADOPTION_TIME_SKILL` (via
+ * grow two dialects of the same idea. Excludes `TARBALL_ONLY_SKILLS` (via
  * `runtimeSkillIndex`): an index entry linking to
  * `docs/guardrails/adopting-guardrails.md` would be a dead link, since that
  * doc is never installed (see `guidanceEntries`).
