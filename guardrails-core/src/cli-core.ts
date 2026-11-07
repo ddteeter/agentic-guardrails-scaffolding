@@ -1747,6 +1747,22 @@ async function installHooksCommand(
   return 0;
 }
 
+const SHIP_USAGE = 'ship [--body-file=<f>] [--status-file=<f>] [--base=<ref>]';
+
+/**
+ * What `ship --help` prints: every flag, the five outcomes, and where the
+ * outcome is written -- enough for an agent to run it without reading source.
+ */
+const SHIP_HELP =
+  `usage: guardrails ${SHIP_USAGE}\n\n` +
+  'Push the branch, find or open its pull request, wait for its checks, and\n' +
+  'write the outcome as JSON. Run it in the background; exit 0 only on green.\n\n' +
+  '  --body-file=<f>    open a missing PR with this body (default: gh --fill)\n' +
+  '  --status-file=<f>  where the outcome goes\n' +
+  '                     (default: .guardrails/state/ship-status.json)\n' +
+  '  --base=<ref>       the branch a new PR targets (default: baseBranch)\n\n' +
+  'states: green | gate-blocked | lock-timeout | ci-red | error\n';
+
 /**
  * `ship`: push, find or open the pull request, wait for its checks, and write
  * the outcome to a status file -- one command for an agent to background and
@@ -1759,6 +1775,11 @@ async function shipCommand(
   dependencies: CliDependencies,
   rest: string[],
 ): Promise<number> {
+  // Before anything that could push: `ship --help` must never ship.
+  if (rest.includes('--help') || rest.includes('-h')) {
+    dependencies.stdout(SHIP_HELP);
+    return 0;
+  }
   const { repoRoot, base } = await directContext(dependencies, rest);
   const named = flag(rest, 'status-file');
   const statusPath =
@@ -2263,7 +2284,7 @@ export async function runCommand(
           '       [--base=<ref>]\n' +
           '  verify [--base=<ref>]\n' +
           '  sanction [--from=<violations manifest>]\n' +
-          '  ship [--body-file=<f>] [--status-file=<f>] [--base=<ref>]\n' +
+          `  ${SHIP_USAGE}\n` +
           '  lock-status\n' +
           '  autofix | audit | sanctions-check | install-hooks\n' +
           '  state | report | scope-check | session-start | session-end\n',

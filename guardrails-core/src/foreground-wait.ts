@@ -120,11 +120,30 @@ const SECONDS_PER_UNIT: Readonly<Record<string, number>> = {
 /**
  * `guardrails ship`, however the CLI is reached: by bin name, through `npx`,
  * or as `node <path>/cli.mjs` (the `node -e "import(...)"` form reads as
- * `node -e "" guardrails ship` once its quoted text is gone).
+ * `node -e "" guardrails ship` once its quoted text is gone). Captures the
+ * rest of that one command, up to the next boundary, as its arguments.
  */
 const SHIP = new RegExp(
-  String.raw`${AT_COMMAND}(?:npx[ \t]+|node[ \t]+[^\n;&|]*[ \t/])?(?:guardrails(?:-core)?|cli\.mjs)[ \t]+ship\b`,
+  String.raw`${AT_COMMAND}(?:npx[ \t]+|node[ \t]+[^\n;&|]*[ \t/])?(?:guardrails(?:-core)?|cli\.mjs)[ \t]+ship\b([^\n;&|]*)`,
+  'g',
 );
+
+/**
+ * `--help` or `-h` as a whole argument. `ship --help` prints its usage and
+ * pushes nothing (#151), so it waits on nothing either. The text it tests is
+ * what follows `ship`, so an argument always has a space or tab before it.
+ */
+const HELP_ARGUMENT = /[ \t](?:--help|-h)(?=[ \t]|$)/;
+
+/**
+ * Whether any `guardrails ship` in the command would ship. Every one must ask
+ * for help to pass: one help call does not excuse a real ship beside it.
+ */
+function hasRealShip(text: string): boolean {
+  return text
+    .matchAll(SHIP)
+    .some(([, argumentText = '']) => !HELP_ARGUMENT.test(argumentText));
+}
 
 function longSleep(text: string, limitSeconds: number): string | undefined {
   for (const [, amount = '', unit = ''] of text.matchAll(SLEEP)) {
@@ -168,7 +187,7 @@ export function foregroundWait(
   if (isPollingLoop(text)) {
     return 'a wait loop on kill -0 or pgrep';
   }
-  if (SHIP.test(text)) {
+  if (hasRealShip(text)) {
     return 'guardrails ship';
   }
   return longSleep(text, sleepLimitSeconds);

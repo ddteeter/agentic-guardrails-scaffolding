@@ -5509,6 +5509,37 @@ describe('runCommand — ship', () => {
     expect(existsSync(file)).toBe(true);
   });
 
+  it.each(['--help', '-h'])(
+    'prints its usage on %s, exits 0, and runs nothing',
+    async (helpFlag) => {
+      const calls: string[] = [];
+      const code = await runCommand(
+        'ship',
+        [helpFlag],
+        dependencies({ exec: shipExec('pass', calls) }),
+      );
+      expect(code).toBe(0);
+      expect(calls).toEqual([]);
+      const printed = out.join('');
+      for (const name of [
+        '--body-file=',
+        '--status-file=',
+        '--base=',
+        'green',
+        'gate-blocked',
+        'lock-timeout',
+        'ci-red',
+        'error',
+        '.guardrails/state/ship-status.json',
+      ]) {
+        expect(printed).toContain(name);
+      }
+      expect(
+        existsSync(path.join(root, '.guardrails', 'state', 'ship-status.json')),
+      ).toBe(false);
+    },
+  );
+
   it('is listed in the usage', async () => {
     await runCommand('nope', [], dependencies());
     expect(errors.join('')).toContain(

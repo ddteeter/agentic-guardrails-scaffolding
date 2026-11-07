@@ -58,6 +58,12 @@ describe('foregroundWait: the waits it names', () => {
       'node -e "import(\'guardrails-core/cli\')" guardrails ship',
       'guardrails ship',
     ],
+    ['guardrails ship; echo --help', 'guardrails ship'],
+    ['guardrails ship | grep -h x', 'guardrails ship'],
+    ['guardrails ship && guardrails ship --help', 'guardrails ship'],
+    ['guardrails ship --help && guardrails ship', 'guardrails ship'],
+    ['guardrails ship --helpful', 'guardrails ship'],
+    ['guardrails ship --body-file="--help"', 'guardrails ship'],
   ])('names %j', (command, expected) => {
     expect(foregroundWait(command, LIMIT)).toBe(expected);
   });
@@ -90,6 +96,10 @@ describe('foregroundWait: what it leaves alone', () => {
     "cat > notes.md <<'EOF'\nsleep 600\ngh run watch\nEOF",
     'mysleep 600',
     'sleep 600x',
+    'guardrails ship --help',
+    'npx guardrails ship -h',
+    'npx guardrails-core ship --body-file=pr.md --help',
+    'node ./node_modules/guardrails-core/dist/cli.mjs ship -h | head',
   ])('allows %j', (command) => {
     expect(foregroundWait(command, LIMIT)).toBeUndefined();
   });
