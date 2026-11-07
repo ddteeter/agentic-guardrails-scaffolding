@@ -1749,7 +1749,7 @@ async function installHooksCommand(
 
 const SHIP_USAGE =
   'ship [--body-file=<f>] [--status-file=<f>] [--base=<ref>]\n' +
-  '       [--force-with-lease]';
+  '       [--force-with-lease] [--attach=<file>[#alt]]...';
 
 /**
  * What `ship --help` prints: every flag, the five outcomes, and where the
@@ -1763,7 +1763,10 @@ const SHIP_HELP =
   '  --status-file=<f>  where the outcome goes\n' +
   '                     (default: .guardrails/state/ship-status.json)\n' +
   '  --base=<ref>       the branch a new PR targets (default: baseBranch)\n' +
-  '  --force-with-lease push a branch rebased since its last push\n\n' +
+  '  --force-with-lease push a branch rebased since its last push\n' +
+  '  --attach=<f>[#alt] attach an image or video (repeatable): on a new PR\n' +
+  '                     with it, on an open one as a comment -- each run\n' +
+  '                     posts again. A failed upload is a warning only.\n\n' +
   'states: green | gate-blocked | lock-timeout | ci-red | error\n';
 
 /**
@@ -1799,12 +1802,36 @@ async function shipCommand(
         ? undefined
         : path.resolve(dependencies.cwd, bodyFile),
     forceWithLease: rest.includes('--force-with-lease'),
+    attach: flags(rest, 'attach').map((file) =>
+      resolveAttachment(dependencies.cwd, file),
+    ),
   });
   writeShipStatus(statusPath, status);
   dependencies.stdout(
     `${shipSummary(status, path.relative(repoRoot, statusPath))}\n`,
   );
   return status.state === 'green' ? 0 : 1;
+}
+
+/**
+Every value of a repeatable `--<name>=<value>` flag, in the order given.
+*/
+function flags(rest: string[], name: string): string[] {
+  const prefix = `--${name}=`;
+  return rest
+    .filter((argument) => argument.startsWith(prefix))
+    .map((argument) => argument.slice(prefix.length));
+}
+
+/**
+ * An `--attach` path made absolute from where the command was run, keeping
+ * gh's `#<alt text>` suffix as written.
+ */
+function resolveAttachment(cwd: string, file: string): string {
+  const hash = file.indexOf('#');
+  return hash === -1
+    ? path.resolve(cwd, file)
+    : `${path.resolve(cwd, file.slice(0, hash))}${file.slice(hash)}`;
 }
 
 function flag(rest: string[], name: string): string | undefined {

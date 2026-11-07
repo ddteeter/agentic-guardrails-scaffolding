@@ -5509,6 +5509,32 @@ describe('runCommand — ship', () => {
     expect(existsSync(file)).toBe(true);
   });
 
+  it('passes every --attach through, from where it was run, keeping alt text', async () => {
+    const calls: string[] = [];
+    await runCommand(
+      'ship',
+      ['--attach=demo.mp4', '--attach=shots/after.png#The fixed state'],
+      dependencies({ exec: shipExec('pass', calls) }),
+    );
+    expect(calls).toContain(
+      `gh pr comment 42 --attach ${path.join(root, 'demo.mp4')} ` +
+        `--attach ${path.join(root, 'shots/after.png')}#The fixed state`,
+    );
+  });
+
+  it('resolves a one-character name and normalizes only the path, not the alt text', async () => {
+    const calls: string[] = [];
+    await runCommand(
+      'ship',
+      ['--attach=a', '--attach=shots/../after.png#left//right/'],
+      dependencies({ exec: shipExec('pass', calls) }),
+    );
+    expect(calls).toContain(
+      `gh pr comment 42 --attach ${path.join(root, 'a')} ` +
+        `--attach ${path.join(root, 'after.png')}#left//right/`,
+    );
+  });
+
   it('passes --force-with-lease through to the push', async () => {
     const calls: string[] = [];
     await runCommand(
@@ -5536,6 +5562,7 @@ describe('runCommand — ship', () => {
         '--status-file=',
         '--base=',
         '--force-with-lease',
+        '--attach=',
         'green',
         'gate-blocked',
         'lock-timeout',
