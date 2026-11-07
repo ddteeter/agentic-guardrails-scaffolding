@@ -1747,7 +1747,9 @@ async function installHooksCommand(
   return 0;
 }
 
-const SHIP_USAGE = 'ship [--body-file=<f>] [--status-file=<f>] [--base=<ref>]';
+const SHIP_USAGE =
+  'ship [--body-file=<f>] [--status-file=<f>] [--base=<ref>]\n' +
+  '       [--force-with-lease]';
 
 /**
  * What `ship --help` prints: every flag, the five outcomes, and where the
@@ -1760,7 +1762,8 @@ const SHIP_HELP =
   '  --body-file=<f>    open a missing PR with this body (default: gh --fill)\n' +
   '  --status-file=<f>  where the outcome goes\n' +
   '                     (default: .guardrails/state/ship-status.json)\n' +
-  '  --base=<ref>       the branch a new PR targets (default: baseBranch)\n\n' +
+  '  --base=<ref>       the branch a new PR targets (default: baseBranch)\n' +
+  '  --force-with-lease push a branch rebased since its last push\n\n' +
   'states: green | gate-blocked | lock-timeout | ci-red | error\n';
 
 /**
@@ -1795,6 +1798,7 @@ async function shipCommand(
       bodyFile === undefined
         ? undefined
         : path.resolve(dependencies.cwd, bodyFile),
+    forceWithLease: rest.includes('--force-with-lease'),
   });
   writeShipStatus(statusPath, status);
   dependencies.stdout(

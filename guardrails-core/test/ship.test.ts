@@ -379,6 +379,72 @@ describe('ship: a push that did not go through', () => {
   });
 });
 
+describe('ship: a branch rewritten since its last push', () => {
+  const HINT =
+    'guardrails ship: the branch was rewritten since its last push ' +
+    '(rebased?); re-run with --force-with-lease';
+
+  it.each([
+    '! [rejected]        HEAD -> feat/x (non-fast-forward)\nerror: failed to push some refs',
+    '! [rejected]        HEAD -> feat/x (stale info)\nerror: failed to push some refs',
+    '! [rejected]        HEAD -> feat/x (fetch first)\nerror: failed to push some refs',
+  ])('names --force-with-lease as the fix for %j', async (stderr) => {
+    const { exec } = fakeExec({ ...HAPPY, 'git push': failed(stderr) });
+    const status = await ship(options(exec));
+    expect(status.state).toBe('error');
+    expect(status.tail.split('\n').at(-1)).toBe(HINT);
+    expect(status.tail).toContain('[rejected]');
+  });
+
+  it('adds no hint to a push the gate blocked', async () => {
+    const { exec } = fakeExec({
+      ...HAPPY,
+      'git push': failed(
+        'guardrails: push blocked — resolve violations or run guardrails verify.',
+      ),
+    });
+    const status = await ship(options(exec));
+    expect(status.state).toBe('gate-blocked');
+    expect(status.tail).not.toContain('--force-with-lease');
+  });
+
+  it('adds no hint to any other failed push', async () => {
+    const { exec } = fakeExec({
+      ...HAPPY,
+      'git push': failed('fatal: unable to access remote'),
+    });
+    const status = await ship(options(exec));
+    expect(status.tail).toBe('fatal: unable to access remote');
+  });
+
+  it('pushes plainly by default', async () => {
+    const { exec, calls } = fakeExec(HAPPY);
+    await ship(options(exec));
+    expect(calls.find((call) => call.line.startsWith('git push'))?.line).toBe(
+      'git push -u origin HEAD',
+    );
+  });
+
+  it('pushes --force-with-lease when asked', async () => {
+    const { exec, calls } = fakeExec(HAPPY);
+    const status = await ship(options(exec, { forceWithLease: true }));
+    expect(status.state).toBe('green');
+    expect(calls.find((call) => call.line.startsWith('git push'))?.line).toBe(
+      'git push --force-with-lease -u origin HEAD',
+    );
+  });
+
+  it('still refuses to ship the base branch with --force-with-lease', async () => {
+    const { exec, calls } = fakeExec({
+      ...HAPPY,
+      'git rev-parse --abbrev-ref HEAD': ok('main\n'),
+    });
+    const status = await ship(options(exec, { forceWithLease: true }));
+    expect(status.state).toBe('error');
+    expect(calls.some((call) => call.line.startsWith('git push'))).toBe(false);
+  });
+});
+
 describe('classifyPushFailure', () => {
   it('reads the marker on stdout too', () => {
     expect(

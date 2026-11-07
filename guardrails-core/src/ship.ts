@@ -51,6 +51,10 @@ export interface ShipOptions {
   A pull request body to open with; otherwise `gh pr create --fill`.
   */
   bodyFile?: string | undefined;
+  /**
+  Push with `--force-with-lease`, for a branch rewritten since its last push.
+  */
+  forceWithLease?: boolean | undefined;
   now?: () => Date;
   /**
   Waits between looks for checks that have not registered; a seam for tests.
@@ -190,6 +194,28 @@ async function viewPullRequest(
 }
 
 /**
+ * git's refusal of a push that would drop commits the remote has: the branch
+ * was rebased or amended since it was last pushed, or someone else pushed.
+ */
+const REWRITTEN_BRANCH =
+  /\[rejected\][^\n]*\((?:non-fast-forward|stale info|fetch first)\)/;
+
+const REWRITTEN_BRANCH_HINT =
+  'guardrails ship: the branch was rewritten since its last push ' +
+  '(rebased?); re-run with --force-with-lease';
+
+/**
+ * A failed push's output, with the fix appended when git refused it as a
+ * rewrite: ship never forces on its own, so the agent has to be told how.
+ */
+function pushFailureText(pushed: ExecResult): string {
+  const text = output(pushed);
+  return REWRITTEN_BRANCH.test(text)
+    ? `${text}\n${REWRITTEN_BRANCH_HINT}`
+    : text;
+}
+
+/**
  * A failed push, still naming the pull request the branch already has: the
  * push failing does not make an open PR disappear (deferred from #122).
  */
@@ -198,7 +224,7 @@ async function pushFailure(
   branch: string,
   pushed: ExecResult,
 ): Promise<Outcome> {
-  const outcome = failure(classifyPushFailure(pushed), output(pushed));
+  const outcome = failure(classifyPushFailure(pushed), pushFailureText(pushed));
   const { pr } = await viewPullRequest(options, branch);
   return pr === undefined
     ? outcome
@@ -390,9 +416,12 @@ async function shipOutcome(
   if (unavailable !== undefined) {
     return failure('error', unavailable);
   }
-  const pushed = await options.exec('git', ['push', '-u', 'origin', 'HEAD'], {
-    cwd: options.repoRoot,
-  });
+  const force = options.forceWithLease === true ? ['--force-with-lease'] : [];
+  const pushed = await options.exec(
+    'git',
+    ['push', ...force, '-u', 'origin', 'HEAD'],
+    { cwd: options.repoRoot },
+  );
   if (pushed.code !== 0) {
     return pushFailure(options, branch, pushed);
   }

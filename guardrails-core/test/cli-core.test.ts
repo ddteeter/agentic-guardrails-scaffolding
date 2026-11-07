@@ -5509,6 +5509,16 @@ describe('runCommand — ship', () => {
     expect(existsSync(file)).toBe(true);
   });
 
+  it('passes --force-with-lease through to the push', async () => {
+    const calls: string[] = [];
+    await runCommand(
+      'ship',
+      ['--force-with-lease'],
+      dependencies({ exec: shipExec('pass', calls) }),
+    );
+    expect(calls).toContain('git push --force-with-lease -u origin HEAD');
+  });
+
   it.each(['--help', '-h'])(
     'prints its usage on %s, exits 0, and runs nothing',
     async (helpFlag) => {
@@ -5525,6 +5535,7 @@ describe('runCommand — ship', () => {
         '--body-file=',
         '--status-file=',
         '--base=',
+        '--force-with-lease',
         'green',
         'gate-blocked',
         'lock-timeout',
