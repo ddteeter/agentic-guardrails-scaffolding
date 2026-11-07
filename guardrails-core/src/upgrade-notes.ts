@@ -308,7 +308,7 @@ export function parseUpgradeNotes(
   if (close === null || !normalized.startsWith('---\n')) {
     return { error: 'no frontmatter: the file must open with a --- block' };
   }
-  const body = rest.slice(close.index + '---'.length).replace(/^\n+/, '');
+  const body = rest.slice(close.index + '---'.length).trimStart();
   try {
     return {
       notes: notesOf(readFrontmatter(rest.slice(0, close.index)), body),

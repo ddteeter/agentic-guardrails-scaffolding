@@ -60,6 +60,14 @@ describe('parseUpgradeNotes: what it reads', () => {
     });
   });
 
+  it('counts a line of only spaces or tabs as blank before the body', () => {
+    expect(
+      parseUpgradeNotes('---\nversion: 1\n---\n  \n\t\nx\n'),
+    ).toMatchObject({
+      notes: { body: 'x\n' },
+    });
+  });
+
   it('reads a double-quoted value, as prettier writes one holding a quote', () => {
     expect(
       parseUpgradeNotes(
@@ -178,6 +186,11 @@ describe('parseUpgradeNotes: what it refuses', () => {
 
   it.each([
     ['a lone quote', "---\nversion: '\n---\n", 'line 1: unterminated quote'],
+    [
+      'a lone double quote',
+      '---\nversion: "\n---\n',
+      'line 1: unterminated quote',
+    ],
     [
       'a field given twice in one item',
       '---\nversion: 1\nwire:\n  - kind: script\n    kind: hook\n---\n',
