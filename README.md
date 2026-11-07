@@ -30,12 +30,25 @@ npm i -D https://github.com/ddteeter/agentic-guardrails-scaffolding/releases/dow
 
 Each release is a pushed `v*` tag: `.github/workflows/release.yml` verifies the
 tag matches `guardrails-core`'s version, runs the tarball smoke test, and
-attaches the `.tgz`. The URL above resolves once `v0.12.0` has been through that.
+attaches the `.tgz`. Cutting one renames `guardrails-core/upgrades/unreleased.md`
+to `<version>.md` and starts a fresh `unreleased.md`; the build fails on a
+version with no notes. The URL above resolves once `v0.12.0` has been through that.
 
 **What a URL dependency costs you, stated plainly:** no semver range, no dedupe,
 and Dependabot will not track it. Upgrading means editing the URL by hand. This
 is deliberate while the package has no external consumers — publishing to npm
 later changes this line and nothing else.
+
+**After upgrading,** have your agent read
+`node_modules/guardrails-core/guidance/upgrading-guardrails.md`. A release can
+make your own instructions stale: a rule it now enforces for you, a workaround
+for a bug it fixed, a command nothing calls yet. Each release ships
+`upgrades/<version>.md` saying what changed for an agent, which of your
+instructions it supersedes, and what to wire. The skill reads every release
+between your old pin and the new one, proposes the edits, and ends on a green
+`guardrails verify`. Like `adopting-guardrails`, it ships in the tarball and
+is never copied into your repo, because a copied version would be the one you
+are upgrading from.
 
 Installing the package does not wire anything up by itself — run
 `guardrails init` to do that:
@@ -102,9 +115,10 @@ observed do not wake the agent on exit, start it detached (`nohup … &`), finis
 the task, and let whoever started the agent read the status file. The
 PreToolUse hook denies the foreground versions on all three hosts (`gh pr
 checks --watch`, `gh run watch`, `kill -0`/`pgrep` wait loops, long `sleep`s)
-with a message for that host; `"denyForegroundWaits": false` turns that off. A coordinator keeps lanes at "ready to ship", runs `guardrails ship` itself
-in the background, and sends a failure to a fresh fixer rather than reviving the
-lane. [`docs/adoption.md`](./docs/adoption.md#agents-and-slow-work) has the
+with a message for that host; `"denyForegroundWaits": false` turns that off.
+Each lane ships itself this way and fixes its own failure while it is still
+active; a coordinator merges, and sends a finished lane's failure to a fresh
+fixer rather than reviving it. [`docs/adoption.md`](./docs/adoption.md#agents-and-slow-work) has the
 details and `CLAUDE.md` and `AGENTS.md` snippets for adopters.
 
 ## What's in Phase A

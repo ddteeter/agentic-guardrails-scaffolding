@@ -58,7 +58,7 @@ console.log(`smoke-tarball: installed into ${fixture}`);
 
 // 3. The package must carry every directory `files` promises.
 const installed = path.join(fixture, 'node_modules', 'guardrails-core');
-for (const directory of ['dist', 'guidance', 'templates']) {
+for (const directory of ['dist', 'guidance', 'templates', 'upgrades']) {
   const target = path.join(installed, directory);
   if (!existsSync(target) || readdirSync(target).length === 0) {
     fail(

@@ -38,6 +38,11 @@ export interface ShipStatus {
   */
   tail: string;
   finishedAt: string;
+  /**
+  What went wrong without changing the outcome -- attachments that were not
+  posted. Always present, empty when nothing did.
+  */
+  warnings: string[];
 }
 
 export interface ShipOptions {
@@ -51,6 +56,15 @@ export interface ShipOptions {
   A pull request body to open with; otherwise `gh pr create --fill`.
   */
   bodyFile?: string | undefined;
+  /**
+  Push with `--force-with-lease`, for a branch rewritten since its last push.
+  */
+  forceWithLease?: boolean | undefined;
+  /**
+  Media to attach to the pull request, each `<file>[#<alt text>]` as gh takes
+  it: on a new PR through `gh pr create`, on an open one as a comment.
+  */
+  attach?: readonly string[] | undefined;
   now?: () => Date;
   /**
   Waits between looks for checks that have not registered; a seam for tests.
@@ -158,7 +172,7 @@ function parseChecks(text: string): Check[] | undefined {
 */
 const RED_BUCKETS: ReadonlySet<string> = new Set(['fail', 'cancel']);
 
-type Outcome = Omit<ShipStatus, 'branch' | 'finishedAt'>;
+type Outcome = Omit<ShipStatus, 'branch' | 'finishedAt' | 'warnings'>;
 
 function failure(state: ShipState, tail: string): Outcome {
   return { state, pr: null, url: null, failing: [], tail: tailOf(tail) };
@@ -190,6 +204,28 @@ async function viewPullRequest(
 }
 
 /**
+ * git's refusal of a push that would drop commits the remote has: the branch
+ * was rebased or amended since it was last pushed, or someone else pushed.
+ */
+const REWRITTEN_BRANCH =
+  /\[rejected\][^\n]*\((?:non-fast-forward|stale info|fetch first)\)/;
+
+const REWRITTEN_BRANCH_HINT =
+  'guardrails ship: the branch was rewritten since its last push ' +
+  '(rebased?); re-run with --force-with-lease';
+
+/**
+ * A failed push's output, with the fix appended when git refused it as a
+ * rewrite: ship never forces on its own, so the agent has to be told how.
+ */
+function pushFailureText(pushed: ExecResult): string {
+  const text = output(pushed);
+  return REWRITTEN_BRANCH.test(text)
+    ? `${text}\n${REWRITTEN_BRANCH_HINT}`
+    : text;
+}
+
+/**
  * A failed push, still naming the pull request the branch already has: the
  * push failing does not make an open PR disappear (deferred from #122).
  */
@@ -198,22 +234,64 @@ async function pushFailure(
   branch: string,
   pushed: ExecResult,
 ): Promise<Outcome> {
-  const outcome = failure(classifyPushFailure(pushed), output(pushed));
+  const outcome = failure(classifyPushFailure(pushed), pushFailureText(pushed));
   const { pr } = await viewPullRequest(options, branch);
   return pr === undefined
     ? outcome
     : { ...outcome, pr: pr.number, url: pr.url };
 }
 
+interface FoundPullRequest {
+  pr: PullRequest;
+  warnings: string[];
+}
+
+/**
+ * The warning for attachments gh did not post: its last line of output, which
+ * is where gh says what failed, on one line so the summary stays one line.
+ */
+function attachWarning(result: ExecResult): string {
+  const last = output(result).trimEnd().split('\n').at(-1) ?? '';
+  return `attachments not posted: ${last}`;
+}
+
+function attachArguments(options: ShipOptions): string[] {
+  return (options.attach ?? []).flatMap((file) => ['--attach', file]);
+}
+
+/**
+ * Post the attachments on a pull request that was already open. A failure is
+ * a warning: the push happened and CI still decides the outcome.
+ */
+async function commentAttachments(
+  options: ShipOptions,
+  pr: PullRequest,
+): Promise<string[]> {
+  const attach = attachArguments(options);
+  if (attach.length === 0) {
+    return [];
+  }
+  const commented = await gh(options, [
+    'pr',
+    'comment',
+    String(pr.number),
+    ...attach,
+  ]);
+  return commented.code === 0 ? [] : [attachWarning(commented)];
+}
+
 async function findOrOpenPullRequest(
   options: ShipOptions,
   branch: string,
-): Promise<PullRequest | string> {
+): Promise<FoundPullRequest | string> {
   const run = (command: string, args: string[]) =>
     options.exec(command, args, { cwd: options.repoRoot });
   const existing = await viewPullRequest(options, branch);
   if (existing.pr !== undefined) {
-    return existing.pr;
+    return {
+      pr: existing.pr,
+      warnings: await commentAttachments(options, existing.pr),
+    };
   }
   let body = ['--fill'];
   if (options.bodyFile !== undefined) {
@@ -221,18 +299,29 @@ async function findOrOpenPullRequest(
     const title = lastCommit.stdout.trim();
     body = ['--title', title, '--body-file', options.bodyFile];
   }
+  const attach = attachArguments(options);
   const created = await run('gh', [
     'pr',
     'create',
     '--base',
     options.baseBranch,
     ...body,
+    ...attach,
   ]);
-  if (created.code !== 0) {
+  // gh still opens the PR when an upload fails, and says so with a failing
+  // exit, so with attachments a failed create is only an error once the PR
+  // is not there to read back.
+  if (created.code !== 0 && attach.length === 0) {
     return output(created);
   }
   const opened = await viewPullRequest(options, branch);
-  return opened.pr ?? output(opened.result);
+  if (opened.pr === undefined) {
+    return output(created.code === 0 ? opened.result : created);
+  }
+  return {
+    pr: opened.pr,
+    warnings: created.code === 0 ? [] : [attachWarning(created)],
+  };
 }
 
 function defaultDelay(ms: number): Promise<void> {
@@ -384,22 +473,29 @@ function bodyFileUnreadable(options: ShipOptions): string | undefined {
 async function shipOutcome(
   options: ShipOptions,
   branch: string,
-): Promise<Outcome> {
+): Promise<Outcome & { warnings: string[] }> {
   const unavailable =
     (await ghUnavailable(options)) ?? bodyFileUnreadable(options);
   if (unavailable !== undefined) {
-    return failure('error', unavailable);
+    return { ...failure('error', unavailable), warnings: [] };
   }
-  const pushed = await options.exec('git', ['push', '-u', 'origin', 'HEAD'], {
-    cwd: options.repoRoot,
-  });
+  const force = options.forceWithLease === true ? ['--force-with-lease'] : [];
+  const pushed = await options.exec(
+    'git',
+    ['push', ...force, '-u', 'origin', 'HEAD'],
+    { cwd: options.repoRoot },
+  );
   if (pushed.code !== 0) {
-    return pushFailure(options, branch, pushed);
+    return { ...(await pushFailure(options, branch, pushed)), warnings: [] };
   }
-  const pr = await findOrOpenPullRequest(options, branch);
-  return typeof pr === 'string'
-    ? failure('error', pr)
-    : watchChecks(options, pr);
+  const found = await findOrOpenPullRequest(options, branch);
+  if (typeof found === 'string') {
+    return { ...failure('error', found), warnings: [] };
+  }
+  return {
+    ...(await watchChecks(options, found.pr)),
+    warnings: found.warnings,
+  };
 }
 
 /**
@@ -420,12 +516,15 @@ export async function ship(options: ShipOptions): Promise<ShipStatus> {
     branch !== 'HEAD' && branch !== options.baseBranch && head.code === 0;
   const outcome = isShippable
     ? await shipOutcome(options, branch)
-    : failure(
-        'error',
-        `guardrails ship: not on a branch that can be shipped (HEAD is ` +
-          `${branch || 'unknown'}; base is ${options.baseBranch}).\n` +
-          output(head),
-      );
+    : {
+        warnings: [],
+        ...failure(
+          'error',
+          `guardrails ship: not on a branch that can be shipped (HEAD is ` +
+            `${branch || 'unknown'}; base is ${options.baseBranch}).\n` +
+            output(head),
+        ),
+      };
   return {
     ...outcome,
     branch,
@@ -446,8 +545,11 @@ export function shipSummary(status: ShipStatus, statusPath: string): string {
     status.pr === null ? 'no PR' : `PR #${status.pr} ${status.url ?? ''}`;
   const failing =
     status.failing.length > 0 ? `; failing: ${status.failing.join(', ')}` : '';
+  const warnings = status.warnings
+    .map((warning) => `; warning: ${warning}`)
+    .join('');
   return (
-    `guardrails ship: ${status.state} — ${status.branch}, ${pr}${failing} ` +
+    `guardrails ship: ${status.state} — ${status.branch}, ${pr}${failing}${warnings} ` +
     `(status: ${statusPath})`
   );
 }

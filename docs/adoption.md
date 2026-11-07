@@ -602,11 +602,19 @@ ship.log 2>&1 &`), finish the task, and let whoever started the agent read
   pull request or opens one (`--body-file=<f>`, else `gh pr create --fill`),
   waits with `gh pr checks --watch`, and writes
   `.guardrails/state/ship-status.json` (`--status-file=<f>` to move it):
-  `{state, branch, pr, url, failing, tail, finishedAt}`. `state` is `green`,
-  `gate-blocked`, `lock-timeout`, `ci-red` (with the failing check names) or
-  `error`. It prints one line and exits 0 only on green. It needs `gh`,
-  authenticated, and checks that before pushing: a missing or logged-out `gh`
-  is an `error` that says how to fix it, and nothing is pushed.
+  `{state, branch, pr, url, failing, tail, finishedAt, warnings}`. `state` is
+  `green`, `gate-blocked`, `lock-timeout`, `ci-red` (with the failing check
+  names) or `error`. It prints one line and exits 0 only on green. It needs
+  `gh`, authenticated, and checks that before pushing: a missing or logged-out
+  `gh` is an `error` that says how to fix it, and nothing is pushed.
+  `ship --help` prints all of this and pushes nothing.
+- **A branch rebased after its first push** needs `--force-with-lease`; ship
+  never forces on its own. Without the flag, git's rejection comes back as an
+  `error` whose tail ends with a line naming the flag.
+- **`--attach=<file>[#alt text]`** (repeatable) attaches an image or video: to
+  a new pull request as it is opened, or to an open one as a comment, posted
+  again on each run. An upload that fails never changes `state`; it lands in
+  `warnings` and on the printed line.
 - **The PreToolUse hook enforces it.** On Claude Code's `Bash`, without
   `run_in_background: true`, and on the Codex and Copilot shell tools, it denies `gh pr checks … --watch`,
   `gh run watch`, an `until`/`while` loop polling `kill -0` or `pgrep`, a
@@ -684,15 +692,23 @@ for a job that takes minutes. Up to about 2 minutes is fine.
   a fresh task, given the failure output and the diff.
 ```
 
-**Coordinating several agents.** A lane agent's context is the expensive part,
-so don't keep one alive to watch a push:
+**Coordinating several agents.** What made a lane expensive was waiting in
+the foreground and re-paying its context on every wake. `guardrails ship` in
+the background costs one wake per ship, and the machine-wide lock already
+makes pushes take turns, so each lane ships itself:
 
-- Lanes stop at **ready to ship**: committed, local gates green, not pushed.
-- The coordinator runs `guardrails ship` for each lane in the background and
-  reads the status file when it is woken.
-- On `gate-blocked` or `ci-red`, hand the status file's `tail` and `failing` to
-  a **fresh** fixer agent rather than reviving the lane. On `lock-timeout`, run
-  `guardrails ship` again: it re-queues.
+- A lane ships with `guardrails ship --body-file=<f>` under
+  `run_in_background`, ends its turn, and is woken once with one status.
+- A lane that is still active fixes its own `gate-blocked` or `ci-red` from
+  the status file's `tail` and `failing`. On `lock-timeout` it runs
+  `guardrails ship` again, which re-queues.
+- The coordinator merges and cleans up. For a lane whose work is finished, it
+  hands a failure to a **fresh** fixer agent with the failure output and the
+  diff, rather than reviving the lane's large context.
+
+(Up to 0.12.0 this section said lanes stop at "ready to ship" and only the
+coordinator pushes. That rule guarded against foreground waits, which the
+PreToolUse hook now denies; `upgrades/` records the change for upgraders.)
 
 ## Known limits
 

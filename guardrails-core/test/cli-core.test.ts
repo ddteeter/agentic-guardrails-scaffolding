@@ -5509,6 +5509,75 @@ describe('runCommand — ship', () => {
     expect(existsSync(file)).toBe(true);
   });
 
+  it('passes every --attach through, from where it was run, keeping alt text', async () => {
+    const calls: string[] = [];
+    await runCommand(
+      'ship',
+      ['--attach=demo.mp4', '--attach=shots/after.png#The fixed state'],
+      dependencies({ exec: shipExec('pass', calls) }),
+    );
+    expect(calls).toContain(
+      `gh pr comment 42 --attach ${path.join(root, 'demo.mp4')} ` +
+        `--attach ${path.join(root, 'shots/after.png')}#The fixed state`,
+    );
+  });
+
+  it('resolves a one-character name and normalizes only the path, not the alt text', async () => {
+    const calls: string[] = [];
+    await runCommand(
+      'ship',
+      ['--attach=a', '--attach=shots/../after.png#left//right/'],
+      dependencies({ exec: shipExec('pass', calls) }),
+    );
+    expect(calls).toContain(
+      `gh pr comment 42 --attach ${path.join(root, 'a')} ` +
+        `--attach ${path.join(root, 'after.png')}#left//right/`,
+    );
+  });
+
+  it('passes --force-with-lease through to the push', async () => {
+    const calls: string[] = [];
+    await runCommand(
+      'ship',
+      ['--force-with-lease'],
+      dependencies({ exec: shipExec('pass', calls) }),
+    );
+    expect(calls).toContain('git push --force-with-lease -u origin HEAD');
+  });
+
+  it.each(['--help', '-h'])(
+    'prints its usage on %s, exits 0, and runs nothing',
+    async (helpFlag) => {
+      const calls: string[] = [];
+      const code = await runCommand(
+        'ship',
+        [helpFlag],
+        dependencies({ exec: shipExec('pass', calls) }),
+      );
+      expect(code).toBe(0);
+      expect(calls).toEqual([]);
+      const printed = out.join('');
+      for (const name of [
+        '--body-file=',
+        '--status-file=',
+        '--base=',
+        '--force-with-lease',
+        '--attach=',
+        'green',
+        'gate-blocked',
+        'lock-timeout',
+        'ci-red',
+        'error',
+        '.guardrails/state/ship-status.json',
+      ]) {
+        expect(printed).toContain(name);
+      }
+      expect(
+        existsSync(path.join(root, '.guardrails', 'state', 'ship-status.json')),
+      ).toBe(false);
+    },
+  );
+
   it('is listed in the usage', async () => {
     await runCommand('nope', [], dependencies());
     expect(errors.join('')).toContain(

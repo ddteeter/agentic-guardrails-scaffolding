@@ -212,7 +212,10 @@ describe('buildDesiredFiles — the shipped template tree', () => {
     // correctly instead of working around.
     const desired = buildDesiredFiles(facts(), decisions());
     const documents = readdirSync(guidanceRoot()).filter(
-      (name) => name.endsWith('.md') && name !== 'adopting-guardrails.md',
+      (name) =>
+        name.endsWith('.md') &&
+        name !== 'adopting-guardrails.md' &&
+        name !== 'upgrading-guardrails.md',
     );
     expect(documents.length).toBeGreaterThan(0);
     for (const document of documents) {
@@ -446,17 +449,22 @@ describe('claudeSkillEntries', () => {
     ]);
   });
 
-  it('excludes adopting-guardrails from the .claude/skills install', () => {
+  it('excludes both tarball-only skills from the .claude/skills install', () => {
     writeFileSync(
       path.join(guidance, 'index.json'),
       `${JSON.stringify({
         'adopting-guardrails': 'Use when adopting.',
         'my-skill': 'Use when testing.',
+        'upgrading-guardrails': 'Use when upgrading.',
       })}\n`,
     );
     writeFileSync(
       path.join(guidance, 'adopting-guardrails.md'),
       '# Adopting\n\nBody.\n',
+    );
+    writeFileSync(
+      path.join(guidance, 'upgrading-guardrails.md'),
+      '# Upgrading\n\nBody.\n',
     );
     writeFileSync(path.join(guidance, 'my-skill.md'), '# My skill\n\nBody.\n');
 
@@ -497,6 +505,21 @@ describe('guidanceEntries', () => {
   it('yields nothing for a directory with no guidance in it', () => {
     writeFileSync(path.join(guidance, 'notes.txt'), 'not guidance\n');
     expect(guidanceEntries(guidance)).toEqual([]);
+  });
+
+  it('excludes upgrading-guardrails.md -- the vendored copy would be the OLD version', () => {
+    // At upgrade time an installed copy is the previous release's skill, which
+    // has never heard of the notes it is meant to read. The copy that knows
+    // them is the one in the tarball just installed.
+    writeFileSync(path.join(guidance, 'crushing-mutants.md'), 'body\n');
+    writeFileSync(
+      path.join(guidance, 'upgrading-guardrails.md'),
+      'upgrade body\n',
+    );
+
+    expect(guidanceEntries(guidance)).toEqual([
+      ['docs/guardrails/crushing-mutants.md', 'body\n'],
+    ]);
   });
 
   it('excludes adopting-guardrails.md -- adoption-time guidance, never installed', () => {

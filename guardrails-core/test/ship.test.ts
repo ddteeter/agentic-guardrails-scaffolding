@@ -274,6 +274,147 @@ describe('ship: finding or creating the pull request', () => {
   });
 });
 
+/**
+A branch with no PR yet, which gh opens; fresh per test because fakeExec consumes the list.
+*/
+function newPr(): Record<string, ExecResult | ExecResult[]> {
+  return {
+    ...HAPPY,
+    'gh pr view': [failed('no pull requests found'), ok(PR_JSON)],
+  };
+}
+
+describe('ship: attaching media to the pull request', () => {
+  const ATTACH = ['/r/demo.mp4', '/r/after.png#The fixed state'];
+
+  it('opens a new PR with the attachments', async () => {
+    const { exec, calls } = fakeExec(newPr());
+    const status = await ship(options(exec, { attach: ATTACH }));
+    expect(status).toMatchObject({ state: 'green', warnings: [] });
+    expect(calls.map((call) => call.line)).toContain(
+      'gh pr create --base main --fill --attach /r/demo.mp4 --attach /r/after.png#The fixed state',
+    );
+    expect(calls.some((call) => call.line.startsWith('gh pr comment'))).toBe(
+      false,
+    );
+  });
+
+  it('comments them once on a PR that is already open, before watching', async () => {
+    const { exec, calls } = fakeExec(HAPPY);
+    const status = await ship(options(exec, { attach: ATTACH }));
+    expect(status).toMatchObject({ state: 'green', warnings: [] });
+    const lines = calls.map((call) => call.line);
+    const comments = lines.filter((line) => line.startsWith('gh pr comment'));
+    expect(comments).toEqual([
+      'gh pr comment 42 --attach /r/demo.mp4 --attach /r/after.png#The fixed state',
+    ]);
+    expect(lines.indexOf(comments[0] ?? '')).toBeLessThan(
+      lines.findIndex((line) => line.startsWith('gh pr checks')),
+    );
+  });
+
+  it('keeps the CI outcome and warns when the comment fails', async () => {
+    const { exec } = fakeExec({
+      ...HAPPY,
+      'gh pr comment': failed('uploading demo.mp4\nHTTP 413: too large'),
+    });
+    const status = await ship(options(exec, { attach: ATTACH }));
+    expect(status.state).toBe('green');
+    expect(status.warnings).toEqual([
+      'attachments not posted: HTTP 413: too large',
+    ]);
+  });
+
+  it('carries on with the PR gh opened even when an upload failed', async () => {
+    const { exec } = fakeExec({
+      ...newPr(),
+      'gh pr create': failed('created\nfailed to upload demo.mp4'),
+    });
+    const status = await ship(options(exec, { attach: ATTACH }));
+    expect(status).toMatchObject({ state: 'green', pr: 42 });
+    expect(status.warnings).toEqual([
+      'attachments not posted: failed to upload demo.mp4',
+    ]);
+  });
+
+  it('warns with the last line of gh output, not a blank or an earlier line', async () => {
+    const { exec } = fakeExec({
+      ...HAPPY,
+      'gh pr comment': failed('uploading\nretrying\nHTTP 500: boom\n'),
+    });
+    const status = await ship(options(exec, { attach: ATTACH }));
+    expect(status.warnings).toEqual(['attachments not posted: HTTP 500: boom']);
+  });
+
+  it('reports the read-back failure when gh opened the PR but it cannot be read', async () => {
+    const { exec } = fakeExec({
+      ...HAPPY,
+      'gh pr view': failed('view broke'),
+      'gh pr create': ok('https://github.com/o/r/pull/42'),
+    });
+    const status = await ship(options(exec, { attach: ATTACH }));
+    expect(status).toMatchObject({ state: 'error', pr: null });
+    expect(status.tail).toBe('view broke');
+  });
+
+  it('reports the create failure when an upload failed and the PR cannot be read', async () => {
+    const { exec } = fakeExec({
+      ...HAPPY,
+      'gh pr view': failed('view broke'),
+      'gh pr create': failed('upload exploded'),
+    });
+    const status = await ship(options(exec, { attach: ATTACH }));
+    expect(status).toMatchObject({ state: 'error', pr: null });
+    expect(status.tail).toBe('upload exploded');
+  });
+
+  it('carries no warnings when gh is unavailable or HEAD is not shippable', async () => {
+    const unavailable = fakeExec({
+      ...HAPPY,
+      'gh auth status': failed('not logged in'),
+    });
+    const notShippable = fakeExec({
+      ...HAPPY,
+      'git rev-parse --abbrev-ref HEAD': ok('main\n'),
+    });
+    for (const { exec } of [unavailable, notShippable]) {
+      const status = await ship(options(exec, { attach: ATTACH }));
+      expect(status.state).toBe('error');
+      expect(status.warnings).toEqual([]);
+    }
+  });
+
+  it('is still an error when a PR without attachments cannot be opened', async () => {
+    const { exec } = fakeExec({
+      ...newPr(),
+      'gh pr create': failed('GraphQL: something broke'),
+    });
+    const status = await ship(options(exec));
+    expect(status).toMatchObject({ state: 'error', pr: null, warnings: [] });
+  });
+
+  it('posts nothing and warns nothing without --attach', async () => {
+    const { exec, calls } = fakeExec(HAPPY);
+    const status = await ship(options(exec));
+    expect(status.warnings).toEqual([]);
+    expect(calls.some((call) => call.line.startsWith('gh pr comment'))).toBe(
+      false,
+    );
+  });
+
+  it('warns nothing on a push that failed before any PR step', async () => {
+    const { exec, calls } = fakeExec({
+      ...HAPPY,
+      'git push': failed('fatal: no remote'),
+    });
+    const status = await ship(options(exec, { attach: ATTACH }));
+    expect(status).toMatchObject({ state: 'error', warnings: [] });
+    expect(calls.some((call) => call.line.startsWith('gh pr comment'))).toBe(
+      false,
+    );
+  });
+});
+
 describe('ship: the branch', () => {
   it.each([
     ['a detached HEAD', ok('HEAD\n')],
@@ -376,6 +517,72 @@ describe('ship: a push that did not go through', () => {
       'git push': failed('! [rejected] HEAD -> feat/x (non-fast-forward)'),
     });
     expect(await stateOf(exec)).toBe('error');
+  });
+});
+
+describe('ship: a branch rewritten since its last push', () => {
+  const HINT =
+    'guardrails ship: the branch was rewritten since its last push ' +
+    '(rebased?); re-run with --force-with-lease';
+
+  it.each([
+    '! [rejected]        HEAD -> feat/x (non-fast-forward)\nerror: failed to push some refs',
+    '! [rejected]        HEAD -> feat/x (stale info)\nerror: failed to push some refs',
+    '! [rejected]        HEAD -> feat/x (fetch first)\nerror: failed to push some refs',
+  ])('names --force-with-lease as the fix for %j', async (stderr) => {
+    const { exec } = fakeExec({ ...HAPPY, 'git push': failed(stderr) });
+    const status = await ship(options(exec));
+    expect(status.state).toBe('error');
+    expect(status.tail.split('\n').at(-1)).toBe(HINT);
+    expect(status.tail).toContain('[rejected]');
+  });
+
+  it('adds no hint to a push the gate blocked', async () => {
+    const { exec } = fakeExec({
+      ...HAPPY,
+      'git push': failed(
+        'guardrails: push blocked — resolve violations or run guardrails verify.',
+      ),
+    });
+    const status = await ship(options(exec));
+    expect(status.state).toBe('gate-blocked');
+    expect(status.tail).not.toContain('--force-with-lease');
+  });
+
+  it('adds no hint to any other failed push', async () => {
+    const { exec } = fakeExec({
+      ...HAPPY,
+      'git push': failed('fatal: unable to access remote'),
+    });
+    const status = await ship(options(exec));
+    expect(status.tail).toBe('fatal: unable to access remote');
+  });
+
+  it('pushes plainly by default', async () => {
+    const { exec, calls } = fakeExec(HAPPY);
+    await ship(options(exec));
+    expect(calls.find((call) => call.line.startsWith('git push'))?.line).toBe(
+      'git push -u origin HEAD',
+    );
+  });
+
+  it('pushes --force-with-lease when asked', async () => {
+    const { exec, calls } = fakeExec(HAPPY);
+    const status = await ship(options(exec, { forceWithLease: true }));
+    expect(status.state).toBe('green');
+    expect(calls.find((call) => call.line.startsWith('git push'))?.line).toBe(
+      'git push --force-with-lease -u origin HEAD',
+    );
+  });
+
+  it('still refuses to ship the base branch with --force-with-lease', async () => {
+    const { exec, calls } = fakeExec({
+      ...HAPPY,
+      'git rev-parse --abbrev-ref HEAD': ok('main\n'),
+    });
+    const status = await ship(options(exec, { forceWithLease: true }));
+    expect(status.state).toBe('error');
+    expect(calls.some((call) => call.line.startsWith('git push'))).toBe(false);
   });
 });
 
@@ -630,6 +837,25 @@ describe('ship: CI', () => {
 });
 
 describe('writeShipStatus and shipSummary', () => {
+  it('names each warning on the same line', () => {
+    const line = shipSummary(
+      {
+        state: 'green',
+        branch: 'feat/x',
+        pr: 42,
+        url: 'u',
+        failing: [],
+        tail: '',
+        finishedAt: '',
+        warnings: ['attachments not posted: HTTP 413'],
+      },
+      's.json',
+    );
+    expect(line).toBe(
+      'guardrails ship: green — feat/x, PR #42 u; warning: attachments not posted: HTTP 413 (status: s.json)',
+    );
+  });
+
   it('writes the status as JSON, creating the directory', () => {
     const file = path.join(root, 'deep', 'status.json');
     const status = {
@@ -640,6 +866,7 @@ describe('writeShipStatus and shipSummary', () => {
       failing: ['build'],
       tail: 'X build',
       finishedAt: '2026-10-12T12:00:00.000Z',
+      warnings: [],
     };
     writeShipStatus(file, status);
     expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual(status);
@@ -655,6 +882,7 @@ describe('writeShipStatus and shipSummary', () => {
         failing: ['build', 'e2e'],
         tail: '',
         finishedAt: '',
+        warnings: [],
       },
       'status.json',
     );
@@ -675,6 +903,7 @@ describe('writeShipStatus and shipSummary', () => {
           failing: [],
           tail: '',
           finishedAt: '',
+          warnings: [],
         },
         's.json',
       ),
