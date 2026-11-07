@@ -427,6 +427,38 @@ directories in one command. Unchanged, and still outside the matcher:
 
 ## Roadmap: fixer-loop hardening (from the dogfooding live proof)
 
+- **The PreToolUse commit gate checks the index BEFORE a compound
+  `git add -A && git commit` stages anything (2026-11-06, open; found on
+  #151).** The hook fires once, on the whole Bash command, so it gates the
+  previous index; the new changes are first seen by husky's pre-commit. Seen
+  twice on #151: the PreToolUse gate passed, then husky blocked the same
+  commit on surviving mutants. Nothing slips through, since husky is the
+  backstop, but the agent sees a pass then a block from one command, and the
+  block comes under a different owner (next finding). Candidates: have the
+  PreToolUse rung treat a leading `git add` as part of the commit (gate the
+  working tree for the paths it names), or say plainly in its pass that it
+  checked the index as it stood.
+- **Husky's commit gate leases files as `nosession`, so the session's own
+  gate takes its own fixer for someone else's (2026-11-06, open; found on
+  #151).** The pre-commit hook has no session id, so the lease it takes when
+  it blocks belongs to `nosession`. The fixer it names finishes and reports to
+  the main agent, never to the gate, so the next commit through the
+  PreToolUse gate (session-owned) sees a foreign live lease on the same files
+  and says "do NOT spawn a fixer yet, wait for that one". It costs the one
+  deferral `MAX_LEASE_DEFERRALS` allows. Candidate: resolve husky's owner to
+  the session that ran the `git commit` (the PreToolUse rung could leave its
+  session id for the hook it is about to trigger), or release a lease once
+  its manifest's violations re-verify clean.
+- **`eslint --fix` (PostToolUse autofix) turned a type guard into a tsc
+  error (2026-11-06, open; found on #151).** A `.some()` comparing each
+  member of an `as const` tuple (`WIRE_KINDS`) to `kind` was rewritten by
+  `unicorn/prefer-includes` to `WIRE_KINDS.includes(kind)`, which does not
+  typecheck (`string` is not assignable to the tuple's union). The fix is
+  mechanical and silent by design, so the agent meets the breakage as a type
+  error it did not write. Worked around with a `ReadonlySet<string>`.
+  Candidate: drop `prefer-includes` from the autofix set, or re-run `tsc` on
+  the autofixed file and revert a fix that introduces an error.
+
 - **The machine lock now wraps stryker itself, on every rung (2026-11-01,
   fixed; spec `docs/superpowers/specs/2026-11-01-mutation-lock-design.md`,
   plan `docs/superpowers/plans/2026-11-01-mutation-lock.md`).** It replaces
@@ -1169,6 +1201,19 @@ core/src/audit.ts`) surfaced that it was a context-free text scan: it flagged
   build regenerates `guidance/`. A live check took the 0.11.0 fixer, ran it
   through default Prettier with a 0.11.0 manifest, and got `update` from a
   packed build where the old code gave `drift`.
+
+- **Upgrades didn't tell adopters which of their own instructions went stale
+  (dialed.run, 0.11 → 0.12.0, #151, fixed).** dialed.run kept "lanes stop at
+  ready to ship; only the coordinator pushes" after its reason was gone, and
+  a coordinator hand-ran every lane's push for most of a day. The rule was
+  ours: README and `docs/adoption.md` recommended it until #151. Each release
+  now ships `guardrails-core/upgrades/<version>.md` (agent-facing; frontmatter
+  `supersedes` phrases + `wire` entries, parsed by `src/upgrade-notes.ts`), a
+  test fails the build when the package version has none, and the
+  tarball-only `upgrading-guardrails` skill applies them. Spec
+  `docs/superpowers/specs/2026-11-06-upgrade-guide-design.md`. Follow-up
+  **#152**: `init --plan` warns on its own when a `supersedes` phrase is still
+  in the adopter's files.
 
 ## Roadmap: analyzer opt-in (pack composition, not all-or-nothing) — shipped
 
