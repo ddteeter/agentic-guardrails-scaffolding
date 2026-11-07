@@ -9,8 +9,9 @@
  * frontmatter to warn on its own (#152), which is why it has a parser at all.
  *
  * Only the subset of YAML these files use is read: top-level `key: value`, and
- * lists of flat maps (`  - key: value` then `    key: value`). Values are bare
- * or single-quoted (`''` is a quote). Anything else is refused with the line it
+ * lists of flat maps (`  - key: value` then `    key: value`). Values are bare,
+ * single-quoted (`''` is a quote) or double-quoted without escapes -- the form
+ * prettier rewrites a value holding a quote into on commit. Anything else is refused with the line it
  * is on, so a notes file can never be half-read -- and no YAML dependency
  * ships for three keys.
  */
@@ -71,17 +72,42 @@ const TOP_LINE = /^(\w+):(.*)$/;
 const ITEM_START = /^ {2}- (\w+):(.*)$/;
 const ITEM_LINE = /^ {4}(\w+):(.*)$/;
 
+function unterminated(lineNumber: number): NotesError {
+  return new NotesError(`line ${String(lineNumber)}: unterminated quote`);
+}
+
 /**
-A bare or single-quoted value.
+ * A double-quoted value, as prettier rewrites a single-quoted one that holds a
+ * quote. Without escapes: prettier only picks double quotes when none are
+ * needed, so a backslash is refused rather than half-understood.
+ */
+function doubleQuoted(raw: string, lineNumber: number): string {
+  const inner = raw.slice(1, -1);
+  if (raw.length < 2 || !raw.endsWith('"') || inner.includes('"')) {
+    throw unterminated(lineNumber);
+  }
+  if (inner.includes('\\')) {
+    throw new NotesError(
+      `line ${String(lineNumber)}: escapes are not supported`,
+    );
+  }
+  return inner;
+}
+
+/**
+A bare, single-quoted or double-quoted value.
 */
 function scalar(raw: string, lineNumber: number): string {
+  if (raw.startsWith('"')) {
+    return doubleQuoted(raw, lineNumber);
+  }
   if (!raw.startsWith("'")) {
     return raw;
   }
   const inner = raw.slice(1, -1);
   const isClosed = raw.length > 1 && raw.endsWith("'");
   if (!isClosed || inner.replaceAll("''", '').includes("'")) {
-    throw new NotesError(`line ${String(lineNumber)}: unterminated quote`);
+    throw unterminated(lineNumber);
   }
   return inner.replaceAll("''", "'");
 }

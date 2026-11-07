@@ -21,7 +21,8 @@
     "dist",
     "guidance",
     "templates",
-    "scaffold-data"
+    "scaffold-data",
+    "upgrades"
   ],
   "scripts": {
     "build": "tsup && tsc -p tsconfig.build.json"

@@ -60,6 +60,24 @@ describe('parseUpgradeNotes: what it reads', () => {
     });
   });
 
+  it('reads a double-quoted value, as prettier writes one holding a quote', () => {
+    expect(
+      parseUpgradeNotes(
+        '---\nversion: "1.0.0"\nsupersedes:\n  - search: "it\'s here"\n    because: ""\n---\n',
+      ),
+    ).toEqual({ error: 'supersedes item 1: "because" is empty' });
+    expect(
+      parseUpgradeNotes(
+        '---\nversion: "1.0.0"\nsupersedes:\n  - search: "it\'s here"\n    because: b\n---\n',
+      ),
+    ).toMatchObject({
+      notes: {
+        version: '1.0.0',
+        supersedes: [{ search: "it's here", because: 'b' }],
+      },
+    });
+  });
+
   it('reads absent lists as empty', () => {
     expect(parseUpgradeNotes('---\nversion: 1.0.0\n---\nx\n')).toEqual({
       notes: { version: '1.0.0', supersedes: [], wire: [], body: 'x\n' },
@@ -138,6 +156,21 @@ describe('parseUpgradeNotes: what it refuses', () => {
     ],
     ['a line it does not understand', '---\nversion: 1\n\tx\n---\n', 'line 2'],
     ['an unterminated quote', "---\nversion: '1.0.0\n---\n", 'line 1'],
+    [
+      'an unterminated double quote',
+      '---\nversion: "1.0.0\n---\n',
+      'line 1: unterminated quote',
+    ],
+    [
+      'a double quote inside a double-quoted value',
+      '---\nversion: "1"0"\n---\n',
+      'line 1: unterminated quote',
+    ],
+    [
+      'an escape in a double-quoted value',
+      '---\nversion: "1\\n0"\n---\n',
+      'line 1: escapes are not supported',
+    ],
     ['a key given twice', '---\nversion: 1\nversion: 2\n---\n', 'version'],
   ])('refuses %s, naming %j', (_case, text, named) => {
     expect(errorOf(text)).toContain(named);
