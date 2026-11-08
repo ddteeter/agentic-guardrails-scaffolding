@@ -104,6 +104,29 @@ describe('parseIncrementalCache', () => {
     ]);
   });
 
+  it('keeps each test file’s tests in order, as stryker wrote them', () => {
+    // What the shard merge (#157) re-keys: it needs every declared test, an
+    // ambiguous id included, and the fields it does not rewrite.
+    const cache = parsed({}, { 'a.test.ts': ['0', '0'], 'b.test.ts': ['1'] });
+    expect(
+      [...cache.testFiles].map(([file, entry]) => [
+        file,
+        entry.raw.source,
+        entry.tests.map((test) => [test.id, test.raw.name]),
+      ]),
+    ).toEqual([
+      [
+        'a.test.ts',
+        '// a.test.ts\n',
+        [
+          ['0', 'test 0'],
+          ['0', 'test 0'],
+        ],
+      ],
+      ['b.test.ts', '// b.test.ts\n', [['1', 'test 1']]],
+    ]);
+  });
+
   it('reads an absent killedBy or coveredBy as no tests', () => {
     const cache = parsed({ 'src/a.ts': [mutant({ status: 'NoCoverage' })] });
     expect(cache.files.get('src/a.ts')?.mutants[0]).toMatchObject({

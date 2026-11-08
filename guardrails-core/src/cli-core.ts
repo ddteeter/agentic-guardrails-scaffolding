@@ -23,6 +23,7 @@ import {
   type SanctionedFile,
   parseSanctionsJson,
   readConfigText,
+  seedSettingsOf,
   toGateConfig,
 } from './config.js';
 import { type Exec, terminateChildren } from './exec.js';
@@ -184,6 +185,7 @@ function commitGateOptionsFromConfig(
   | 'analyzerRungs'
   | 'mutationCacheInvalidation'
   | 'mutationScope'
+  | 'mutationCacheSeed'
   | 'config'
   | 'mutationLock'
 > {
@@ -198,6 +200,7 @@ function commitGateOptionsFromConfig(
     analyzerRungs: config.analyzerRungs,
     mutationCacheInvalidation: config.mutationCache.invalidation,
     mutationScope: config.mutationScope,
+    mutationCacheSeed: seedSettingsOf(config),
     config: toGateConfig(config),
     mutationLock: machineLock(config.mutationLock),
   };
@@ -374,6 +377,7 @@ async function verifyCommand(
     analyzerRungs: config.analyzerRungs,
     mutationCacheInvalidation: config.mutationCache.invalidation,
     mutationScope: config.mutationScope,
+    mutationCacheSeed: seedSettingsOf(config),
   });
   printViolations(dependencies, violations);
   dependencies.stderr(`guardrails: ${verdictLine(violations)}\n`);
@@ -493,6 +497,7 @@ async function gateStopCommand(
     analyzerRungs: config.analyzerRungs,
     mutationCacheInvalidation: config.mutationCache.invalidation,
     mutationScope: config.mutationScope,
+    mutationCacheSeed: seedSettingsOf(config),
     isRetry: input.stopHookActive,
     mutationLock: machineLock(config.mutationLock),
   });

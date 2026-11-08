@@ -46,6 +46,7 @@ import {
 import type { AnalyzerMode, Rung } from './verify/analyzer-policy.js';
 import type { CacheInvalidation } from './verify/incremental-cache.js';
 import type { MutationScopeSettings } from './verify/mutate-ranges.js';
+import type { SeedSettings } from './verify/seed-cache.js';
 import {
   appendDecision,
   loadCleanTree,
@@ -113,6 +114,10 @@ export interface StopGateOptions {
    * Line-range mutation — see `VerifyOptions.mutationScope`.
    */
   mutationScope?: MutationScopeSettings | undefined;
+  /**
+   * The incremental-cache seed — see `VerifyOptions.mutationCacheSeed`.
+   */
+  mutationCacheSeed?: SeedSettings | undefined;
 
   /**
   Claude/Copilot says this Stop is a retry caused by an earlier block.
@@ -182,6 +187,10 @@ export interface CommitGateOptions {
    * Line-range mutation — see `VerifyOptions.mutationScope`.
    */
   mutationScope?: MutationScopeSettings | undefined;
+  /**
+   * The incremental-cache seed — see `VerifyOptions.mutationCacheSeed`.
+   */
+  mutationCacheSeed?: SeedSettings | undefined;
   /**
    * Which rung this gate is. `commit` by default; `gate --mode=push` and
    * `--mode=ci` pass their own.
@@ -691,6 +700,7 @@ export async function runStopGate(
     analyzerRungs: options.analyzerRungs,
     mutationCacheInvalidation: options.mutationCacheInvalidation,
     mutationScope: options.mutationScope,
+    mutationCacheSeed: options.mutationCacheSeed,
     mutationLock: options.mutationLock,
   };
   // No open loop is the precondition: a fixer mid-flight has to have its
@@ -932,6 +942,7 @@ export async function runCommitGate(
     analyzerRungs: options.analyzerRungs,
     mutationCacheInvalidation: options.mutationCacheInvalidation,
     mutationScope: options.mutationScope,
+    mutationCacheSeed: options.mutationCacheSeed,
     ...(options.changedScope && { changedScope: options.changedScope }),
     mutationLock: options.mutationLock,
   });

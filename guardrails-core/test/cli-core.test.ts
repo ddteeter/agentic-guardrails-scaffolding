@@ -32,8 +32,11 @@ import type { Violation } from '../src/violation.js';
 import { checksum as scaffoldChecksum } from '../src/scaffold/manifest.js';
 import {
   CHANGED_FILES,
+  SEED_COMMAND,
   keptKills,
+  seedFixtureExec,
   writeCacheFixture,
+  writeSeedFixture,
 } from './mutation-cache-fixture.js';
 import {
   WHOLE,
@@ -6051,5 +6054,75 @@ describe('mutationScope reaches stryker from the config', () => {
       }),
     );
     expect(mutated).toEqual([WHOLE]);
+  });
+});
+
+function configureSeedFixture(analyzers: Record<string, unknown>): void {
+  writeSeedFixture(root);
+  writeFileSync(
+    path.join(root, 'guardrails.config.json'),
+    JSON.stringify({ analyzers, mutationCache: { seedFrom: SEED_COMMAND } }),
+  );
+}
+
+/**
+ * `mutationCache.seedFrom` from `guardrails.config.json` reaches every command
+ * that runs stryker (#157): the fixture's fresh worktree ends up with the
+ * seeded kill only if the command was run.
+ */
+describe('mutationCache.seedFrom reaches stryker from the config', () => {
+  it.each([['commit'], ['push']])('through gate --mode=%s', async (mode) => {
+    configureSeedFixture({ stryker: 'required' });
+    await runCommand(
+      'gate',
+      [`--mode=${mode}`],
+      dependencies({ exec: seedFixtureExec }),
+    );
+    expect(keptKills(root)).toBe(1);
+  });
+
+  it('through verify', async () => {
+    configureSeedFixture({ stryker: 'required' });
+    await runCommand('verify', [], dependencies({ exec: seedFixtureExec }));
+    expect(keptKills(root)).toBe(1);
+  });
+
+  it('through gate --mode=stop', async () => {
+    configureSeedFixture({ stryker: { mode: 'required', rung: 'stop' } });
+    await runCommand(
+      'gate',
+      ['--mode=stop'],
+      dependencies({
+        exec: seedFixtureExec,
+        readStdin: () =>
+          Promise.resolve(JSON.stringify({ cwd: root, sessionId: 'sid' })),
+      }),
+    );
+    expect(keptKills(root)).toBe(1);
+  });
+
+  it('passes the configured timeout to the command', async () => {
+    writeSeedFixture(root);
+    writeFileSync(
+      path.join(root, 'guardrails.config.json'),
+      JSON.stringify({
+        analyzers: { stryker: 'required' },
+        mutationCache: { seedFrom: SEED_COMMAND, seedTimeoutSeconds: 7 },
+      }),
+    );
+    const timeouts: (number | undefined)[] = [];
+    await runCommand(
+      'verify',
+      [],
+      dependencies({
+        exec: (command, args, options) => {
+          if (command === 'sh') {
+            timeouts.push(options?.timeoutMs);
+          }
+          return seedFixtureExec(command, args, options);
+        },
+      }),
+    );
+    expect(timeouts).toEqual([7000]);
   });
 });

@@ -66,6 +66,12 @@ export interface CacheSeams {
   */
   fileModifiedTime: (filePath: string) => Promise<number>;
   repoRoot: string;
+  /**
+   * A seed for a missing cache, as one report's JSON, or `undefined` for none
+   * (#157, `mutationCache.seedFrom` — see `seed-cache.ts`). Absent when the
+   * project configures no seed.
+   */
+  seed?: (() => Promise<string | undefined>) | undefined;
 }
 
 export interface CacheRun {
@@ -246,6 +252,44 @@ async function writeOrRemove(
   await seams.removeFile(filePath);
 }
 
+/**
+ * Seed a missing cache, and say whether one was written (#157).
+ *
+ * Only when this run could use one: a run that cannot report per-test
+ * coverage, or has no fingerprint to stamp a cache with, discards any cache
+ * unread, so waiting on a download for it would buy nothing. A written seed
+ * then counts as measured under this run's fingerprint — it is checked
+ * against nothing else, and the rewrite after it is the same as a local
+ * cache's: cut to this run's files, Survived and NoCoverage dropped, and a
+ * kill kept only while its test file is unchanged on this branch.
+ */
+async function didSeedMissingCache(
+  seams: CacheSeams,
+  run: CacheRun,
+  hasFingerprint: boolean,
+): Promise<boolean> {
+  const cachePath = path.join(seams.repoRoot, STRYKER_INCREMENTAL_PATH);
+  const { seed: fetchSeed } = seams;
+  if (
+    !hasFingerprint ||
+    fetchSeed === undefined ||
+    !run.canThisRunReportCoverage ||
+    (await readOrEmpty(seams, cachePath)) !== ''
+  ) {
+    return false;
+  }
+  const seed = await fetchSeed();
+  if (seed === undefined) {
+    return false;
+  }
+  try {
+    await seams.writeFile(cachePath, seed);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function prepareIncrementalCache(
   seams: CacheSeams,
   run: CacheRun,
@@ -260,10 +304,15 @@ export async function prepareIncrementalCache(
     config: run.strykerConfig,
     lockfiles,
   });
+  const isSeeded = await didSeedMissingCache(
+    seams,
+    run,
+    fingerprint !== undefined,
+  );
   const cache = await reusableCache(
     seams,
     run,
-    isSameFingerprint(previous, fingerprint),
+    isSeeded || isSameFingerprint(previous, fingerprint),
   );
   await writeOrRemove(
     seams,

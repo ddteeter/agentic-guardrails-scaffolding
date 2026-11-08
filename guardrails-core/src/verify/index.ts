@@ -106,6 +106,7 @@ import {
   planRunRanges,
 } from './mutate-ranges.js';
 import { prepareIncrementalCache } from './prepare-cache.js';
+import { fetchSeed, nodeSeedSeams, type SeedSettings } from './seed-cache.js';
 import {
   isStrykerReportJson,
   parseStrykerJson,
@@ -186,6 +187,11 @@ export interface VerifyOptions {
    * (`RepoConfig.mutationScope`, #155). Defaults to `DEFAULT_MUTATION_SCOPE`.
    */
   mutationScope?: MutationScopeSettings | undefined;
+  /**
+   * The command that seeds a missing mutation cache, and its timeout
+   * (`RepoConfig.mutationCache.seedFrom`, #157). Absent seeds nothing.
+   */
+  mutationCacheSeed?: SeedSettings | undefined;
   /**
    * Per-analyzer opt-in (`RepoConfig.analyzers`). Absent → every analyzer is
    * `auto`. See `analyzer-policy.ts` for the truth table.
@@ -1760,6 +1766,13 @@ export async function strykerScope(
   return { inScope, outOfScope, config, negations };
 }
 
+/**
+`VerifyOptions.progress`'s default.
+*/
+function writeStderrLine(line: string): void {
+  process.stderr.write(`${line}\n`);
+}
+
 async function runStryker(
   options: VerifyOptions,
   resolveBin: (tool: string) => string,
@@ -1807,8 +1820,26 @@ async function runStryker(
     });
 
   await removeFile(path.join(repoRoot, reportPath));
+  const seed = options.mutationCacheSeed;
   await prepareIncrementalCache(
-    { readFile, writeFile, removeFile, fileModifiedTime, repoRoot },
+    {
+      readFile,
+      writeFile,
+      removeFile,
+      fileModifiedTime,
+      repoRoot,
+      seed:
+        seed &&
+        (() =>
+          fetchSeed(
+            nodeSeedSeams({
+              exec,
+              repoRoot,
+              warn: options.progress ?? writeStderrLine,
+            }),
+            seed,
+          )),
+    },
     {
       // The project's own `!` exclusions applied, so a cached file this run
       // will not mutate cannot survive — see `applyMutateNegations`.
@@ -1867,11 +1898,7 @@ async function runStryker(
         },
       }),
     cwd: repoRoot,
-    progress:
-      options.progress ??
-      ((line) => {
-        process.stderr.write(`${line}\n`);
-      }),
+    progress: options.progress ?? writeStderrLine,
   });
   if (locked.kind === 'deferred') {
     return [

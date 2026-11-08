@@ -65,8 +65,31 @@ interface CachedFile {
   readonly raw: Readonly<Record<string, unknown>>;
 }
 
+interface CachedTest {
+  readonly id: string;
+  /**
+  The test as stryker wrote it (`name`, and `location` where the runner has one).
+  */
+  readonly raw: Readonly<Record<string, unknown>>;
+}
+
+interface CachedTestFile {
+  /**
+  Every test the file declares, in order — a repeated id included.
+  */
+  readonly tests: readonly CachedTest[];
+  /**
+  The test file entry as stryker wrote it (`source`, `tests`).
+  */
+  readonly raw: Readonly<Record<string, unknown>>;
+}
+
 export interface IncrementalCache {
   readonly files: ReadonlyMap<string, CachedFile>;
+  /**
+  `testFiles`, test file by test file; empty when the report has none.
+  */
+  readonly testFiles: ReadonlyMap<string, CachedTestFile>;
   /**
   Test id → the test file it sits in. An id two files claim is absent.
   */
@@ -142,31 +165,54 @@ function parseFile(value: unknown): CachedFile | undefined {
   return mutants && { mutants, raw: value };
 }
 
-function parseFiles(value: unknown): Map<string, CachedFile> | undefined {
+/**
+ * `parse` applied to every value of the object `value`, keyed as in it, or
+ * `undefined` if it is not an object or any one value does not parse.
+ */
+function parseEntries<T>(
+  value: unknown,
+  parse: (entry: unknown) => T | undefined,
+): Map<string, T> | undefined {
   if (!isRecord(value)) {
     return undefined;
   }
-  const files = new Map<string, CachedFile>();
-  for (const [file, entry] of Object.entries(value)) {
-    const parsed = parseFile(entry);
+  const entries = new Map<string, T>();
+  for (const [key, entry] of Object.entries(value)) {
+    const parsed = parse(entry);
     if (parsed === undefined) {
       return undefined;
     }
-    files.set(file, parsed);
+    entries.set(key, parsed);
   }
-  return files;
+  return entries;
+}
+
+function parseFiles(value: unknown): Map<string, CachedFile> | undefined {
+  return parseEntries(value, parseFile);
 }
 
 /**
-The ids one `testFiles` entry declares, or `undefined` if it is malformed.
+One `testFiles` entry, or `undefined` if it is malformed.
 */
-function declaredTestIds(entry: unknown): string[] | undefined {
+function parseTestFile(entry: unknown): CachedTestFile | undefined {
   if (!isRecord(entry)) {
     return undefined;
   }
-  return parseList(entry.tests, (test) =>
-    isRecord(test) && typeof test.id === 'string' ? test.id : undefined,
+  const tests = parseList(entry.tests, (test) =>
+    isRecord(test) && typeof test.id === 'string'
+      ? { id: test.id, raw: test }
+      : undefined,
   );
+  return tests && { tests, raw: entry };
+}
+
+function parseTestFileEntries(
+  value: unknown,
+): Map<string, CachedTestFile> | undefined {
+  if (value === undefined) {
+    return new Map();
+  }
+  return parseEntries(value, parseTestFile);
 }
 
 /**
@@ -179,21 +225,13 @@ function declaredTestIds(entry: unknown): string[] | undefined {
  * file, and a rule that asks "did the killing test's file change?" has no
  * answer for it.
  */
-function parseTestFiles(value: unknown): Map<string, string> | undefined {
-  if (value === undefined) {
-    return new Map();
-  }
-  if (!isRecord(value)) {
-    return undefined;
-  }
+function testFileIndex(
+  testFiles: ReadonlyMap<string, CachedTestFile>,
+): Map<string, string> {
   const testFileOf = new Map<string, string>();
   const ambiguous = new Set<string>();
-  for (const [file, entry] of Object.entries(value)) {
-    const ids = declaredTestIds(entry);
-    if (ids === undefined) {
-      return undefined;
-    }
-    for (const id of ids) {
+  for (const [file, entry] of testFiles) {
+    for (const { id } of entry.tests) {
       if (testFileOf.has(id)) {
         ambiguous.add(id);
       }
@@ -218,11 +256,16 @@ export function parseIncrementalCache(
     return undefined;
   }
   const files = parseFiles(parsed.files);
-  const testFileOf = parseTestFiles(parsed.testFiles);
-  if (files === undefined || testFileOf === undefined) {
+  const testFiles = parseTestFileEntries(parsed.testFiles);
+  if (files === undefined || testFiles === undefined) {
     return undefined;
   }
-  return { files, testFileOf, raw: parsed };
+  return {
+    files,
+    testFiles,
+    testFileOf: testFileIndex(testFiles),
+    raw: parsed,
+  };
 }
 
 /**

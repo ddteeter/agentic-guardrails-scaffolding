@@ -166,6 +166,24 @@ function kept(files: Map<string, Entry>): Record<string, string[]> | undefined {
   );
 }
 
+/**
+A fresh worktree: no cache, no sidecar, and a seed on offer.
+*/
+function freshWorktree(seedJson: string | undefined) {
+  const fs = healthyRepo();
+  fs.files.delete(CACHE);
+  fs.files.delete(SIDECAR);
+  let seedCalls = 0;
+  const seams = {
+    ...fs.seams,
+    seed: () => {
+      seedCalls += 1;
+      return Promise.resolve(seedJson);
+    },
+  };
+  return { ...fs, seams, seedCalls: () => seedCalls };
+}
+
 describe('prepareIncrementalCache', () => {
   it('keeps every kill and drops every survivor when no test changed', async () => {
     const { files, seams } = healthyRepo();
@@ -451,6 +469,104 @@ describe('prepareIncrementalCache', () => {
         changedFiles: [...run.changedFiles, 'vitest.setup.ts'],
       });
       expect(files.has(CACHE)).toBe(false);
+    });
+  });
+
+  describe('seeding a missing cache (#157)', () => {
+    it('writes the seed as the cache, and rewrites it like a local one', async () => {
+      // Survivors dropped: the seed passes the same targeted rule.
+      const { files, seams } = freshWorktree(cacheJson());
+      await prepareIncrementalCache(seams, run);
+      expect(kept(files)).toEqual({
+        'src/a.ts': ['Killed'],
+        'src/b.ts': ['Killed'],
+      });
+    });
+
+    it('stamps the seed with this checkout’s fingerprint', async () => {
+      // So the NEXT run reads it as its own local cache.
+      const { files, seams } = freshWorktree(cacheJson());
+      await prepareIncrementalCache(seams, run);
+      expect(files.get(SIDECAR)?.contents).toBe(sidecar());
+    });
+
+    it('reuses a seed whatever sidecar was lying around', async () => {
+      const { files, seams } = freshWorktree(cacheJson());
+      files.set(SIDECAR, { contents: sidecar('{"other":true}'), mtime: 0 });
+      await prepareIncrementalCache(seams, run);
+      expect(kept(files)).toEqual({
+        'src/a.ts': ['Killed'],
+        'src/b.ts': ['Killed'],
+      });
+    });
+
+    it('drops a seeded kill whose test this branch changed', async () => {
+      const { files, seams } = freshWorktree(cacheJson());
+      await prepareIncrementalCache(seams, {
+        ...run,
+        changedFiles: [...run.changedFiles, 'a.test.ts'],
+      });
+      expect(kept(files)).toEqual({ 'src/a.ts': [], 'src/b.ts': ['Killed'] });
+    });
+
+    it('cuts a seed to this run’s files', async () => {
+      const { files, seams } = freshWorktree(cacheJson());
+      await prepareIncrementalCache(seams, {
+        ...run,
+        mutateFiles: ['src/a.ts'],
+      });
+      expect(kept(files)).toEqual({ 'src/a.ts': ['Killed'] });
+    });
+
+    it('runs cold when no seed came back', async () => {
+      const { files, seams } = freshWorktree(undefined);
+      await prepareIncrementalCache(seams, run);
+      expect(files.has(CACHE)).toBe(false);
+      expect(files.get(SIDECAR)?.contents).toBe(sidecar());
+    });
+
+    it('runs cold when the seed cannot be written', async () => {
+      const { files, seams } = freshWorktree(cacheJson());
+      await prepareIncrementalCache(
+        {
+          ...seams,
+          writeFile: (file, contents) =>
+            file === CACHE
+              ? Promise.reject(new Error('ENOSPC'))
+              : seams.writeFile(file, contents),
+        },
+        run,
+      );
+      expect(files.has(CACHE)).toBe(false);
+    });
+
+    it('does not fetch a seed while a local cache exists', async () => {
+      const { files, seams, seedCalls } = freshWorktree(cacheJson());
+      files.set(CACHE, { contents: cacheJson(), mtime: 5000 });
+      await prepareIncrementalCache(seams, run);
+      expect(seedCalls()).toBe(0);
+    });
+
+    it('fetches a seed in place of an empty cache file', async () => {
+      const { files, seams, seedCalls } = freshWorktree(cacheJson());
+      files.set(CACHE, { contents: '', mtime: 5000 });
+      await prepareIncrementalCache(seams, run);
+      expect(seedCalls()).toBe(1);
+    });
+
+    it('does not fetch a seed this run could not use', async () => {
+      // No coverage, or no fingerprint to stamp it with: the seed would be
+      // discarded unread, so the download is not worth waiting on.
+      const noCoverage = freshWorktree(cacheJson());
+      await prepareIncrementalCache(noCoverage.seams, {
+        ...run,
+        canThisRunReportCoverage: false,
+      });
+      const noStryker = freshWorktree(cacheJson());
+      noStryker.files.delete(STRYKER_MANIFEST);
+      await prepareIncrementalCache(noStryker.seams, run);
+      expect([noCoverage.seedCalls(), noStryker.seedCalls()]).toEqual([0, 0]);
+      expect(noStryker.files.has(CACHE)).toBe(false);
     });
   });
 });
