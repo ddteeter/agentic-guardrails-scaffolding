@@ -6126,3 +6126,51 @@ describe('mutationCache.seedFrom reaches stryker from the config', () => {
     expect(timeouts).toEqual([7000]);
   });
 });
+
+/**
+ * `mutation-fingerprint` writes the sidecar CI uploads beside its report
+ * (#157): CI runs stryker itself, so nothing else there writes one, and a
+ * seed without one is discarded.
+ */
+function sidecarPath(): string {
+  return path.join(root, 'reports', 'stryker-incremental.fingerprint.json');
+}
+
+describe('mutation-fingerprint: the sidecar a CI seed needs', () => {
+  it('writes this checkout’s fingerprint where the gate reads it, and names the file', async () => {
+    writeCacheFixture(root);
+    const expected = readFileSync(sidecarPath(), 'utf8');
+    rmSync(path.join(root, 'reports'), { recursive: true });
+    const code = await runCommand('mutation-fingerprint', [], dependencies());
+    expect(code).toBe(0);
+    expect(readFileSync(sidecarPath(), 'utf8')).toBe(expected);
+    expect(out.join('')).toBe(
+      `${path.join('reports', 'stryker-incremental.fingerprint.json')}\n`,
+    );
+  });
+
+  it('fails, writing nothing, when no installed stryker can be found', async () => {
+    writeCacheFixture(root);
+    rmSync(path.join(root, 'reports'), { recursive: true });
+    rmSync(path.join(root, 'node_modules', '@stryker-mutator'), {
+      recursive: true,
+    });
+    const code = await runCommand('mutation-fingerprint', [], dependencies());
+    expect(code).toBe(1);
+    expect(existsSync(sidecarPath())).toBe(false);
+    expect(errors.join('')).toContain('@stryker-mutator/core');
+  });
+
+  it('is listed in the usage', async () => {
+    await runCommand('no-such-command', [], dependencies());
+    expect(errors.join('')).toContain('mutation-fingerprint');
+  });
+});
+
+describe('command dispatch', () => {
+  it('treats an inherited object key as an unknown command', async () => {
+    const code = await runCommand('toString', [], dependencies());
+    expect(code).toBe(1);
+    expect(errors.join('')).toContain('usage: guardrails-core <command>');
+  });
+});

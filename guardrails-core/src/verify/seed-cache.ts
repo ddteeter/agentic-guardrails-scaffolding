@@ -11,13 +11,22 @@
  *
  * What to fetch and from where is entirely the consumer's: nothing here
  * knows about GitHub, artifacts or `gh` (docs/adoption.md has a sample). And
- * nothing here decides what to TRUST — the caller writes the seed as the
- * local cache and runs it through the same rewrite every cache gets, so a seed
- * can only spare a mutant the targeted rule would have spared locally.
+ * nothing here decides which verdicts to TRUST — the caller runs the seed
+ * through the same rewrite every cache gets, so a seed can only spare a
+ * mutant the targeted rule would have spared locally.
  *
- * Every failure is a cold run, never a gate failure: the seed is an
- * optimisation, and a flaky download must not block a push. Each says why on
- * one line, so a consumer whose seeding silently stopped working can see it.
+ * What this does check is that the seed was measured under THIS checkout:
+ * every report must land with its fingerprint sidecar beside it
+ * (`<name>.fingerprint.json` next to `<name>.json`, as CI uploads them), every
+ * sidecar must agree — a sharded run writes one per shard — and they must
+ * match the caller's fingerprint. A seed measured under another stryker,
+ * config or lockfile is the same hazard `cache-fingerprint.ts` discards a
+ * local cache for.
+ *
+ * Every failure is a cold run for the files the seed would have covered,
+ * never a gate failure: the seed is an optimisation, and a flaky download
+ * must not block a push. Each says why on one line, so a consumer whose
+ * seeding silently stopped working can see it.
  */
 
 import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
@@ -26,6 +35,12 @@ import path from 'node:path';
 import process from 'node:process';
 
 import type { Exec, ExecResult } from '../exec.js';
+import {
+  isFingerprintEqual,
+  parseFingerprint,
+  serializeFingerprint,
+  type CacheFingerprint,
+} from './cache-fingerprint.js';
 import { mergeReports } from './merge-reports.js';
 
 export interface SeedSettings {
@@ -91,12 +106,57 @@ function commandFailure(
   return result.code === 0 ? undefined : `failed (exit ${String(result.code)})`;
 }
 
+const SIDECAR_SUFFIX = '.fingerprint.json';
+
 /**
- * A report, by name: JSON, but not the fingerprint sidecar a consumer may
- * upload beside the cache — the seed is fingerprinted from this checkout.
- */
+A report, by name: JSON, but not a fingerprint sidecar.
+*/
 function isReport(file: string): boolean {
-  return file.endsWith('.json') && !file.endsWith('.fingerprint.json');
+  return file.endsWith('.json') && !file.endsWith(SIDECAR_SUFFIX);
+}
+
+/**
+`<name>.json`'s sidecar: `<name>.fingerprint.json`, in the same directory.
+*/
+function sidecarOf(report: string): string {
+  return `${report.slice(0, -'.json'.length)}${SIDECAR_SUFFIX}`;
+}
+
+/**
+ * Why the reports' sidecars rule the seed out, or `undefined` when every
+ * report has one and all of them match `current`.
+ */
+async function fingerprintFailure(
+  seams: SeedSeams,
+  directory: string,
+  landed: ReadonlySet<string>,
+  reports: readonly string[],
+  current: CacheFingerprint,
+): Promise<string | undefined> {
+  const unpaired = reports.find((report) => !landed.has(sidecarOf(report)));
+  if (unpaired !== undefined) {
+    return `left ${unpaired} with no fingerprint beside it`;
+  }
+  const sidecars = reports.map((report) => sidecarOf(report));
+  const texts = await Promise.all(
+    sidecars.map((file) => seams.readFile(path.join(directory, file))),
+  );
+  const fingerprints: CacheFingerprint[] = [];
+  for (const [index, text] of texts.entries()) {
+    const fingerprint = parseFingerprint(text);
+    if (fingerprint === undefined) {
+      return `left a fingerprint that cannot be read (${String(sidecars[index])})`;
+    }
+    fingerprints.push(fingerprint);
+  }
+  if (
+    new Set(fingerprints.map((each) => serializeFingerprint(each))).size > 1
+  ) {
+    return 'left shards whose fingerprints disagree';
+  }
+  return fingerprints.every((each) => isFingerprintEqual(each, current))
+    ? undefined
+    : 'was measured under another stryker version, stryker config or lockfile than this checkout';
 }
 
 type Outcome =
@@ -106,6 +166,7 @@ async function collect(
   seams: SeedSeams,
   directory: string,
   settings: SeedSettings,
+  current: CacheFingerprint,
 ): Promise<Outcome> {
   const result = await seams.exec('sh', ['-c', settings.command], {
     cwd: seams.repoRoot,
@@ -122,6 +183,16 @@ async function collect(
   if (reports.length === 0) {
     return { why: 'wrote no report to $GUARDRAILS_SEED_DIR' };
   }
+  const mismatch = await fingerprintFailure(
+    seams,
+    directory,
+    new Set(landed),
+    reports,
+    current,
+  );
+  if (mismatch !== undefined) {
+    return { why: mismatch };
+  }
   const texts = await Promise.all(
     reports.map((file) => seams.readFile(path.join(directory, file))),
   );
@@ -136,10 +207,11 @@ async function collect(
 async function collectInScratchDirectory(
   seams: SeedSeams,
   settings: SeedSettings,
+  current: CacheFingerprint,
 ): Promise<Outcome> {
   const directory = await seams.makeTempDir();
   try {
-    return await collect(seams, directory, settings);
+    return await collect(seams, directory, settings, current);
   } finally {
     try {
       await seams.removeDirectory(directory);
@@ -155,21 +227,24 @@ function messageOf(error: unknown): string {
 
 /**
  * The seed `settings.command` fetched, as one cache's JSON, or `undefined` —
- * a cold run. Says which on one line through `seams.warn`, either way.
+ * a cold run for the files it would have covered. `current` is this
+ * checkout's fingerprint, which the seed's must match. Says which on one line
+ * through `seams.warn`, either way.
  */
 export async function fetchSeed(
   seams: SeedSeams,
   settings: SeedSettings,
+  current: CacheFingerprint,
 ): Promise<string | undefined> {
   let outcome: Outcome;
   try {
-    outcome = await collectInScratchDirectory(seams, settings);
+    outcome = await collectInScratchDirectory(seams, settings, current);
   } catch (error) {
     outcome = { why: `could not be read (${messageOf(error)})` };
   }
   if ('why' in outcome) {
     seams.warn(
-      `guardrails: mutation cache seed (mutationCache.seedFrom) ${outcome.why}; running stryker cold.`,
+      `guardrails: mutation cache seed (mutationCache.seedFrom) ${outcome.why}; running cold for the files it would have covered.`,
     );
     return undefined;
   }

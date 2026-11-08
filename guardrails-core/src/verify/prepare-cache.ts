@@ -25,11 +25,13 @@ import {
   serializeFingerprint,
   strykerVersionFrom,
   isSameFingerprint,
+  type CacheFingerprint,
   type Lockfile,
 } from './cache-fingerprint.js';
 import { isTestFile, isTestSupportFile } from './git.js';
 import {
   cacheTestFiles,
+  dropUnresolvedKills,
   dropUntrusted,
   filterToScope,
   hasPerTestCoverage,
@@ -38,6 +40,7 @@ import {
   type CacheInvalidation,
   type IncrementalCache,
 } from './incremental-cache.js';
+import { mergeSeedInto } from './merge-reports.js';
 import {
   UNREADABLE_CACHE_TIME,
   UNREADABLE_TEST_TIME,
@@ -67,11 +70,14 @@ export interface CacheSeams {
   fileModifiedTime: (filePath: string) => Promise<number>;
   repoRoot: string;
   /**
-   * A seed for a missing cache, as one report's JSON, or `undefined` for none
-   * (#157, `mutationCache.seedFrom` — see `seed-cache.ts`). Absent when the
-   * project configures no seed.
+   * A seed for the files the local cache lacks, as one report's JSON, or
+   * `undefined` for none (#157, `mutationCache.seedFrom` — see
+   * `seed-cache.ts`, which checks it was measured under `fingerprint`).
+   * Absent when the project configures no seed.
    */
-  seed?: (() => Promise<string | undefined>) | undefined;
+  seed?:
+    | ((fingerprint: CacheFingerprint) => Promise<string | undefined>)
+    | undefined;
 }
 
 export interface CacheRun {
@@ -95,7 +101,7 @@ export interface CacheRun {
 }
 
 async function readOrEmpty(
-  seams: CacheSeams,
+  seams: ReadSeams,
   filePath: string,
 ): Promise<string> {
   try {
@@ -112,7 +118,7 @@ async function readOrEmpty(
  * is the one stryker runs.
  */
 async function installedStrykerVersion(
-  seams: CacheSeams,
+  seams: ReadSeams,
 ): Promise<string | undefined> {
   for (const directory of upwardFrom(seams.repoRoot)) {
     const manifest = await readOrEmpty(
@@ -132,7 +138,7 @@ async function installedStrykerVersion(
   return undefined;
 }
 
-async function presentLockfiles(seams: CacheSeams): Promise<Lockfile[]> {
+async function presentLockfiles(seams: ReadSeams): Promise<Lockfile[]> {
   const read = await Promise.all(
     LOCKFILE_NAMES.map(async (name) => ({
       name,
@@ -186,43 +192,46 @@ async function testsNewerThanCache(
 }
 
 /**
- * The cache this run may reuse, or `undefined` for none.
- *
- * In order: the run must be able to tell a stale verdict (coverage); the cache
- * must parse and have been written under this run's fingerprint; it is cut to
- * this run's files and must still show per-test coverage; a changed
- * test-support file discards it; and then the invalidation rule decides.
+ * The test files, of those a rule asks about, that changed since the cache
+ * was measured.
  */
-async function reusableCache(
-  seams: CacheSeams,
-  run: CacheRun,
-  isFingerprintCurrent: boolean,
-): Promise<IncrementalCache | undefined> {
-  if (!isFingerprintCurrent || !run.canThisRunReportCoverage) {
+type NewerThanCache = (files: readonly string[]) => Promise<string[]>;
+
+/**
+ * `json` as a cache this run may weigh, cut to its files, or `undefined`.
+ *
+ * In order: the run must be able to tell a stale verdict (coverage); the
+ * cache must parse; cut to this run's files it must still show per-test
+ * coverage; and a changed test-support file discards it.
+ */
+function admissible(json: string, run: CacheRun): IncrementalCache | undefined {
+  if (!run.canThisRunReportCoverage) {
     return undefined;
   }
-  const cache = parseIncrementalCache(
-    await readOrEmpty(
-      seams,
-      path.join(seams.repoRoot, STRYKER_INCREMENTAL_PATH),
-    ),
-  );
+  const cache = parseIncrementalCache(json);
   if (cache === undefined) {
     return undefined;
   }
   const scoped = filterToScope(cache, run.mutateFiles);
-  if (
-    !hasPerTestCoverage(scoped) ||
+  return !hasPerTestCoverage(scoped) ||
     run.changedFiles.some((file) => isTestSupportFile(file))
-  ) {
-    return undefined;
-  }
+    ? undefined
+    : scoped;
+}
+
+/**
+The invalidation rule applied to an admissible cache.
+*/
+async function trusted(
+  cache: IncrementalCache,
+  run: CacheRun,
+  newerThanCache: NewerThanCache,
+): Promise<IncrementalCache | undefined> {
   if (run.invalidation === 'any-test-change') {
-    const stale = await testsNewerThanCache(
-      seams,
+    const stale = await newerThanCache(
       run.changedFiles.filter((file) => isTestFile(file)),
     );
-    return stale.length === 0 ? scoped : undefined;
+    return stale.length === 0 ? cache : undefined;
   }
   // The WHOLE change set, not only its `*.test.*` files: `dropUntrusted`
   // looks a changed file up among the files the cache itself names as tests,
@@ -230,9 +239,108 @@ async function reusableCache(
   // (`*.check.ts`) is still caught.
   const changedTests = new Set([
     ...run.changedFiles,
-    ...(await testsNewerThanCache(seams, cacheTestFiles(scoped))),
+    ...(await newerThanCache(cacheTestFiles(cache))),
   ]);
-  return dropUntrusted(scoped, changedTests);
+  return dropUntrusted(cache, changedTests);
+}
+
+/**
+ * The local cache this run may reuse, or `undefined` for none: written under
+ * this run's fingerprint, admissible, and then the invalidation rule, with
+ * "changed since" read off the cache file's timestamp.
+ */
+async function reusableCache(
+  seams: CacheSeams,
+  run: CacheRun,
+  isFingerprintCurrent: boolean,
+): Promise<IncrementalCache | undefined> {
+  if (!isFingerprintCurrent) {
+    return undefined;
+  }
+  const cache = admissible(
+    await readOrEmpty(
+      seams,
+      path.join(seams.repoRoot, STRYKER_INCREMENTAL_PATH),
+    ),
+    run,
+  );
+  return (
+    cache && trusted(cache, run, (files) => testsNewerThanCache(seams, files))
+  );
+}
+
+/**
+ * Could a seed be used at all? A run that cannot report per-test coverage,
+ * changed a test-support file, or (under `any-test-change`) changed any test
+ * would discard one unread, so waiting on a download for it buys nothing.
+ */
+function canUseSeed(run: CacheRun): boolean {
+  return (
+    run.canThisRunReportCoverage &&
+    run.changedFiles.every(
+      (file) =>
+        !isTestSupportFile(file) &&
+        !(run.invalidation === 'any-test-change' && isTestFile(file)),
+    )
+  );
+}
+
+/**
+ * The cache to write: the local one with a seed's entries added for the
+ * in-scope files it lacks (#157), or `undefined` when nothing was seeded.
+ *
+ * Per file, on every run — a fresh worktree lacks every file, a new branch
+ * in an old checkout lacks the files it touches, and a cache just discarded
+ * lacks them all. Where both hold a file the local entry is kept. The seed
+ * is fetched only when some in-scope file is missing, because the command
+ * costs a download. (A file with no mutants never appears in a report, so
+ * one in scope keeps asking.)
+ *
+ * The seed passes the rules a local cache does, with one difference: a
+ * seeded kill is judged stale by this branch's changed files alone, since
+ * the local cache's timestamp says nothing about when CI measured it. The
+ * two are then merged with their test ids re-keyed (`mergeSeedInto`); a
+ * seeded kill whose test no longer resolves after that is dropped, and a
+ * merge that cannot vouch for itself leaves the local cache alone.
+ */
+async function withSeed(
+  seams: CacheSeams,
+  run: CacheRun,
+  fingerprint: CacheFingerprint | undefined,
+  local: IncrementalCache | undefined,
+): Promise<string | undefined> {
+  const missing = run.mutateFiles.filter((file) => !local?.files.has(file));
+  const { seed: fetchSeed } = seams;
+  if (
+    fingerprint === undefined ||
+    fetchSeed === undefined ||
+    missing.length === 0 ||
+    !canUseSeed(run)
+  ) {
+    return undefined;
+  }
+  const admitted = admissible((await fetchSeed(fingerprint)) ?? '', run);
+  if (admitted === undefined) {
+    return undefined;
+  }
+  const changed = new Set(run.changedFiles);
+  const seed = await trusted(filterToScope(admitted, missing), run, (files) =>
+    Promise.resolve(files.filter((file) => changed.has(file))),
+  );
+  if (seed === undefined) {
+    return undefined;
+  }
+  const seedJson = serializeIncrementalCache(seed);
+  if (local === undefined) {
+    return seedJson;
+  }
+  const merged = parseIncrementalCache(
+    mergeSeedInto(serializeIncrementalCache(local), seedJson) ?? '',
+  );
+  return (
+    merged &&
+    serializeIncrementalCache(dropUnresolvedKills(merged, new Set(missing)))
+  );
 }
 
 async function writeOrRemove(
@@ -252,72 +360,69 @@ async function writeOrRemove(
   await seams.removeFile(filePath);
 }
 
+type ReadSeams = Pick<CacheSeams, 'readFile' | 'repoRoot'>;
+
 /**
- * Seed a missing cache, and say whether one was written (#157).
- *
- * Only when this run could use one: a run that cannot report per-test
- * coverage, or has no fingerprint to stamp a cache with, discards any cache
- * unread, so waiting on a download for it would buy nothing. A written seed
- * then counts as measured under this run's fingerprint — it is checked
- * against nothing else, and the rewrite after it is the same as a local
- * cache's: cut to this run's files, Survived and NoCoverage dropped, and a
- * kill kept only while its test file is unchanged on this branch.
+ * This checkout's fingerprint under `strykerConfig`, or `undefined` when no
+ * installed stryker can be found — the value a cache measured here is
+ * stamped with.
  */
-async function didSeedMissingCache(
-  seams: CacheSeams,
-  run: CacheRun,
-  hasFingerprint: boolean,
-): Promise<boolean> {
-  const cachePath = path.join(seams.repoRoot, STRYKER_INCREMENTAL_PATH);
-  const { seed: fetchSeed } = seams;
-  if (
-    !hasFingerprint ||
-    fetchSeed === undefined ||
-    !run.canThisRunReportCoverage ||
-    (await readOrEmpty(seams, cachePath)) !== ''
-  ) {
-    return false;
+async function checkoutFingerprint(
+  seams: ReadSeams,
+  strykerConfig: string,
+): Promise<CacheFingerprint | undefined> {
+  const [strykerVersion, lockfiles] = await Promise.all([
+    installedStrykerVersion(seams),
+    presentLockfiles(seams),
+  ]);
+  return computeFingerprint({
+    strykerVersion,
+    config: strykerConfig,
+    lockfiles,
+  });
+}
+
+/**
+ * Write this checkout's fingerprint sidecar, and return its path relative to
+ * the repo, or `undefined` (writing nothing) when no installed stryker can be
+ * found (#157, `guardrails mutation-fingerprint`).
+ *
+ * For CI, which runs stryker itself and so never passes through
+ * `prepareIncrementalCache`: a seed is used only with this file beside it.
+ */
+export async function writeFingerprintSidecar(
+  seams: ReadSeams & Pick<CacheSeams, 'writeFile'>,
+  strykerConfig: string,
+): Promise<string | undefined> {
+  const fingerprint = await checkoutFingerprint(seams, strykerConfig);
+  if (fingerprint === undefined) {
+    return undefined;
   }
-  const seed = await fetchSeed();
-  if (seed === undefined) {
-    return false;
-  }
-  try {
-    await seams.writeFile(cachePath, seed);
-    return true;
-  } catch {
-    return false;
-  }
+  await seams.writeFile(
+    path.join(seams.repoRoot, STRYKER_FINGERPRINT_PATH),
+    serializeFingerprint(fingerprint),
+  );
+  return STRYKER_FINGERPRINT_PATH;
 }
 
 export async function prepareIncrementalCache(
   seams: CacheSeams,
   run: CacheRun,
 ): Promise<void> {
-  const [strykerVersion, lockfiles, previous] = await Promise.all([
-    installedStrykerVersion(seams),
-    presentLockfiles(seams),
+  const [fingerprint, previous] = await Promise.all([
+    checkoutFingerprint(seams, run.strykerConfig),
     readOrEmpty(seams, path.join(seams.repoRoot, STRYKER_FINGERPRINT_PATH)),
   ]);
-  const fingerprint = computeFingerprint({
-    strykerVersion,
-    config: run.strykerConfig,
-    lockfiles,
-  });
-  const isSeeded = await didSeedMissingCache(
+  const local = await reusableCache(
     seams,
     run,
-    fingerprint !== undefined,
+    isSameFingerprint(previous, fingerprint),
   );
-  const cache = await reusableCache(
-    seams,
-    run,
-    isSeeded || isSameFingerprint(previous, fingerprint),
-  );
+  const seeded = await withSeed(seams, run, fingerprint, local);
   await writeOrRemove(
     seams,
     path.join(seams.repoRoot, STRYKER_INCREMENTAL_PATH),
-    cache && serializeIncrementalCache(cache),
+    seeded ?? (local && serializeIncrementalCache(local)),
   );
   // Stamped BEFORE the run, for the cache stryker writes at its end — a cold
   // run included. A sidecar that cannot be written leaves the next run

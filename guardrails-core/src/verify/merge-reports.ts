@@ -38,6 +38,18 @@ interface MergedTestFile {
 class Refused extends Error {}
 
 /**
+ * What a test file held at two different sources does to the merge.
+ *
+ * - `refuse`: shards of one CI run ran one checkout, so two sources mean the
+ *   reports are not what they claim, and the merge is refused.
+ * - `unresolve`: a local cache and a seed were measured at different
+ *   checkouts, so differing sources are expected. The first input's copy is
+ *   kept, and a later input's tests in that file map to nothing: their kills
+ *   stop resolving, which the targeted rule drops like any untraceable kill.
+ */
+type SourceConflict = 'refuse' | 'unresolve';
+
+/**
  * What makes two reports' tests the same test. The occurrence count tells
  * apart two tests of one file that share a name: the n-th of them in one
  * report is the n-th in another.
@@ -55,38 +67,64 @@ class ReportMerge {
   private nextTestId = 0;
   private nextMutantId = 0;
 
+  constructor(private readonly onSourceConflict: SourceConflict) {}
+
   /**
   This report's test id → its id in the merge.
   */
   private addTests(report: IncrementalCache): Map<string, string> {
     const idOf = new Map<string, string>();
+    const declared = new Set<string>();
     for (const [file, entry] of report.testFiles) {
       const merged = this.testFileFor(file, entry.raw);
-      const occurrences = new Map<string, number>();
-      for (const test of entry.tests) {
-        if (idOf.has(test.id)) {
-          throw new Refused(test.id);
-        }
+      this.mapTests(entry.tests, merged, idOf, declared);
+    }
+    return idOf;
+  }
+
+  /**
+   * Record each of one test file's tests in `idOf`, unless `merged` is
+   * `undefined` (its tests map to nothing). Every id goes into `declared`
+   * either way: one report declaring an id twice refuses the merge.
+   */
+  private mapTests(
+    tests: readonly { readonly id: string; readonly raw: Fields }[],
+    merged: MergedTestFile | undefined,
+    idOf: Map<string, string>,
+    declared: Set<string>,
+  ): void {
+    const occurrences = new Map<string, number>();
+    for (const test of tests) {
+      if (declared.has(test.id)) {
+        throw new Refused(test.id);
+      }
+      declared.add(test.id);
+      if (merged !== undefined) {
         const name = testKey(test.raw, 0);
         const occurrence = occurrences.get(name) ?? 0;
         occurrences.set(name, occurrence + 1);
         idOf.set(test.id, this.mergedId(merged, test.raw, occurrence));
       }
     }
-    return idOf;
   }
 
-  private testFileFor(file: string, raw: Fields): MergedTestFile {
+  /**
+  The merged entry for `file`, or `undefined` when its tests map to nothing.
+  */
+  private testFileFor(file: string, raw: Fields): MergedTestFile | undefined {
     const existing = this.testFiles.get(file);
     if (existing === undefined) {
       const created = { raw, tests: [], idOf: new Map<string, string>() };
       this.testFiles.set(file, created);
       return created;
     }
-    if (existing.raw.source !== raw.source) {
+    if (existing.raw.source === raw.source) {
+      return existing;
+    }
+    if (this.onSourceConflict === 'refuse') {
       throw new Refused(file);
     }
-    return existing;
+    return undefined;
   }
 
   private mergedId(
@@ -143,12 +181,10 @@ class ReportMerge {
   }
 }
 
-/**
- * The reports in `texts` as one cache's JSON, or `undefined` when they cannot
- * be merged safely (see the module comment). Everything but `files` and
- * `testFiles` — `schemaVersion`, `thresholds` — is taken from the first.
- */
-export function mergeReports(texts: readonly string[]): string | undefined {
+function mergeParsed(
+  texts: readonly string[],
+  onSourceConflict: SourceConflict,
+): string | undefined {
   const reports = texts
     .map((text) => parseIncrementalCache(text))
     .filter((report) => report !== undefined);
@@ -156,7 +192,7 @@ export function mergeReports(texts: readonly string[]): string | undefined {
   if (first === undefined || reports.length !== texts.length) {
     return undefined;
   }
-  const merge = new ReportMerge();
+  const merge = new ReportMerge(onSourceConflict);
   try {
     for (const [index, report] of reports.entries()) {
       merge.add(report, index);
@@ -168,4 +204,27 @@ export function mergeReports(texts: readonly string[]): string | undefined {
     throw error;
   }
   return merge.serialize(first);
+}
+
+/**
+ * The reports in `texts` as one cache's JSON, or `undefined` when they cannot
+ * be merged safely (see the module comment). Everything but `files` and
+ * `testFiles` — `schemaVersion`, `thresholds` — is taken from the first.
+ */
+export function mergeReports(texts: readonly string[]): string | undefined {
+  return mergeParsed(texts, 'refuse');
+}
+
+/**
+ * A local cache and a seed for the files it lacks, as one cache's JSON, or
+ * `undefined` when they cannot be merged safely (#157).
+ *
+ * The same union as `mergeReports`, with the local cache first — its
+ * report-level fields win — and one rule relaxed: a test file the two hold at
+ * different sources keeps the local copy, and the seed's kills by its tests
+ * stop resolving (`SourceConflict`). A production file in both still refuses
+ * the merge; the caller cuts the seed to the files the local cache lacks.
+ */
+export function mergeSeedInto(local: string, seed: string): string | undefined {
+  return mergeParsed([local, seed], 'unresolve');
 }

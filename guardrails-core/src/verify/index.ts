@@ -105,7 +105,10 @@ import {
   mutateEntries,
   planRunRanges,
 } from './mutate-ranges.js';
-import { prepareIncrementalCache } from './prepare-cache.js';
+import {
+  prepareIncrementalCache,
+  writeFingerprintSidecar,
+} from './prepare-cache.js';
 import { fetchSeed, nodeSeedSeams, type SeedSettings } from './seed-cache.js';
 import {
   isStrykerReportJson,
@@ -1724,6 +1727,31 @@ export interface StrykerScope {
 }
 
 /**
+ * Write `reports/stryker-incremental.fingerprint.json` for this checkout and
+ * return its repo-relative path, or `undefined` when no installed stryker can
+ * be found (#157). The fingerprint reads the stryker config the gate would.
+ */
+export async function writeMutationFingerprint(
+  repoRoot: string,
+): Promise<string | undefined> {
+  return writeFingerprintSidecar(
+    {
+      repoRoot,
+      readFile: readUtf8,
+      writeFile: async (filePath, contents) => {
+        await fsMkdir(path.dirname(filePath), { recursive: true });
+        await fsWriteFile(filePath, contents);
+      },
+    },
+    (await readStrykerConfig(repoRoot, readUtf8)) ?? '',
+  );
+}
+
+function readUtf8(filePath: string): Promise<string> {
+  return fsReadFile(filePath, 'utf8');
+}
+
+/**
  * Which of `files` stryker would mutate, before anything is spawned.
  *
  * Split out of `runStryker` so the pre-push lock probe asks the SAME question
@@ -1830,7 +1858,7 @@ async function runStryker(
       repoRoot,
       seed:
         seed &&
-        (() =>
+        ((fingerprint) =>
           fetchSeed(
             nodeSeedSeams({
               exec,
@@ -1838,6 +1866,7 @@ async function runStryker(
               warn: options.progress ?? writeStderrLine,
             }),
             seed,
+            fingerprint,
           )),
     },
     {

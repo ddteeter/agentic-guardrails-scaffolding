@@ -5,6 +5,11 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { spawnExec, type Exec, type ExecResult } from '../../src/exec.js';
+import {
+  computeFingerprint,
+  serializeFingerprint,
+  type CacheFingerprint,
+} from '../../src/verify/cache-fingerprint.js';
 import { parseIncrementalCache } from '../../src/verify/incremental-cache.js';
 import {
   fetchSeed,
@@ -13,6 +18,39 @@ import {
 } from '../../src/verify/seed-cache.js';
 
 const SEED_DIR = '/scratch/seed-1';
+
+function fingerprintOf(lock: string): CacheFingerprint {
+  const fingerprint = computeFingerprint({
+    strykerVersion: '10.0.0',
+    config: '{}',
+    lockfiles: [{ name: 'package-lock.json', contents: lock }],
+  });
+  if (fingerprint === undefined) {
+    throw new Error('no fingerprint');
+  }
+  return fingerprint;
+}
+
+/**
+This checkout's fingerprint.
+*/
+const CURRENT = fingerprintOf('{"lockfileVersion":3}');
+
+/**
+ * A report at `name` with its fingerprint sidecar beside it, as CI uploads
+ * the pair.
+ */
+function uploaded(
+  name: string,
+  report: string,
+  fingerprint: CacheFingerprint = CURRENT,
+): Record<string, string> {
+  return {
+    [name]: report,
+    [name.replace(/\.json$/, '.fingerprint.json')]:
+      serializeFingerprint(fingerprint),
+  };
+}
 
 function shard(file: string): string {
   return JSON.stringify({
@@ -92,8 +130,8 @@ function seededFiles(seed: string | undefined): string[] | undefined {
 
 describe('fetchSeed', () => {
   it('runs the command through the shell, in the repo, with the seed dir set and a timeout', async () => {
-    const fake = fakeSeams({ 'a.json': shard('src/a.ts') });
-    await fetchSeed(fake.seams, settings);
+    const fake = fakeSeams(uploaded('a.json', shard('src/a.ts')));
+    await fetchSeed(fake.seams, settings, CURRENT);
     expect(fake.calls).toEqual([
       {
         command: 'sh',
@@ -110,10 +148,10 @@ describe('fetchSeed', () => {
 
   it('merges every report that lands, nested ones included, and says so', async () => {
     const fake = fakeSeams({
-      'a.json': shard('src/a.ts'),
-      [path.join('shard-2', 'b.json')]: shard('src/b.ts'),
+      ...uploaded('a.json', shard('src/a.ts')),
+      ...uploaded(path.join('shard-2', 'b.json'), shard('src/b.ts')),
     });
-    const seed = await fetchSeed(fake.seams, settings);
+    const seed = await fetchSeed(fake.seams, settings, CURRENT);
     expect(new Set(seededFiles(seed))).toEqual(
       new Set(['src/a.ts', 'src/b.ts']),
     );
@@ -123,14 +161,58 @@ describe('fetchSeed', () => {
     expect(fake.removed).toEqual([SEED_DIR]);
   });
 
-  it('ignores a fingerprint sidecar and anything that is not JSON', async () => {
+  it('reads the sidecar as a fingerprint, not a report, and ignores anything that is not JSON', async () => {
     const fake = fakeSeams({
-      'stryker-incremental.json': shard('src/a.ts'),
-      'stryker-incremental.fingerprint.json': '{"strykerVersion":"10.0.0"}',
+      ...uploaded('stryker-incremental.json', shard('src/a.ts')),
       'notes.txt': 'not a report',
     });
-    const seed = await fetchSeed(fake.seams, settings);
+    const seed = await fetchSeed(fake.seams, settings, CURRENT);
     expect(seededFiles(seed)).toEqual(['src/a.ts']);
+    expect(fake.warnings).toEqual([
+      'guardrails: seeded the mutation cache from 1 report(s) (mutationCache.seedFrom).',
+    ]);
+  });
+
+  describe('checks the seed was measured under this checkout (fingerprint)', () => {
+    it.each<[string, Record<string, string>, string]>([
+      [
+        'a report has no fingerprint beside it',
+        {
+          ...uploaded('a.json', shard('src/a.ts')),
+          [path.join('shard-2', 'b.json')]: shard('src/b.ts'),
+        },
+        `left ${path.join('shard-2', 'b.json')} with no fingerprint beside it`,
+      ],
+      [
+        'a fingerprint cannot be read',
+        { 'a.json': shard('src/a.ts'), 'a.fingerprint.json': '{"stryker":1}' },
+        'left a fingerprint that cannot be read (a.fingerprint.json)',
+      ],
+      [
+        'the shards’ fingerprints disagree',
+        {
+          ...uploaded('a.json', shard('src/a.ts')),
+          ...uploaded(
+            path.join('shard-2', 'b.json'),
+            shard('src/b.ts'),
+            fingerprintOf('{"other":true}'),
+          ),
+        },
+        'left shards whose fingerprints disagree',
+      ],
+      [
+        'the fingerprint is not this checkout’s',
+        uploaded('a.json', shard('src/a.ts'), fingerprintOf('{"other":true}')),
+        'was measured under another stryker version, stryker config or lockfile than this checkout',
+      ],
+    ])('discards the seed when %s', async (_label, landed, why) => {
+      const fake = fakeSeams(landed);
+      expect(await fetchSeed(fake.seams, settings, CURRENT)).toBeUndefined();
+      expect(fake.warnings).toEqual([
+        `guardrails: mutation cache seed (mutationCache.seedFrom) ${why}; running cold for the files it would have covered.`,
+      ]);
+      expect(fake.removed).toEqual([SEED_DIR]);
+    });
   });
 
   it.each<[string, Partial<ExecResult>, string]>([
@@ -153,10 +235,10 @@ describe('fetchSeed', () => {
   ])(
     'runs cold, saying why, when the command %s',
     async (_label, result, why) => {
-      const fake = fakeSeams({ 'a.json': shard('src/a.ts') }, result);
-      expect(await fetchSeed(fake.seams, settings)).toBeUndefined();
+      const fake = fakeSeams(uploaded('a.json', shard('src/a.ts')), result);
+      expect(await fetchSeed(fake.seams, settings, CURRENT)).toBeUndefined();
       expect(fake.warnings).toEqual([
-        `guardrails: mutation cache seed (mutationCache.seedFrom) ${why}; running stryker cold.`,
+        `guardrails: mutation cache seed (mutationCache.seedFrom) ${why}; running cold for the files it would have covered.`,
       ]);
       expect(fake.removed).toEqual([SEED_DIR]);
     },
@@ -164,29 +246,29 @@ describe('fetchSeed', () => {
 
   it('runs cold when nothing lands in the seed dir', async () => {
     const fake = fakeSeams({ 'notes.txt': '' });
-    expect(await fetchSeed(fake.seams, settings)).toBeUndefined();
+    expect(await fetchSeed(fake.seams, settings, CURRENT)).toBeUndefined();
     expect(fake.warnings).toEqual([
-      'guardrails: mutation cache seed (mutationCache.seedFrom) wrote no report to $GUARDRAILS_SEED_DIR; running stryker cold.',
+      'guardrails: mutation cache seed (mutationCache.seedFrom) wrote no report to $GUARDRAILS_SEED_DIR; running cold for the files it would have covered.',
     ]);
   });
 
   it('runs cold when the reports cannot be merged', async () => {
     const fake = fakeSeams({
-      'a.json': shard('src/a.ts'),
-      'b.json': shard('src/a.ts'),
+      ...uploaded('a.json', shard('src/a.ts')),
+      ...uploaded('b.json', shard('src/a.ts')),
     });
-    expect(await fetchSeed(fake.seams, settings)).toBeUndefined();
+    expect(await fetchSeed(fake.seams, settings, CURRENT)).toBeUndefined();
     expect(fake.warnings).toEqual([
-      'guardrails: mutation cache seed (mutationCache.seedFrom) left reports that cannot be merged (malformed, or one file in two reports); running stryker cold.',
+      'guardrails: mutation cache seed (mutationCache.seedFrom) left reports that cannot be merged (malformed, or one file in two reports); running cold for the files it would have covered.',
     ]);
   });
 
   it('runs cold when the seed dir cannot be read', async () => {
     const fake = fakeSeams({});
     fake.seams.listFiles = () => Promise.reject(new Error('EACCES'));
-    expect(await fetchSeed(fake.seams, settings)).toBeUndefined();
+    expect(await fetchSeed(fake.seams, settings, CURRENT)).toBeUndefined();
     expect(fake.warnings).toEqual([
-      'guardrails: mutation cache seed (mutationCache.seedFrom) could not be read (EACCES); running stryker cold.',
+      'guardrails: mutation cache seed (mutationCache.seedFrom) could not be read (EACCES); running cold for the files it would have covered.',
     ]);
     expect(fake.removed).toEqual([SEED_DIR]);
   });
@@ -194,19 +276,19 @@ describe('fetchSeed', () => {
   it('runs cold when no seed dir can be made, without running the command', async () => {
     const fake = fakeSeams({});
     fake.seams.makeTempDir = () => Promise.reject(new Error('ENOSPC'));
-    expect(await fetchSeed(fake.seams, settings)).toBeUndefined();
+    expect(await fetchSeed(fake.seams, settings, CURRENT)).toBeUndefined();
     expect(fake.calls).toEqual([]);
     expect(fake.warnings).toEqual([
-      'guardrails: mutation cache seed (mutationCache.seedFrom) could not be read (ENOSPC); running stryker cold.',
+      'guardrails: mutation cache seed (mutationCache.seedFrom) could not be read (ENOSPC); running cold for the files it would have covered.',
     ]);
   });
 
   it('still returns the seed when the seed dir cannot be removed', async () => {
-    const fake = fakeSeams({ 'a.json': shard('src/a.ts') });
+    const fake = fakeSeams(uploaded('a.json', shard('src/a.ts')));
     fake.seams.removeDirectory = () => Promise.reject(new Error('EBUSY'));
-    expect(seededFiles(await fetchSeed(fake.seams, settings))).toEqual([
-      'src/a.ts',
-    ]);
+    expect(seededFiles(await fetchSeed(fake.seams, settings, CURRENT))).toEqual(
+      ['src/a.ts'],
+    );
   });
 });
 
@@ -223,6 +305,10 @@ describe('nodeSeedSeams, against a real shell and filesystem', () => {
 
   it('fetches what the command copies into GUARDRAILS_SEED_DIR, then removes the dir', async () => {
     writeFileSync(path.join(source, 'report.json'), shard('src/a.ts'));
+    writeFileSync(
+      path.join(source, 'report.fingerprint.json'),
+      serializeFingerprint(CURRENT),
+    );
     const warnings: string[] = [];
     let seedDirectory = '';
     const seams = nodeSeedSeams({
@@ -235,11 +321,15 @@ describe('nodeSeedSeams, against a real shell and filesystem', () => {
         warnings.push(line);
       },
     });
-    const seed = await fetchSeed(seams, {
-      command:
-        'mkdir -p "$GUARDRAILS_SEED_DIR/nested" && cp report.json "$GUARDRAILS_SEED_DIR/nested/"',
-      timeoutSeconds: 10,
-    });
+    const seed = await fetchSeed(
+      seams,
+      {
+        command:
+          'mkdir -p "$GUARDRAILS_SEED_DIR/nested" && cp report.json report.fingerprint.json "$GUARDRAILS_SEED_DIR/nested/"',
+        timeoutSeconds: 10,
+      },
+      CURRENT,
+    );
     expect(seededFiles(seed)).toEqual(['src/a.ts']);
     expect(seedDirectory.startsWith(tmpdir())).toBe(true);
     expect(existsSync(seedDirectory)).toBe(false);

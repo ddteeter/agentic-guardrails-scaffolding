@@ -108,7 +108,11 @@ import { ship, shipSummary, writeShipStatus } from './ship.js';
 import { withHeartbeat } from './state.js';
 import { hasErrors, isViolation, type Violation } from './violation.js';
 import type { Rung } from './verify/analyzer-policy.js';
-import { runVerify, silentSkipWarning } from './verify/index.js';
+import {
+  runVerify,
+  silentSkipWarning,
+  writeMutationFingerprint,
+} from './verify/index.js';
 import { resolveBaseReference } from './verify/git.js';
 
 export interface CliDependencies {
@@ -2245,6 +2249,24 @@ function gateCommand(
  * `lock-status`: who holds the machine-wide mutation lock and how many wait,
  * looked at once. Always exits 0 -- it reports, it never gates.
  */
+/**
+ * `mutation-fingerprint`: write the fingerprint sidecar CI uploads beside its
+ * stryker report, so a `mutationCache.seedFrom` seed can be checked (#157).
+ */
+async function mutationFingerprintCommand(
+  dependencies: CliDependencies,
+): Promise<number> {
+  const written = await writeMutationFingerprint(dependencies.cwd);
+  if (written === undefined) {
+    dependencies.stderr(
+      'guardrails: mutation-fingerprint found no installed @stryker-mutator/core; nothing written.\n',
+    );
+    return 1;
+  }
+  dependencies.stdout(`${written}\n`);
+  return 0;
+}
+
 async function lockStatusCommand(
   dependencies: CliDependencies,
 ): Promise<number> {
@@ -2258,6 +2280,25 @@ async function lockStatusCommand(
   return 0;
 }
 
+/**
+The commands that take nothing but the dependencies.
+*/
+type PlainCommand = (dependencies: CliDependencies) => number | Promise<number>;
+
+const PLAIN_COMMANDS: ReadonlyMap<string, PlainCommand> = new Map<
+  string,
+  PlainCommand
+>([
+  ['autofix', autofixCommand],
+  ['audit', auditCommand],
+  ['sanctions-check', sanctionsCheckCommand],
+  ['report', reportCommand],
+  ['session-end', sessionEndCommand],
+  ['install-hooks', installHooksCommand],
+  ['lock-status', lockStatusCommand],
+  ['mutation-fingerprint', mutationFingerprintCommand],
+]);
+
 export async function runCommand(
   command: string | undefined,
   rest: string[],
@@ -2269,30 +2310,23 @@ export async function runCommand(
   if (outside !== undefined && command !== 'scope-check') {
     return untrustedInstallCommand(command, rest, dependencies, outside);
   }
+  // A Map, not an object: `toString` and its kin must not resolve to a command.
+  const plain = PLAIN_COMMANDS.get(command ?? '');
+  if (plain !== undefined) {
+    return plain(dependencies);
+  }
   switch (command) {
     case 'verify': {
       return verifyCommand(dependencies, rest);
     }
-    case 'autofix': {
-      return autofixCommand(dependencies);
-    }
     case 'gate': {
       return gateCommand(dependencies, rest);
-    }
-    case 'audit': {
-      return auditCommand(dependencies);
-    }
-    case 'sanctions-check': {
-      return sanctionsCheckCommand(dependencies);
     }
     case 'sanction': {
       return sanctionCommand(dependencies, rest);
     }
     case 'state': {
       return stateCommand(dependencies, flag(rest, 'session') ?? 'default');
-    }
-    case 'report': {
-      return reportCommand(dependencies);
     }
     case 'scope-check': {
       const dialect = resolveDialect(rest);
@@ -2304,20 +2338,11 @@ export async function runCommand(
       warnAboutStaleGuidance(dependencies, dependencies.cwd);
       return 0;
     }
-    case 'session-end': {
-      return sessionEndCommand(dependencies);
-    }
     case 'init': {
       return initCommand(dependencies, rest);
     }
-    case 'install-hooks': {
-      return installHooksCommand(dependencies);
-    }
     case 'ship': {
       return shipCommand(dependencies, rest);
-    }
-    case 'lock-status': {
-      return lockStatusCommand(dependencies);
     }
     default: {
       dependencies.stderr(
@@ -2329,7 +2354,7 @@ export async function runCommand(
           '  verify [--base=<ref>]\n' +
           '  sanction [--from=<violations manifest>]\n' +
           `  ${SHIP_USAGE}\n` +
-          '  lock-status\n' +
+          '  lock-status | mutation-fingerprint\n' +
           '  autofix | audit | sanctions-check | install-hooks\n' +
           '  state | report | scope-check | session-start | session-end\n',
       );

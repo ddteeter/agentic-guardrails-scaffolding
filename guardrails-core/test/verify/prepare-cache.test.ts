@@ -173,15 +173,48 @@ function freshWorktree(seedJson: string | undefined) {
   const fs = healthyRepo();
   fs.files.delete(CACHE);
   fs.files.delete(SIDECAR);
-  let seedCalls = 0;
+  const fingerprints: unknown[] = [];
   const seams = {
     ...fs.seams,
-    seed: () => {
-      seedCalls += 1;
+    seed: (fingerprint: unknown) => {
+      fingerprints.push(fingerprint);
       return Promise.resolve(seedJson);
     },
   };
-  return { ...fs, seams, seedCalls: () => seedCalls };
+  return {
+    ...fs,
+    seams,
+    seedCalls: () => fingerprints.length,
+    fingerprints,
+  };
+}
+
+/**
+An old checkout: its own healthy cache, and a seed on offer too.
+*/
+function oldCheckout(seedJson: string) {
+  const fresh = freshWorktree(seedJson);
+  fresh.files.set(CACHE, { contents: cacheJson(), mtime: 5000 });
+  fresh.files.set(SIDECAR, { contents: sidecar(), mtime: 5000 });
+  return fresh;
+}
+
+/**
+ * A CI seed over `src/a.ts`, `src/b.ts` and `src/c.ts`, each with one kill
+ * per line in `lines`, all by `c.test.ts` unless `killer` says otherwise.
+ */
+function ciSeed(lines: number[], killer = 'c.test.ts', source = 'ci'): string {
+  const mutants = lines.map((line) => mutant('Killed', ['0'], line));
+  return JSON.stringify({
+    schemaVersion: '1.0',
+    files: Object.fromEntries(
+      ['src/a.ts', 'src/b.ts', 'src/c.ts'].map((file) => [
+        file,
+        { language: 'typescript', source: file, mutants },
+      ]),
+    ),
+    testFiles: { [killer]: { source, tests: [{ id: '0', name: 'c' }] } },
+  });
 }
 
 describe('prepareIncrementalCache', () => {
@@ -540,11 +573,160 @@ describe('prepareIncrementalCache', () => {
       expect(files.has(CACHE)).toBe(false);
     });
 
-    it('does not fetch a seed while a local cache exists', async () => {
-      const { files, seams, seedCalls } = freshWorktree(cacheJson());
-      files.set(CACHE, { contents: cacheJson(), mtime: 5000 });
+    it('does not fetch a seed while the local cache holds every in-scope file', async () => {
+      // The download is the cost: nothing to seed, nothing to fetch.
+      const { files, seams, seedCalls } = oldCheckout(ciSeed([1]));
       await prepareIncrementalCache(seams, run);
       expect(seedCalls()).toBe(0);
+      expect(kept(files)).toEqual({
+        'src/a.ts': ['Killed'],
+        'src/b.ts': ['Killed'],
+      });
+    });
+
+    it('seeds only the in-scope files the local cache lacks — a new branch in an old checkout', async () => {
+      const { files, seams, seedCalls } = oldCheckout(ciSeed([1, 2]));
+      await prepareIncrementalCache(seams, {
+        ...run,
+        mutateFiles: ['src/a.ts', 'src/b.ts', 'src/c.ts'],
+      });
+      expect(seedCalls()).toBe(1);
+      // a and b stay as the local cache had them (one kill each); c is the
+      // seed's (two kills).
+      expect(kept(files)).toEqual({
+        'src/a.ts': ['Killed'],
+        'src/b.ts': ['Killed'],
+        'src/c.ts': ['Killed', 'Killed'],
+      });
+    });
+
+    it('keeps every seeded kill traceable to its own test once merged', async () => {
+      const { files, seams } = oldCheckout(ciSeed([1]));
+      await prepareIncrementalCache(seams, {
+        ...run,
+        mutateFiles: ['src/a.ts', 'src/c.ts'],
+      });
+      const cache = parseIncrementalCache(files.get(CACHE)?.contents ?? '');
+      const killers = ['src/a.ts', 'src/c.ts'].map((file) =>
+        cache?.testFileOf.get(
+          cache.files.get(file)?.mutants[0]?.killedBy[0] ?? '',
+        ),
+      );
+      expect(killers).toEqual(['a.test.ts', 'c.test.ts']);
+    });
+
+    it('passes this checkout’s fingerprint to the seed', async () => {
+      const { seams, fingerprints } = freshWorktree(cacheJson());
+      await prepareIncrementalCache(seams, run);
+      expect(fingerprints).toEqual([
+        computeFingerprint({
+          strykerVersion: '10.0.0',
+          config: CONFIG,
+          lockfiles: [{ name: 'package-lock.json', contents: LOCK }],
+        }),
+      ]);
+    });
+
+    it('seeds every file of a local cache just discarded for its fingerprint', async () => {
+      const { files, seams } = oldCheckout(ciSeed([1, 2]));
+      files.set(SIDECAR, { contents: sidecar('{"other":true}'), mtime: 0 });
+      await prepareIncrementalCache(seams, run);
+      expect(kept(files)).toEqual({
+        'src/a.ts': ['Killed', 'Killed'],
+        'src/b.ts': ['Killed', 'Killed'],
+      });
+    });
+
+    it('keeps a local file whose kills were all dropped, rather than seeding it', async () => {
+      // The local entry still exists, so the seed is not asked for it.
+      const { files, seams, seedCalls } = oldCheckout(ciSeed([1, 2]));
+      await prepareIncrementalCache(seams, {
+        ...run,
+        changedFiles: [...run.changedFiles, 'a.test.ts'],
+      });
+      expect(seedCalls()).toBe(0);
+      expect(kept(files)).toEqual({ 'src/a.ts': [], 'src/b.ts': ['Killed'] });
+    });
+
+    it('does not trust a seeded kill by a test file the local cache holds at another source', async () => {
+      const { files, seams } = oldCheckout(ciSeed([1], 'a.test.ts'));
+      await prepareIncrementalCache(seams, {
+        ...run,
+        mutateFiles: ['src/a.ts', 'src/c.ts'],
+      });
+      expect(kept(files)).toEqual({ 'src/a.ts': ['Killed'], 'src/c.ts': [] });
+    });
+
+    it('does not judge a seeded kill by the local cache’s timestamp', async () => {
+      // c.test.ts is newer than the local cache, but this branch did not
+      // change it: the seed was measured at CI, not when the cache was written.
+      const { files, seams } = oldCheckout(ciSeed([1]));
+      files.set(path.join(ROOT, 'c.test.ts'), { contents: '', mtime: 8000 });
+      await prepareIncrementalCache(seams, {
+        ...run,
+        mutateFiles: ['src/a.ts', 'src/c.ts'],
+      });
+      expect(kept(files)).toEqual({
+        'src/a.ts': ['Killed'],
+        'src/c.ts': ['Killed'],
+      });
+    });
+
+    it('keeps the local cache alone when the seed cannot be merged into it', async () => {
+      // One test id declared twice in one report: no merge can vouch for it.
+      const seed = JSON.parse(ciSeed([1])) as Record<string, unknown>;
+      seed.testFiles = {
+        'c.test.ts': {
+          tests: [
+            { id: '0', name: 'c' },
+            { id: '0', name: 'd' },
+          ],
+        },
+      };
+      const { files, seams } = oldCheckout(JSON.stringify(seed));
+      await prepareIncrementalCache(seams, {
+        ...run,
+        mutateFiles: ['src/a.ts', 'src/c.ts'],
+      });
+      expect(kept(files)).toEqual({ 'src/a.ts': ['Killed'] });
+    });
+
+    it('drops a seed whose own scope shows no per-test coverage', async () => {
+      const seed = JSON.parse(ciSeed([1])) as {
+        files: Record<string, { mutants: Record<string, unknown>[] }>;
+      };
+      for (const entry of Object.values(seed.files)) {
+        for (const each of entry.mutants) {
+          each.coveredBy = [];
+        }
+      }
+      const { files, seams } = freshWorktree(JSON.stringify(seed));
+      await prepareIncrementalCache(seams, run);
+      expect(files.has(CACHE)).toBe(false);
+    });
+
+    it('under any-test-change, drops a seed once this branch changed any test', async () => {
+      const { files, seams, seedCalls } = freshWorktree(cacheJson());
+      await prepareIncrementalCache(seams, {
+        ...run,
+        invalidation: 'any-test-change',
+        changedFiles: [...run.changedFiles, 'a.test.ts'],
+      });
+      expect(seedCalls()).toBe(0);
+      expect(files.has(CACHE)).toBe(false);
+    });
+
+    it('under any-test-change, keeps a seed when this branch changed no test', async () => {
+      const { files, seams } = freshWorktree(cacheJson());
+      await prepareIncrementalCache(seams, {
+        ...run,
+        invalidation: 'any-test-change',
+      });
+      // Whole, survivor included, as a local cache is kept under this rule.
+      expect(kept(files)).toEqual({
+        'src/a.ts': ['Killed', 'Survived'],
+        'src/b.ts': ['Killed'],
+      });
     });
 
     it('fetches a seed in place of an empty cache file', async () => {
@@ -565,7 +747,16 @@ describe('prepareIncrementalCache', () => {
       const noStryker = freshWorktree(cacheJson());
       noStryker.files.delete(STRYKER_MANIFEST);
       await prepareIncrementalCache(noStryker.seams, run);
-      expect([noCoverage.seedCalls(), noStryker.seedCalls()]).toEqual([0, 0]);
+      const supportChanged = freshWorktree(cacheJson());
+      await prepareIncrementalCache(supportChanged.seams, {
+        ...run,
+        changedFiles: [...run.changedFiles, 'test/setup.ts'],
+      });
+      expect([
+        noCoverage.seedCalls(),
+        noStryker.seedCalls(),
+        supportChanged.seedCalls(),
+      ]).toEqual([0, 0, 0]);
       expect(noStryker.files.has(CACHE)).toBe(false);
     });
   });

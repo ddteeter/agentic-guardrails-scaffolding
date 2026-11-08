@@ -31,9 +31,23 @@ What the fixture's change set holds, as `git diff --name-only` prints it.
 */
 export const CHANGED_FILES = 'src/foo.ts\ntest/foo.test.ts\n';
 
+const STRYKER_CONFIG = JSON.stringify({ testRunner: 'vitest' });
+
+/**
+The fixture checkout's fingerprint sidecar, as `cache-fingerprint.ts` writes it.
+*/
+function fixtureSidecar(): string {
+  const fingerprint = computeFingerprint({
+    strykerVersion: '10.0.0',
+    config: STRYKER_CONFIG,
+    lockfiles: [],
+  });
+  return fingerprint === undefined ? '' : serializeFingerprint(fingerprint);
+}
+
 export function writeCacheFixture(root: string): void {
   const at = (...parts: string[]) => path.join(root, ...parts);
-  const config = JSON.stringify({ testRunner: 'vitest' });
+  const config = STRYKER_CONFIG;
   mkdirSync(at('reports'), { recursive: true });
   mkdirSync(at('test'), { recursive: true });
   mkdirSync(at('node_modules', '@stryker-mutator', 'core'), {
@@ -44,14 +58,9 @@ export function writeCacheFixture(root: string): void {
     at('node_modules', '@stryker-mutator', 'core', 'package.json'),
     '{"version":"10.0.0"}',
   );
-  const fingerprint = computeFingerprint({
-    strykerVersion: '10.0.0',
-    config,
-    lockfiles: [],
-  });
   writeFileSync(
     at('reports', 'stryker-incremental.fingerprint.json'),
-    fingerprint === undefined ? '' : serializeFingerprint(fingerprint),
+    fixtureSidecar(),
   );
   writeFileSync(
     at('reports', 'stryker-incremental.json'),
@@ -144,7 +153,8 @@ const SEED_REPORT = JSON.stringify({
 /**
  * An `Exec` that answers the gate's `git diff --name-only` with the fixture's
  * change set, and plays a `seedFrom` command: `sh -c SEED_COMMAND` writes the
- * CI report into `$GUARDRAILS_SEED_DIR`. Anything else, stryker included,
+ * CI report, and the fingerprint CI uploads beside it, into
+ * `$GUARDRAILS_SEED_DIR`. Anything else, stryker included,
  * does nothing.
  */
 export const seedFixtureExec: Exec = (command, args, options) => {
@@ -155,6 +165,10 @@ export const seedFixtureExec: Exec = (command, args, options) => {
     args.join(' ') === `-c ${SEED_COMMAND}`
   ) {
     writeFileSync(path.join(seedDirectory, 'report.json'), SEED_REPORT);
+    writeFileSync(
+      path.join(seedDirectory, 'report.fingerprint.json'),
+      fixtureSidecar(),
+    );
   }
   return Promise.resolve({
     stdout: args.includes('--name-only') ? CHANGED_FILES : '',

@@ -405,3 +405,49 @@ export function dropUntrusted(
   );
   return withFiles(cache, files);
 }
+
+/**
+ * Does every test vouching for this Killed or Timeout verdict resolve to a
+ * test file? Any other status is not a kill, and answers yes.
+ */
+function isResolvable(
+  mutant: CachedMutant,
+  testFileOf: ReadonlyMap<string, string>,
+): boolean {
+  return (
+    !KEPT_STATUSES.has(mutant.status) ||
+    vouchingTests(mutant).every((id) => testFileOf.has(id))
+  );
+}
+
+/**
+ * The cache with every kill in `files` removed whose vouching tests do not
+ * all resolve to a test file (#157).
+ *
+ * For a seed merged into a local cache: a seeded kill by a test file the two
+ * held at different sources ends up naming a test no file declares, and
+ * stryker would reuse the kill anyway. Narrower than `dropUntrusted` on
+ * purpose — it judges nothing else, so a cache kept whole under
+ * `any-test-change` keeps its other verdicts.
+ */
+export function dropUnresolvedKills(
+  cache: IncrementalCache,
+  files: ReadonlySet<string>,
+): IncrementalCache {
+  return withFiles(
+    cache,
+    new Map(
+      [...cache.files].map(([file, entry]) => [
+        file,
+        files.has(file)
+          ? {
+              ...entry,
+              mutants: entry.mutants.filter((each) =>
+                isResolvable(each, cache.testFileOf),
+              ),
+            }
+          : entry,
+      ]),
+    ),
+  );
+}

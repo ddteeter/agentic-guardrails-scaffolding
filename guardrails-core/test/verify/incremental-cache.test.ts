@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   cacheTestFiles,
+  dropUnresolvedKills,
   dropUntrusted,
   filterToScope,
   hasPerTestCoverage,
@@ -437,6 +438,41 @@ describe('dropUntrusted', () => {
     const cache = parsed({ 'src/a.ts': [mutant()] }, testFiles);
     expect(dropUntrusted(cache, new Set(['a.test.ts'])).testFileOf).toEqual(
       cache.testFileOf,
+    );
+  });
+});
+
+describe('dropUnresolvedKills', () => {
+  const testFiles = { 'a.test.ts': ['0'] };
+
+  it('drops a Killed or Timeout verdict in the named files whose vouching test resolves to no file', () => {
+    const cache = parsed(
+      {
+        'src/a.ts': [
+          mutant({ killedBy: ['0'] }),
+          mutant({ killedBy: ['0', 'gone'], line: 2 }),
+          mutant({ status: 'Timeout', coveredBy: ['gone'], line: 3 }),
+        ],
+      },
+      testFiles,
+    );
+    expect(statuses(dropUnresolvedKills(cache, new Set(['src/a.ts'])))).toEqual(
+      { 'src/a.ts': ['Killed'] },
+    );
+  });
+
+  it('leaves every other status, and every file not named, as it was', () => {
+    // Under `any-test-change` a cache keeps its survivors; this only removes
+    // what a merge left pointing at nothing.
+    const cache = parsed(
+      {
+        'src/a.ts': [mutant({ status: 'Survived', coveredBy: ['gone'] })],
+        'src/b.ts': [mutant({ killedBy: ['gone'] })],
+      },
+      testFiles,
+    );
+    expect(statuses(dropUnresolvedKills(cache, new Set(['src/a.ts'])))).toEqual(
+      { 'src/a.ts': ['Survived'], 'src/b.ts': ['Killed'] },
     );
   });
 });

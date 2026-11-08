@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { parseIncrementalCache } from '../../src/verify/incremental-cache.js';
-import { mergeReports } from '../../src/verify/merge-reports.js';
+import { mergeReports, mergeSeedInto } from '../../src/verify/merge-reports.js';
 
 function mutant(
   id: string,
@@ -277,5 +277,117 @@ describe('mergeReports', () => {
         ]),
       ).toBeUndefined();
     });
+  });
+});
+
+/**
+ * A local cache and a seed fetched for the files it lacks (#157): the same
+ * per-file union, but the seed was measured at CI's sources and the local
+ * cache at this checkout's — so a test file the two hold at different
+ * sources keeps the local copy, and the seed's kills by it stop resolving.
+ */
+describe('mergeSeedInto', () => {
+  const local = report({
+    files: {
+      'src/a.ts': { source: 'a', mutants: [mutant('0', 'Killed', ['0'])] },
+    },
+    testFiles: {
+      'test/a.test.ts': { source: 'local', tests: [{ id: '0', name: 'a' }] },
+    },
+  });
+
+  function seeded(seed: string) {
+    const text = mergeSeedInto(local, seed);
+    if (text === undefined) {
+      throw new Error('merge refused');
+    }
+    const cache = parseIncrementalCache(text);
+    if (cache === undefined) {
+      throw new Error('merge produced an unreadable cache');
+    }
+    return cache;
+  }
+
+  it('unions the seed’s files with the local ones, re-keying its test ids', () => {
+    const cache = seeded(
+      report({
+        files: {
+          'src/b.ts': { source: 'b', mutants: [mutant('0', 'Killed', ['0'])] },
+        },
+        testFiles: {
+          'test/b.test.ts': { source: 'tb', tests: [{ id: '0', name: 'b' }] },
+        },
+      }),
+    );
+    expect(cache.files.keys().toArray()).toEqual(['src/a.ts', 'src/b.ts']);
+    const [bKill] = cache.files.get('src/b.ts')?.mutants ?? [];
+    expect(cache.testFileOf.get(bKill?.killedBy[0] ?? '')).toBe(
+      'test/b.test.ts',
+    );
+    const [aKill] = cache.files.get('src/a.ts')?.mutants ?? [];
+    expect(cache.testFileOf.get(aKill?.killedBy[0] ?? '')).toBe(
+      'test/a.test.ts',
+    );
+  });
+
+  it('shares a test the two hold at the same source', () => {
+    const cache = seeded(
+      report({
+        files: {
+          'src/b.ts': { source: 'b', mutants: [mutant('0', 'Killed', ['5'])] },
+        },
+        testFiles: {
+          'test/a.test.ts': {
+            source: 'local',
+            tests: [{ id: '5', name: 'a' }],
+          },
+        },
+      }),
+    );
+    const ids = ['src/a.ts', 'src/b.ts'].map(
+      (file) => cache.files.get(file)?.mutants[0]?.killedBy[0],
+    );
+    expect(ids[0]).toBeDefined();
+    expect(ids[1]).toBe(ids[0]);
+  });
+
+  it('keeps the local copy of a test file the seed ran at another source, and its kills by it stop resolving', () => {
+    const cache = seeded(
+      report({
+        files: {
+          'src/b.ts': { source: 'b', mutants: [mutant('0', 'Killed', ['0'])] },
+        },
+        testFiles: {
+          'test/a.test.ts': { source: 'ci', tests: [{ id: '0', name: 'a' }] },
+        },
+      }),
+    );
+    expect(cache.testFiles.get('test/a.test.ts')?.raw.source).toBe('local');
+    const [bKill] = cache.files.get('src/b.ts')?.mutants ?? [];
+    expect(bKill?.killedBy).toHaveLength(1);
+    expect(cache.testFileOf.has(bKill?.killedBy[0] ?? '')).toBe(false);
+  });
+
+  it('takes the report-level fields from the local cache', () => {
+    const text = mergeSeedInto(
+      report({ files: {} }, { schemaVersion: 'local' }),
+      report({ files: {} }, { schemaVersion: 'seed' }),
+    );
+    expect(text && JSON.parse(text)).toMatchObject({ schemaVersion: 'local' });
+  });
+
+  it('refuses a production file both hold', () => {
+    expect(
+      mergeSeedInto(
+        local,
+        report({
+          files: { 'src/a.ts': { source: 'a', mutants: [] } },
+        }),
+      ),
+    ).toBeUndefined();
+  });
+
+  it('refuses a seed that does not parse', () => {
+    expect(mergeSeedInto(local, '{')).toBeUndefined();
   });
 });
