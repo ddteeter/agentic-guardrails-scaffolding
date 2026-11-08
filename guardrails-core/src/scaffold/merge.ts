@@ -190,11 +190,14 @@ const GITIGNORE_BLOCK = [
   // Stryker's `incrementalFile` default, which is NOT under reports/mutation/.
   // Measured on a greenfield adoption: without it the repo's first
   // `git add -A` commits a mutation-result cache that churns on every run.
-  // guardrails' own gate keeps this file only when the cache in it proves it
-  // is this run's to reuse (`discardUnusableIncrementalCache`), so the gate is
+  // guardrails' own gate rewrites this file before each run down to the
+  // verdicts it can vouch for (`verify/prepare-cache.ts`), so the gate is
   // unaffected either way -- what this prevents is the committed artifact, and
   // stale verdicts for anyone running `npx stryker run` by hand.
   'reports/stryker-incremental.json',
+  // The fingerprint the gate writes beside that cache (#156): what stryker,
+  // config and lockfile it was measured under. Machine-local like the cache.
+  'reports/stryker-incremental.fingerprint.json',
   '.stryker-tmp/',
   // A git worktree checked out inside the repo is untracked but NOT ignored,
   // so knip -- which does respect .gitignore -- walks into it and reports a
