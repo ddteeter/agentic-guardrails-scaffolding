@@ -292,78 +292,6 @@ export function unrunSurvivedMutants(
 }
 
 /**
- * May stryker's incremental cache from a previous run be kept for this one?
- *
- * `--incremental` is only worth anything if the cache it reads survives from
- * the previous run, and `runStryker` used to delete that file immediately
- * before passing the flag — so every gate run was a cold one and the flag's
- * only effect was writing a file the next run deleted (#59). Deleting was not a
- * stray line: an unconditionally kept cache is genuinely unsafe here, in two
- * ways this predicate is the guard against. The fix is to make the deletion
- * conditional rather than to drop either half.
- *
- * Reuse is granted only on evidence in the cache itself, never on what the
- * consumer's config claims:
- *
- * 1. **Scope.** Every file in the cache must be one this run mutates. Stryker
- *    folds cached verdicts for out-of-scope files back into the report it
- *    writes (`incremental-differ`'s "old mutants that didn't run this time
- *    around aren't forgotten" branch), so a cache written for some other
- *    `--mutate` set carries results this run never checked. Subset, not
- *    equality: a run whose scope has GROWN reuses what it can and mutates the
- *    rest cold, which is the whole point.
- * 2. **Per-test coverage.** At least one mutant must name a covering test.
- *    A cache with no `coveredBy` anywhere was written by a runner that reports
- *    no per-test data, and stryker's `mutantCanBeReused` then returns `true`
- *    before examining anything — a `Survived` verdict is reused however the
- *    tests changed, so the fixer's new test can never clear the mutant and the
- *    loop can never go green. Measured against stryker 10: under the `command`
- *    runner (the one `STRYKER_SEED` ships) a strengthened test left the
- *    survivor standing, 14 of 14 mutants reused.
- *
- * Rule 2 is only HALF of the coverage question, and both halves are needed.
- * It looks at the cache, so it establishes only that the run which WROTE the
- * file had per-test data; `hasCoverage` is read from the run about to consume
- * it. The other half — will THIS run be able to tell — is
- * `canReportPerTestCoverage`, which decides from the config this run will use
- * and which the caller checks first. A repo that switches runners fails only
- * the second; a repo that has always been coverage-blind fails only the first.
- *
- * Neither rule keys on `coverageAnalysis`, which was measured not to
- * discriminate: the vitest runner writes `coveredBy` and re-runs the survivor
- * under `off` and `all` just as under `perTest`.
- *
- * A cache that is missing, unparseable, or not a report reads as `''` and is
- * rejected by the same path — fail toward the cold run, as everywhere else in
- * this module.
- *
- * What this does NOT promise is that a reused verdict is more trustworthy than
- * the cold run it replaces: a cache written by a hand-run
- * `npx stryker run --mutate <one file>` can satisfy both rules, and the vitest
- * runner's `related` test selection makes such a run over-report survivors
- * (plan.md, "Cache poisoning"). It answers only what it can: this cache is
- * about this run's files, and stryker's own invalidation rules have the
- * coverage data they need to run.
- */
-export function canReuseIncrementalCache(
-  cacheJson: string,
-  mutateFiles: readonly string[],
-): boolean {
-  const parsed = parseReport(cacheJson);
-  if (parsed === undefined) {
-    return false;
-  }
-  const mutated = new Set(mutateFiles);
-  const entries = Object.entries(parsed.files);
-  if (entries.some(([file]) => !mutated.has(file))) {
-    return false;
-  }
-  return entries.some(([, fileResult]) =>
-    fileResult.mutants.some((mutant) => (mutant.coveredBy?.length ?? 0) > 0),
-  );
-}
-
-/**
  * A timestamp that could not be read, resolved in the direction that makes the
  * cache unusable — a cache infinitely old, a test infinitely new. Sentinels
  * rather than `undefined` so the predicate below is total over numbers: an
@@ -379,8 +307,8 @@ export const UNREADABLE_TEST_TIME = Infinity;
 /**
  * Has the test suite moved on since stryker wrote this incremental cache?
  *
- * `canReuseIncrementalCache` asks only about the cache's PRODUCTION files, and
- * that is the whole of #67: a cache whose file set is a subset of this run's
+ * The cache's old scope rule asked only about its PRODUCTION files, and that
+ * was the whole of #67: a cache whose file set is a subset of this run's
  * `--mutate` set was kept however much the suite had changed underneath it. On
  * a gate the loop is "add the test that kills the survivor, run again", and the
  * second run's mutate set is usually the same one file — so the cache was

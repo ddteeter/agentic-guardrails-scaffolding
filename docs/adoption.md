@@ -221,6 +221,60 @@ green run that carries it is not the guarantee it looks like. `init` prints the
 same warning; the difference is that this one is in front of you every time,
 not once at scaffold time.
 
+## The mutation cache between runs
+
+Stryker runs with `--incremental` at every rung, so each run writes
+`reports/stryker-incremental.json` for the next one to reuse. Before each run
+the gate **rewrites** that file, keeping only the verdicts it can vouch for, and
+stryker re-tests the rest. This matters most on the usual loop: the gate finds
+survivors, an agent adds tests, the agent ships again. Before #156 every such
+re-ship started cold.
+
+What survives the rewrite under the default, `"invalidation": "targeted"`:
+
+- **Survived and NoCoverage results are always dropped.** They are what the
+  next test is written to kill, and stryker reuses a cached survivor from
+  module-level ("static") code even after a killing test lands
+  (stryker-js#6119).
+- **A Killed result stays only if every test that killed it sits in a test file
+  this change set does not touch at all**, and that was not edited after the
+  cache was written. "At all" means added lines count too: a test is weakened
+  by an added `return` as easily as by a removed assertion. A Timeout records
+  no killer, so its covering tests stand in for one.
+- **A kill whose test cannot be traced to a file is dropped.** Every other
+  status is dropped too.
+- **A cached file this run does not mutate is dropped.** The rest of the cache
+  is kept.
+
+The whole cache is discarded when:
+
+- a changed file is **test-support code**: a helper or fixture under a test
+  directory, `__mocks__`, a snapshot, a setup file (`vitest.setup.ts`,
+  `setupTests.ts`), a `test-utils`/`test-helpers` module, or a tool config such
+  as `vitest.config.ts`;
+- the **fingerprint** in `reports/stryker-incremental.fingerprint.json` does not
+  match: the installed stryker version, a hash of the stryker config, or a hash
+  of the lockfiles. A missing or unreadable sidecar counts as a mismatch, and
+  the gate writes a fresh one before every run;
+- the cache does not parse, the run cannot report per-test coverage (the
+  `command` runner, or a config the gate cannot read), or no cached mutant names
+  a covering test.
+
+```json
+{ "mutationCache": { "invalidation": "any-test-change" } }
+```
+
+`any-test-change` is the behaviour before #156, for repos that want it: once
+any changed test is newer than the cache, the whole cache goes. Otherwise the
+cache is reused as stryker wrote it, survivors included. A value the gate does
+not recognise keeps `targeted`.
+
+**Known gap.** An edit in file A can change whether a mutant in an untouched
+file B is killed, and the gate only mutates the files the change set touches,
+so nothing at the gate re-checks B. This was true before the rewrite and is
+still true after it. CI's whole-scope mutation run is the backstop: the gate
+is not a complete mutation measurement.
+
 ## The clean-baseline prerequisite
 
 **Run `guardrails verify` clean before turning the gate on.** tsc, knip, and

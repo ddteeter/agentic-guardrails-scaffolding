@@ -30,6 +30,11 @@ import {
 } from '../src/state-store.js';
 import type { Violation } from '../src/violation.js';
 import { checksum as scaffoldChecksum } from '../src/scaffold/manifest.js';
+import {
+  CHANGED_FILES,
+  keptKills,
+  writeCacheFixture,
+} from './mutation-cache-fixture.js';
 
 /**
  * Close the inheritance channel for CLAUDE_PROJECT_DIR, at module scope,
@@ -5944,5 +5949,57 @@ describe('pretooluse delegates a write in another repository to its install (#12
         `stub ${other} ${other} gate --mode=pretooluse --dialect=copilot`,
       );
     }
+  });
+});
+
+const cacheFixtureExec: Exec = (_command, args) =>
+  Promise.resolve(ok(args.includes('--name-only') ? CHANGED_FILES : ''));
+
+function configureCacheFixture(analyzers: Record<string, unknown>): void {
+  writeCacheFixture(root);
+  writeFileSync(
+    path.join(root, 'guardrails.config.json'),
+    JSON.stringify({
+      analyzers,
+      mutationCache: { invalidation: 'any-test-change' },
+    }),
+  );
+}
+
+/**
+ * `mutationCache.invalidation` from `guardrails.config.json` reaches every
+ * command that runs stryker. `mutation-cache-wiring.test.ts` pins the gates'
+ * half; this is the config-to-gate half, where a key read but never passed on
+ * would leave every consumer on the default without a word.
+ */
+describe('mutationCache.invalidation reaches stryker from the config', () => {
+  it.each([['commit'], ['push']])('through gate --mode=%s', async (mode) => {
+    configureCacheFixture({ stryker: 'required' });
+    await runCommand(
+      'gate',
+      [`--mode=${mode}`],
+      dependencies({ exec: cacheFixtureExec }),
+    );
+    expect(keptKills(root)).toBe(1);
+  });
+
+  it('through verify', async () => {
+    configureCacheFixture({ stryker: 'required' });
+    await runCommand('verify', [], dependencies({ exec: cacheFixtureExec }));
+    expect(keptKills(root)).toBe(1);
+  });
+
+  it('through gate --mode=stop', async () => {
+    configureCacheFixture({ stryker: { mode: 'required', rung: 'stop' } });
+    await runCommand(
+      'gate',
+      ['--mode=stop'],
+      dependencies({
+        exec: cacheFixtureExec,
+        readStdin: () =>
+          Promise.resolve(JSON.stringify({ cwd: root, sessionId: 'sid' })),
+      }),
+    );
+    expect(keptKills(root)).toBe(1);
   });
 });

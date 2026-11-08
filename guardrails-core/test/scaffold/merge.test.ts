@@ -265,6 +265,7 @@ describe('mergeGitignore', () => {
     '!.guardrails/state/recurrence.json',
     'reports/mutation/',
     'reports/stryker-incremental.json',
+    'reports/stryker-incremental.fingerprint.json',
     '.stryker-tmp/',
     '.claude/worktrees/',
     '# --- guardrails:end ---',
@@ -285,6 +286,14 @@ describe('mergeGitignore', () => {
     // and guardrails ignores only what guardrails generates.
     expect(mergeGitignore(undefined)).toContain(
       'reports/stryker-incremental.json',
+    );
+  });
+
+  it("ignores the gate's fingerprint sidecar beside that cache", () => {
+    // Written by the gate before every mutation run (#156) — the same
+    // churning, machine-local artifact as the cache it describes.
+    expect(mergeGitignore(undefined)).toContain(
+      'reports/stryker-incremental.fingerprint.json',
     );
   });
 

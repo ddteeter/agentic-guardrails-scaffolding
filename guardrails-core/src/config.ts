@@ -17,6 +17,10 @@ import {
   type Rung,
   isRung,
 } from './verify/analyzer-policy.js';
+import {
+  CACHE_INVALIDATIONS,
+  type CacheInvalidation,
+} from './verify/incremental-cache.js';
 
 /**
 One reviewed diff-auditor exemption: the finding key plus why it is allowed.
@@ -89,6 +93,13 @@ See `RepoConfig.mutationLock`.
 export interface MutationLockConfig {
   commitWaitSeconds: number;
   pushWaitSeconds: number;
+}
+
+/**
+See `RepoConfig.mutationCache`.
+*/
+interface MutationCacheConfig {
+  invalidation: CacheInvalidation;
 }
 
 export interface RepoConfig {
@@ -212,6 +223,16 @@ export interface RepoConfig {
    */
   mutationLock: MutationLockConfig;
   /**
+   * How stryker's incremental cache survives a change to the tests (#156).
+   * `targeted`, the default, keeps a cached kill whose killing tests all sit
+   * in unchanged test files and re-tests everything else;
+   * `any-test-change` discards the whole cache once any test changed, which
+   * is the behaviour before #156. An unknown value keeps the default. See
+   * `verify/prepare-cache.ts`, and docs/adoption.md ("The mutation cache
+   * between runs").
+   */
+  mutationCache: MutationCacheConfig;
+  /**
    * Deny a Claude Code Bash call that WAITS in the foreground -- `gh pr checks
    * --watch`, `gh run watch`, a `kill -0`/`pgrep` wait loop, a long `sleep`,
    * `guardrails ship` -- unless it runs with `run_in_background`. See
@@ -252,6 +273,7 @@ export function defaultConfig(): RepoConfig {
     enforcement: 'warn',
     hookDeadlineSeconds: 240,
     mutationLock: { commitWaitSeconds: 60, pushWaitSeconds: 10_800 },
+    mutationCache: { invalidation: 'targeted' },
     denyForegroundWaits: true,
     foregroundSleepLimitSeconds: 120,
   };
@@ -601,6 +623,23 @@ function pickMutationLock(
   };
 }
 
+/**
+`mutationCache`, key by key; anything unrecognised keeps the default.
+*/
+function pickMutationCache(
+  value: unknown,
+  defaults: MutationCacheConfig,
+): MutationCacheConfig {
+  const section = isRecord(value) ? value : {};
+  return {
+    invalidation: pickString(
+      section.invalidation,
+      defaults.invalidation,
+      CACHE_INVALIDATIONS,
+    ),
+  };
+}
+
 /** The policy file's name, exported so the modules that read it, name it in a
  *  message, or file a violation against it cannot drift on the spelling. */
 export const CONFIG_FILE_NAME = 'guardrails.config.json';
@@ -676,6 +715,7 @@ export function loadConfig(
       base.mutationLock,
       environment,
     ),
+    mutationCache: pickMutationCache(raw.mutationCache, base.mutationCache),
     denyForegroundWaits: raw.denyForegroundWaits !== false,
     foregroundSleepLimitSeconds: pickPositive(
       raw.foregroundSleepLimitSeconds,

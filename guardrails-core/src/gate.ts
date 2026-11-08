@@ -44,6 +44,7 @@ import {
   noVerdictLogEntry,
 } from './gate-decision.js';
 import type { AnalyzerMode, Rung } from './verify/analyzer-policy.js';
+import type { CacheInvalidation } from './verify/incremental-cache.js';
 import {
   appendDecision,
   loadCleanTree,
@@ -103,6 +104,10 @@ export interface StopGateOptions {
    * Per-analyzer cadence overrides — see `VerifyOptions.analyzerRungs`.
    */
   analyzerRungs?: Readonly<Record<string, Rung>> | undefined;
+  /**
+   * The incremental-cache rule — see `VerifyOptions.mutationCacheInvalidation`.
+   */
+  mutationCacheInvalidation?: CacheInvalidation | undefined;
 
   /**
   Claude/Copilot says this Stop is a retry caused by an earlier block.
@@ -164,6 +169,10 @@ export interface CommitGateOptions {
    * Per-analyzer cadence overrides — see `VerifyOptions.analyzerRungs`.
    */
   analyzerRungs?: Readonly<Record<string, Rung>> | undefined;
+  /**
+   * The incremental-cache rule — see `VerifyOptions.mutationCacheInvalidation`.
+   */
+  mutationCacheInvalidation?: CacheInvalidation | undefined;
   /**
    * Which rung this gate is. `commit` by default; `gate --mode=push` and
    * `--mode=ci` pass their own.
@@ -671,6 +680,7 @@ export async function runStopGate(
     // `CommitGateOptions.sessionId` — a mutant avoided costs nothing, where a
     // mutant suppressed costs a sanction that has to be justified forever.
     analyzerRungs: options.analyzerRungs,
+    mutationCacheInvalidation: options.mutationCacheInvalidation,
     mutationLock: options.mutationLock,
   };
   // No open loop is the precondition: a fixer mid-flight has to have its
@@ -910,6 +920,7 @@ export async function runCommitGate(
     ...(options.analyzers && { analyzers: options.analyzers }),
     // Straight through, not conditionally spread — see the stop gate's note.
     analyzerRungs: options.analyzerRungs,
+    mutationCacheInvalidation: options.mutationCacheInvalidation,
     ...(options.changedScope && { changedScope: options.changedScope }),
     mutationLock: options.mutationLock,
   });
