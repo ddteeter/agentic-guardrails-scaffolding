@@ -733,6 +733,45 @@ describe('mutationLock', () => {
   });
 });
 
+describe('mutationCache', () => {
+  it('rewrites the cache by the targeted rule by default', () => {
+    expect(defaultConfig().mutationCache).toEqual({ invalidation: 'targeted' });
+  });
+
+  it('reads the opt-in any-test-change rule', () => {
+    writeFileSync(
+      path.join(root, 'guardrails.config.json'),
+      JSON.stringify({ mutationCache: { invalidation: 'any-test-change' } }),
+    );
+    expect(loadConfig(root).mutationCache).toEqual({
+      invalidation: 'any-test-change',
+    });
+  });
+
+  it.each([['sometimes'], [3], [undefined]])(
+    'keeps the default for an invalidation of %s',
+    (invalidation) => {
+      writeFileSync(
+        path.join(root, 'guardrails.config.json'),
+        JSON.stringify({ mutationCache: { invalidation } }),
+      );
+      expect(loadConfig(root).mutationCache).toEqual({
+        invalidation: 'targeted',
+      });
+    },
+  );
+
+  it('keeps the default when the section is not an object', () => {
+    writeFileSync(
+      path.join(root, 'guardrails.config.json'),
+      JSON.stringify({ mutationCache: 'any-test-change' }),
+    );
+    expect(loadConfig(root).mutationCache).toEqual({
+      invalidation: 'targeted',
+    });
+  });
+});
+
 describe('denyForegroundWaits and foregroundSleepLimitSeconds', () => {
   it('denies foreground waits by default, with a two-minute sleep limit', () => {
     expect(defaultConfig().denyForegroundWaits).toBe(true);

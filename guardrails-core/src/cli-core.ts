@@ -182,6 +182,7 @@ function commitGateOptionsFromConfig(
   | 'sanctionedFiles'
   | 'analyzers'
   | 'analyzerRungs'
+  | 'mutationCacheInvalidation'
   | 'config'
   | 'mutationLock'
 > {
@@ -194,6 +195,7 @@ function commitGateOptionsFromConfig(
     sanctionedFiles: config.sanctionedFiles,
     analyzers: config.analyzers,
     analyzerRungs: config.analyzerRungs,
+    mutationCacheInvalidation: config.mutationCache.invalidation,
     config: toGateConfig(config),
     mutationLock: machineLock(config.mutationLock),
   };
@@ -368,6 +370,7 @@ async function verifyCommand(
     resolveBin: binResolver(repoRoot),
     analyzers: config.analyzers,
     analyzerRungs: config.analyzerRungs,
+    mutationCacheInvalidation: config.mutationCache.invalidation,
   });
   printViolations(dependencies, violations);
   dependencies.stderr(`guardrails: ${verdictLine(violations)}\n`);
@@ -485,6 +488,7 @@ async function gateStopCommand(
     resolveBin: binResolver(repoRoot),
     analyzers: config.analyzers,
     analyzerRungs: config.analyzerRungs,
+    mutationCacheInvalidation: config.mutationCache.invalidation,
     isRetry: input.stopHookActive,
     mutationLock: machineLock(config.mutationLock),
   });
