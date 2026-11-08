@@ -324,6 +324,111 @@ so nothing at the gate re-checks B. This was true before the rewrite and is
 still true after it. CI's whole-scope mutation run is the backstop: the gate
 is not a complete mutation measurement.
 
+### Seeding a fresh worktree from CI (`seedFrom`)
+
+A fresh worktree has no cache, so its first mutation run is cold, even when
+CI measured nearly every mutant on the base branch an hour ago. If CI keeps
+that report somewhere you can fetch, name a command that fetches it:
+
+```json
+{
+  "mutationCache": {
+    "seedFrom": "sh scripts/fetch-mutation-seed.sh",
+    "seedTimeoutSeconds": 120
+  }
+}
+```
+
+- **When it runs:** only when stryker is about to run and there is no
+  `reports/stryker-incremental.json`. It does not run when the run could not
+  use a cache anyway (the `command` runner, or no installed stryker to
+  fingerprint).
+- **How it runs:** `sh -c "<seedFrom>"` from the repo root, with
+  `GUARDRAILS_SEED_DIR` set to an empty temporary directory. Put one or more
+  stryker reports there. Every `*.json` file under it, at any depth, is read,
+  except `*.fingerprint.json`. Several reports (one per CI shard) are merged.
+  The merge is refused if a production file appears in two reports, if a test
+  file appears at two different sources, or if any report does not parse.
+- **What happens to the seed:** it is written as the local cache, stamped with
+  **this checkout's** fingerprint, and then rewritten by the rules above, like
+  any local cache. Survivors are dropped, the cache is cut to this run's files,
+  and a kill stays only while its test file is unchanged against the base
+  branch. Stryker itself re-tests any mutant whose source changed.
+- **When it fails** (a non-zero exit, a timeout, nothing written, or reports
+  that cannot be merged), the run goes cold, as it would have without a seed,
+  and the gate prints one line on stderr saying why. A seed never fails the
+  gate. A command that runs longer than `seedTimeoutSeconds` (120 by default)
+  is stopped, along with everything it started.
+
+Guardrails ships no workflow and runs no `gh` of its own. The rest of this
+section is a **sample** for GitHub Actions. Adapt it.
+
+**The CI half:** a job on the base branch that runs stryker over the whole
+scope and uploads the cache as an artifact. Keep retention short, because only
+the newest run is ever read:
+
+```yaml
+# .github/workflows/mutation.yml (sample)
+name: Mutation
+on:
+  push:
+    branches: [main]
+jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx stryker run --incremental
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stryker-incremental
+          path: reports/stryker-incremental.json
+          retention-days: 2
+          if-no-files-found: error
+```
+
+Use `actions/upload-artifact` for this, not `actions/cache`. The contents of
+`actions/cache` can only be restored inside a workflow run. A developer's
+machine cannot download them.
+
+**The local half** (`scripts/fetch-mutation-seed.sh`): it fetches the report
+from the run on the commit this branch forked from:
+
+```sh
+#!/bin/sh
+set -eu
+base=$(git merge-base HEAD origin/main)
+run=$(gh run list --workflow mutation.yml --commit "$base" --status success \
+  --limit 1 --json databaseId --jq '.[0].databaseId')
+[ -n "$run" ] || { echo "no successful mutation run for $base" >&2; exit 1; }
+gh run download "$run" --name stryker-incremental --dir "$GUARDRAILS_SEED_DIR"
+```
+
+The script picks the merge-base, not the newest run on `main`, on purpose. The
+gate judges a seeded kill by whether its test file differs from the base
+branch it diffs against. A report from a newer `main` can hold a kill made by
+a test that `main` changed after this branch forked, and that change is not on
+your branch. If no run exists for that commit (it expired, or the push was
+batched), the script exits non-zero and the gate runs cold.
+
+For a sharded CI job, upload one artifact per shard
+(`name: stryker-incremental-${{ matrix.shard }}`) and download them all with
+`gh run download "$run" --pattern 'stryker-incremental-*' --dir
+"$GUARDRAILS_SEED_DIR"`. Each shard lands in its own subdirectory, and the gate
+merges them. The shards must split the production files between them. Two
+shards that both mutated one file refuse the whole seed.
+
+**What a seed does not check:** the stryker version, stryker config and
+lockfile CI ran under. The fingerprint is computed from this checkout, so a
+branch that upgrades stryker, changes its config or changes dependencies can
+still reuse kills that CI measured under the old setup. On such a branch, take
+`seedFrom` out of the config before its first push.
+
 ## The clean-baseline prerequisite
 
 **Run `guardrails verify` clean before turning the gate on.** tsc, knip, and
