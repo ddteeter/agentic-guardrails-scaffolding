@@ -597,6 +597,88 @@ describe('a process-group child takes its grandchildren with it', () => {
   });
 });
 
+describe('timeoutMs stops a child that runs too long', () => {
+  it('terminates the child and says it timed out', async () => {
+    const result = await spawnExec(node, ['-e', forever], { timeoutMs: 50 });
+    expect(result.timedOut).toBe(true);
+    expect(result.signal).toBe('SIGTERM');
+  });
+
+  it('leaves timedOut absent for a child that finishes in time', async () => {
+    const result = await spawnExec(node, ['-e', 'process.exit(0)'], {
+      timeoutMs: 60_000,
+    });
+    expect(result.timedOut).toBeUndefined();
+    expect(result.code).toBe(0);
+  });
+
+  it('clears its timer once the child is done, so nothing waits on it', async () => {
+    // A timer left running would hold the CLI open for the whole timeout after
+    // the child exited, and then signal a pid the OS may have handed out again.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      await spawnExec(node, ['-e', 'process.exit(0)'], { timeoutMs: 60_000 });
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('clears its timer when the child could not be started', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const result = await spawnExec('guardrails-no-such-binary-xyz', [], {
+        timeoutMs: 60_000,
+      });
+      expect(result.spawnFailed).toBe(true);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('stops a timed-out group child with SIGINT, not SIGTERM', async () => {
+    // stryker saves a partial incremental report on SIGINT; the group path
+    // owns that choice, and a timeout must go through it.
+    const trap =
+      "process.on('SIGINT', () => { process.stdout.write('INT'); process.exit(0); });" +
+      "process.on('SIGTERM', () => { process.stdout.write('TERM'); process.exit(0); });" +
+      forever;
+    const result = await spawnExec(node, ['-e', trap], {
+      processGroup: true,
+      timeoutMs: 300,
+    });
+    expect(result.timedOut).toBe(true);
+    expect(result.stdout).toBe('INT');
+  });
+
+  it('stops a group child the way terminateChildren does: SIGINT, then SIGKILL after its grace', async () => {
+    // A seed command runs under `sh -c`, and the work it starts (`gh run
+    // download`) is a grandchild: stopping `sh` alone would leave it running.
+    // A backgrounded grandchild of a non-interactive sh ignores SIGINT, so
+    // only the reaper's SIGKILL, after `stopGraceSeconds`, ends it.
+    const directory = mkdtempSync(path.join(tmpdir(), 'guardrails-group-'));
+    const pidFile = path.join(directory, 'grandchild.pid');
+    try {
+      const running = spawnExec(
+        'sh',
+        ['-c', `${node} -e "${forever}" & echo $! > "${pidFile}"; wait`],
+        { processGroup: true, timeoutMs: 300, stopGraceSeconds: 1 },
+      );
+      const grandchild = await readPid(pidFile);
+      const result = await running;
+      const deadline = Date.now() + 5000;
+      while (isAlive(grandchild) && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(result.timedOut).toBe(true);
+      expect(isAlive(grandchild)).toBe(false);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+});
+
 /**
  * Run `terminateChildren` straight after spawning a binary that does not
  * exist, before Node has reported the failure -- in a node of its OWN SESSION,

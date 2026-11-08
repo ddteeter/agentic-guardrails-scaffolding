@@ -5,6 +5,7 @@ import {
   isSameFingerprint,
   serializeFingerprint,
   strykerVersionFrom,
+  parseFingerprint,
 } from '../../src/verify/cache-fingerprint.js';
 
 const inputs = {
@@ -123,5 +124,26 @@ describe('strykerVersionFrom', () => {
     ['a numeric version', '{"version":10}'],
   ])('reads no version from %s', (_label, manifest) => {
     expect(strykerVersionFrom(manifest)).toBeUndefined();
+  });
+});
+
+describe('parseFingerprint', () => {
+  const whole = { stryker: '10.0.0', config: 'c', lockfile: 'l' };
+
+  it('reads a sidecar holding all three fields', () => {
+    expect(parseFingerprint(JSON.stringify(whole))).toEqual(whole);
+  });
+
+  it.each(['stryker', 'config', 'lockfile'])(
+    'rejects a sidecar whose %s is not a string',
+    (field) => {
+      expect(
+        parseFingerprint(JSON.stringify({ ...whole, [field]: 1 })),
+      ).toBeUndefined();
+    },
+  );
+
+  it('rejects text that is not an object', () => {
+    expect(parseFingerprint('[]')).toBeUndefined();
   });
 });

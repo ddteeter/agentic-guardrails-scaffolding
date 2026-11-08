@@ -105,7 +105,11 @@ import {
   mutateEntries,
   planRunRanges,
 } from './mutate-ranges.js';
-import { prepareIncrementalCache } from './prepare-cache.js';
+import {
+  prepareIncrementalCache,
+  writeFingerprintSidecar,
+} from './prepare-cache.js';
+import { fetchSeed, nodeSeedSeams, type SeedSettings } from './seed-cache.js';
 import {
   isStrykerReportJson,
   parseStrykerJson,
@@ -186,6 +190,11 @@ export interface VerifyOptions {
    * (`RepoConfig.mutationScope`, #155). Defaults to `DEFAULT_MUTATION_SCOPE`.
    */
   mutationScope?: MutationScopeSettings | undefined;
+  /**
+   * The command that seeds a missing mutation cache, and its timeout
+   * (`RepoConfig.mutationCache.seedFrom`, #157). Absent seeds nothing.
+   */
+  mutationCacheSeed?: SeedSettings | undefined;
   /**
    * Per-analyzer opt-in (`RepoConfig.analyzers`). Absent → every analyzer is
    * `auto`. See `analyzer-policy.ts` for the truth table.
@@ -1718,6 +1727,31 @@ export interface StrykerScope {
 }
 
 /**
+ * Write `reports/stryker-incremental.fingerprint.json` for this checkout and
+ * return its repo-relative path, or `undefined` when no installed stryker can
+ * be found (#157). The fingerprint reads the stryker config the gate would.
+ */
+export async function writeMutationFingerprint(
+  repoRoot: string,
+): Promise<string | undefined> {
+  return writeFingerprintSidecar(
+    {
+      repoRoot,
+      readFile: readUtf8,
+      writeFile: async (filePath, contents) => {
+        await fsMkdir(path.dirname(filePath), { recursive: true });
+        await fsWriteFile(filePath, contents);
+      },
+    },
+    (await readStrykerConfig(repoRoot, readUtf8)) ?? '',
+  );
+}
+
+function readUtf8(filePath: string): Promise<string> {
+  return fsReadFile(filePath, 'utf8');
+}
+
+/**
  * Which of `files` stryker would mutate, before anything is spawned.
  *
  * Split out of `runStryker` so the pre-push lock probe asks the SAME question
@@ -1758,6 +1792,13 @@ export async function strykerScope(
     negations,
   ).map((file) => strykerOutOfScopeViolation(file));
   return { inScope, outOfScope, config, negations };
+}
+
+/**
+`VerifyOptions.progress`'s default.
+*/
+function writeStderrLine(line: string): void {
+  process.stderr.write(`${line}\n`);
 }
 
 async function runStryker(
@@ -1807,8 +1848,27 @@ async function runStryker(
     });
 
   await removeFile(path.join(repoRoot, reportPath));
+  const seed = options.mutationCacheSeed;
   await prepareIncrementalCache(
-    { readFile, writeFile, removeFile, fileModifiedTime, repoRoot },
+    {
+      readFile,
+      writeFile,
+      removeFile,
+      fileModifiedTime,
+      repoRoot,
+      seed:
+        seed &&
+        ((fingerprint) =>
+          fetchSeed(
+            nodeSeedSeams({
+              exec,
+              repoRoot,
+              warn: options.progress ?? writeStderrLine,
+            }),
+            seed,
+            fingerprint,
+          )),
+    },
     {
       // The project's own `!` exclusions applied, so a cached file this run
       // will not mutate cannot survive — see `applyMutateNegations`.
@@ -1867,11 +1927,7 @@ async function runStryker(
         },
       }),
     cwd: repoRoot,
-    progress:
-      options.progress ??
-      ((line) => {
-        process.stderr.write(`${line}\n`);
-      }),
+    progress: options.progress ?? writeStderrLine,
   });
   if (locked.kind === 'deferred') {
     return [

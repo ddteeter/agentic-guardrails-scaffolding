@@ -94,6 +94,43 @@ export function serializeFingerprint(fingerprint: CacheFingerprint): string {
 }
 
 /**
+ * The fingerprint in a sidecar's text, or `undefined` unless it holds all
+ * three fields as strings.
+ */
+export function parseFingerprint(
+  sidecarJson: string,
+): CacheFingerprint | undefined {
+  const { parsed } = parseJsonText(sidecarJson);
+  if (
+    !isRecord(parsed) ||
+    typeof parsed.stryker !== 'string' ||
+    typeof parsed.config !== 'string' ||
+    typeof parsed.lockfile !== 'string'
+  ) {
+    return undefined;
+  }
+  return {
+    stryker: parsed.stryker,
+    config: parsed.config,
+    lockfile: parsed.lockfile,
+  };
+}
+
+/**
+Do `a` and `b` agree on all three fields?
+*/
+export function isFingerprintEqual(
+  a: CacheFingerprint,
+  b: CacheFingerprint,
+): boolean {
+  return (
+    a.stryker === b.stryker &&
+    a.config === b.config &&
+    a.lockfile === b.lockfile
+  );
+}
+
+/**
  * Was the cache beside `sidecarJson` written under `current`? Anything short
  * of three equal fields answers no.
  */
@@ -101,14 +138,11 @@ export function isSameFingerprint(
   sidecarJson: string,
   current: CacheFingerprint | undefined,
 ): boolean {
-  const { parsed } = parseJsonText(sidecarJson);
-  if (current === undefined || !isRecord(parsed)) {
-    return false;
-  }
+  const recorded = parseFingerprint(sidecarJson);
   return (
-    parsed.stryker === current.stryker &&
-    parsed.config === current.config &&
-    parsed.lockfile === current.lockfile
+    current !== undefined &&
+    recorded !== undefined &&
+    isFingerprintEqual(recorded, current)
   );
 }
 

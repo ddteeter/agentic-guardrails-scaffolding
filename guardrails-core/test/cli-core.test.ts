@@ -32,8 +32,11 @@ import type { Violation } from '../src/violation.js';
 import { checksum as scaffoldChecksum } from '../src/scaffold/manifest.js';
 import {
   CHANGED_FILES,
+  SEED_COMMAND,
   keptKills,
+  seedFixtureExec,
   writeCacheFixture,
+  writeSeedFixture,
 } from './mutation-cache-fixture.js';
 import {
   WHOLE,
@@ -6051,5 +6054,133 @@ describe('mutationScope reaches stryker from the config', () => {
       }),
     );
     expect(mutated).toEqual([WHOLE]);
+  });
+});
+
+function configureSeedFixture(analyzers: Record<string, unknown>): void {
+  writeSeedFixture(root);
+  writeFileSync(
+    path.join(root, 'guardrails.config.json'),
+    JSON.stringify({ analyzers, mutationCache: { seedFrom: SEED_COMMAND } }),
+  );
+}
+
+/**
+ * `mutationCache.seedFrom` from `guardrails.config.json` reaches every command
+ * that runs stryker (#157): the fixture's fresh worktree ends up with the
+ * seeded kill only if the command was run.
+ */
+describe('mutationCache.seedFrom reaches stryker from the config', () => {
+  it.each([['commit'], ['push']])('through gate --mode=%s', async (mode) => {
+    configureSeedFixture({ stryker: 'required' });
+    await runCommand(
+      'gate',
+      [`--mode=${mode}`],
+      dependencies({ exec: seedFixtureExec }),
+    );
+    expect(keptKills(root)).toBe(1);
+  });
+
+  it('through verify', async () => {
+    configureSeedFixture({ stryker: 'required' });
+    await runCommand('verify', [], dependencies({ exec: seedFixtureExec }));
+    expect(keptKills(root)).toBe(1);
+  });
+
+  it('through gate --mode=stop', async () => {
+    configureSeedFixture({ stryker: { mode: 'required', rung: 'stop' } });
+    await runCommand(
+      'gate',
+      ['--mode=stop'],
+      dependencies({
+        exec: seedFixtureExec,
+        readStdin: () =>
+          Promise.resolve(JSON.stringify({ cwd: root, sessionId: 'sid' })),
+      }),
+    );
+    expect(keptKills(root)).toBe(1);
+  });
+
+  it('passes the configured timeout to the command', async () => {
+    writeSeedFixture(root);
+    writeFileSync(
+      path.join(root, 'guardrails.config.json'),
+      JSON.stringify({
+        analyzers: { stryker: 'required' },
+        mutationCache: { seedFrom: SEED_COMMAND, seedTimeoutSeconds: 7 },
+      }),
+    );
+    const timeouts: (number | undefined)[] = [];
+    await runCommand(
+      'verify',
+      [],
+      dependencies({
+        exec: (command, args, options) => {
+          if (command === 'sh') {
+            timeouts.push(options?.timeoutMs);
+          }
+          return seedFixtureExec(command, args, options);
+        },
+      }),
+    );
+    expect(timeouts).toEqual([7000]);
+  });
+});
+
+/**
+ * `mutation-fingerprint` writes the sidecar CI uploads beside its report
+ * (#157): CI runs stryker itself, so nothing else there writes one, and a
+ * seed without one is discarded.
+ */
+function sidecarPath(): string {
+  return path.join(root, 'reports', 'stryker-incremental.fingerprint.json');
+}
+
+describe('mutation-fingerprint: the sidecar a CI seed needs', () => {
+  it('writes this checkout’s fingerprint where the gate reads it, and names the file', async () => {
+    writeCacheFixture(root);
+    const expected = readFileSync(sidecarPath(), 'utf8');
+    rmSync(path.join(root, 'reports'), { recursive: true });
+    const code = await runCommand('mutation-fingerprint', [], dependencies());
+    expect(code).toBe(0);
+    expect(readFileSync(sidecarPath(), 'utf8')).toBe(expected);
+    expect(out.join('')).toBe(
+      `${path.join('reports', 'stryker-incremental.fingerprint.json')}\n`,
+    );
+  });
+
+  it('overwrites a sidecar already in reports/', async () => {
+    writeCacheFixture(root);
+    const expected = readFileSync(sidecarPath(), 'utf8');
+    writeFileSync(sidecarPath(), 'stale');
+    expect(await runCommand('mutation-fingerprint', [], dependencies())).toBe(
+      0,
+    );
+    expect(readFileSync(sidecarPath(), 'utf8')).toBe(expected);
+  });
+
+  it('fails, writing nothing, when no installed stryker can be found', async () => {
+    writeCacheFixture(root);
+    rmSync(path.join(root, 'reports'), { recursive: true });
+    rmSync(path.join(root, 'node_modules', '@stryker-mutator'), {
+      recursive: true,
+    });
+    const code = await runCommand('mutation-fingerprint', [], dependencies());
+    expect(code).toBe(1);
+    expect(existsSync(sidecarPath())).toBe(false);
+    expect(errors.join('')).toContain('@stryker-mutator/core');
+  });
+
+  it('is listed in the usage', async () => {
+    await runCommand('no-such-command', [], dependencies());
+    expect(errors.join('')).toContain('mutation-fingerprint');
+  });
+});
+
+describe('command dispatch', () => {
+  it('treats an inherited object key as an unknown command', async () => {
+    const code = await runCommand('toString', [], dependencies());
+    expect(code).toBe(1);
+    expect(errors.join('')).toContain('usage: guardrails-core <command>');
   });
 });

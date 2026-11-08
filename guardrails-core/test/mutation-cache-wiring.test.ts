@@ -19,8 +19,11 @@ import type { GateConfig } from '../src/gate-decision.js';
 import type { CacheInvalidation } from '../src/verify/incremental-cache.js';
 import {
   CHANGED_FILES,
+  SEED_COMMAND,
   keptKills,
+  seedFixtureExec,
   writeCacheFixture,
+  writeSeedFixture,
 } from './mutation-cache-fixture.js';
 
 let root: string;
@@ -75,6 +78,52 @@ describe.each<[string, CacheInvalidation | undefined, number]>([
       repoRoot: root,
       baseBranch: 'main',
       exec,
+      config,
+      resolveBin: (tool) => tool,
+      analyzers: { stryker: 'required' },
+      ...policy,
+    });
+    expect(keptKills(root)).toBe(kills);
+  });
+});
+
+/**
+ * `mutationCache.seedFrom` reaches the seeder through both gates (#157). The
+ * fixture's worktree has no cache; a gate that runs the seed leaves the CI
+ * report's one kill behind, and one that does not leaves no cache at all.
+ */
+describe.each<
+  [string, { command: string; timeoutSeconds: number } | undefined, number]
+>([
+  ['seeded, when configured', { command: SEED_COMMAND, timeoutSeconds: 5 }, 1],
+  ['cold, by default', undefined, -1],
+])('a fresh worktree’s mutation cache: %s', (_label, seed, kills) => {
+  beforeEach(() => {
+    writeSeedFixture(root);
+  });
+
+  const policy = { mutationCacheSeed: seed };
+
+  it('is the stop gate’s', async () => {
+    await runStopGate({
+      repoRoot: root,
+      sessionId: 'sid',
+      baseBranch: 'main',
+      exec: seedFixtureExec,
+      config,
+      resolveBin: (tool) => tool,
+      analyzers: { stryker: 'required' },
+      analyzerRungs: { stryker: 'stop' },
+      ...policy,
+    });
+    expect(keptKills(root)).toBe(kills);
+  });
+
+  it('is the commit gate’s', async () => {
+    await runCommitGate({
+      repoRoot: root,
+      baseBranch: 'main',
+      exec: seedFixtureExec,
       config,
       resolveBin: (tool) => tool,
       analyzers: { stryker: 'required' },

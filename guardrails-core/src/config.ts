@@ -112,6 +112,15 @@ See `RepoConfig.mutationCache`.
 */
 interface MutationCacheConfig {
   invalidation: CacheInvalidation;
+  /**
+   * A shell command that fetches a seed for a missing cache into
+   * `$GUARDRAILS_SEED_DIR` (#157); `undefined`, the default, seeds nothing.
+   */
+  seedFrom: string | undefined;
+  /**
+  How long `seedFrom` may run before the gate gives up on it and runs cold.
+  */
+  seedTimeoutSeconds: number;
 }
 
 export interface RepoConfig {
@@ -243,6 +252,10 @@ export interface RepoConfig {
    * is the behaviour before #156. An unknown value keeps the default. See
    * `verify/prepare-cache.ts`, and docs/adoption.md ("The mutation cache
    * between runs").
+   *
+   * `seedFrom` (#157) is opt-in: a command that fetches CI's report when a
+   * worktree has no cache, run for at most `seedTimeoutSeconds` (default 120).
+   * See `verify/seed-cache.ts`.
    */
   mutationCache: MutationCacheConfig;
   /**
@@ -301,7 +314,11 @@ export function defaultConfig(): RepoConfig {
       pushWaitSeconds: 10_800,
       stopGraceSeconds: DEFAULT_STOP_GRACE_SECONDS,
     },
-    mutationCache: { invalidation: 'targeted' },
+    mutationCache: {
+      invalidation: 'targeted',
+      seedFrom: undefined,
+      seedTimeoutSeconds: 120,
+    },
     mutationScope: { ...DEFAULT_MUTATION_SCOPE },
     denyForegroundWaits: true,
     foregroundSleepLimitSeconds: 120,
@@ -670,6 +687,11 @@ function pickMutationCache(
       defaults.invalidation,
       CACHE_INVALIDATIONS,
     ),
+    seedFrom: pickCommand(section.seedFrom),
+    seedTimeoutSeconds: pickPositive(
+      section.seedTimeoutSeconds,
+      defaults.seedTimeoutSeconds,
+    ),
   };
 }
 
@@ -702,6 +724,26 @@ function pickMutationScope(
         ? wholeFileAbove
         : defaults.wholeFileAbove,
   };
+}
+
+/**
+ * `mutationCache.seedFrom` with its timeout, as the gate runs it, or
+ * `undefined` when the project seeds nothing.
+ */
+export function seedSettingsOf(
+  config: RepoConfig,
+): { command: string; timeoutSeconds: number } | undefined {
+  const { seedFrom, seedTimeoutSeconds } = config.mutationCache;
+  return seedFrom === undefined
+    ? undefined
+    : { command: seedFrom, timeoutSeconds: seedTimeoutSeconds };
+}
+
+/**
+A shell command, or `undefined` for anything that is not a non-blank string.
+*/
+function pickCommand(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() !== '' ? value : undefined;
 }
 
 /** The policy file's name, exported so the modules that read it, name it in a

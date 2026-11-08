@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   cacheTestFiles,
+  dropUnresolvedKills,
   dropUntrusted,
   filterToScope,
   hasPerTestCoverage,
@@ -101,6 +102,29 @@ describe('parseIncrementalCache', () => {
       ['0', 'a.test.ts'],
       ['1', 'b.test.ts'],
       ['2', 'b.test.ts'],
+    ]);
+  });
+
+  it('keeps each test file’s tests in order, as stryker wrote them', () => {
+    // What the shard merge (#157) re-keys: it needs every declared test, an
+    // ambiguous id included, and the fields it does not rewrite.
+    const cache = parsed({}, { 'a.test.ts': ['0', '0'], 'b.test.ts': ['1'] });
+    expect(
+      [...cache.testFiles].map(([file, entry]) => [
+        file,
+        entry.raw.source,
+        entry.tests.map((test) => [test.id, test.raw.name]),
+      ]),
+    ).toEqual([
+      [
+        'a.test.ts',
+        '// a.test.ts\n',
+        [
+          ['0', 'test 0'],
+          ['0', 'test 0'],
+        ],
+      ],
+      ['b.test.ts', '// b.test.ts\n', [['1', 'test 1']]],
     ]);
   });
 
@@ -414,6 +438,41 @@ describe('dropUntrusted', () => {
     const cache = parsed({ 'src/a.ts': [mutant()] }, testFiles);
     expect(dropUntrusted(cache, new Set(['a.test.ts'])).testFileOf).toEqual(
       cache.testFileOf,
+    );
+  });
+});
+
+describe('dropUnresolvedKills', () => {
+  const testFiles = { 'a.test.ts': ['0'] };
+
+  it('drops a Killed or Timeout verdict in the named files whose vouching test resolves to no file', () => {
+    const cache = parsed(
+      {
+        'src/a.ts': [
+          mutant({ killedBy: ['0'] }),
+          mutant({ killedBy: ['0', 'gone'], line: 2 }),
+          mutant({ status: 'Timeout', coveredBy: ['gone'], line: 3 }),
+        ],
+      },
+      testFiles,
+    );
+    expect(statuses(dropUnresolvedKills(cache, new Set(['src/a.ts'])))).toEqual(
+      { 'src/a.ts': ['Killed'] },
+    );
+  });
+
+  it('leaves every other status, and every file not named, as it was', () => {
+    // Under `any-test-change` a cache keeps its survivors; this only removes
+    // what a merge left pointing at nothing.
+    const cache = parsed(
+      {
+        'src/a.ts': [mutant({ status: 'Survived', coveredBy: ['gone'] })],
+        'src/b.ts': [mutant({ killedBy: ['gone'] })],
+      },
+      testFiles,
+    );
+    expect(statuses(dropUnresolvedKills(cache, new Set(['src/a.ts'])))).toEqual(
+      { 'src/a.ts': ['Survived'], 'src/b.ts': ['Killed'] },
     );
   });
 });

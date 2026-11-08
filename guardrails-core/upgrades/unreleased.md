@@ -1,5 +1,52 @@
 ---
 version: unreleased
+wire:
+  - kind: config
+    name: mutationCache.seedFrom
+    value: 'sh scripts/fetch-mutation-seed.sh'
+    because: "a shell command that downloads CI's stryker report and its fingerprint sidecar into $GUARDRAILS_SEED_DIR; optional, and only worth wiring where CI runs whole-scope mutation and uploads the pair"
+  - kind: config
+    name: mutationCache.seedTimeoutSeconds
+    value: '120'
+    because: 'how long the seed command may run before it is stopped (one SIGINT, then SIGKILL after mutationLock.stopGraceSeconds); 120 is the default'
 ---
 
 # Unreleased — what changed for an agent
+
+## Behaviour that changed
+
+- **The mutation cache can be seeded from CI (#157).** With
+  `mutationCache.seedFrom` set, a gate about to run stryker takes CI's entries
+  for every in-scope file its local cache lacks — a fresh worktree, a new
+  branch in an old checkout, or a cache that was just discarded. Where both
+  hold a file, the local entry is kept. The command runs only when some
+  in-scope file is missing (it costs a download); a file with no mutants is
+  never in a report, so one in scope keeps it asking. Seeded verdicts pass
+  the same rules as local ones: survivors are dropped, and a kill is kept only
+  while its test file is unchanged on this branch.
+- **A seed must match this checkout.** Each report has to arrive with its
+  fingerprint sidecar (`<name>.fingerprint.json` beside `<name>.json`), every
+  shard's sidecar must agree, and they must match this checkout's stryker
+  version, stryker config and lockfile. Otherwise the seed is discarded with
+  one stderr line, and that run is cold for the files it would have covered.
+  A seed never fails the gate.
+- **`guardrails mutation-fingerprint`** writes
+  `reports/stryker-incremental.fingerprint.json` for the checkout it runs in.
+  CI runs stryker itself, so this is how CI produces the sidecar to upload.
+
+## Instructions this supersedes
+
+- Nothing in guardrails' own guidance. If your instructions copy
+  `reports/stryker-incremental.json` between checkouts by hand to avoid a cold
+  first run, `seedFrom` replaces that step once it is wired.
+
+## What to wire
+
+- Only if CI runs whole-scope mutation on the base branch. In CI, after
+  stryker, run `node ./node_modules/guardrails-core/dist/cli.mjs
+mutation-fingerprint` and upload `reports/stryker-incremental.json` and
+  `reports/stryker-incremental.fingerprint.json` together with
+  `actions/upload-artifact` (`retention-days: 2`). `actions/cache` will not
+  do: a developer's machine cannot download it. docs/adoption.md has a sample
+  workflow and fetch script.
+- Then set `mutationCache.seedFrom` to the fetch command.

@@ -9,9 +9,17 @@
  * it. Stryker itself is faked by the callers, so the cache on disk afterwards
  * is exactly what the gate prepared.
  */
-import { mkdirSync, readFileSync, utimesSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import path from 'node:path';
 
+import type { Exec } from '../src/exec.js';
 import {
   computeFingerprint,
   serializeFingerprint,
@@ -23,9 +31,23 @@ What the fixture's change set holds, as `git diff --name-only` prints it.
 */
 export const CHANGED_FILES = 'src/foo.ts\ntest/foo.test.ts\n';
 
+const STRYKER_CONFIG = JSON.stringify({ testRunner: 'vitest' });
+
+/**
+The fixture checkout's fingerprint sidecar, as `cache-fingerprint.ts` writes it.
+*/
+function fixtureSidecar(): string {
+  const fingerprint = computeFingerprint({
+    strykerVersion: '10.0.0',
+    config: STRYKER_CONFIG,
+    lockfiles: [],
+  });
+  return fingerprint === undefined ? '' : serializeFingerprint(fingerprint);
+}
+
 export function writeCacheFixture(root: string): void {
   const at = (...parts: string[]) => path.join(root, ...parts);
-  const config = JSON.stringify({ testRunner: 'vitest' });
+  const config = STRYKER_CONFIG;
   mkdirSync(at('reports'), { recursive: true });
   mkdirSync(at('test'), { recursive: true });
   mkdirSync(at('node_modules', '@stryker-mutator', 'core'), {
@@ -36,14 +58,9 @@ export function writeCacheFixture(root: string): void {
     at('node_modules', '@stryker-mutator', 'core', 'package.json'),
     '{"version":"10.0.0"}',
   );
-  const fingerprint = computeFingerprint({
-    strykerVersion: '10.0.0',
-    config,
-    lockfiles: [],
-  });
   writeFileSync(
     at('reports', 'stryker-incremental.fingerprint.json'),
-    fingerprint === undefined ? '' : serializeFingerprint(fingerprint),
+    fixtureSidecar(),
   );
   writeFileSync(
     at('reports', 'stryker-incremental.json'),
@@ -82,11 +99,80 @@ export function writeCacheFixture(root: string): void {
 How many kills the gate left in the fixture's cache; -1 for no cache.
 */
 export function keptKills(root: string): number {
-  const cache = parseIncrementalCache(
-    readFileSync(
-      path.join(root, 'reports', 'stryker-incremental.json'),
-      'utf8',
-    ),
-  );
+  const cachePath = path.join(root, 'reports', 'stryker-incremental.json');
+  const cache =
+    existsSync(cachePath) &&
+    parseIncrementalCache(readFileSync(cachePath, 'utf8'));
+  if (cache === false) {
+    return -1;
+  }
   return cache?.files.get('src/foo.ts')?.mutants.length ?? -1;
 }
+
+/**
+The `mutationCache.seedFrom` command the seeding fixture answers to.
+*/
+export const SEED_COMMAND = 'fetch-ci-reports';
+
+/**
+ * The cache fixture as a FRESH worktree sees it (#157): everything in place
+ * but the cache itself, so a gate that seeds writes one and a gate that does
+ * not leaves none.
+ */
+export function writeSeedFixture(root: string): void {
+  writeCacheFixture(root);
+  rmSync(path.join(root, 'reports', 'stryker-incremental.json'));
+  const otherTest = path.join(root, 'test', 'other.test.ts');
+  writeFileSync(otherTest, '');
+  utimesSync(otherTest, new Date(1_000_000), new Date(1_000_000));
+}
+
+/**
+ * The CI report the fake `seedFrom` command "downloads": one kill of
+ * `src/foo.ts`, by a test in a file the fixture's branch did NOT change — so
+ * the targeted rule keeps it, and a seeded gate leaves one kill.
+ */
+const SEED_REPORT = JSON.stringify({
+  files: {
+    'src/foo.ts': {
+      source: '',
+      mutants: [
+        {
+          mutatorName: 'BlockStatement',
+          status: 'Killed',
+          killedBy: ['0'],
+          coveredBy: ['0'],
+          location: { start: { line: 1, column: 1 } },
+        },
+      ],
+    },
+  },
+  testFiles: { 'test/other.test.ts': { tests: [{ id: '0', name: 'other' }] } },
+});
+
+/**
+ * An `Exec` that answers the gate's `git diff --name-only` with the fixture's
+ * change set, and plays a `seedFrom` command: `sh -c SEED_COMMAND` writes the
+ * CI report, and the fingerprint CI uploads beside it, into
+ * `$GUARDRAILS_SEED_DIR`. Anything else, stryker included,
+ * does nothing.
+ */
+export const seedFixtureExec: Exec = (command, args, options) => {
+  const seedDirectory = options?.env?.GUARDRAILS_SEED_DIR;
+  if (
+    seedDirectory !== undefined &&
+    command === 'sh' &&
+    args.join(' ') === `-c ${SEED_COMMAND}`
+  ) {
+    writeFileSync(path.join(seedDirectory, 'report.json'), SEED_REPORT);
+    writeFileSync(
+      path.join(seedDirectory, 'report.fingerprint.json'),
+      fixtureSidecar(),
+    );
+  }
+  return Promise.resolve({
+    stdout: args.includes('--name-only') ? CHANGED_FILES : '',
+    stderr: '',
+    code: 0,
+  });
+};

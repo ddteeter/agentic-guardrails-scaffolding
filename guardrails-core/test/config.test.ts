@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   defaultConfig,
   loadConfig,
+  seedSettingsOf,
   parseSanctionsJson,
   readConfigText,
   toGateConfig,
@@ -745,18 +746,67 @@ describe('mutationLock', () => {
 });
 
 describe('mutationCache', () => {
-  it('rewrites the cache by the targeted rule by default', () => {
-    expect(defaultConfig().mutationCache).toEqual({ invalidation: 'targeted' });
+  it('rewrites the cache by the targeted rule, and seeds nothing, by default', () => {
+    expect(defaultConfig().mutationCache).toStrictEqual({
+      invalidation: 'targeted',
+      seedFrom: undefined,
+      seedTimeoutSeconds: 120,
+    });
   });
+
+  it('reads a seed command and its timeout (#157)', () => {
+    writeFileSync(
+      path.join(root, 'guardrails.config.json'),
+      JSON.stringify({
+        mutationCache: { seedFrom: 'fetch-reports', seedTimeoutSeconds: 30 },
+      }),
+    );
+    expect(loadConfig(root).mutationCache).toMatchObject({
+      seedFrom: 'fetch-reports',
+      seedTimeoutSeconds: 30,
+    });
+  });
+
+  it.each([[''], [' '.repeat(3)], [3], [['fetch']]])(
+    'seeds nothing for a seedFrom of %j',
+    (seedFrom) => {
+      writeFileSync(
+        path.join(root, 'guardrails.config.json'),
+        JSON.stringify({ mutationCache: { seedFrom } }),
+      );
+      expect(loadConfig(root).mutationCache.seedFrom).toBeUndefined();
+    },
+  );
+
+  it('hands the gate a seed only when a command is configured', () => {
+    expect(seedSettingsOf(defaultConfig())).toBeUndefined();
+    writeFileSync(
+      path.join(root, 'guardrails.config.json'),
+      JSON.stringify({ mutationCache: { seedFrom: 'fetch-reports' } }),
+    );
+    expect(seedSettingsOf(loadConfig(root))).toStrictEqual({
+      command: 'fetch-reports',
+      timeoutSeconds: 120,
+    });
+  });
+
+  it.each([[0], [-5], ['60']])(
+    'keeps the default for a seedTimeoutSeconds of %j',
+    (seedTimeoutSeconds) => {
+      writeFileSync(
+        path.join(root, 'guardrails.config.json'),
+        JSON.stringify({ mutationCache: { seedTimeoutSeconds } }),
+      );
+      expect(loadConfig(root).mutationCache.seedTimeoutSeconds).toBe(120);
+    },
+  );
 
   it('reads the opt-in any-test-change rule', () => {
     writeFileSync(
       path.join(root, 'guardrails.config.json'),
       JSON.stringify({ mutationCache: { invalidation: 'any-test-change' } }),
     );
-    expect(loadConfig(root).mutationCache).toEqual({
-      invalidation: 'any-test-change',
-    });
+    expect(loadConfig(root).mutationCache.invalidation).toBe('any-test-change');
   });
 
   it.each([['sometimes'], [3], [undefined]])(
@@ -766,9 +816,7 @@ describe('mutationCache', () => {
         path.join(root, 'guardrails.config.json'),
         JSON.stringify({ mutationCache: { invalidation } }),
       );
-      expect(loadConfig(root).mutationCache).toEqual({
-        invalidation: 'targeted',
-      });
+      expect(loadConfig(root).mutationCache.invalidation).toBe('targeted');
     },
   );
 
@@ -777,9 +825,9 @@ describe('mutationCache', () => {
       path.join(root, 'guardrails.config.json'),
       JSON.stringify({ mutationCache: 'any-test-change' }),
     );
-    expect(loadConfig(root).mutationCache).toEqual({
-      invalidation: 'targeted',
-    });
+    expect(loadConfig(root).mutationCache).toStrictEqual(
+      defaultConfig().mutationCache,
+    );
   });
 });
 
