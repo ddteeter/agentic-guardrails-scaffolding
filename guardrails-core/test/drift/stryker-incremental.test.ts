@@ -1,9 +1,9 @@
 /**
  * Drift guard for stryker's INCREMENTAL REUSE semantics.
  *
- * `runStryker` now keeps stryker's incremental cache whenever
- * `canReuseIncrementalCache` says the cache proves itself (#59). That
- * predicate rests on two things this repo does not control, and which no
+ * `runStryker` keeps (a rewrite of) stryker's incremental cache whenever the
+ * cache shows per-test coverage (`hasPerTestCoverage`, #59, #156). That
+ * rule rests on two things this repo does not control, and which no
  * hand-written report can test:
  *
  * 1. A real `@stryker-mutator/vitest-runner` cache records `coveredBy`, so the
@@ -41,9 +41,11 @@ import { describe, expect, it } from 'vitest';
 import { spawnExec } from '../../src/exec.js';
 import { canReportPerTestCoverage } from '../../src/verify/index.js';
 import {
-  canReuseIncrementalCache,
-  parseStrykerJson,
-} from '../../src/verify/stryker-adapter.js';
+  filterToScope,
+  hasPerTestCoverage,
+  parseIncrementalCache,
+} from '../../src/verify/incremental-cache.js';
+import { parseStrykerJson } from '../../src/verify/stryker-adapter.js';
 import { isUnderMutationRun } from './under-mutation.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -262,8 +264,10 @@ describe.skipIf(isUnderMutationRun(here))(
         path.join(directory, 'reports', 'stryker-incremental.json'),
         'utf8',
       );
+      const parsed = parseIncrementalCache(cache);
       expect(
-        canReuseIncrementalCache(cache, MUTATED),
+        parsed !== undefined &&
+          hasPerTestCoverage(filterToScope(parsed, MUTATED)),
         'a real stryker cache no longer records the per-test coverage that ' +
           'makes reuse safe, so guardrails will now take a cold mutation run ' +
           'on every gate. Check the runner plugin against the installed ' +
@@ -271,12 +275,13 @@ describe.skipIf(isUnderMutationRun(here))(
       ).toBe(true);
 
       // Strengthen the covering test, exactly as a fixer would. The cache is
-      // left in place — which is NOT what the gate does any more: since #67 a
-      // changed test file newer than the cache discards it
-      // (`haveTestsChangedSinceCache`). That guard exists precisely because this
-      // upstream behaviour is not observable from the gate, so the guard must
-      // not stand in for it here: leaving the cache is the only way to keep
-      // asking stryker the question.
+      // left in place UNREWRITTEN — which is NOT what the gate does: since #156
+      // it drops every cached survivor and every kill whose test changed
+      // (`dropUntrusted`). That rule exists precisely because this upstream
+      // behaviour is not observable from the gate (and fails for static
+      // mutants, `stryker-cache-semantics.test.ts`), so it must not stand in
+      // for it here: leaving the cache is the only way to keep asking stryker
+      // the question.
       await writeFile(path.join(directory, 'tier.test.ts'), STRONG_TIER_TEST);
       const second = await spawnExec(strykerBin, ['run'], { cwd: directory });
       const secondDiagnostic = `stryker exit ${second.code}\n${second.stdout}\n${second.stderr}`;
@@ -307,7 +312,7 @@ describe.skipIf(isUnderMutationRun(here))(
       // cached `Survived` verdict outlives the test written to kill it, and
       // the fixer loop can never go green.
       //
-      // `canReuseIncrementalCache` cannot catch this on its own — on the very
+      // `hasPerTestCoverage` cannot catch this on its own — on the very
       // first run under a real runner the cache is coverage-rich — which is
       // why `canReportPerTestCoverage` decides from the config instead.
       const directory = await buildFixture('command');

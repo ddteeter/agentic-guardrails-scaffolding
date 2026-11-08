@@ -38,6 +38,11 @@ import { describe, expect, it } from 'vitest';
 
 import { spawnExec } from '../../src/exec.js';
 import { isRecord } from '../../src/is-record.js';
+import {
+  dropUntrusted,
+  parseIncrementalCache,
+  serializeIncrementalCache,
+} from '../../src/verify/incremental-cache.js';
 import { isUnderMutationRun } from './under-mutation.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -97,6 +102,11 @@ describe('unit', () => {
 `;
 
 const MUTATED = ['src/tier.ts', 'src/unit.ts'];
+
+/** Stryker's incremental summary, e.g. `3 of 11 mutant result(s) are reused.`
+ *  Hardcoded upstream text, pinned the same way `stryker-incremental.test.ts`
+ *  pins it. */
+const REUSE_SUMMARY = /(\d{1,9}) of \d{1,9} mutant result\(s\) are reused/;
 
 async function buildFixture(): Promise<string> {
   const directory = await mkdtemp(
@@ -303,6 +313,46 @@ describe.skipIf(isUnderMutationRun(here))(
           'needs.\n' +
           diagnostic,
       ).toEqual([expect.objectContaining({ isStatic: true })]);
+    }, 600_000);
+
+    it('re-tests the static survivor, and reuses the rest, once the gate rewrites the cache (#156)', async () => {
+      // The same loop as the test above, with the one step the gate adds:
+      // `dropUntrusted` between the runs, told which test file the fixer
+      // changed. The survivor is gone from the cache, so stryker must test it
+      // again — and the kills of the UNCHANGED test file are still there to
+      // reuse, which is the cold run #156 exists to avoid.
+      const directory = await buildFixture();
+      await runStrykerIn(directory);
+      await writeFile(path.join(directory, 'unit.test.ts'), STRONG_UNIT_TEST);
+      const cache = parseIncrementalCache(
+        await readFile(cachePath(directory), 'utf8'),
+      );
+      expect(cache).toBeDefined();
+      if (cache !== undefined) {
+        await writeFile(
+          cachePath(directory),
+          serializeIncrementalCache(
+            dropUntrusted(cache, new Set(['unit.test.ts'])),
+          ),
+        );
+      }
+      const diagnostic = await runStrykerIn(directory);
+
+      const report = await readObserved(reportPath(directory));
+      expect(survivorsIn(report, 'src/unit.ts'), diagnostic).toEqual([]);
+      expect(
+        report.mutants.filter((mutant) => mutant.file === 'src/unit.ts'),
+        diagnostic,
+      ).toContainEqual(
+        expect.objectContaining({
+          mutatorName: 'StringLiteral',
+          status: 'Killed',
+        }),
+      );
+      // Reuse is what makes the rewrite worth it: tier.test.ts did not change,
+      // so its kills come back from the cache rather than from a run.
+      const reused = Number(REUSE_SUMMARY.exec(diagnostic)?.[1] ?? '0');
+      expect(reused, diagnostic).toBeGreaterThan(0);
     }, 600_000);
 
     it('folds out-of-range cached verdicts back into a ranged run’s report', async () => {

@@ -43,9 +43,11 @@
  */
 
 import {
+  mkdir as fsMkdir,
   readFile as fsReadFile,
   rm as fsRm,
   stat as fsStat,
+  writeFile as fsWriteFile,
 } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
@@ -95,11 +97,9 @@ import {
 import { parseKnipJson } from './knip-adapter.js';
 import { parseNpmLsJson } from './npm-peers-adapter.js';
 import { isRecord } from './report-shape.js';
+import type { CacheInvalidation } from './incremental-cache.js';
+import { prepareIncrementalCache } from './prepare-cache.js';
 import {
-  UNREADABLE_CACHE_TIME,
-  UNREADABLE_TEST_TIME,
-  canReuseIncrementalCache,
-  haveTestsChangedSinceCache,
   isStrykerReportJson,
   parseStrykerJson,
   unrunSurvivedMutants,
@@ -160,11 +160,20 @@ export interface VerifyOptions {
    *  reused. Defaults to node:fs/promises `rm` with `{ force: true }`
    *  (a missing file is not an error); injected in tests. */
   removeFile?: (filePath: string) => Promise<void>;
-  /** File mtime seam, in epoch milliseconds. `runStryker` compares the tests
-   *  this run changed against stryker's incremental cache, so a cache older
-   *  than the test written to kill its survivor is discarded (#67). Defaults to
-   *  node:fs/promises `stat`; injected in tests. */
+  /** File mtime seam, in epoch milliseconds. `runStryker` compares the test
+   *  files stryker's incremental cache names against the cache itself, so a
+   *  kill measured against an older version of its test is re-tested (#67,
+   *  #156). Defaults to node:fs/promises `stat`; injected in tests. */
   fileModifiedTime?: (filePath: string) => Promise<number>;
+  /** File write seam: `runStryker` writes back the incremental cache it
+   *  rewrote, and the fingerprint sidecar beside it (#156). Defaults to
+   *  node:fs/promises `writeFile`, creating the directory; injected in tests. */
+  writeFile?: (filePath: string, contents: string) => Promise<void>;
+  /**
+   * How a changed test invalidates cached mutation verdicts
+   * (`RepoConfig.mutationCache.invalidation`). Defaults to `targeted`.
+   */
+  mutationCacheInvalidation?: CacheInvalidation | undefined;
   /**
    * Per-analyzer opt-in (`RepoConfig.analyzers`). Absent → every analyzer is
    * `auto`. See `analyzer-policy.ts` for the truth table.
@@ -852,10 +861,6 @@ function resolvedProjectReferences(stdout: string): boolean | undefined {
  *  is fixed, gitignored, and persists across runs — which is exactly why
  *  `runStryker` deletes it before every run rather than trying to avoid it. */
 const STRYKER_REPORT_PATH = path.join('reports', 'mutation', 'mutation.json');
-const STRYKER_INCREMENTAL_PATH = path.join(
-  'reports',
-  'stryker-incremental.json',
-);
 
 /**
  * Stryker's instrumenter banner, e.g.
@@ -1193,11 +1198,11 @@ function strykerOutOfScopeViolation(file: string): Violation {
  *  (`STRYKER_REPORT_PATH`) — there is no flag to relocate it per run (see that
  *  constant's comment) — so stale output from a PRIOR run could otherwise be
  *  misread as this run's. `removeFile` deletes the JSON report BEFORE stryker
- *  runs. Stryker's incremental cache is deleted before the run too, but
- *  conditionally — see `discardUnusableIncrementalCache`. Keeping it when it is
- *  safe to keep is what makes `--incremental` mean anything (#59); deleting it
- *  whenever the cache cannot prove itself is what stops stryker reusing a
- *  survivor verdict the fixer's new test was meant to overturn.
+ *  runs. Stryker's incremental cache is REWRITTEN before the run — see
+ *  `prepareIncrementalCache`. Keeping the verdicts it can vouch for is what
+ *  makes `--incremental` mean anything (#59, #156); dropping every survivor and
+ *  every kill whose test changed is what stops stryker reusing a verdict the
+ *  fixer's new test was meant to overturn.
  *
  *  A report still missing after a zero exit is a failure (`analyzer-failed`,
  *  not clean): whether because stryker crashed internally without a non-zero
@@ -1499,12 +1504,12 @@ function negationMatcher(negation: string): (file: string) => boolean {
  * `--mutate` still receives the full changed set plus the negations — stryker
  * resolves them itself, and it is the authority. This is a SEPARATE, more
  * conservative reading used for one decision only: whether a cache from a
- * previous run may be kept (`canReuseIncrementalCache`).
+ * previous run may be kept (`filterToScope`, via `prepareIncrementalCache`).
  *
  * That narrow use is what licenses the bias. Over-matching a pattern shrinks
- * the allowed set, rejects the cache, and costs a cold mutation run.
- * Under-matching would let a cache holding a negated file survive, and stryker
- * folds such a cache's verdicts into the report it writes — reproducing #56,
+ * the allowed set and drops a cached file the run could have reused.
+ * Under-matching would let a cached negated file survive, and stryker folds
+ * its verdicts into the report it writes — reproducing #56,
  * where a file the project excluded raised violations no test could fix and no
  * grant in `guardrails.config.json` could name. So anything unreadable
  * excludes everything.
@@ -1594,8 +1599,8 @@ const COVERAGE_BLIND_TEST_RUNNER = 'command';
  * Will the run about to start be able to tell a stale cached verdict from a
  * live one?
  *
- * `canReuseIncrementalCache` inspects the cache and answers whether that FILE
- * could be reused soundly. On its own that is the wrong side of the question:
+ * `hasPerTestCoverage` inspects the cache and answers whether that FILE could
+ * be reused soundly. On its own that is the wrong side of the question:
  * `IncrementalDiffer.mutantCanBeReused` reads `testCoverage.hasCoverage`, and
  * `testCoverage` is built from THIS run's dry run, not from the cache. A repo
  * that switches from the vitest runner to `command` therefore keeps a
@@ -1676,109 +1681,6 @@ async function readStrykerConfig(
     return contents;
   }
   return undefined;
-}
-
-interface CacheSeams {
-  readFile: (filePath: string) => Promise<string>;
-  removeFile: (filePath: string) => Promise<void>;
-  fileModifiedTime: (filePath: string) => Promise<number>;
-  repoRoot: string;
-}
-
-/**
- * Was any test this run changed touched after stryker wrote its cache?
- *
- * The stat is taken only when there is a test to stat. A turn that changed
- * production code alone has nothing to be stale against, so it pays nothing and
- * keeps the reuse #59 restored — see `haveTestsChangedSinceCache` for why this
- * axis exists at all.
- *
- * A timestamp that cannot be read resolves to the sentinel that makes the cache
- * unusable rather than throwing — see `haveTestsChangedSinceCache`.
- */
-async function hasTestSuiteChangedSinceCache(
-  seams: CacheSeams,
-  cachePath: string,
-  changedTestFiles: readonly string[],
-): Promise<boolean> {
-  if (changedTestFiles.length === 0) {
-    return false;
-  }
-  // The two fallbacks are different VALUES, not a shared `undefined`. A single
-  // absent value either operand could produce made the failure paths
-  // indistinguishable — an equivalent mutant no test could kill — so each
-  // resolves toward the answer that makes the cache unusable on its own.
-  const modifiedTime = async (
-    filePath: string,
-    unreadable: number,
-  ): Promise<number> => {
-    try {
-      return await seams.fileModifiedTime(filePath);
-    } catch {
-      return unreadable;
-    }
-  };
-  const [cacheModified, testModified] = await Promise.all([
-    modifiedTime(cachePath, UNREADABLE_CACHE_TIME),
-    Promise.all(
-      changedTestFiles.map((file) =>
-        modifiedTime(path.join(seams.repoRoot, file), UNREADABLE_TEST_TIME),
-      ),
-    ),
-  ]);
-  return haveTestsChangedSinceCache(cacheModified, testModified);
-}
-
-/**
- * Deletes stryker's incremental cache unless this run may reuse it.
- *
- * `--incremental` is passed on every run, so stryker always WRITES a cache for
- * the next one; whether the next one reads it is decided here, by what is
- * actually in the file (`canReuseIncrementalCache`). Previously the file was
- * deleted unconditionally on the line before the flag was passed, which made
- * the flag a no-op — every gate run was a cold full run of the changed files
- * (#59).
- *
- * Deleting is the fail-closed direction and every uncertainty takes it: a cache
- * that cannot be read at all is treated exactly like one that must not be
- * reused. It has to be deleted rather than merely left unread, because a
- * consumer's own `stryker.conf.json` may set `incremental: true` — `STRYKER_SEED`
- * does — and stryker then reads the file whatever this process puts on the CLI.
- * An absent file is the only thing that reliably means "cold run".
- *
- * Three rules, on three different things, and a cache has to clear all of them:
- * the run about to start (`canReportPerTestCoverage`, from the config), the
- * cache's own contents (`canReuseIncrementalCache`, its files and coverage),
- * and the suite the cache was measured against
- * (`hasTestSuiteChangedSinceCache`, #67).
- */
-async function discardUnusableIncrementalCache(
-  seams: CacheSeams,
-  mutateFiles: readonly string[],
-  changedTestFiles: readonly string[],
-  canThisRunReportCoverage: boolean,
-): Promise<void> {
-  const cachePath = path.join(seams.repoRoot, STRYKER_INCREMENTAL_PATH);
-  if (!canThisRunReportCoverage) {
-    // Checked before the cache is even read: the question this answers is
-    // about the run about to start, and no cache content can settle it.
-    await seams.removeFile(cachePath);
-    return;
-  }
-  let cache = '';
-  try {
-    cache = await seams.readFile(cachePath);
-  } catch {
-    // Deliberately empty: a cache that cannot be read is not a reusable one,
-    // and `''` reaches the predicate below as exactly that.
-  }
-  if (
-    canReuseIncrementalCache(cache, mutateFiles) &&
-    !(await hasTestSuiteChangedSinceCache(seams, cachePath, changedTestFiles))
-  ) {
-    return;
-  }
-  await seams.removeFile(cachePath);
 }
 
 /**
@@ -1883,17 +1785,29 @@ async function runStryker(
     });
   const reportPath = STRYKER_REPORT_PATH;
 
+  const writeFile =
+    options.writeFile ??
+    (async (filePath: string, contents: string): Promise<void> => {
+      // A block body for the same reason as `fileModifiedTime`: the cache
+      // sidecar may be the first thing ever written under `reports/`.
+      await fsMkdir(path.dirname(filePath), { recursive: true });
+      await fsWriteFile(filePath, contents);
+    });
+
   await removeFile(path.join(repoRoot, reportPath));
-  await discardUnusableIncrementalCache(
-    { readFile, removeFile, fileModifiedTime, repoRoot },
-    // The project's own `!` exclusions applied, so a cache holding a file this
-    // run will not mutate cannot survive — see `applyMutateNegations`.
-    applyMutateNegations(inScope, negations),
-    // The other axis (#67): the tests this turn touched. They are the files
-    // `candidates` above filtered OUT of the mutate set, and a cache older than
-    // any of them describes a suite that no longer exists.
-    files.filter((file) => isTestFile(file)),
-    canReportPerTestCoverage(strykerConfig),
+  await prepareIncrementalCache(
+    { readFile, writeFile, removeFile, fileModifiedTime, repoRoot },
+    {
+      // The project's own `!` exclusions applied, so a cached file this run
+      // will not mutate cannot survive — see `applyMutateNegations`.
+      mutateFiles: applyMutateNegations(inScope, negations),
+      // The whole change set: the rewriter reads the tests and test-support
+      // files in it, which `candidates` above filtered OUT of the mutate set.
+      changedFiles: files,
+      strykerConfig,
+      canThisRunReportCoverage: canReportPerTestCoverage(strykerConfig),
+      invalidation: options.mutationCacheInvalidation ?? 'targeted',
+    },
   );
 
   const rung = options.profile ?? 'stop';
