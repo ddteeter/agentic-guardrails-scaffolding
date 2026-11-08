@@ -6149,6 +6149,16 @@ describe('mutation-fingerprint: the sidecar a CI seed needs', () => {
     );
   });
 
+  it('overwrites a sidecar already in reports/', async () => {
+    writeCacheFixture(root);
+    const expected = readFileSync(sidecarPath(), 'utf8');
+    writeFileSync(sidecarPath(), 'stale');
+    expect(await runCommand('mutation-fingerprint', [], dependencies())).toBe(
+      0,
+    );
+    expect(readFileSync(sidecarPath(), 'utf8')).toBe(expected);
+  });
+
   it('fails, writing nothing, when no installed stryker can be found', async () => {
     writeCacheFixture(root);
     rmSync(path.join(root, 'reports'), { recursive: true });

@@ -124,6 +124,27 @@ describe('mergeReports', () => {
     expect(killerOfA).toEqual(killerOfB);
   });
 
+  it('matches a test by name, not position, when a shard lists only some of a file’s tests', () => {
+    // Per-test coverage records the tests that ran, so one shard's list can
+    // skip a test the other's holds.
+    const partial = report({
+      files: {
+        'src/c.ts': { source: 'c', mutants: [mutant('0', 'Killed', ['9'])] },
+      },
+      testFiles: {
+        'test/a.test.ts': {
+          source: 'ta',
+          tests: [{ id: '9', name: 'a fails' }],
+        },
+      },
+    });
+    const cache = merged([shardA, partial]);
+    const fails = cache.files.get('src/c.ts')?.mutants[0]?.killedBy[0];
+    const tests = cache.testFiles.get('test/a.test.ts')?.tests ?? [];
+    expect(tests.map((test) => test.raw.name)).toEqual(['a works', 'a fails']);
+    expect(tests.find((test) => test.id === fails)?.raw.name).toBe('a fails');
+  });
+
   it('tells apart two tests of one file that share a name', () => {
     const text = mergeReports([
       report({
@@ -193,6 +214,21 @@ describe('mergeReports', () => {
       .flatMap((entry) => entry.mutants.map((each) => each.raw.id))
       .toArray();
     expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it('numbers the merge from zero, as stryker numbers a report', () => {
+    const cache = merged([shardA, shardB]);
+    const mutantIds = cache.files
+      .values()
+      .flatMap((entry) => entry.mutants.map((each) => each.raw.id))
+      .toArray();
+    const testIds = cache.testFiles
+      .values()
+      .flatMap((entry) => entry.tests.map((test) => test.id))
+      .toArray()
+      .toSorted((a, b) => a.localeCompare(b));
+    expect(mutantIds).toEqual(['0', '1']);
+    expect(testIds).toEqual(['0', '1', '2']);
   });
 
   it('leaves a list stryker did not write absent', () => {

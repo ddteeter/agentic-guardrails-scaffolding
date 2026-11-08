@@ -81,8 +81,9 @@ export function nodeSeedSeams(
     makeTempDir: () => mkdtemp(path.join(tmpdir(), 'guardrails-seed-')),
     listFiles: (directory) => readdir(directory, { recursive: true }),
     readFile: (filePath) => readFile(filePath, 'utf8'),
-    removeDirectory: (directory) =>
-      rm(directory, { recursive: true, force: true }),
+    // No `force`: a directory already gone throws, and the caller ignores
+    // every failure to remove it.
+    removeDirectory: (directory) => rm(directory, { recursive: true }),
   };
 }
 
@@ -149,13 +150,12 @@ async function fingerprintFailure(
     }
     fingerprints.push(fingerprint);
   }
-  if (
-    new Set(fingerprints.map((each) => serializeFingerprint(each))).size > 1
-  ) {
-    return 'left shards whose fingerprints disagree';
+  if (fingerprints.every((each) => isFingerprintEqual(each, current))) {
+    return undefined;
   }
-  return fingerprints.every((each) => isFingerprintEqual(each, current))
-    ? undefined
+  return new Set(fingerprints.map((each) => serializeFingerprint(each))).size >
+    1
+    ? 'left shards whose fingerprints disagree'
     : 'was measured under another stryker version, stryker config or lockfile than this checkout';
 }
 

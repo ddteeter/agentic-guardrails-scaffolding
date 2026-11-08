@@ -35,8 +35,6 @@ interface MergedTestFile {
   readonly idOf: Map<string, string>;
 }
 
-class Refused extends Error {}
-
 /**
  * What a test file held at two different sources does to the merge.
  *
@@ -66,6 +64,11 @@ class ReportMerge {
   private readonly testFiles = new Map<string, MergedTestFile>();
   private nextTestId = 0;
   private nextMutantId = 0;
+  /**
+   * Set by anything the merge cannot vouch for. The merge carries on — what
+   * it builds afterwards is discarded — so refusing needs no early exit.
+   */
+  isRefused = false;
 
   constructor(private readonly onSourceConflict: SourceConflict) {}
 
@@ -93,16 +96,16 @@ class ReportMerge {
     idOf: Map<string, string>,
     declared: Set<string>,
   ): void {
-    const occurrences = new Map<string, number>();
-    for (const test of tests) {
+    for (const [index, test] of tests.entries()) {
       if (declared.has(test.id)) {
-        throw new Refused(test.id);
+        this.isRefused = true;
       }
       declared.add(test.id);
       if (merged !== undefined) {
         const name = testKey(test.raw, 0);
-        const occurrence = occurrences.get(name) ?? 0;
-        occurrences.set(name, occurrence + 1);
+        const occurrence = tests
+          .slice(0, index)
+          .filter((earlier) => testKey(earlier.raw, 0) === name).length;
         idOf.set(test.id, this.mergedId(merged, test.raw, occurrence));
       }
     }
@@ -122,7 +125,7 @@ class ReportMerge {
       return existing;
     }
     if (this.onSourceConflict === 'refuse') {
-      throw new Refused(file);
+      this.isRefused = true;
     }
     return undefined;
   }
@@ -149,7 +152,7 @@ class ReportMerge {
       idOf.get(id) ?? `unresolved:${String(index)}:${id}`;
     for (const [file, entry] of report.files) {
       if (this.files.has(file)) {
-        throw new Refused(file);
+        this.isRefused = true;
       }
       this.files.set(file, {
         ...entry.raw,
@@ -193,15 +196,11 @@ function mergeParsed(
     return undefined;
   }
   const merge = new ReportMerge(onSourceConflict);
-  try {
-    for (const [index, report] of reports.entries()) {
-      merge.add(report, index);
-    }
-  } catch (error) {
-    if (error instanceof Refused) {
-      return undefined;
-    }
-    throw error;
+  for (const [index, report] of reports.entries()) {
+    merge.add(report, index);
+  }
+  if (merge.isRefused) {
+    return undefined;
   }
   return merge.serialize(first);
 }

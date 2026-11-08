@@ -323,13 +323,14 @@ async function withSeed(
   if (admitted === undefined) {
     return undefined;
   }
-  const changed = new Set(run.changedFiles);
-  const seed = await trusted(filterToScope(admitted, missing), run, (files) =>
-    Promise.resolve(files.filter((file) => changed.has(file))),
-  );
-  if (seed === undefined) {
-    return undefined;
-  }
+  // The invalidation rule, judged by this branch's changed files alone.
+  // Under `any-test-change` a changed test never gets here (`canUseSeed`),
+  // so the seed is kept whole, as a local cache with no newer test is.
+  const scoped = filterToScope(admitted, missing);
+  const seed =
+    run.invalidation === 'any-test-change'
+      ? scoped
+      : dropUntrusted(scoped, new Set(run.changedFiles));
   const seedJson = serializeIncrementalCache(seed);
   if (local === undefined) {
     return seedJson;
