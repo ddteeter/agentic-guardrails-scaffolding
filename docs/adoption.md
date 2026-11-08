@@ -646,7 +646,7 @@ The cheap shape depends on the host:
   `bash` modes, checked with `read_bash`), but as far as we observed (Codex 0.154
   and Copilot CLI, at time of writing) neither wakes the agent when it exits, so
   every check is another model call that re-reads the whole context. Don't wait
-  inside the agent at all: start the job detached (`nohup npx guardrails ship … >
+  inside the agent at all: start the job detached (`nohup node ./node_modules/guardrails-core/dist/cli.mjs ship … >
 ship.log 2>&1 &`), finish the task, and let whoever started the agent read
   `.guardrails/state/ship-status.json`. If your host gains wake-on-exit, the
   Claude pattern applies.
@@ -747,7 +747,7 @@ foreground (`sleep`, `kill -0`/`pgrep`, `gh pr checks --watch`, `gh run watch`)
 for a job that takes minutes. Up to about 2 minutes is fine.
 
 - Commit your work first. Then start the slow part detached and finish the task:
-  `nohup npx guardrails ship --body-file=<f> > ship.log 2>&1 &`. It pushes,
+  `nohup node ./node_modules/guardrails-core/dist/cli.mjs ship --body-file=<f> > ship.log 2>&1 &`. It pushes,
   opens or finds the PR, watches CI, and writes
   `.guardrails/state/ship-status.json`.
 - End your reply by saying what is running and where its outcome will land.
