@@ -690,7 +690,7 @@ describe('terminateChildren skips a child that has no pid yet', () => {
  * (pid 4242) first and a recording stand-in for the reaper after it, with
  * `process.kill` replaced by `didKill`.
  */
-async function stopOneGroup(didKill: () => boolean) {
+async function stopOneGroup(didKill: () => true) {
   const child = Object.assign(new PassThrough(), {
     pid: 4242,
     kill: vi.fn(() => true),
