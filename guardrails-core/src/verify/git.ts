@@ -138,6 +138,80 @@ const TEST_DIRECTORIES: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * A file that declares tests of its own: `*.test.*` / `*.spec.*`, in any
+ * JavaScript or TypeScript flavour. Narrower than `isTestFile`, which also
+ * counts every helper under a test directory — the distinction the
+ * incremental-cache rewriter needs, because only a spec file can be the file a
+ * killing test sits in.
+ */
+export function isTestSpecFile(file: string): boolean {
+  return /\.(test|spec)\.[cm]?[jt]sx?$/.test(file);
+}
+
+/**
+Directories whose contents tests read but which declare no tests.
+*/
+const TEST_SUPPORT_DIRECTORIES: ReadonlySet<string> = new Set([
+  ...TEST_DIRECTORIES,
+  '__mocks__',
+  '__snapshots__',
+  '__fixtures__',
+  'fixtures',
+]);
+
+/**
+ * Does a base name read as a setup file or a test-utility module —
+ * `vitest.setup.ts`, `setupTests.ts`, `test-utils.ts`, `testHelpers.ts`?
+ *
+ * Read as WORDS (split on separators and on camelCase humps), so
+ * `contest.ts` is not a test and `setupTests.ts` is a setup file. Deliberately
+ * broad otherwise: a false positive costs one cold mutation run, a false
+ * negative keeps a verdict nothing re-checked.
+ */
+function isTestSupportName(name: string): boolean {
+  const words = name
+    .split(/[^A-Za-z]|(?<=[a-z])(?=[A-Z])/)
+    .map((word) => word.toLowerCase());
+  return words.some(
+    (word, index) =>
+      word === 'setup' ||
+      (word === 'test' && TEST_UTILITY_WORDS.has(words[index + 1] ?? '')),
+  );
+}
+
+const TEST_UTILITY_WORDS: ReadonlySet<string> = new Set([
+  'util',
+  'utils',
+  'helper',
+  'helpers',
+]);
+
+/**
+ * Code the suite runs that is not itself a test: a helper or fixture under a
+ * test directory, a manual mock, a snapshot, a setup file, a `test-utils`
+ * module, or a tool config (`vitest.config.ts`) the runner reads.
+ *
+ * A change to one can weaken a test without touching that test's file, which
+ * is the one thing the incremental-cache rewriter's targeted rule checks — so
+ * a change here discards the whole cache instead.
+ */
+export function isTestSupportFile(file: string): boolean {
+  if (isTestSpecFile(file)) {
+    return false;
+  }
+  const segments = file.split(/[/\\]/);
+  const name = segments.at(-1) ?? '';
+  return (
+    segments
+      .slice(0, -1)
+      .some((segment) => TEST_SUPPORT_DIRECTORIES.has(segment)) ||
+    name.endsWith('.snap') ||
+    isTestSupportName(name) ||
+    isConfigFile(file)
+  );
+}
+
+/**
  * Config-as-TypeScript: `vitest.config.ts`, `eslint.config.mts`,
  * `playwright.config.ts`, and every other `*.config.*ts` a modern TypeScript
  * repo declares its tooling in.
