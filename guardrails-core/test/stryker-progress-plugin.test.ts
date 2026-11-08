@@ -387,6 +387,17 @@ describe('absorbRepeatStopSignals', () => {
     );
   });
 
+  it('can be undone after a stop signal, removing the listeners it swapped in', () => {
+    const signals = new FakeSignals();
+    withStrykerHandler(signals);
+    const undo = absorbRepeatStopSignals(signals);
+    signals.emit('SIGINT');
+    undo();
+    expect(STOP_SIGNALS.map((signal) => signals.listenerCount(signal))).toEqual(
+      [0, 0, 0, 0],
+    );
+  });
+
   it('can be undone, leaving only what was there before', () => {
     const signals = new FakeSignals();
     const heard = withStrykerHandler(signals);

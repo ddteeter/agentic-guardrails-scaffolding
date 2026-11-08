@@ -685,6 +685,76 @@ describe('terminateChildren skips a child that has no pid yet', () => {
   );
 });
 
+/**
+ * A freshly imported exec.ts whose `spawn` hands out a started group child
+ * (pid 4242) first and a recording stand-in for the reaper after it, with
+ * `process.kill` replaced by `didKill`.
+ */
+async function stopOneGroup(didKill: () => boolean) {
+  const child = Object.assign(new PassThrough(), {
+    pid: 4242,
+    kill: vi.fn(() => true),
+    stdout: new PassThrough(),
+    stderr: new PassThrough(),
+  });
+  const reaper = Object.assign(new PassThrough(), { unref: vi.fn() });
+  const spawn = vi.fn().mockReturnValueOnce(child).mockReturnValue(reaper);
+  vi.resetModules();
+  vi.doMock('node:child_process', () => ({ spawn }));
+  const kill = vi.spyOn(process, 'kill').mockImplementation(didKill);
+  try {
+    const fresh = await import('../src/exec.js');
+    const pending = fresh.spawnExec('wrapped', [], {
+      processGroup: true,
+      stopGraceSeconds: 7,
+    });
+    fresh.terminateChildren();
+    child.emit('close', null, 'SIGINT');
+    await pending;
+    // Copied before the restore below, which clears the recorded calls.
+    return { spawn, killCalls: [...kill.mock.calls], reaper };
+  } finally {
+    kill.mockRestore();
+  }
+}
+
+describe('stopping a group child, observed at the spawn and kill seams', () => {
+  afterEach(() => {
+    vi.doUnmock('node:child_process');
+    vi.resetModules();
+  });
+
+  it('sends the group one SIGINT and arms a detached reaper that SIGKILLs it', async () => {
+    const { spawn, killCalls, reaper } = await stopOneGroup(() => true);
+    expect(killCalls).toEqual([[-4242, 'SIGINT']]);
+    expect(spawn).toHaveBeenCalledTimes(2);
+    expect(spawn).toHaveBeenLastCalledWith(
+      'sh',
+      [
+        '-c',
+        'sleep "$1"; kill -s KILL -- "-$2" 2>/dev/null',
+        'sh',
+        '7',
+        '4242',
+      ],
+      { detached: true, stdio: 'ignore' },
+    );
+    // Unreferenced, so the CLI can exit while the reaper sleeps.
+    expect(reaper.unref).toHaveBeenCalledTimes(1);
+    // No `sh` on the machine must not crash the CLI.
+    expect(() =>
+      reaper.emit('error', new Error('spawn sh ENOENT')),
+    ).not.toThrow();
+  });
+
+  it('arms no reaper for a group that is already gone', async () => {
+    const { spawn } = await stopOneGroup(() => {
+      throw new Error('kill ESRCH');
+    });
+    expect(spawn).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('terminateChildren never signals its own process group', () => {
   it.each([false, true])(
     'leaves the caller alive after a spawn that never started (processGroup: %s)',
