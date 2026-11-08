@@ -500,6 +500,20 @@ directories in one command. Unchanged, and still outside the matcher:
     guards outside the lock**, so a push here can still run stryker next to
     another checkout's. The fixtures are small, but it is the case the lock
     exists for.
+  - **Open (2026-11-07, found on #156; #158): an agent cannot point the
+    PreToolUse commit gate at another lock.** A coordinator asked a lane to keep off
+    `~/.guardrails-gate.lock` while another project's lanes shipped. Husky's
+    pre-commit inherits the command's environment, so
+    `GUARDRAILS_GATE_LOCK=<scratch> git commit` redirects that gate. The
+    Bash PreToolUse hook does not: it runs in the host's environment, sees
+    the `git commit` and runs the commit gate with stryker under
+    `machineLock(process.env)`, which is the real lock. The only ways to
+    commit a `src/` change without queueing on the shared lock are ones
+    the repo rightly forbids (`--no-verify`, or editing the hook config).
+    The lane held its commits instead. Possible fix: the pretooluse gate
+    reads a `GUARDRAILS_GATE_LOCK=` prefix off the command, the way it
+    already reads `cd`/`git -C` targets (#123). Or a per-session lock
+    override in `.guardrails/state/` that the hook honours.
   - **Open: a push that waits long for the lock loses its connection.** git
     connects to the remote before it runs the pre-push hook, so a push that
     queued behind another checkout's stryker (here about an hour) found
@@ -510,9 +524,12 @@ directories in one command. Unchanged, and still outside the matcher:
     for the lock (or re-pushes once after a cached pass) before it lets git
     connect.
   - **A repo that sets its own `GUARDRAILS_GATE_LOCK` splits the queue.**
-    dialed.run points it at `~/.dialed-gate.lock`, so its runs and this
-    repo's never queue behind each other. The lock is meant to be one per
-    machine; that override should go.
+    The lock is meant to be one per machine, so a repo-level override puts
+    that repo's runs in a separate queue, and they never wait behind
+    anyone else's. Resolved for dialed.run (2026-11-07): it used to point
+    the variable at `~/.dialed-gate.lock`, but its gates now use
+    `~/.guardrails-gate.lock` and nothing in its config sets it.
+    `~/.dialed-gate.lock` is a leftover, last touched 2026-10-22.
 
 - **The husky advice dropped the lock, and the lock serialized pushes that
   had nothing to protect (2026-11-01, fixed, then superseded by the entry
