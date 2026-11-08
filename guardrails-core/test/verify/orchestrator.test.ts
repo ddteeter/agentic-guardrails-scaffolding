@@ -1041,6 +1041,122 @@ async function didRunStrykerAt(
   return calls.some((call) => call.command === 'stryker');
 }
 
+const ok = (stdout: string): ExecResult => ({ stdout, stderr: '', code: 0 });
+
+const survivorOn = (line: number): object => ({
+  id: String(line),
+  mutatorName: 'ConditionalExpression',
+  status: 'Survived',
+  location: { start: { line, column: 1 }, end: { line, column: 4 } },
+});
+
+/**
+ * A branch that changed one line of a 300-line file, and added a file. The
+ * report it reads back holds a survivor on the changed line and one far from
+ * it, which is what stryker folds back from its cache on a ranged run.
+ */
+async function runLineRanged(
+  extra: Partial<VerifyOptions> = {},
+  config = '',
+): Promise<{ calls: Call[]; violations: Violation[] }> {
+  const calls: Call[] = [];
+  const exec: Exec = (command, args, options) => {
+    calls.push({ command, args, options });
+    if (args.includes('--name-only')) {
+      return Promise.resolve(ok('src/big.ts\nsrc/new.ts\n'));
+    }
+    if (args.includes('--unified=0')) {
+      return Promise.resolve(
+        ok(
+          [
+            'diff --git a/src/big.ts b/src/big.ts',
+            '--- a/src/big.ts',
+            '+++ b/src/big.ts',
+            '@@ -150 +150 @@',
+            '-old',
+            '+new',
+          ].join('\n'),
+        ),
+      );
+    }
+    return Promise.resolve(ok(''));
+  };
+  const report = JSON.stringify({
+    files: { 'src/big.ts': { mutants: [survivorOn(2), survivorOn(150)] } },
+  });
+  const sources: Record<string, string> = {
+    'src/big.ts': 'const line = 1;\n'.repeat(300),
+    'src/new.ts': 'export const fresh = 1;\n',
+    'stryker.conf.json': config,
+    [path.join('reports', 'mutation', 'mutation.json')]: report,
+  };
+  const { violations } = await runVerify({
+    repoRoot: '/repo',
+    baseBranch: 'main',
+    exec,
+    profile: 'commit',
+    resolveBin: (tool) => tool,
+    readFile: (filePath) => {
+      const text = sources[path.relative('/repo', filePath)];
+      return text === undefined || text === ''
+        ? Promise.reject(new Error('ENOENT'))
+        : Promise.resolve(text);
+    },
+    removeFile: () => Promise.resolve(),
+    ...extra,
+  });
+  return { calls, violations };
+}
+
+function mutateArgumentOf(calls: readonly Call[]): string {
+  const args = calls.find((call) => call.command === 'stryker')?.args ?? [];
+  return args[args.indexOf('--mutate') + 1] ?? '';
+}
+
+describe('stryker mutates the changed lines, not the changed files (#155)', () => {
+  it('hands stryker the padded hunk, and a new file whole', async () => {
+    const { calls } = await runLineRanged();
+    expect(mutateArgumentOf(calls)).toBe('src/big.ts:145-155,src/new.ts');
+  });
+
+  it('reports the survivor on the changed line, not the one stryker folded back', async () => {
+    const { violations } = await runLineRanged();
+    expect(
+      violations
+        .filter((violation) => violation.ruleId === 'stryker/survived')
+        .map((violation) => violation.line),
+    ).toEqual([150]);
+  });
+
+  it('honours the configured padding and threshold', async () => {
+    const { calls } = await runLineRanged({
+      mutationScope: { lines: true, padding: 0, wholeFileAbove: 0.4 },
+    });
+    expect(mutateArgumentOf(calls)).toBe('src/big.ts:150-150,src/new.ts');
+  });
+
+  it('mutates whole files, without reading the diff, when lines are off', async () => {
+    const { calls, violations } = await runLineRanged({
+      mutationScope: { lines: false, padding: 5, wholeFileAbove: 0.4 },
+    });
+    expect(mutateArgumentOf(calls)).toBe('src/big.ts,src/new.ts');
+    expect(calls.some((call) => call.args.includes('--unified=0'))).toBe(false);
+    expect(
+      violations.filter((violation) => violation.ruleId === 'stryker/survived'),
+    ).toHaveLength(2);
+  });
+
+  it('still appends the project’s own negations after the ranges', async () => {
+    const { calls } = await runLineRanged(
+      {},
+      JSON.stringify({ mutate: ['src/**/*.ts', '!src/gen/**'] }),
+    );
+    expect(mutateArgumentOf(calls)).toBe(
+      'src/big.ts:145-155,src/new.ts,!src/gen/**',
+    );
+  });
+});
+
 describe('per-analyzer rung override', () => {
   it('leaves stryker at the commit rung when nothing overrides it', async () => {
     // The default is unchanged: a repo that never heard of #61 gets exactly

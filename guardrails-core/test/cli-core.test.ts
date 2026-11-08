@@ -35,6 +35,11 @@ import {
   keptKills,
   writeCacheFixture,
 } from './mutation-cache-fixture.js';
+import {
+  WHOLE,
+  rangeFixtureExec,
+  writeRangeFixture,
+} from './mutation-scope-fixture.js';
 
 /**
  * Close the inheritance channel for CLAUDE_PROJECT_DIR, at module scope,
@@ -6001,5 +6006,50 @@ describe('mutationCache.invalidation reaches stryker from the config', () => {
       }),
     );
     expect(keptKills(root)).toBe(1);
+  });
+});
+
+function configureRangeFixture(analyzers: Record<string, unknown>): void {
+  writeRangeFixture(root);
+  writeFileSync(
+    path.join(root, 'guardrails.config.json'),
+    JSON.stringify({ analyzers, mutationScope: { lines: false } }),
+  );
+}
+
+/**
+ * `mutationScope` from `guardrails.config.json` reaches every command that
+ * runs stryker. `mutation-scope-wiring.test.ts` pins the gates' half; this is
+ * the config-to-gate half. The fixture's default is a ranged run, so a key
+ * dropped on the way mutates `src/big.ts:145-155` instead of the whole file.
+ */
+describe('mutationScope reaches stryker from the config', () => {
+  it.each([['commit'], ['push']])('through gate --mode=%s', async (mode) => {
+    configureRangeFixture({ stryker: 'required' });
+    const { exec, mutated } = rangeFixtureExec();
+    await runCommand('gate', [`--mode=${mode}`], dependencies({ exec }));
+    expect(mutated).toEqual([WHOLE]);
+  });
+
+  it('through verify', async () => {
+    configureRangeFixture({ stryker: 'required' });
+    const { exec, mutated } = rangeFixtureExec();
+    await runCommand('verify', [], dependencies({ exec }));
+    expect(mutated).toEqual([WHOLE]);
+  });
+
+  it('through gate --mode=stop', async () => {
+    configureRangeFixture({ stryker: { mode: 'required', rung: 'stop' } });
+    const { exec, mutated } = rangeFixtureExec();
+    await runCommand(
+      'gate',
+      ['--mode=stop'],
+      dependencies({
+        exec,
+        readStdin: () =>
+          Promise.resolve(JSON.stringify({ cwd: root, sessionId: 'sid' })),
+      }),
+    );
+    expect(mutated).toEqual([WHOLE]);
   });
 });

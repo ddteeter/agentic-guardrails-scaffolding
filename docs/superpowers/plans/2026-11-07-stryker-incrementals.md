@@ -148,6 +148,14 @@ Pure function over the diff text.
 _Test:_ fixtures for added, deleted and renamed files, pure deletions (a zero
 count becomes the line around the cut), overlapping hunks, and CRLF line
 endings.
+_Measured (2026-11-07):_ stryker's instrumenter over the modified files of
+three ranges of this repo's history (`main..stryker-incremental-cache`,
+`main~10..main`, `main~30..main~10`), without the whole-file threshold.
+Padding 5 tested 3.8%, 14.5% and 39.0% of the whole-file mutants and included
+83.0%, 89.5% and 97.0% of the mutants overlapping a changed line. Padding 2
+included 83.0–95.6%, padding 10 89.4–98.6% at 5.7–46.9% of the cost. The misses
+are mutants spanning the hunk (function-body `BlockStatement`s), which no small
+padding reaches. Defaults kept: `padding: 5`, `wholeFileAbove: 0.4`.
 
 **2.2 Range planner.** From ranges, `padding`, `wholeFileAbove` and the file's
 line count, produce `--mutate` entries (`file:a-b`, with several per file) or

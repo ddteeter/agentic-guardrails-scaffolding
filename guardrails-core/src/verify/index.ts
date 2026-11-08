@@ -98,6 +98,13 @@ import { parseKnipJson } from './knip-adapter.js';
 import { parseNpmLsJson } from './npm-peers-adapter.js';
 import { isRecord } from './report-shape.js';
 import type { CacheInvalidation } from './incremental-cache.js';
+import {
+  DEFAULT_MUTATION_SCOPE,
+  type LineRange,
+  type MutationScopeSettings,
+  mutateEntries,
+  planRunRanges,
+} from './mutate-ranges.js';
 import { prepareIncrementalCache } from './prepare-cache.js';
 import {
   isStrykerReportJson,
@@ -174,6 +181,11 @@ export interface VerifyOptions {
    * (`RepoConfig.mutationCache.invalidation`). Defaults to `targeted`.
    */
   mutationCacheInvalidation?: CacheInvalidation | undefined;
+  /**
+   * How far `--mutate` narrows to the changed lines
+   * (`RepoConfig.mutationScope`, #155). Defaults to `DEFAULT_MUTATION_SCOPE`.
+   */
+  mutationScope?: MutationScopeSettings | undefined;
   /**
    * Per-analyzer opt-in (`RepoConfig.analyzers`). Absent → every analyzer is
    * `auto`. See `analyzer-policy.ts` for the truth table.
@@ -1811,7 +1823,18 @@ async function runStryker(
   );
 
   const rung = options.profile ?? 'stop';
-  const mutate = [...inScope, ...negations].join(',');
+  // Line ranges narrow the files `strykerScope` chose and never drop one, so
+  // the pre-push lock probe, which asks only `strykerScope`, still agrees with
+  // the run about whether anything is mutated (#155).
+  const lineRanges = await planRunRanges(
+    { exec, repoRoot, readFile },
+    options,
+    inScope,
+    options.mutationScope ?? DEFAULT_MUTATION_SCOPE,
+  );
+  const mutate = [...mutateEntries(inScope, lineRanges), ...negations].join(
+    ',',
+  );
   const strykerArguments = (reporters: string): string[] => [
     'run',
     '--incremental',
@@ -1869,6 +1892,7 @@ async function runStryker(
     repoRoot,
     inScope,
     outOfScope,
+    lineRanges,
   });
 }
 
@@ -1880,6 +1904,10 @@ interface StrykerRunContext {
   repoRoot: string;
   inScope: string[];
   outOfScope: Violation[];
+  /**
+  The planned ranges of the files mutated by line range.
+  */
+  lineRanges: ReadonlyMap<string, readonly LineRange[]>;
 }
 
 /**
@@ -1891,7 +1919,7 @@ async function strykerRunVerdict(
   result: ExecResult,
   context: StrykerRunContext,
 ): Promise<Violation[]> {
-  const { readFile, repoRoot, inScope, outOfScope } = context;
+  const { readFile, repoRoot, inScope, outOfScope, lineRanges } = context;
   if (result.spawnFailed === true) {
     // Reported separately as guardrails/analyzer-missing by the caller.
     return [];
@@ -1912,11 +1940,11 @@ async function strykerRunVerdict(
   // findings are the answer no matter what the exit code was -- unless the
   // verdicts in it were never produced by a test run at all.
   if (isStrykerReportJson(report)) {
-    const unrun = unrunSurvivedMutants(report, inScope);
+    const unrun = unrunSurvivedMutants(report, inScope, lineRanges);
     if (unrun > 0) {
       return [...outOfScope, strykerUnrunMutantsViolation(unrun)];
     }
-    return [...outOfScope, ...parseStrykerJson(report, inScope)];
+    return [...outOfScope, ...parseStrykerJson(report, inScope, lineRanges)];
   }
   // A kill, checked between outcomes 1 and 2. It sits behind the report because
   // the report is still the better evidence — it is deleted before the run and

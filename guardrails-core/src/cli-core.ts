@@ -183,6 +183,7 @@ function commitGateOptionsFromConfig(
   | 'analyzers'
   | 'analyzerRungs'
   | 'mutationCacheInvalidation'
+  | 'mutationScope'
   | 'config'
   | 'mutationLock'
 > {
@@ -196,6 +197,7 @@ function commitGateOptionsFromConfig(
     analyzers: config.analyzers,
     analyzerRungs: config.analyzerRungs,
     mutationCacheInvalidation: config.mutationCache.invalidation,
+    mutationScope: config.mutationScope,
     config: toGateConfig(config),
     mutationLock: machineLock(config.mutationLock),
   };
@@ -371,6 +373,7 @@ async function verifyCommand(
     analyzers: config.analyzers,
     analyzerRungs: config.analyzerRungs,
     mutationCacheInvalidation: config.mutationCache.invalidation,
+    mutationScope: config.mutationScope,
   });
   printViolations(dependencies, violations);
   dependencies.stderr(`guardrails: ${verdictLine(violations)}\n`);
@@ -489,6 +492,7 @@ async function gateStopCommand(
     analyzers: config.analyzers,
     analyzerRungs: config.analyzerRungs,
     mutationCacheInvalidation: config.mutationCache.invalidation,
+    mutationScope: config.mutationScope,
     isRetry: input.stopHookActive,
     mutationLock: machineLock(config.mutationLock),
   });

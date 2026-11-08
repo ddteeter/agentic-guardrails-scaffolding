@@ -22,6 +22,10 @@ import {
   CACHE_INVALIDATIONS,
   type CacheInvalidation,
 } from './verify/incremental-cache.js';
+import {
+  DEFAULT_MUTATION_SCOPE,
+  type MutationScopeSettings,
+} from './verify/mutate-ranges.js';
 
 /**
 One reviewed diff-auditor exemption: the finding key plus why it is allowed.
@@ -242,6 +246,17 @@ export interface RepoConfig {
    */
   mutationCache: MutationCacheConfig;
   /**
+   * How far stryker's `--mutate` narrows to the lines a change touched (#155).
+   * `lines` (default `true`) mutates each changed file's diff hunks, padded by
+   * `padding` lines (default 5) on each side, and mutates the file whole once
+   * those ranges cover more than `wholeFileAbove` of it (default 0.4). Files
+   * new since the base are always whole. `lines: false` mutates every changed
+   * file whole, the behaviour before #155. A value of the wrong type or out of
+   * range keeps that key's default. See `verify/mutate-ranges.ts`, and
+   * docs/adoption.md ("Mutating changed lines").
+   */
+  mutationScope: MutationScopeSettings;
+  /**
    * Deny a Claude Code Bash call that WAITS in the foreground -- `gh pr checks
    * --watch`, `gh run watch`, a `kill -0`/`pgrep` wait loop, a long `sleep`,
    * `guardrails ship` -- unless it runs with `run_in_background`. See
@@ -287,6 +302,7 @@ export function defaultConfig(): RepoConfig {
       stopGraceSeconds: DEFAULT_STOP_GRACE_SECONDS,
     },
     mutationCache: { invalidation: 'targeted' },
+    mutationScope: { ...DEFAULT_MUTATION_SCOPE },
     denyForegroundWaits: true,
     foregroundSleepLimitSeconds: 120,
   };
@@ -657,6 +673,37 @@ function pickMutationCache(
   };
 }
 
+/**
+`Number.isSafeInteger`, as a type guard.
+*/
+function isWholeNumber(value: unknown): value is number {
+  return Number.isSafeInteger(value);
+}
+
+/**
+ * `mutationScope`, key by key. Each key keeps its default unless it is the
+ * right type and in range: a whole number of padding lines from 0, and a
+ * share from 0 to 1. `lines` stays on unless it is exactly `false`.
+ */
+function pickMutationScope(
+  value: unknown,
+  defaults: MutationScopeSettings,
+): MutationScopeSettings {
+  const section = isRecord(value) ? value : {};
+  const { padding, wholeFileAbove } = section;
+  return {
+    lines: section.lines !== false,
+    padding:
+      isWholeNumber(padding) && padding >= 0 ? padding : defaults.padding,
+    wholeFileAbove:
+      typeof wholeFileAbove === 'number' &&
+      wholeFileAbove >= 0 &&
+      wholeFileAbove <= 1
+        ? wholeFileAbove
+        : defaults.wholeFileAbove,
+  };
+}
+
 /** The policy file's name, exported so the modules that read it, name it in a
  *  message, or file a violation against it cannot drift on the spelling. */
 export const CONFIG_FILE_NAME = 'guardrails.config.json';
@@ -733,6 +780,7 @@ export function loadConfig(
       environment,
     ),
     mutationCache: pickMutationCache(raw.mutationCache, base.mutationCache),
+    mutationScope: pickMutationScope(raw.mutationScope, base.mutationScope),
     denyForegroundWaits: raw.denyForegroundWaits !== false,
     foregroundSleepLimitSeconds: pickPositive(
       raw.foregroundSleepLimitSeconds,

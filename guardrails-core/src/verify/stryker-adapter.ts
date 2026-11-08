@@ -23,11 +23,14 @@
  */
 
 import type { Violation } from '../violation.js';
+import { type LineRange, isLocationInRanges } from './mutate-ranges.js';
 
 interface StrykerMutant {
   status: string;
   mutatorName: string;
-  location: { start: { line: number } };
+  /** `end` is read only by the line-range filter, and is unvalidated: a
+   *  mutant without a numeric end line is judged by its start line. */
+  location: { start: { line: number }; end?: { line?: unknown } };
   /** Test ids stryker determined cover this mutant. Absent in reports from
    *  runners that provide no per-test data. */
   coveredBy?: string[];
@@ -205,9 +208,44 @@ function parseReport(
   return parsed;
 }
 
+/**
+ * Planned line ranges per file, for a line-ranged run (#155). A file with no
+ * entry was mutated whole, and keeps every verdict.
+ */
+type MutateRanges = ReadonlyMap<string, readonly LineRange[]>;
+
+/**
+ * The mutants of `file` this run actually asked stryker about.
+ *
+ * Stryker writes EVERY cached verdict into the report of a ranged run, out of
+ * range or not (drift test 0.3, `test/drift/stryker-cache-semantics.test.ts`),
+ * so a cached survivor on a line the change never touched would otherwise
+ * block it. Judged by `location`, never by id: the ids of folded-back mutants
+ * are not the run's own.
+ */
+function mutantsInScope(
+  file: string,
+  mutants: readonly StrykerMutant[],
+  ranges: MutateRanges,
+): readonly StrykerMutant[] {
+  const planned = ranges.get(file);
+  if (planned === undefined) {
+    return mutants;
+  }
+  return mutants.filter((mutant) => {
+    const start = mutant.location.start.line;
+    const end = mutant.location.end?.line;
+    return isLocationInRanges(
+      { start, end: typeof end === 'number' ? end : start },
+      planned,
+    );
+  });
+}
+
 export function parseStrykerJson(
   reportJson: string,
   changedFiles: readonly string[],
+  ranges: MutateRanges = new Map(),
 ): Violation[] {
   const parsed = parseReport(reportJson);
   if (parsed === undefined) {
@@ -219,7 +257,7 @@ export function parseStrykerJson(
     if (!changed.has(file)) {
       continue;
     }
-    for (const mutant of fileResult.mutants) {
+    for (const mutant of mutantsInScope(file, fileResult.mutants, ranges)) {
       const failure = FAILING_STATUSES[mutant.status];
       if (failure !== undefined) {
         violations.push(failureViolation(file, mutant, failure));
@@ -273,6 +311,7 @@ function isUnrunSurvivor(mutant: StrykerMutant): boolean {
 export function unrunSurvivedMutants(
   reportJson: string,
   changedFiles: readonly string[],
+  ranges: MutateRanges = new Map(),
 ): number {
   const parsed = parseReport(reportJson);
   if (parsed === undefined) {
@@ -284,7 +323,7 @@ export function unrunSurvivedMutants(
     if (!changed.has(file)) {
       continue;
     }
-    count += fileResult.mutants.filter((mutant) =>
+    count += mutantsInScope(file, fileResult.mutants, ranges).filter((mutant) =>
       isUnrunSurvivor(mutant),
     ).length;
   }
