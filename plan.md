@@ -1259,6 +1259,18 @@ core/src/audit.ts`) surfaced that it was a context-free text scan: it flagged
   `docs/superpowers/specs/2026-11-06-upgrade-guide-design.md`. Follow-up
   **#152**: `init --plan` warns on its own when a `supersedes` phrase is still
   in the adopter's files.
+- **Open (2026-11-07, found on #155): a renamed file escapes every
+  diff-scoped analyzer.** The changed-file list is
+  `git diff --name-only --diff-filter=ACM <base>`, and git detects renames by
+  default (`diff.renames`), so a file that was moved and edited has status `R`
+  and is filtered out. Reproduced in a scratch repo: `git mv a.ts b.ts` plus
+  one appended line gives `R097 a.ts b.ts` under `--name-status` and nothing
+  at all under the gate's filter. eslint, tsc's diff filter and stryker never
+  see `b.ts`; CI's whole-scope runs are the only check. Line-range mutation
+  (#155) uses the same filter on purpose, so the run and the probe agree, and
+  inherits the gap. Possible fix: add `R` to the filter (or pass
+  `--no-renames`), with the rename's new path as the changed file. It
+  changes what every analyzer sees, so it wants its own issue and tests.
 
 ## Roadmap: analyzer opt-in (pack composition, not all-or-nothing) — shipped
 
