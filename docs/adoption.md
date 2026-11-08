@@ -324,11 +324,13 @@ so nothing at the gate re-checks B. This was true before the rewrite and is
 still true after it. CI's whole-scope mutation run is the backstop: the gate
 is not a complete mutation measurement.
 
-### Seeding a fresh worktree from CI (`seedFrom`)
+### Seeding the mutation cache from CI (`seedFrom`)
 
 A fresh worktree has no cache, so its first mutation run is cold, even when
-CI measured nearly every mutant on the base branch an hour ago. If CI keeps
-that report somewhere you can fetch, name a command that fetches it:
+CI measured nearly every mutant on the base branch an hour ago. An old
+checkout on a new branch has the same problem for the files that branch
+touches. If CI keeps its report somewhere you can fetch, name a command that
+fetches it:
 
 ```json
 {
@@ -339,33 +341,54 @@ that report somewhere you can fetch, name a command that fetches it:
 }
 ```
 
-- **When it runs:** only when stryker is about to run and there is no
-  `reports/stryker-incremental.json`. It does not run when the run could not
-  use a cache anyway (the `command` runner, or no installed stryker to
-  fingerprint).
+- **What it seeds:** per file. On every run, the seed's entries are taken for
+  the in-scope files the local cache lacks, and the local entry is kept where
+  both hold one. That covers a fresh worktree (every file is missing), a new
+  branch in an old checkout (the files it touches are missing), and a cache
+  that was just discarded (everything is missing again).
+- **When it runs:** only when stryker is about to run and some in-scope file
+  is missing from the local cache, because the command costs a download.
+  Stryker writes no entry for a file with no mutants, so such a file in scope
+  counts as missing on every run. It does not run when the run could not use a
+  seed anyway: the `command` runner, no installed stryker to fingerprint, a
+  changed test-support file, or (under `any-test-change`) any changed test.
 - **How it runs:** `sh -c "<seedFrom>"` from the repo root, with
   `GUARDRAILS_SEED_DIR` set to an empty temporary directory. Put one or more
-  stryker reports there. Every `*.json` file under it, at any depth, is read,
-  except `*.fingerprint.json`. Several reports (one per CI shard) are merged.
-  The merge is refused if a production file appears in two reports, if a test
-  file appears at two different sources, or if any report does not parse.
-- **What happens to the seed:** it is written as the local cache, stamped with
-  **this checkout's** fingerprint, and then rewritten by the rules above, like
-  any local cache. Survivors are dropped, the cache is cut to this run's files,
-  and a kill stays only while its test file is unchanged against the base
-  branch. Stryker itself re-tests any mutant whose source changed.
-- **When it fails** (a non-zero exit, a timeout, nothing written, or reports
-  that cannot be merged), the run goes cold, as it would have without a seed,
-  and the gate prints one line on stderr saying why. A seed never fails the
-  gate. A command that runs longer than `seedTimeoutSeconds` (120 by default)
-  is stopped, along with everything it started.
+  stryker reports there, each with its fingerprint sidecar beside it:
+  `<name>.json` and `<name>.fingerprint.json` in the same directory. Every
+  `*.json` file under it, at any depth, other than a `*.fingerprint.json`, is
+  read as a report. Several reports (one per CI shard) are merged. The merge
+  is refused if a production file appears in two reports, if a test file
+  appears at two different sources, or if any report does not parse.
+- **What it checks first:** the fingerprint. Every report must have its
+  sidecar, the shards' sidecars must all agree, and they must match this
+  checkout's stryker version, stryker config and lockfile. A branch that
+  upgrades stryker, changes its config or changes dependencies therefore
+  never reuses kills CI measured under the old setup.
+- **What happens to the seed:** it passes the rules above like a local cache.
+  Survivors are dropped, it is cut to this run's files, and a kill stays only
+  while its test file is unchanged on this branch. (A seeded kill is not
+  judged by the local cache's timestamp, which says nothing about when CI
+  measured it.) It is then merged into the local cache with its test ids
+  re-keyed, since each report numbers its tests from zero. A test file the
+  two hold at different sources keeps the local copy, and the seed's kills by
+  it are dropped. Stryker itself re-tests any mutant whose source changed.
+- **When it fails** (a non-zero exit, a timeout, nothing written, a missing or
+  mismatched fingerprint, or reports that cannot be merged), the run is cold
+  for the files the seed would have covered, as it would have been without a
+  seed, and the gate prints one line on stderr saying why. A seed never fails
+  the gate. A command that runs longer than `seedTimeoutSeconds` (120 by
+  default) is stopped, along with everything it started: one SIGINT, then a
+  SIGKILL after `mutationLock.stopGraceSeconds`.
 
 Guardrails ships no workflow and runs no `gh` of its own. The rest of this
 section is a **sample** for GitHub Actions. Adapt it.
 
 **The CI half:** a job on the base branch that runs stryker over the whole
-scope and uploads the cache as an artifact. Keep retention short, because only
-the newest run is ever read:
+scope, writes the fingerprint sidecar with `guardrails mutation-fingerprint`
+(CI runs stryker itself, so nothing else writes it there), and uploads the
+pair as one artifact. Keep retention short, because only the newest run is
+ever read:
 
 ```yaml
 # .github/workflows/mutation.yml (sample)
@@ -384,10 +407,13 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npx stryker run --incremental
+      - run: node ./node_modules/guardrails-core/dist/cli.mjs mutation-fingerprint
       - uses: actions/upload-artifact@v4
         with:
           name: stryker-incremental
-          path: reports/stryker-incremental.json
+          path: |
+            reports/stryker-incremental.json
+            reports/stryker-incremental.fingerprint.json
           retention-days: 2
           if-no-files-found: error
 ```
@@ -396,7 +422,7 @@ Use `actions/upload-artifact` for this, not `actions/cache`. The contents of
 `actions/cache` can only be restored inside a workflow run. A developer's
 machine cannot download them.
 
-**The local half** (`scripts/fetch-mutation-seed.sh`): it fetches the report
+**The local half** (`scripts/fetch-mutation-seed.sh`): it fetches the pair
 from the run on the commit this branch forked from:
 
 ```sh
@@ -416,18 +442,15 @@ a test that `main` changed after this branch forked, and that change is not on
 your branch. If no run exists for that commit (it expired, or the push was
 batched), the script exits non-zero and the gate runs cold.
 
-For a sharded CI job, upload one artifact per shard
-(`name: stryker-incremental-${{ matrix.shard }}`) and download them all with
-`gh run download "$run" --pattern 'stryker-incremental-*' --dir
-"$GUARDRAILS_SEED_DIR"`. Each shard lands in its own subdirectory, and the gate
-merges them. The shards must split the production files between them. Two
-shards that both mutated one file refuse the whole seed.
-
-**What a seed does not check:** the stryker version, stryker config and
-lockfile CI ran under. The fingerprint is computed from this checkout, so a
-branch that upgrades stryker, changes its config or changes dependencies can
-still reuse kills that CI measured under the old setup. On such a branch, take
-`seedFrom` out of the config before its first push.
+For a sharded CI job, run `mutation-fingerprint` in every shard and upload one
+artifact per shard (`name: stryker-incremental-${{ matrix.shard }}`), then
+download them all with `gh run download "$run" --pattern
+'stryker-incremental-*' --dir "$GUARDRAILS_SEED_DIR"`. Each shard lands in its
+own subdirectory, report and sidecar together, and the gate merges them. The
+shards must split the production files between them: two shards that both
+mutated one file refuse the whole seed. Every shard writes the same
+fingerprint, so shards that disagree (a runner with a different lockfile or
+stryker) refuse it too.
 
 ## The clean-baseline prerequisite
 
