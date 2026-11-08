@@ -33,6 +33,13 @@ export interface ExecResult {
    * that exited on its own, so existing test fakes stay valid.
    */
   signal?: NodeJS.Signals;
+  /**
+   * `true` when the run was stopped because it outlived `timeoutMs`. `signal`
+   * then says how it was stopped; this says why, which a signal alone cannot --
+   * the same SIGTERM arrives from a hook deadline or a Ctrl-C. Absent on a run
+   * that ended on its own.
+   */
+  timedOut?: true;
 }
 
 /**
@@ -111,6 +118,15 @@ export type Exec = (
      * Defaults to `DEFAULT_STOP_GRACE_SECONDS`.
      */
     stopGraceSeconds?: number;
+    /**
+     * Stop the child once it has run this long, and flag the result
+     * `timedOut`. A plain child gets SIGTERM; a `processGroup` child is
+     * stopped the way `terminateChildren` stops one -- one SIGINT, then a
+     * SIGKILL after its `stopGraceSeconds`. For a consumer-supplied command,
+     * such as `mutationCache.seedFrom`, whose cost the gate cannot know and
+     * must not wait on indefinitely.
+     */
+    timeoutMs?: number;
   },
 ) => Promise<ExecResult>;
 
@@ -145,22 +161,29 @@ const live = new Set<ChildProcess>();
 export function terminateChildren(): number {
   const count = live.size;
   for (const child of live) {
-    const { pid } = child;
-    if (pid === undefined) {
-      // Never started: its 'error' is still on its way. Measured (Node 24):
-      // `child.kill()` in this window signals the CALLER's whole process
-      // group, so a gate abandoned while an analyzer spawn was failing would
-      // kill itself and the hook that ran it. There is nothing to stop.
-      continue;
-    }
-    const grace = groups.get(child);
-    if (grace === undefined) {
-      child.kill('SIGTERM');
-    } else {
-      stopGroup(child, pid, grace);
-    }
+    stop(child);
   }
   return count;
+}
+
+/**
+SIGTERM to a plain child; to a process group, `stopGroup`.
+*/
+function stop(child: ChildProcess): void {
+  const { pid } = child;
+  if (pid === undefined) {
+    // Never started: its 'error' is still on its way. Measured (Node 24):
+    // `child.kill()` in this window signals the CALLER's whole process
+    // group, so a gate abandoned while an analyzer spawn was failing would
+    // kill itself and the hook that ran it. There is nothing to stop.
+    return;
+  }
+  const grace = groups.get(child);
+  if (grace === undefined) {
+    child.kill('SIGTERM');
+  } else {
+    stopGroup(child, pid, grace);
+  }
 }
 
 /**
@@ -279,6 +302,14 @@ export const spawnExec: Exec = (command, args, options) =>
     if (options?.input !== undefined) {
       child.stdin.end(options.input);
     }
+    let isTimedOut = false;
+    const timer =
+      options?.timeoutMs === undefined
+        ? undefined
+        : setTimeout(() => {
+            isTimedOut = true;
+            stop(child);
+          }, options.timeoutMs);
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', (chunk: Buffer) => {
@@ -288,6 +319,7 @@ export const spawnExec: Exec = (command, args, options) =>
       stderr += chunk.toString();
     });
     child.on('error', (error: Error) => {
+      clearTimeout(timer);
       live.delete(child);
       untrackGroup(child);
       resolve({
@@ -298,6 +330,7 @@ export const spawnExec: Exec = (command, args, options) =>
       });
     });
     child.on('close', (code, signal) => {
+      clearTimeout(timer);
       live.delete(child);
       untrackGroup(child);
       // `code ?? 0` is kept, but it is no longer the only thing a caller has to
@@ -308,6 +341,7 @@ export const spawnExec: Exec = (command, args, options) =>
         stderr,
         code: code ?? 0,
         ...(signal !== null && { signal }),
+        ...(isTimedOut && { timedOut: true }),
       });
     });
   });
