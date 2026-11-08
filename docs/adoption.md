@@ -709,6 +709,15 @@ gate lock`, which `guardrails ship` reports as `lock-timeout` rather than as
   `dialed-163 (push) is mutating, 62% (160/258), ~4m left` -- and how many
   others queue, once a minute. `guardrails lock-status` shows the same once,
   from anywhere on the machine.
+- **A stopped mutation run keeps what it tested.** When the gate is stopped
+  mid-run (by a signal, or at its hook deadline) it sends the locked stryker
+  run exactly one SIGINT, and stryker writes a partial
+  `reports/stryker-incremental.json` that the next run reuses. A second
+  signal would make stryker exit without saving (stryker-js#6257). Whatever
+  stops the gate may also signal stryker directly, as a tree-kill does, so
+  guardrails' progress plugin absorbs any repeat inside stryker. A run still
+  alive `mutationLock.stopGraceSeconds` (30) after the SIGINT is SIGKILLed,
+  so a hung one cannot hold the lock.
 
 A `CLAUDE.md` snippet for adopters:
 

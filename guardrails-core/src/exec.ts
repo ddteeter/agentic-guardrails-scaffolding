@@ -105,8 +105,21 @@ export type Exec = (
      * why `forwardTerminationSignal` exists.
      */
     processGroup?: boolean;
+    /**
+     * For a `processGroup` child: how long its group may take to stop after
+     * the one SIGINT `terminateChildren` sends, before it is SIGKILLed.
+     * Defaults to `DEFAULT_STOP_GRACE_SECONDS`.
+     */
+    stopGraceSeconds?: number;
   },
 ) => Promise<ExecResult>;
+
+/**
+ * How long a stopped process group gets to exit before it is SIGKILLed.
+ * Long enough for stryker to write a partial incremental report of a large
+ * run; short enough that a hung one does not hold the machine-wide lock.
+ */
+export const DEFAULT_STOP_GRACE_SECONDS = 30;
 
 /**
  * Every child `spawnExec` started that has not yet finished.
@@ -118,7 +131,9 @@ export type Exec = (
 const live = new Set<ChildProcess>();
 
 /**
- * Send `SIGTERM` to every child still running, and say how many there were.
+ * Stop every child still running, and say how many there were: `SIGTERM` to
+ * a plain child, and to a process group one SIGINT with a SIGKILL after its
+ * grace (`stopGroup`).
  *
  * A hook that stops waiting must also stop the work: every host treats a hook
  * timeout as fail-open, and a gate abandoned that way kept tsc or stryker
@@ -138,27 +153,68 @@ export function terminateChildren(): number {
       // kill itself and the hook that ran it. There is nothing to stop.
       continue;
     }
-    if (groups.has(child)) {
-      killGroup(pid);
-    } else {
+    const grace = groups.get(child);
+    if (grace === undefined) {
       child.kill('SIGTERM');
+    } else {
+      stopGroup(child, pid, grace);
     }
   }
   return count;
 }
 
 /**
-The live children started with `processGroup`. A subset of `live`.
+The live children started with `processGroup`, each with its stop grace in
+seconds. A subset of `live`.
 */
-const groups = new Set<ChildProcess>();
+const groups = new Map<ChildProcess, number>();
 
-function killGroup(pid: number): void {
+/**
+The groups already told to stop. Each is told once.
+*/
+const stopped = new WeakSet<ChildProcess>();
+
+/**
+ * Stop the group `pid` leads: one SIGINT, then a SIGKILL once `grace` runs
+ * out, if any of it is still running.
+ *
+ * One signal, because stryker saves a partial incremental report on the
+ * first and exits without one on a second (measured, plan.md 2026-11-07) --
+ * so a gate told to stop twice, or by its deadline and then a signal, must
+ * not pass both on. SIGINT, because that is the interrupt stryker documents.
+ *
+ * The SIGKILL comes from a detached `sh`, not a timer here: the CLI exits
+ * straight after stopping its children (the hook deadline must), and a
+ * stryker that hangs while it shuts down would otherwise hold the
+ * machine-wide lock with nothing left to end it.
+ */
+function stopGroup(child: ChildProcess, pid: number, grace: number): void {
+  if (stopped.has(child)) {
+    return;
+  }
+  stopped.add(child);
   try {
     // A negative pid addresses the group the child leads.
-    process.kill(-pid, 'SIGTERM');
+    process.kill(-pid, 'SIGINT');
   } catch {
     // Already gone -- the group exited between the check and the kill.
+    return;
   }
+  const reaper = spawn(
+    'sh',
+    [
+      '-c',
+      'sleep "$1"; kill -s KILL -- "-$2" 2>/dev/null',
+      'sh',
+      String(grace),
+      String(pid),
+    ],
+    { detached: true, stdio: 'ignore' },
+  );
+  reaper.on('error', () => {
+    // No sh: the group keeps its SIGINT and nothing more.
+  });
+  reaper.unref();
 }
 
 /**
@@ -187,12 +243,12 @@ function onSignal(signal: 'SIGINT' | 'SIGTERM'): void {
   forwardTerminationSignal(signal, (code) => process.exit(code));
 }
 
-function trackGroup(child: ChildProcess): void {
+function trackGroup(child: ChildProcess, grace: number): void {
   if (groups.size === 0) {
     process.on('SIGINT', onSignal);
     process.on('SIGTERM', onSignal);
   }
-  groups.add(child);
+  groups.set(child, grace);
 }
 
 function untrackGroup(child: ChildProcess): void {
@@ -218,7 +274,7 @@ export const spawnExec: Exec = (command, args, options) =>
     });
     live.add(child);
     if (options?.processGroup === true) {
-      trackGroup(child);
+      trackGroup(child, options.stopGraceSeconds ?? DEFAULT_STOP_GRACE_SECONDS);
     }
     if (options?.input !== undefined) {
       child.stdin.end(options.input);

@@ -131,7 +131,11 @@ function verifyOptions(
     },
     mutationLock: {
       path: lockPath,
-      config: { commitWaitSeconds: 60, pushWaitSeconds: 10_800 },
+      config: {
+        commitWaitSeconds: 60,
+        pushWaitSeconds: 10_800,
+        stopGraceSeconds: 30,
+      },
     },
   };
 }

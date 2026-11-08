@@ -674,36 +674,47 @@ describe('hookDeadlineSeconds', () => {
 });
 
 describe('mutationLock', () => {
-  it('waits a minute at commit and three hours at push by default', () => {
+  it('waits a minute at commit and three hours at push by default, and gives a stopped run 30s', () => {
     expect(defaultConfig().mutationLock).toEqual({
       commitWaitSeconds: 60,
       pushWaitSeconds: 10_800,
+      stopGraceSeconds: 30,
     });
   });
 
-  it('reads both waits', () => {
+  it('reads both waits and the stop grace', () => {
     writeFileSync(
       path.join(root, 'guardrails.config.json'),
       JSON.stringify({
-        mutationLock: { commitWaitSeconds: 30, pushWaitSeconds: 600 },
+        mutationLock: {
+          commitWaitSeconds: 30,
+          pushWaitSeconds: 600,
+          stopGraceSeconds: 90,
+        },
       }),
     );
     expect(loadConfig(root).mutationLock).toEqual({
       commitWaitSeconds: 30,
       pushWaitSeconds: 600,
+      stopGraceSeconds: 90,
     });
   });
 
-  it.each([0, -5, 'soon'])('ignores a wait of %s', (value) => {
+  it.each([0, -5, 'soon'])('ignores a wait or grace of %s', (value) => {
     writeFileSync(
       path.join(root, 'guardrails.config.json'),
       JSON.stringify({
-        mutationLock: { commitWaitSeconds: value, pushWaitSeconds: value },
+        mutationLock: {
+          commitWaitSeconds: value,
+          pushWaitSeconds: value,
+          stopGraceSeconds: value,
+        },
       }),
     );
     expect(loadConfig(root).mutationLock).toEqual({
       commitWaitSeconds: 60,
       pushWaitSeconds: 10_800,
+      stopGraceSeconds: 30,
     });
   });
 

@@ -10,6 +10,7 @@ import path from 'node:path';
 import process from 'node:process';
 
 import { auditKinds, type AuditKind } from './audit.js';
+import { DEFAULT_STOP_GRACE_SECONDS } from './exec.js';
 import type { GateConfig } from './gate-decision.js';
 import { makeIsLoose } from './loose-rules.js';
 import {
@@ -93,6 +94,13 @@ See `RepoConfig.mutationLock`.
 export interface MutationLockConfig {
   commitWaitSeconds: number;
   pushWaitSeconds: number;
+  /**
+   * How long a locked stryker run that the gate stops -- on a forwarded
+   * signal, or at the hook deadline -- gets to write its partial incremental
+   * report and exit after its one SIGINT, before its process group is
+   * SIGKILLed (`exec.ts`, `stopGroup`).
+   */
+  stopGraceSeconds: number;
 }
 
 /**
@@ -219,7 +227,8 @@ export interface RepoConfig {
    * whole branch. Push is long because it is the rung that must not defer.
    * The lock PATH is deliberately not here: which lock to share is a property
    * of the machine (`GUARDRAILS_GATE_LOCK`), and a per-repo path would split
-   * the one queue the lock exists for.
+   * the one queue the lock exists for. `stopGraceSeconds` is how long a
+   * stopped holder gets to save its partial report before it is killed.
    */
   mutationLock: MutationLockConfig;
   /**
@@ -272,7 +281,11 @@ export function defaultConfig(): RepoConfig {
     distribution: 'solo',
     enforcement: 'warn',
     hookDeadlineSeconds: 240,
-    mutationLock: { commitWaitSeconds: 60, pushWaitSeconds: 10_800 },
+    mutationLock: {
+      commitWaitSeconds: 60,
+      pushWaitSeconds: 10_800,
+      stopGraceSeconds: DEFAULT_STOP_GRACE_SECONDS,
+    },
     mutationCache: { invalidation: 'targeted' },
     denyForegroundWaits: true,
     foregroundSleepLimitSeconds: 120,
@@ -620,6 +633,10 @@ function pickMutationLock(
       defaults.commitWaitSeconds,
     ),
     pushWaitSeconds: pickPositive(section.pushWaitSeconds, legacyPush),
+    stopGraceSeconds: pickPositive(
+      section.stopGraceSeconds,
+      defaults.stopGraceSeconds,
+    ),
   };
 }
 

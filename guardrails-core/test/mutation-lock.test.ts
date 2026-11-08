@@ -16,7 +16,11 @@ import {
   waitFor,
 } from '../src/mutation-lock.js';
 
-const lockConfig = { commitWaitSeconds: 60, pushWaitSeconds: 10_800 };
+const lockConfig = {
+  commitWaitSeconds: 60,
+  pushWaitSeconds: 10_800,
+  stopGraceSeconds: 45,
+};
 
 describe('waitFor', () => {
   it('tries the lock once on the stop rung, then defers', () => {
@@ -201,6 +205,21 @@ describe('runUnderLock', () => {
       processGroup: true,
     });
     expect(lines).toEqual([]);
+  });
+
+  it('gives the locked group the configured stop grace', async () => {
+    // A stopped holder gets this long to write stryker's partial report
+    // before its group is SIGKILLed (`exec.ts`, `stopGroup`).
+    const { exec } = lockfMachine({ busy: false });
+    const graces: (number | undefined)[] = [];
+    const recording: Exec = (command, args, options) => {
+      if (options?.processGroup === true) {
+        graces.push(options.stopGraceSeconds);
+      }
+      return exec(command, args, options);
+    };
+    await locked(recording, 'push').run;
+    expect(graces).toEqual([45]);
   });
 
   it('passes the command exit code through untouched', async () => {

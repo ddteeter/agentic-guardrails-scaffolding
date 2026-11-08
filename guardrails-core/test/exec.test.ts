@@ -302,13 +302,19 @@ describe('terminateChildren', () => {
  * Spawn `sh` as a process group whose grandchild writes its pid to `pidFile`
  * and then runs forever -- the shape of `lockf … stryker`, without needing a
  * locker on the machine.
+ *
+ * The grandchild handles SIGINT, as stryker does: a job `sh` starts with `&`
+ * otherwise inherits SIGINT ignored (POSIX, for a non-interactive shell),
+ * which `lockf` -- it execs its command -- does not do to stryker.
  */
 function groupWithGrandchild(pidFile: string) {
   return spawnExec(
     'sh',
     [
       '-c',
-      `${node} -e "setInterval(() => {}, 1000)" & echo $! > "${pidFile}"; wait`,
+      // The grandchild names itself once its handler is in, so no test
+      // signals it before then.
+      `${node} -e "process.on('SIGINT', () => process.exit(130)); require('node:fs').writeFileSync(process.argv[1], String(process.pid)); setInterval(() => {}, 1000)" "${pidFile}" & wait`,
     ],
     { processGroup: true },
   );
@@ -459,13 +465,89 @@ describe('termination handlers are installed only while a group is live', () => 
         expect(handler).toBeDefined();
         expect(() => handler?.(signal)).toThrow('exit intercepted');
         const result = await running;
-        expect(result.signal).toBe('SIGTERM');
+        expect(result.signal).toBe('SIGINT');
         expect(exits).toEqual([expected]);
       } finally {
         exit.mockRestore();
       }
     },
   );
+});
+
+/**
+ * A group child that counts the SIGINTs it gets and survives them, printing
+ * the running count -- a stryker that will not stop, or one told to stop
+ * twice.
+ */
+const countsInterrupts =
+  'let heard = 0; process.on("SIGINT", () => { heard += 1; process.stdout.write(String(heard)); }); require("node:fs").writeFileSync(process.argv[1], String(process.pid)); setInterval(() => {}, 1000)';
+
+describe('a process group is stopped with one SIGINT, then a SIGKILL after its grace', () => {
+  // Measured (plan.md, 2026-11-07): stryker saves its partial incremental
+  // report on the first stop signal and loses it on a second (#6257). SIGINT,
+  // not SIGTERM, is the stop stryker documents for an interrupted run.
+  it('sends a group SIGINT, not SIGTERM', async () => {
+    const running = spawnExec(node, ['-e', forever], { processGroup: true });
+    terminateChildren();
+    const result = await running;
+    expect(result.signal).toBe('SIGINT');
+  });
+
+  it('signals a group once, however many times it is told to stop', async () => {
+    const ready = path.join(root, 'ready.pid');
+    const running = spawnExec(node, ['-e', countsInterrupts, ready], {
+      processGroup: true,
+      stopGraceSeconds: 1,
+    });
+    // The child names itself once its handler is in.
+    await readPid(ready);
+    terminateChildren();
+    terminateChildren();
+    const result = await running;
+    expect(result.stdout).toBe('1');
+  });
+
+  it('SIGKILLs a group still running when its grace runs out', async () => {
+    const ready = path.join(root, 'ready.pid');
+    const running = spawnExec(node, ['-e', countsInterrupts, ready], {
+      processGroup: true,
+      stopGraceSeconds: 1,
+    });
+    await readPid(ready);
+    const stoppedAt = Date.now();
+    terminateChildren();
+    const result = await running;
+    expect(result.signal).toBe('SIGKILL');
+    // Not before the grace: the SIGINT alone did not end it.
+    expect(Date.now() - stoppedAt).toBeGreaterThanOrEqual(1000);
+  });
+
+  it('kills the whole group at the grace, not only its leader', async () => {
+    const pidFile = path.join(root, 'grandchild.pid');
+    const running = spawnExec(
+      'sh',
+      [
+        '-c',
+        `trap '' INT; ${node} -e 'process.on("SIGINT", () => {}); setInterval(() => {}, 1000)' & echo $! > "${pidFile}"; wait; wait`,
+      ],
+      { processGroup: true, stopGraceSeconds: 1 },
+    );
+    const grandchild = await readPid(pidFile);
+    terminateChildren();
+    await running;
+    const deadline = Date.now() + 5000;
+    while (isAlive(grandchild) && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    expect(isAlive(grandchild)).toBe(false);
+  });
+
+  it('leaves a plain child to SIGTERM, as before', async () => {
+    const running = spawnExec(node, ['-e', forever]);
+    terminateChildren();
+    const result = await running;
+    expect(result.signal).toBe('SIGTERM');
+  });
 });
 
 describe('a process-group child takes its grandchildren with it', () => {
