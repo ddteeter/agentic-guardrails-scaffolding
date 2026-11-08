@@ -13,13 +13,56 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { parseJsonText } from '../src/json-file.js';
 import { type Holder, readHolder } from '../src/lock-holder.js';
 import {
+  absorbRepeatStopSignals,
   defaultIo,
   GuardrailsProgressReporter,
   ProgressReporter,
   type ProgressIo,
+  type SignalTarget,
   strykerPlugins,
   writeAtomically,
 } from '../src/stryker-progress-plugin.js';
+
+/**
+ * A `process` stand-in for signal listeners. `emit` calls a COPY of the
+ * listener list, as Node does -- which is what lets the first stop signal
+ * still reach stryker while the absorber swaps the listeners out.
+ */
+class FakeSignals implements SignalTarget {
+  readonly #listeners = new Map<string, (() => void)[]>();
+
+  #of(event: string): (() => void)[] {
+    return this.#listeners.get(event) ?? [];
+  }
+
+  on(event: string, listener: () => void): this {
+    this.#listeners.set(event, [...this.#of(event), listener]);
+    return this;
+  }
+
+  off(event: string, listener: () => void): this {
+    this.#listeners.set(
+      event,
+      this.#of(event).filter((other) => other !== listener),
+    );
+    return this;
+  }
+
+  removeAllListeners(event: string): this {
+    this.#listeners.delete(event);
+    return this;
+  }
+
+  emit(event: string): void {
+    for (const listener of this.#of(event)) {
+      listener();
+    }
+  }
+
+  listenerCount(event: string): number {
+    return this.#of(event).length;
+  }
+}
 
 const HOLDER_FILE = '/locks/gate.lock.holder.json';
 
@@ -37,6 +80,7 @@ interface Fake {
   runExit: () => void;
   pendingTimers: () => number;
   exitListeners: () => number;
+  signals: FakeSignals;
 }
 
 /**
@@ -62,7 +106,9 @@ function fake(
   const removed: string[] = [];
   let timers: { at: number; callback: () => void }[] = [];
   let listeners: (() => void)[] = [];
+  const signals = new FakeSignals();
   const io: ProgressIo = {
+    signals,
     environment,
     now: () => now,
     pid: 4242,
@@ -107,6 +153,7 @@ function fake(
     },
     pendingTimers: () => timers.length,
     exitListeners: () => listeners.length,
+    signals,
   };
 }
 
@@ -278,6 +325,110 @@ describe('ProgressReporter', () => {
   });
 });
 
+/**
+Stryker's own handler, as `UnexpectedExitHandler` installs it: one listener on
+each of the four signals it treats as a stop.
+*/
+const STOP_SIGNALS = ['SIGABRT', 'SIGHUP', 'SIGINT', 'SIGTERM'] as const;
+
+function withStrykerHandler(signals: FakeSignals): string[] {
+  const heard: string[] = [];
+  for (const signal of STOP_SIGNALS) {
+    signals.on(signal, () => {
+      heard.push(signal);
+    });
+  }
+  return heard;
+}
+
+describe('absorbRepeatStopSignals', () => {
+  // Measured (plan.md, 2026-11-07): a tree-kill gives stryker two SIGTERMs
+  // 7ms apart -- its own and the gate's forward -- and stryker's second-signal
+  // branch exits before the partial incremental report is written
+  // (stryker-js#6257). Only stryker's own process can tell a repeat apart.
+  it('lets the first stop signal through to stryker', () => {
+    const signals = new FakeSignals();
+    const heard = withStrykerHandler(signals);
+    absorbRepeatStopSignals(signals);
+    signals.emit('SIGTERM');
+    expect(heard).toEqual(['SIGTERM']);
+  });
+
+  it.each(STOP_SIGNALS)(
+    'keeps every later stop signal from stryker once %s has arrived',
+    (first) => {
+      const signals = new FakeSignals();
+      const heard = withStrykerHandler(signals);
+      absorbRepeatStopSignals(signals);
+      signals.emit(first);
+      for (const signal of STOP_SIGNALS) {
+        signals.emit(signal);
+      }
+      expect(heard).toEqual([first]);
+    },
+  );
+
+  it('still listens for each repeat, so none falls to the default kill', () => {
+    const signals = new FakeSignals();
+    withStrykerHandler(signals);
+    absorbRepeatStopSignals(signals);
+    signals.emit('SIGINT');
+    expect(STOP_SIGNALS.map((signal) => signals.listenerCount(signal))).toEqual(
+      [1, 1, 1, 1],
+    );
+  });
+
+  it('leaves stryker alone until a signal arrives', () => {
+    const signals = new FakeSignals();
+    withStrykerHandler(signals);
+    absorbRepeatStopSignals(signals);
+    expect(STOP_SIGNALS.map((signal) => signals.listenerCount(signal))).toEqual(
+      [2, 2, 2, 2],
+    );
+  });
+
+  it('can be undone after a stop signal, removing the listeners it swapped in', () => {
+    const signals = new FakeSignals();
+    withStrykerHandler(signals);
+    const undo = absorbRepeatStopSignals(signals);
+    signals.emit('SIGINT');
+    undo();
+    expect(STOP_SIGNALS.map((signal) => signals.listenerCount(signal))).toEqual(
+      [0, 0, 0, 0],
+    );
+  });
+
+  it('can be undone, leaving only what was there before', () => {
+    const signals = new FakeSignals();
+    const heard = withStrykerHandler(signals);
+    const undo = absorbRepeatStopSignals(signals);
+    undo();
+    expect(STOP_SIGNALS.map((signal) => signals.listenerCount(signal))).toEqual(
+      [1, 1, 1, 1],
+    );
+    signals.emit('SIGTERM');
+    signals.emit('SIGTERM');
+    expect(heard).toEqual(['SIGTERM', 'SIGTERM']);
+  });
+});
+
+describe('ProgressReporter absorbs repeat stop signals for the run', () => {
+  it('installs the absorber on a holder run, and removes it with the report', () => {
+    const f = fake();
+    withStrykerHandler(f.signals);
+    const reporter = new ProgressReporter(f.io);
+    expect(f.signals.listenerCount('SIGTERM')).toBe(2);
+    reporter.onMutationTestReportReady(...report);
+    expect(f.signals.listenerCount('SIGTERM')).toBe(1);
+  });
+
+  it('installs nothing when the env asks for no holder', () => {
+    const f = fake({});
+    new ProgressReporter(f.io).onMutantTested({ status: 'Killed' });
+    expect(f.signals.listenerCount('SIGTERM')).toBe(0);
+  });
+});
+
 describe('writeAtomically', () => {
   let directory: string;
 
@@ -348,6 +499,10 @@ describe('defaultIo', () => {
     const spy = vi.spyOn(globalThis, 'setTimeout');
     defaultIo().schedule(vi.fn(), 100);
     expect(spy.mock.results[0]?.value.hasRef()).toBe(false);
+  });
+
+  it('listens for signals on the process itself', () => {
+    expect(defaultIo().signals).toBe(process);
   });
 
   it('registers an exit listener and removes it again', () => {

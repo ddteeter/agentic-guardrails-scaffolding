@@ -165,7 +165,7 @@ function isPollingLoop(text: string): boolean {
  * `undefined` when it runs none. `sleepLimitSeconds` is the longest `sleep`
  * that still counts as a pause.
  *
- * A job started detached -- `nohup npx guardrails ship … &`,
+ * A job started detached -- `nohup node ./node_modules/guardrails-core/dist/cli.mjs ship … &`,
  * `setsid gh run watch … &` -- is taken out first (`DETACHED_JOB`), so it is
  * not a wait. Nothing else is: a bare `… &` ties the job to the shell, and on
  * a host with no wake-on-exit the agent still has to poll it; a wrapper such

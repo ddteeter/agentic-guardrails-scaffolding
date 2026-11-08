@@ -362,6 +362,7 @@ export async function runUnderLock(
     result = await exec(run.command, run.args, {
       cwd,
       processGroup: true,
+      stopGraceSeconds: lock.config.stopGraceSeconds,
       ...(holding !== undefined && { env: holding.env }),
     });
   } finally {

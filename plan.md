@@ -458,6 +458,34 @@ directories in one command. Unchanged, and still outside the matcher:
   error it did not write. Worked around with a `ReadonlySet<string>`.
   Candidate: drop `prefer-includes` from the autofix set, or re-run `tsc` on
   the autofixed file and revert a fix that introduces an error.
+- **A stopped gate loses stryker's partial report only when stryker gets two
+  signals (2026-11-07, measured; #156, plan
+  `docs/superpowers/plans/2026-11-07-stryker-incrementals.md` task 0.4).**
+  Measured on stryker 10.0.0 and Node 24 on macOS, with a 210-mutant fixture
+  under the gate's real chain: `runUnderLock` → `lockf -k -s -t 10800` (temp
+  lock) → the resolved `stryker` bin, with the progress plugin appended. A probe
+  plugin logged every signal stryker's main process got. The gate was signalled
+  30s in, part-way through the mutants:
+
+  | Stop                                                         | Signals stryker got                                       | Partial `stryker-incremental.json`      |
+  | ------------------------------------------------------------ | --------------------------------------------------------- | --------------------------------------- |
+  | SIGINT to the gate                                           | 1 SIGTERM (the gate's forward to the group)               | yes, parses, 61 Killed                  |
+  | SIGINT to the gate's process group                           | 1 SIGTERM (the locked group is detached, out of reach)    | yes, 61 Killed                          |
+  | SIGTERM to the gate                                          | 1 SIGTERM                                                 | yes, 61 Killed                          |
+  | SIGTERM to every pid in the tree (tree-kill, a harness stop) | **2 SIGTERMs, 7ms apart**: its own and the gate's forward | **no**: "Forced exit", `reports/` empty |
+  | SIGKILL to the gate                                          | none. Orphaned, it ran to the end holding the lock        | full report                             |
+
+  So the single-signal paths already save (stryker-js#5986 works for SIGTERM
+  as well as SIGINT). The loss is #6257's double signal, and **the gate's own
+  forward is the second one** whenever whatever stops the gate also signals
+  its descendants. That matches the dialed.run gate stopped 1h40m in. No gate-side
+  dedupe can see a signal sent straight to stryker, so the duplicate has to be
+  absorbed inside stryker. Phase 4 therefore does three things: the progress
+  plugin (already loaded into every locked run) ignores repeat stop signals
+  after the first; the gate sends each group exactly one SIGINT; and a
+  detached reaper SIGKILLs the group after `mutationLock.stopGraceSeconds`
+  (30) if it is still alive, on a forwarded signal and on the hook deadline
+  alike.
 
 - **The machine lock now wraps stryker itself, on every rung (2026-11-01,
   fixed; spec `docs/superpowers/specs/2026-11-01-mutation-lock-design.md`,

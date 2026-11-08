@@ -13,6 +13,10 @@
  * `@stryker-mutator/api` at runtime -- a plugin is the plain object stryker's
  * `declareClassPlugin` would return -- so it loads in any consumer that has
  * stryker, whatever else it has installed.
+ *
+ * It also keeps a SECOND stop signal from reaching stryker
+ * (`absorbRepeatStopSignals`): stryker saves a partial incremental report on
+ * the first, and exits without one on the second.
  */
 import { renameSync, rmSync, writeFileSync } from 'node:fs';
 import process from 'node:process';
@@ -35,6 +39,62 @@ interface TestedMutant {
 }
 
 /**
+The signals stryker's `UnexpectedExitHandler` treats as a stop.
+*/
+const STOP_SIGNALS = ['SIGABRT', 'SIGHUP', 'SIGINT', 'SIGTERM'] as const;
+
+/**
+The slice of `process` that signal handling needs.
+*/
+export interface SignalTarget {
+  on: (event: string, listener: () => void) => unknown;
+  off: (event: string, listener: () => void) => unknown;
+  removeAllListeners: (event: string) => unknown;
+}
+
+/**
+A repeat stop signal: stryker is already saving and exiting.
+*/
+function ignoreRepeatStop(): void {
+  // Deliberately nothing.
+}
+
+/**
+ * After the first stop signal, keep every later one from reaching stryker.
+ *
+ * Stryker 10 saves a partial incremental report when a run is stopped
+ * (stryker-js#5986), but a second signal while it shuts down forces an exit
+ * without one (#6257). Measured (plan.md, 2026-11-07): stopping a gate by
+ * signalling its whole process tree delivers exactly that -- stryker's own
+ * SIGTERM and the gate's forward, 7ms apart -- and a run stopped 1h40m in
+ * left `reports/` empty. Nothing outside stryker can tell the two apart.
+ *
+ * On the first stop signal every stop listener is replaced with one that does
+ * nothing, so repeats neither reach stryker nor fall to the default kill.
+ * Node hands that first signal to a copy of the listener list, so stryker's
+ * own handler still runs for it, saves, and exits. A run that hangs instead
+ * is the gate's to end: it SIGKILLs the group after
+ * `mutationLock.stopGraceSeconds`. Returns the function that undoes it.
+ */
+export function absorbRepeatStopSignals(target: SignalTarget): () => void {
+  const firstStop = (): void => {
+    for (const signal of STOP_SIGNALS) {
+      target.removeAllListeners(signal);
+      target.on(signal, ignoreRepeatStop);
+    }
+  };
+  for (const signal of STOP_SIGNALS) {
+    target.on(signal, firstStop);
+  }
+  return () => {
+    for (const signal of STOP_SIGNALS) {
+      target.off(signal, firstStop);
+      target.off(signal, ignoreRepeatStop);
+    }
+  };
+}
+
+/**
  * Everything the reporter touches outside itself, so tests can drive it with
  * a fake clock and writer. `write` must be atomic; `schedule` and `onExit`
  * return the function that undoes them.
@@ -47,6 +107,7 @@ export interface ProgressIo {
   remove: (filePath: string) => void;
   schedule: (callback: () => void, ms: number) => () => void;
   onExit: (listener: () => void) => () => void;
+  signals: SignalTarget;
 }
 
 /**
@@ -87,6 +148,7 @@ export function defaultIo(): ProgressIo {
         process.off('exit', listener);
       };
     },
+    signals: process,
   };
 }
 
@@ -142,6 +204,7 @@ export class ProgressReporter {
   #cancelFlush: (() => void) | undefined;
   #stopListening: (() => void) | undefined;
   #removeFile: (() => void) | undefined;
+  #stopAbsorbing: (() => void) | undefined;
   #done = false;
 
   constructor(io: ProgressIo) {
@@ -161,6 +224,7 @@ export class ProgressReporter {
     };
     this.#removeFile = remove;
     this.#stopListening = io.onExit(remove);
+    this.#stopAbsorbing = absorbRepeatStopSignals(io.signals);
   }
 
   #update(change: (holder: Holder) => void): void {
@@ -219,6 +283,8 @@ export class ProgressReporter {
     this.#cancelFlush = undefined;
     this.#stopListening?.();
     this.#stopListening = undefined;
+    this.#stopAbsorbing?.();
+    this.#stopAbsorbing = undefined;
     this.#removeFile?.();
   }
 }
