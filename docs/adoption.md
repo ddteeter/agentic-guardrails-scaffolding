@@ -221,6 +221,55 @@ green run that carries it is not the guarantee it looks like. `init` prints the
 same warning; the difference is that this one is in front of you every time,
 not once at scaffold time.
 
+## Mutating changed lines
+
+The gate hands stryker the lines a change touched, not every line of every
+file it touched. For each changed production file it reads the diff's hunks,
+from the same diff as the changed-file list (the working tree against the base
+branch, or the index for a staged commit), pads each hunk by a few lines on
+each side, and passes the result as `--mutate "src/a.ts:120-160"`, several
+ranges per file where there are several hunks. Before #155 a one-line change to
+a large component mutated all of it.
+
+- **A file new since the base is mutated whole**, and so is an untracked one.
+- **A file whose padded ranges cover more than `wholeFileAbove` of its lines is
+  mutated whole.** Ranges save little there and still miss the mutants across
+  their edges.
+- **Anything the gate cannot read goes whole too**: a file with no hunks, a path
+  git quotes, a file it cannot read, or a `git diff` that fails. Ranges only
+  ever narrow a file the gate was going to mutate; they never drop one.
+- **The project's `!` negations** are appended after the ranges, as before.
+- **Only in-range verdicts count.** Stryker writes every cached verdict into a
+  ranged run's report, out of range or not, so the gate keeps only the mutants
+  that lie wholly inside a planned range, the same rule stryker uses to choose
+  what to mutate.
+
+```json
+{
+  "mutationScope": { "lines": true, "padding": 5, "wholeFileAbove": 0.4 }
+}
+```
+
+Those are the defaults. `padding` is a whole number of lines from 0;
+`wholeFileAbove` is a share from 0 to 1, where `0` mutates every changed file
+whole and `1` never does. `"lines": false` turns ranges off and mutates every
+changed file whole, which is the behaviour before #155. A key of the wrong type
+or out of range keeps its default.
+
+The defaults were checked against three ranges of this repo's own history,
+using stryker's instrumenter on the modified (not new) files and leaving the
+whole-file threshold out. With five lines of padding a ranged run tested 4% to
+39% of the mutants a whole-file run would have, and included 83% to 97% of the
+mutants that overlap a changed line. Two lines of padding included 83% to 96%
+while testing 3% to 34%; ten included 89% to 99% while testing 6% to 47%.
+
+**Known gap.** Stryker mutates a node only when the whole node lies inside a
+range, so a mutant that spans the change, such as a `BlockStatement` mutant
+that empties the function a one-line edit sits in, is not tested at the gate.
+Padding catches the short ones. An edit can also change whether a mutant
+elsewhere in the same file is killed. CI's whole-scope mutation run is the
+backstop for both, as it is for the cross-file gap below.
+
 ## The mutation cache between runs
 
 Stryker runs with `--incremental` at every rung, so each run writes

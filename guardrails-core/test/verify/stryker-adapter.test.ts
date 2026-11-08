@@ -554,6 +554,67 @@ describe('parseStrykerJson: what the mutation actually did', () => {
 });
 
 /**
+ * The verdict of a line-ranged run (#155). Stryker folds every cached verdict
+ * back into the report it writes, in range or not (drift test 0.3), so a
+ * survivor outside the planned ranges reaches the report although this run
+ * never tested it. Each mutant is judged by its `location`, with stryker's own
+ * inclusion rule: the whole span inside one range.
+ */
+const span = (start: number, end: number) => ({
+  start: { line: start, column: 1 },
+  end: { line: end, column: 4 },
+});
+
+const survivor = (location: unknown, extra: object = {}) => ({
+  status: 'Survived',
+  mutatorName: 'EqualityOperator',
+  location,
+  ...extra,
+});
+
+describe('the verdict of a line-ranged run', () => {
+  const ranged = new Map([['src/a.ts', [{ start: 10, end: 20 }]]]);
+
+  it('reports only the survivors inside the planned ranges', () => {
+    const json = reportOf([
+      survivor(span(12, 12)),
+      survivor(span(2, 2)),
+      survivor(span(19, 21)),
+    ]);
+    expect(
+      parseStrykerJson(json, ['src/a.ts'], ranged).map(
+        (violation) => violation.line,
+      ),
+    ).toEqual([12]);
+  });
+
+  it('judges a mutant with no end by its start line', () => {
+    const json = reportOf([survivor(at(15)), survivor(at(25))]);
+    expect(
+      parseStrykerJson(json, ['src/a.ts'], ranged).map(
+        (violation) => violation.line,
+      ),
+    ).toEqual([15]);
+  });
+
+  it('keeps every verdict for a file mutated whole', () => {
+    const json = reportOf([survivor(span(2, 2))]);
+    expect(
+      parseStrykerJson(json, ['src/a.ts'], new Map([['src/b.ts', []]])),
+    ).toHaveLength(1);
+  });
+
+  it('does not count an unrun survivor outside the planned ranges', () => {
+    const unrun = { coveredBy: ['0'], testsCompleted: 0 };
+    const json = reportOf([
+      survivor(span(2, 2), unrun),
+      survivor(span(12, 12), unrun),
+    ]);
+    expect(unrunSurvivedMutants(json, ['src/a.ts'], ranged)).toBe(1);
+  });
+});
+
+/**
  * The test-suite half of the reuse question (#67).
  *
  * The cache's old scope rule asked only about its PRODUCTION files, so a

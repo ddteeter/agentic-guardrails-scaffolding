@@ -45,6 +45,7 @@ import {
 } from './gate-decision.js';
 import type { AnalyzerMode, Rung } from './verify/analyzer-policy.js';
 import type { CacheInvalidation } from './verify/incremental-cache.js';
+import type { MutationScopeSettings } from './verify/mutate-ranges.js';
 import {
   appendDecision,
   loadCleanTree,
@@ -108,6 +109,10 @@ export interface StopGateOptions {
    * The incremental-cache rule — see `VerifyOptions.mutationCacheInvalidation`.
    */
   mutationCacheInvalidation?: CacheInvalidation | undefined;
+  /**
+   * Line-range mutation — see `VerifyOptions.mutationScope`.
+   */
+  mutationScope?: MutationScopeSettings | undefined;
 
   /**
   Claude/Copilot says this Stop is a retry caused by an earlier block.
@@ -173,6 +178,10 @@ export interface CommitGateOptions {
    * The incremental-cache rule — see `VerifyOptions.mutationCacheInvalidation`.
    */
   mutationCacheInvalidation?: CacheInvalidation | undefined;
+  /**
+   * Line-range mutation — see `VerifyOptions.mutationScope`.
+   */
+  mutationScope?: MutationScopeSettings | undefined;
   /**
    * Which rung this gate is. `commit` by default; `gate --mode=push` and
    * `--mode=ci` pass their own.
@@ -681,6 +690,7 @@ export async function runStopGate(
     // mutant suppressed costs a sanction that has to be justified forever.
     analyzerRungs: options.analyzerRungs,
     mutationCacheInvalidation: options.mutationCacheInvalidation,
+    mutationScope: options.mutationScope,
     mutationLock: options.mutationLock,
   };
   // No open loop is the precondition: a fixer mid-flight has to have its
@@ -921,6 +931,7 @@ export async function runCommitGate(
     // Straight through, not conditionally spread — see the stop gate's note.
     analyzerRungs: options.analyzerRungs,
     mutationCacheInvalidation: options.mutationCacheInvalidation,
+    mutationScope: options.mutationScope,
     ...(options.changedScope && { changedScope: options.changedScope }),
     mutationLock: options.mutationLock,
   });

@@ -43,6 +43,7 @@ import {
   parseIncrementalCache,
   serializeIncrementalCache,
 } from '../../src/verify/incremental-cache.js';
+import { parseStrykerJson } from '../../src/verify/stryker-adapter.js';
 import { isUnderMutationRun } from './under-mutation.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -377,6 +378,14 @@ describe.skipIf(isUnderMutationRun(here))(
       expect(
         ranged.mutants.some((mutant) => mutant.file === 'src/unit.ts'),
       ).toBe(true);
+      // Which is why the gate's verdict filters by the planned range (#155):
+      // read the same report through it, and the folded-back survivor is gone.
+      const verdict = parseStrykerJson(
+        await readFile(reportPath(directory), 'utf8'),
+        ['src/tier.ts'],
+        new Map([['src/tier.ts', [{ start: 3, end: 5 }]]]),
+      );
+      expect(verdict, diagnostic).toEqual([]);
       // And nothing was lost from the cache: every mutant of the full run is
       // still there for the next one.
       const rangedCache = await readObserved(cachePath(directory));

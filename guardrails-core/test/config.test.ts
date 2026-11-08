@@ -783,6 +783,63 @@ describe('mutationCache', () => {
   });
 });
 
+function scopeOf(mutationScope: unknown): unknown {
+  writeFileSync(
+    path.join(root, 'guardrails.config.json'),
+    JSON.stringify({ mutationScope }),
+  );
+  return loadConfig(root).mutationScope;
+}
+
+describe('mutationScope', () => {
+  const defaults = { lines: true, padding: 5, wholeFileAbove: 0.4 };
+
+  it('mutates changed lines with five lines of padding by default', () => {
+    expect(defaultConfig().mutationScope).toEqual(defaults);
+  });
+
+  it('reads each key', () => {
+    expect(scopeOf({ lines: false, padding: 0, wholeFileAbove: 1 })).toEqual({
+      lines: false,
+      padding: 0,
+      wholeFileAbove: 1,
+    });
+  });
+
+  it('keeps the default for each key it is not given', () => {
+    expect(scopeOf({ padding: 12 })).toEqual({ ...defaults, padding: 12 });
+  });
+
+  it.each([['no'], [0], [null]])('keeps lines on for %j', (lines) => {
+    expect(scopeOf({ lines })).toEqual(defaults);
+  });
+
+  it.each([[-1], [2.5], ['5'], [Infinity]])(
+    'keeps the default padding for %j',
+    (padding) => {
+      expect(scopeOf({ padding })).toEqual(defaults);
+    },
+  );
+
+  it.each([[-0.1], [1.1], ['0.4'], [null]])(
+    'keeps the default wholeFileAbove for %j',
+    (wholeFileAbove) => {
+      expect(scopeOf({ wholeFileAbove })).toEqual(defaults);
+    },
+  );
+
+  it('accepts a share of zero, which mutates every changed file whole', () => {
+    expect(scopeOf({ wholeFileAbove: 0 })).toEqual({
+      ...defaults,
+      wholeFileAbove: 0,
+    });
+  });
+
+  it('keeps the defaults when the section is not an object', () => {
+    expect(scopeOf(false)).toEqual(defaults);
+  });
+});
+
 describe('denyForegroundWaits and foregroundSleepLimitSeconds', () => {
   it('denies foreground waits by default, with a two-minute sleep limit', () => {
     expect(defaultConfig().denyForegroundWaits).toBe(true);
