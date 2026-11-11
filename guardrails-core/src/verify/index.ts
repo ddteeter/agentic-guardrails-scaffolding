@@ -113,6 +113,7 @@ import { fetchSeed, nodeSeedSeams, type SeedSettings } from './seed-cache.js';
 import {
   isStrykerReportJson,
   parseStrykerJson,
+  reportedFiles,
   unrunSurvivedMutants,
 } from './stryker-adapter.js';
 import { parseTscOutput } from './tsc-adapter.js';
@@ -1468,54 +1469,15 @@ export function strykerMutatePositives(configJson: string): string[] {
 }
 
 /**
- * Glob syntax this cannot model, so a negation containing any of it is read as
- * excluding EVERYTHING. Braces, character classes, extglobs, `?`, and the `:`
- * of a mutation range (`src/a.ts:1-10`, which negates lines rather than the
- * file) are stryker's to resolve.
- */
-const UNMODELLED_GLOB_SYNTAX = /[{}[\]()?+:!@]/;
-
-/**
- * Escapes everything regex-special except `*`, which the caller expands.
- */
-function escapeGlobLiteral(text: string): string {
-  return text.replaceAll(/[.+?^${}()|[\]\\]/g, String.raw`\$&`);
-}
-
-/** `*` spans one path segment. `**` is handled by the caller, which alone
- *  knows whether it is the last segment. */
-function globSegmentToPattern(segment: string): string {
-  return segment
-    .split('*')
-    .map((part) => escapeGlobLiteral(part))
-    .join('[^/]*');
-}
-
-/**
- * A negation entry as a predicate over repo-relative file paths.
+ * The glob a negation entry excludes: its `!` and any mutation range removed.
  *
- * Deliberately not a glob library, and deliberately biased: the ONE direction
- * this may err in is matching too much. See `applyMutateNegations`.
+ * The range goes because stryker drops it too. For a NEGATED pattern
+ * `ProjectReader.resolveMutateFiles` strips the range and sets every file the
+ * rest matches to `mutate: false`, so `!src/a.ts:1-10` excludes all of
+ * `src/a.ts`, not ten lines of it.
  */
-function negationMatcher(negation: string): (file: string) => boolean {
-  const body = negation.startsWith('!') ? negation.slice(1) : negation;
-  if (body.length === 0 || UNMODELLED_GLOB_SYNTAX.test(body)) {
-    return () => true;
-  }
-  const segments = body.split('/');
-  const source = segments
-    .map((segment, index) => {
-      const isLast = index === segments.length - 1;
-      if (segment === '**') {
-        // Zero-or-more whole segments when more follow, so `src/**/*.ts`
-        // covers `src/a.ts` the way minimatch does; anything at all when last.
-        return isLast ? '.*' : '(?:[^/]+/)*';
-      }
-      return globSegmentToPattern(segment) + (isLast ? '' : '/');
-    })
-    .join('');
-  const pattern = new RegExp(`^${source}$`);
-  return (file) => pattern.test(file);
+function negatedGlob(negation: string): string {
+  return stripMutationRange(negation.slice(1));
 }
 
 /**
@@ -1523,29 +1485,43 @@ function negationMatcher(negation: string): (file: string) => boolean {
  * will actually mutate, with the project's own `!` exclusions applied.
  *
  * `--mutate` still receives the full changed set plus the negations — stryker
- * resolves them itself, and it is the authority. This is a SEPARATE, more
- * conservative reading used for one decision only: whether a cache from a
+ * resolves them itself, and it is the authority. This is a second reading of
+ * the same patterns, used for one decision only: whether a cached file from a
  * previous run may be kept (`filterToScope`, via `prepareIncrementalCache`).
  *
- * That narrow use is what licenses the bias. Over-matching a pattern shrinks
- * the allowed set and drops a cached file the run could have reused.
- * Under-matching would let a cached negated file survive, and stryker folds
- * its verdicts into the report it writes — reproducing #56,
- * where a file the project excluded raised violations no test could fix and no
- * grant in `guardrails.config.json` could name. So anything unreadable
- * excludes everything.
+ * Both ways of getting it wrong cost something. Under-matching lets a cached
+ * negated file survive, and stryker folds its verdicts into the report it
+ * writes — #56, where a file the project excluded raised violations no test
+ * could fix and no grant in `guardrails.config.json` could name. Over-matching
+ * drops a cached file the run could have reused, and when the pattern
+ * over-matches EVERYTHING the cache is deleted before every run and the gate
+ * goes cold without a word (#168: a hand-rolled matcher answered "excludes
+ * every file" for any brace, extglob, character class or `?`).
+ *
+ * So this neither under- nor over-reads on purpose: it matches with
+ * `path.matchesGlob`, resolved against `repoRoot` exactly as `applyMutateScope`
+ * resolves the positive half and as stryker's `FileMatcher` resolves both.
+ * `test/drift/stryker-scope.test.ts` runs real stryker over negations in each
+ * grammar and is what notices the two drifting apart. A glob neither can parse
+ * (`!src/{a`, the fragment stryker's comma splitter leaves of a brace list —
+ * see `strykerMutateNegations`) and a bare `!` exclude nothing, in both. And
+ * if the readings disagree anyway, `runStryker` warns after the run, naming
+ * each file stryker mutated that this had excluded.
  *
  * Deliberately NOT used to filter the report (`parseStrykerJson` still scopes
- * by the full changed set). There the fail-safe direction inverts: an
- * over-matching pattern would silently drop real violations, and a mutation
- * gate that under-reports is the one failure this pack exists to prevent.
+ * by the full changed set). There an over-matching pattern would silently drop
+ * real violations, and a mutation gate that under-reports is the one failure
+ * this pack exists to prevent.
  */
 export function applyMutateNegations(
   files: readonly string[],
   negations: readonly string[],
+  repoRoot: string,
 ): string[] {
-  const matchers = negations.map((negation) => negationMatcher(negation));
-  return files.filter((file) => matchers.every((matches) => !matches(file)));
+  const globs = negations.map((negation) => negatedGlob(negation));
+  return files.filter((file) =>
+    globs.every((glob) => !isFileInGlob(file, glob, repoRoot)),
+  );
 }
 
 /**
@@ -1561,11 +1537,11 @@ export function applyMutateNegations(
  * indistinguishable to a reviewer. Intersecting here restores the negations to
  * meaning one thing.
  *
- * The bias is the opposite of the negation filter's, because the costs are.
- * Over-matching a negation rejects an incremental cache and costs a cold run;
- * under-matching a POSITIVE glob drops a file the project declared in scope
- * from the mutation gate silently, which is the under-reporting this pack
- * exists to prevent. So every unreadable case widens: an empty `positives` —
+ * Where the negation filter aims to match exactly, this one is biased, because
+ * its costs are lopsided. Under-matching a POSITIVE glob drops a file the
+ * project declared in scope from the mutation gate silently, which is the
+ * under-reporting this pack exists to prevent. So every unreadable case
+ * widens: an empty `positives` —
  * no config, an unparseable one, or no `mutate` key — keeps every file, which
  * is the behaviour that shipped before this existed.
  *
@@ -1790,6 +1766,7 @@ export async function strykerScope(
   const outOfScope = applyMutateNegations(
     production.filter((file) => !inScope.includes(file)),
     negations,
+    repoRoot,
   ).map((file) => strykerOutOfScopeViolation(file));
   return { inScope, outOfScope, config, negations };
 }
@@ -1849,6 +1826,10 @@ async function runStryker(
 
   await removeFile(path.join(repoRoot, reportPath));
   const seed = options.mutationCacheSeed;
+  const warn = options.progress ?? writeStderrLine;
+  // The project's own `!` exclusions applied, so a cached file this run will
+  // not mutate cannot survive — see `applyMutateNegations`.
+  const cacheFiles = applyMutateNegations(inScope, negations, repoRoot);
   await prepareIncrementalCache(
     {
       readFile,
@@ -1863,16 +1844,14 @@ async function runStryker(
             nodeSeedSeams({
               exec,
               repoRoot,
-              warn: options.progress ?? writeStderrLine,
+              warn,
             }),
             seed,
             fingerprint,
           )),
     },
     {
-      // The project's own `!` exclusions applied, so a cached file this run
-      // will not mutate cannot survive — see `applyMutateNegations`.
-      mutateFiles: applyMutateNegations(inScope, negations),
+      mutateFiles: cacheFiles,
       // The whole change set: the rewriter reads the tests and test-support
       // files in it, which `candidates` above filtered OUT of the mutate set.
       changedFiles: files,
@@ -1927,7 +1906,7 @@ async function runStryker(
         },
       }),
     cwd: repoRoot,
-    progress: options.progress ?? writeStderrLine,
+    progress: warn,
   });
   if (locked.kind === 'deferred') {
     return [
@@ -1949,6 +1928,8 @@ async function runStryker(
     inScope,
     outOfScope,
     lineRanges,
+    cacheExcluded: inScope.filter((file) => !cacheFiles.includes(file)),
+    warn,
   });
 }
 
@@ -1964,6 +1945,40 @@ interface StrykerRunContext {
   The planned ranges of the files mutated by line range.
   */
   lineRanges: ReadonlyMap<string, readonly LineRange[]>;
+  /**
+  The in-scope files `applyMutateNegations` kept out of the incremental cache.
+  */
+  cacheExcluded: string[];
+  warn: (line: string) => void;
+}
+
+/**
+ * Says so when stryker mutated a file guardrails had read as negated (#168).
+ *
+ * Two readers resolve one `mutate` array: stryker decides what is mutated,
+ * `applyMutateNegations` decides what the incremental cache may hold. When the
+ * second excludes a file the first mutates, that file's verdicts are dropped
+ * before every run and it is re-tested from cold, while the gate still passes.
+ * The drift guard holds the two together for the grammar it knows; this is
+ * what speaks up for a pattern it does not.
+ */
+function warnOfMutatedExclusions(
+  report: string,
+  { cacheExcluded, warn }: StrykerRunContext,
+): void {
+  const mutated = new Set(reportedFiles(report));
+  for (const file of cacheExcluded) {
+    if (!mutated.has(file)) {
+      continue;
+    }
+    warn(
+      `guardrails: stryker mutated ${file}, which guardrails read as ` +
+        `excluded by a "!" pattern in the "mutate" array of ` +
+        `stryker.conf.json. Its verdicts are not cached, so every run ` +
+        `re-tests it from cold. Report the pattern at ` +
+        `https://github.com/ddteeter/agentic-guardrails-scaffolding/issues.`,
+    );
+  }
 }
 
 /**
@@ -1996,6 +2011,7 @@ async function strykerRunVerdict(
   // findings are the answer no matter what the exit code was -- unless the
   // verdicts in it were never produced by a test run at all.
   if (isStrykerReportJson(report)) {
+    warnOfMutatedExclusions(report, context);
     const unrun = unrunSurvivedMutants(report, inScope, lineRanges);
     if (unrun > 0) {
       return [...outOfScope, strykerUnrunMutantsViolation(unrun)];

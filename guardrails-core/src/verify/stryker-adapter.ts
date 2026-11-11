@@ -209,6 +209,13 @@ function parseReport(
 }
 
 /**
+ * The files a report holds results for, or `[]` for one this cannot read.
+ */
+export function reportedFiles(reportJson: string): string[] {
+  return Object.keys(parseReport(reportJson)?.files ?? {});
+}
+
+/**
  * Planned line ranges per file, for a line-ranged run (#155). A file with no
  * entry was mutated whole, and keeps every verdict.
  */

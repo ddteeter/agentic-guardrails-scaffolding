@@ -1,3 +1,34 @@
 ---
 version: unreleased
 ---
+
+# Unreleased — what changed for an agent
+
+## Behaviour that changed
+
+- **A `!` mutate pattern with braces, an extglob, a character class or `?` no
+  longer disables the mutation cache (#168).** Guardrails read any such
+  negation in `stryker.conf.json` as excluding every file. No file was then
+  allowed in `reports/stryker-incremental.json`, so the cache was deleted
+  before each run, `mutationCache.seedFrom` never ran, and every gate ran
+  stryker cold while still passing. Negations are now matched as stryker
+  matches them, and each excludes only the files it names.
+- **A negation with a line range excludes the whole file from the cache**, as
+  stryker excludes the whole file from mutation: `!src/a.ts:1-10` drops
+  `src/a.ts`, not every file. A bare `!` excludes nothing.
+- **A new stderr line names a file stryker mutated that guardrails had read as
+  negated.** It means the two disagree about a pattern, and that file is
+  re-tested from cold on every run. It does not fail the gate. Report the
+  pattern if you see it.
+
+## Instructions this supersedes
+
+- Nothing in guardrails' own guidance. If a negation in your `mutate` array
+  was rewritten without braces only to get warm gates back, either form works
+  now.
+
+## What to wire
+
+- Nothing. If your push gate has been slow since 0.13.0 and its stryker output
+  said `No incremental result file found` on every run, expect the second run
+  after upgrading to be warm.
