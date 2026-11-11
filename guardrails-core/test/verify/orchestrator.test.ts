@@ -965,11 +965,12 @@ describe('stryker honours the project’s own mutate negations', () => {
  * The negation filter that decides which changed files an incremental cache is
  * allowed to hold.
  *
- * Its ONE safe failure direction is over-matching: a pattern read as excluding
- * more than it does shrinks the allowed set, which rejects the cache and takes
- * a cold run. Under-matching would let a cache holding a file the project
+ * Both failure directions cost something, so it aims to match exactly what
+ * stryker matches. Under-matching would let a cache holding a file the project
  * negated survive, and stryker folds such a cache's verdicts into the report —
  * raising violations on a file no test can fix and no grant can name (#56).
+ * Over-matching drops cached files the run could have reused, and a pattern
+ * read as excluding EVERYTHING deletes the cache before every run (#168).
  * Every case below pins one of those two directions.
  */
 /**
@@ -1275,24 +1276,31 @@ describe('canReportPerTestCoverage', () => {
   });
 });
 
+/**
+Every case resolves against the same root, as `applyMutateScope` does.
+*/
+function excluding(files: string[], negations: string[]): string[] {
+  return applyMutateNegations(files, negations, '/repo');
+}
+
 describe('applyMutateNegations', () => {
   it('keeps every file when the config negates nothing', () => {
-    expect(applyMutateNegations(['src/a.ts', 'src/b.ts'], [])).toEqual([
+    expect(excluding(['src/a.ts', 'src/b.ts'], [])).toEqual([
       'src/a.ts',
       'src/b.ts',
     ]);
   });
 
   it('drops a file a literal negation names', () => {
-    expect(
-      applyMutateNegations(['src/a.ts', 'src/b.ts'], ['!src/a.ts']),
-    ).toEqual(['src/b.ts']);
+    expect(excluding(['src/a.ts', 'src/b.ts'], ['!src/a.ts'])).toEqual([
+      'src/b.ts',
+    ]);
   });
 
   it('matches `*` within one path segment only', () => {
-    expect(
-      applyMutateNegations(['src/a.ts', 'src/nested/b.ts'], ['!src/*.ts']),
-    ).toEqual(['src/nested/b.ts']);
+    expect(excluding(['src/a.ts', 'src/nested/b.ts'], ['!src/*.ts'])).toEqual([
+      'src/nested/b.ts',
+    ]);
   });
 
   it('matches `**` across segments, including none at all', () => {
@@ -1300,50 +1308,83 @@ describe('applyMutateNegations', () => {
     // Reading `**` as "at least one segment" would leave `src/a.ts` in the
     // allowed set and let a cache holding it through.
     expect(
-      applyMutateNegations(
-        ['src/a.ts', 'src/deep/a.ts', 'other/a.ts'],
-        ['!src/**/*.ts'],
-      ),
+      excluding(['src/a.ts', 'src/deep/a.ts', 'other/a.ts'], ['!src/**/*.ts']),
     ).toEqual(['other/a.ts']);
   });
 
   it('matches a trailing `**` against everything beneath it', () => {
+    expect(excluding(['src/lib/a.ts', 'src/app.ts'], ['!src/lib/**'])).toEqual([
+      'src/app.ts',
+    ]);
+  });
+
+  it('reads braces, `?`, character classes and extglobs as stryker does (#168)', () => {
+    // These used to be "syntax it cannot read", answered by excluding EVERY
+    // file — which emptied the cache-allowed set, deleted the incremental
+    // cache on every run, and left the gate silently cold. Each now excludes
+    // exactly what it names.
+    const files = ['src/a.ts', 'src/b.ts', 'src/c.ts'];
+    expect(excluding(files, ['!src/{a,b}.ts'])).toEqual(['src/c.ts']);
+    expect(excluding(files, ['!src/[ab].ts'])).toEqual(['src/c.ts']);
+    expect(excluding(files, ['!src/!(c).ts'])).toEqual(['src/c.ts']);
+    expect(excluding(['src/a.ts', 'src/ab.ts'], ['!src/?.ts'])).toEqual([
+      'src/ab.ts',
+    ]);
+  });
+
+  it('reads a brace with no comma as the literal file name it is (#168)', () => {
+    // dialed.run's trigger: a TanStack route file whose NAME holds braces.
+    // minimatch does not expand a one-item brace, so this negates one file.
     expect(
-      applyMutateNegations(['src/lib/a.ts', 'src/app.ts'], ['!src/lib/**']),
-    ).toEqual(['src/app.ts']);
+      excluding(
+        ['src/routes/@{$handle}.tsx', 'src/routes/index.tsx', 'src/app.ts'],
+        ['!src/routes/@{$handle}.tsx'],
+      ),
+    ).toEqual(['src/routes/index.tsx', 'src/app.ts']);
   });
 
-  it('drops every file when a negation uses syntax it cannot read', () => {
-    // Braces, character classes and extglobs are stryker's to resolve, not
-    // ours. Answering "excludes everything" costs a cold mutation run;
-    // answering "excludes nothing" costs a violation no fixer can resolve.
-    expect(
-      applyMutateNegations(['src/a.ts', 'src/b.ts'], ['!src/{a,b}.ts']),
-    ).toEqual([]);
-    expect(applyMutateNegations(['src/a.ts'], ['!src/?.ts'])).toEqual([]);
+  it('keeps every file when a negation is a glob nothing can parse', () => {
+    // `!src/{a` is what stryker's comma splitter leaves of `!src/{a,b}.ts`
+    // (see `strykerMutateNegations`). It matches nothing there and nothing
+    // here: a negation that does not apply, never one that applies to all.
+    expect(excluding(['src/a.ts', 'src/b.ts'], ['!src/{a'])).toEqual([
+      'src/a.ts',
+      'src/b.ts',
+    ]);
   });
 
-  it('drops every file when a negation strips to an empty body (a bare "!")', () => {
-    // Pins the LEFT half of `body.length === 0 || UNMODELLED_GLOB_SYNTAX
-    // .test(body)`, which the unmodelled-syntax cases above never exercise —
-    // "!" alone has no brace, bracket, or other unmodelled character, so it
-    // reaches the guard through `body.length === 0` and nothing else. Without
-    // this, a mutant that forces the whole `if` to `false` survives: with the
-    // guard skipped, an empty body still builds a regex (`^$`), which matches
-    // no real path, so every file is wrongly kept instead of excluded.
-    expect(applyMutateNegations(['src/a.ts', 'src/b.ts'], ['!'])).toEqual([]);
+  it('keeps every file when a negation strips to an empty body (a bare "!")', () => {
+    // Stryker resolves the empty pattern to the working directory itself,
+    // which is no file's path. It used to be read as excluding everything.
+    expect(excluding(['src/a.ts', 'src/b.ts'], ['!'])).toEqual([
+      'src/a.ts',
+      'src/b.ts',
+    ]);
   });
 
-  it('drops every file when a negation carries a mutation range', () => {
-    // `!src/a.ts:1-10` negates LINES, so the file is still mutated and a
-    // cached verdict for it may be partial. Refusing the cache is the honest
-    // answer to a scope this cannot model.
-    expect(applyMutateNegations(['src/a.ts'], ['!src/a.ts:1-10'])).toEqual([]);
+  it('drops the whole file a negation with a mutation range names, and only it', () => {
+    // Stryker strips the range from a NEGATED pattern and sets every file it
+    // matches to `mutate: false` (`ProjectReader.resolveMutateFiles`), so
+    // `!src/a.ts:1-10` excludes all of `src/a.ts`. Reading the range as part
+    // of the path would match nothing and let a cached `src/a.ts` through.
+    expect(excluding(['src/a.ts', 'src/b.ts'], ['!src/a.ts:1-10'])).toEqual([
+      'src/b.ts',
+    ]);
+    expect(excluding(['src/a.ts', 'src/b.ts'], ['!src/a.ts:1:2-10:4'])).toEqual(
+      ['src/b.ts'],
+    );
+  });
+
+  it('does not let `*` match a dotfile, as stryker does not', () => {
+    // `dot: false` for mutate patterns on both sides.
+    expect(excluding(['src/.hidden.ts', 'src/a.ts'], ['!src/*.ts'])).toEqual([
+      'src/.hidden.ts',
+    ]);
   });
 
   it('applies every negation, not just the first', () => {
     expect(
-      applyMutateNegations(
+      excluding(
         ['src/a.ts', 'src/b.ts', 'src/c.ts'],
         ['!src/a.ts', '!src/c.ts'],
       ),
@@ -1352,9 +1393,18 @@ describe('applyMutateNegations', () => {
 
   it('treats a dot in a pattern as a literal, not as any character', () => {
     // `src/a.ts` must not be excluded by a negation for `src/axts`.
-    expect(applyMutateNegations(['src/a.ts'], ['!src/axts'])).toEqual([
-      'src/a.ts',
-    ]);
+    expect(excluding(['src/a.ts'], ['!src/axts'])).toEqual(['src/a.ts']);
+  });
+
+  it('resolves both sides against the repo root it is given', () => {
+    // A pattern that climbs out of the root and back in names the same file
+    // only when the two are resolved against the SAME root.
+    expect(
+      applyMutateNegations(['src/a.ts'], ['!../repo/src/a.ts'], '/repo'),
+    ).toEqual([]);
+    expect(
+      applyMutateNegations(['src/a.ts'], ['!../repo/src/a.ts'], '/elsewhere'),
+    ).toEqual(['src/a.ts']);
   });
 });
 
@@ -3670,6 +3720,98 @@ describe('stryker fails open twice (defect 3)', () => {
         readFile: cacheRepoReader(reusableCache, config),
       }),
     ).toBe('removed');
+  });
+
+  it.each([
+    '!guardrails-core/src/routes/@{$handle}.tsx',
+    '!guardrails-core/src/{bar,baz}.ts',
+    '!guardrails-core/src/ba?.ts',
+    '!guardrails-core/src/[xy].ts',
+    '!guardrails-core/src/!(foo).ts',
+    '!guardrails-core/src/bar.ts:1-10',
+    '!',
+  ])(
+    'keeps the cache when the config negates some OTHER file with %s (#168)',
+    async (negation) => {
+      // Each of these was once "syntax it cannot read" and excluded every
+      // file, so the cache-allowed set emptied, the cache was deleted before
+      // every run, and the gate ran cold while still passing. A negation that
+      // does not name the changed file must leave its cached kill alone.
+      const { exec } = execWithStryker({ stdout: '', stderr: '', code: 0 });
+      const config = JSON.stringify({
+        testRunner: 'vitest',
+        mutate: ['guardrails-core/src/**', negation],
+      });
+      expect(
+        await cacheOutcome({
+          exec,
+          readFile: cacheRepoReader(reusableCache, config),
+        }),
+      ).toEqual({ 'guardrails-core/src/foo.ts': ['Killed'] });
+    },
+  );
+
+  /** `runVerify` over a config negating `negation`, with stryker reporting
+   *  mutants for `reported`; answers the progress lines it emitted. */
+  async function progressLines(
+    negation: string,
+    reported: string[],
+  ): Promise<string[]> {
+    const { exec } = execWithStryker({ stdout: '', stderr: '', code: 0 });
+    const config = JSON.stringify({
+      testRunner: 'vitest',
+      mutate: ['guardrails-core/src/**', negation],
+    });
+    const reader = cacheRepoReader(reusableCache, config);
+    const report = JSON.stringify({
+      schemaVersion: '1.0',
+      files: Object.fromEntries(
+        reported.map((file) => [
+          file,
+          { language: 'typescript', source: '', mutants: [] },
+        ]),
+      ),
+    });
+    const lines: string[] = [];
+    await cacheOutcome({
+      exec,
+      readFile: (filePath) =>
+        filePath.endsWith('mutation.json')
+          ? Promise.resolve(report)
+          : reader(filePath),
+      progress: (line) => {
+        lines.push(line);
+      },
+    });
+    return lines;
+  }
+
+  it('warns when stryker mutated a file guardrails had read as negated (#168)', async () => {
+    // The two readings of one `mutate` array have diverged: guardrails kept
+    // the file out of the cache, stryker mutated it anyway. That is a file
+    // re-tested cold on every run, and nothing else would ever say so.
+    const lines = await progressLines('!guardrails-core/src/foo.ts', [
+      'guardrails-core/src/foo.ts',
+    ]);
+    expect(lines).toEqual([
+      'guardrails: stryker mutated guardrails-core/src/foo.ts, which ' +
+        'guardrails read as excluded by a "!" pattern in the "mutate" array ' +
+        'of stryker.conf.json. Its verdicts are not cached, so every run ' +
+        're-tests it from cold. Report the pattern at ' +
+        'https://github.com/ddteeter/agentic-guardrails-scaffolding/issues.',
+    ]);
+  });
+
+  it('does not warn when stryker left the negated file alone', async () => {
+    expect(await progressLines('!guardrails-core/src/foo.ts', [])).toEqual([]);
+  });
+
+  it('does not warn about a mutated file the cache was allowed to hold', async () => {
+    expect(
+      await progressLines('!guardrails-core/src/bar.ts', [
+        'guardrails-core/src/foo.ts',
+      ]),
+    ).toEqual([]);
   });
 
   it('drops a cached file this run does not mutate and keeps the rest', async () => {

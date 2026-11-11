@@ -56,12 +56,25 @@ const strykerBin = path.join(repoRoot, 'node_modules', '.bin', 'stryker');
  * The fixture's `mutate` array, exercising every construct the two matchers
  * could disagree about: a brace expansion, an extglob, `**` spanning nested
  * directories, a bare path, and a negation.
+ *
+ * Then a negation in each grammar `applyMutateNegations` once answered with
+ * "excludes every file" (#168): a one-item brace that is really a file name,
+ * `?`, a character class, an extglob, and a mutation range — which stryker
+ * strips from a negated pattern, excluding the whole file. Each sits beside a
+ * sibling it must NOT exclude, so over-matching fails as loudly as
+ * under-matching. No comma-bearing brace: `strykerMutateNegations` splits on
+ * commas as stryker's CLI does, and this fixture reaches stryker by config.
  */
 const MUTATE = [
   'src/**/*.{ts,tsx}',
   'lib/!(vendor).ts',
   'tools/one.ts',
   '!src/generated/**',
+  '!src/routes/@{$handle}.tsx',
+  '!src/question/?.ts',
+  '!src/class/[ab].ts',
+  '!src/extglob/!(keep).ts',
+  '!src/ranged.ts:1-1',
 ];
 
 /**
@@ -79,6 +92,15 @@ const SOURCES = [
   'src/nested/deep/c.ts',
   'src/generated/schema.ts',
   'src/notes.md',
+  'src/routes/@{$handle}.tsx',
+  'src/routes/index.tsx',
+  'src/question/x.ts',
+  'src/question/xy.ts',
+  'src/class/a.ts',
+  'src/class/c.ts',
+  'src/extglob/keep.ts',
+  'src/extglob/drop.ts',
+  'src/ranged.ts',
   'lib/keep.ts',
   'lib/vendor.ts',
   'lib/nested/skipped.ts',
@@ -183,8 +205,12 @@ describe.skipIf(isUnderMutationRun(here))(
       expect(theirs, diagnostic).toEqual([
         'lib/keep.ts',
         'src/a.ts',
+        'src/class/c.ts',
+        'src/extglob/keep.ts',
         'src/nested/b.tsx',
         'src/nested/deep/c.ts',
+        'src/question/xy.ts',
+        'src/routes/index.tsx',
         'tools/one.ts',
       ]);
 
@@ -196,6 +222,7 @@ describe.skipIf(isUnderMutationRun(here))(
           directory,
         ),
         strykerMutateNegations(configJson),
+        directory,
       ).toSorted((left, right) => left.localeCompare(right));
 
       expect(

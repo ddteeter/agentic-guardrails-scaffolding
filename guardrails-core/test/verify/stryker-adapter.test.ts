@@ -6,6 +6,7 @@ import {
   haveTestsChangedSinceCache,
   isStrykerReportJson,
   parseStrykerJson,
+  reportedFiles,
   unrunSurvivedMutants,
 } from '../../src/verify/stryker-adapter.js';
 import {
@@ -283,6 +284,25 @@ const at = (line: number) => ({ start: { line } });
 function reportOf(mutants: unknown[]): string {
   return JSON.stringify({ files: { 'src/a.ts': { mutants } } });
 }
+
+describe('reportedFiles', () => {
+  it('names every file the report holds results for', () => {
+    const file = { language: 'typescript', source: '', mutants: [] };
+    expect(
+      reportedFiles(
+        JSON.stringify({ files: { 'src/a.ts': file, 'src/b.ts': file } }),
+      ),
+    ).toEqual(['src/a.ts', 'src/b.ts']);
+  });
+
+  it('names none for a report it cannot read', () => {
+    // Not reachable through `runStryker`, which asks only of a report it has
+    // already parsed, so it is pinned here: a caller that asks first must get
+    // an empty list rather than a throw.
+    expect(reportedFiles('not json')).toEqual([]);
+    expect(reportedFiles('{"files":"nope"}')).toEqual([]);
+  });
+});
 
 describe('unrunSurvivedMutants', () => {
   it('counts a Survived mutant whose covering tests never ran', () => {
