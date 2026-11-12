@@ -14,7 +14,9 @@ supersedes:
   so `gh pr checks` showed nothing wrong and ship reported `green`. Ship now
   also lists the workflow runs on the commit it pushed. A run that ended
   `startup_failure`, `failure`, `timed_out` or `cancelled` is `ci-red`, and
-  `failing` names it as `<workflow> (<conclusion>)`.
+  `failing` names it as `<workflow> (<conclusion>)`. A cancelled run does not
+  count when another run of the same workflow on that commit was not
+  cancelled, which is what `concurrency: cancel-in-progress` leaves behind.
 - **A required check that never reported is `ci-red`.** Ship reads the base
   branch's required status checks, from rulesets and from classic branch
   protection. If one has no check run once the wait for checks to register

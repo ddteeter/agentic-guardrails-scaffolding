@@ -439,6 +439,7 @@ async function requiredChecks(options: ShipOptions): Promise<string[]> {
       gh(options, [
         'api',
         [REPOSITORY_API, source, options.baseBranch].join('/'),
+        '--paginate',
         '--jq',
         filter,
       ]),
@@ -453,6 +454,23 @@ async function requiredChecks(options: ShipOptions): Promise<string[]> {
 type Verdict = Omit<Outcome, 'pr' | 'url'>;
 
 /**
+ * The runs that did not pass. A cancelled run is left out when another run of
+ * its workflow on the commit was not cancelled: `concurrency:
+ * cancel-in-progress` leaves the run it replaced behind, and the run that
+ * replaced it is the one that says how the workflow went.
+ */
+function redRuns(runs: readonly Listed[]): Listed[] {
+  const outlived = new Set(
+    runs.filter((run) => run.outcome !== 'cancelled').map((run) => run.name),
+  );
+  return runs.filter(
+    (run) =>
+      RED_CONCLUSIONS.has(run.outcome) &&
+      !(run.outcome === 'cancelled' && outlived.has(run.name)),
+  );
+}
+
+/**
 The red checks by name, then the red runs by workflow and conclusion.
 */
 function failingOf(evidence: Evidence): string[] {
@@ -460,9 +478,7 @@ function failingOf(evidence: Evidence): string[] {
     ...evidence.checks
       .filter((check) => RED_BUCKETS.has(check.outcome))
       .map((check) => check.name),
-    ...evidence.runs
-      .filter((run) => RED_CONCLUSIONS.has(run.outcome))
-      .map((run) => `${run.name} (${run.outcome})`),
+    ...redRuns(evidence.runs).map((run) => `${run.name} (${run.outcome})`),
   ];
 }
 

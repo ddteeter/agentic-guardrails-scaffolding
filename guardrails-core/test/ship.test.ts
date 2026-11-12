@@ -914,6 +914,51 @@ describe('ship: workflow runs and required checks (#172)', () => {
     },
   );
 
+  it.each(['success', ''])(
+    'does not count a cancelled run that a later "%s" run of its workflow replaced',
+    async (conclusion) => {
+      // `concurrency: cancel-in-progress` leaves the cancelled run on the
+      // commit after the run that replaced it has passed.
+      const { status } = await shipped({
+        'gh run list': runs(
+          { workflowName: 'CI', conclusion: 'cancelled' },
+          { workflowName: 'CI', conclusion },
+        ),
+      });
+      expect(status).toMatchObject({ state: 'green', failing: [] });
+    },
+  );
+
+  it('counts a cancelled run that only another workflow outlived', async () => {
+    const { status } = await shipped({
+      'gh run list': runs(
+        { workflowName: 'CI', conclusion: 'cancelled' },
+        { workflowName: 'Docs', conclusion: 'success' },
+      ),
+    });
+    expect(status.failing).toEqual(['CI (cancelled)']);
+  });
+
+  it('counts a cancelled run when every run of its workflow was cancelled', async () => {
+    const { status } = await shipped({
+      'gh run list': runs(
+        { workflowName: 'CI', conclusion: 'cancelled' },
+        { workflowName: 'CI', conclusion: 'cancelled' },
+      ),
+    });
+    expect(status.failing).toEqual(['CI (cancelled)', 'CI (cancelled)']);
+  });
+
+  it('names the failed run, not the cancelled one it replaced', async () => {
+    const { status } = await shipped({
+      'gh run list': runs(
+        { workflowName: 'CI', conclusion: 'cancelled' },
+        { workflowName: 'CI', conclusion: 'failure' },
+      ),
+    });
+    expect(status.failing).toEqual(['CI (failure)']);
+  });
+
   it('names failing checks before failing runs', async () => {
     const { status } = await shipped({
       'gh pr checks 42 --json': ok(
@@ -973,7 +1018,7 @@ describe('ship: workflow runs and required checks (#172)', () => {
     expect(delays).toHaveLength(8);
     expect(calls.find((call) => call.line.startsWith(RULES))).toEqual({
       line:
-        `${RULES} --jq ` +
+        `${RULES} --paginate --jq ` +
         '.[] | select(.type == "required_status_checks") | ' +
         '.parameters.required_status_checks[].context',
       cwd: root,
@@ -989,7 +1034,7 @@ describe('ship: workflow runs and required checks (#172)', () => {
       failing: ['e2e (required, not reported)'],
     });
     expect(calls.find((call) => call.line.startsWith(PROTECTION))).toEqual({
-      line: `${PROTECTION} --jq .protection.required_status_checks.contexts[]?`,
+      line: `${PROTECTION} --paginate --jq .protection.required_status_checks.contexts[]?`,
       cwd: root,
     });
   });
@@ -1002,7 +1047,7 @@ describe('ship: workflow runs and required checks (#172)', () => {
     await ship(options(exec, { baseBranch: 'develop' }));
     const asked = calls
       .filter((call) => call.line.startsWith('gh api'))
-      .map((call) => call.line.split(' --jq ', 1)[0]);
+      .map((call) => call.line.split(' --paginate ', 1)[0]);
     expect(asked).toEqual([
       'gh api repos/{owner}/{repo}/rules/branches/develop',
       'gh api repos/{owner}/{repo}/branches/develop',

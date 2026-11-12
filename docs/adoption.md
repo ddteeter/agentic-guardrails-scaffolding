@@ -839,7 +839,8 @@ ship.log 2>&1 &`), finish the task, and let whoever started the agent read
   not the only thing it reads: a workflow run on the pushed commit that ended
   `startup_failure`, `failure`, `timed_out` or `cancelled` is `ci-red` and is
   named in `failing` as `<workflow> (<conclusion>)`, because a workflow that
-  fails to start creates no checks at all. A check the base branch requires
+  fails to start creates no checks at all. A cancelled run does not count when
+  another run of the same workflow on that commit was not cancelled. A check the base branch requires
   (by ruleset or branch protection) that never reported is `ci-red` too, as
   `<check> (required, not reported)`, after about two minutes of waiting. It needs
   `gh`, authenticated, and checks that before pushing: a missing or logged-out
