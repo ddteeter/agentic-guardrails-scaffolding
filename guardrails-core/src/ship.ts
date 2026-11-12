@@ -274,6 +274,78 @@ async function pushFailure(
     : { ...outcome, pr: pr.number, url: pr.url };
 }
 
+/**
+ * The commit `origin` has for the branch, or `''` when it has no such branch
+ * (or could not be asked).
+ */
+async function remoteHead(
+  options: ShipOptions,
+  branch: string,
+): Promise<string> {
+  const listed = await options.exec(
+    'git',
+    ['ls-remote', '--heads', 'origin', branch],
+    { cwd: options.repoRoot },
+  );
+  return listed.stdout.split(/\s/, 1).join('');
+}
+
+/**
+How a push that exited 0 without pushing ended, for the warning.
+*/
+function endingOf(pushed: ExecResult): string {
+  return pushed.signal === undefined
+    ? 'no signal reported'
+    : `ended by ${pushed.signal}`;
+}
+
+/**
+ * Push HEAD and confirm `origin` has it: the warnings to carry on when it
+ * does, or the outcome when it does not.
+ *
+ * git's exit code is not enough. The exec seam reports a push ended by a
+ * signal as exit 0, and three ships whose push gate ran cold ended that way
+ * with nothing on the remote (#170). On a branch with an open pull request
+ * the old commit's checks were then read as this commit's. So the remote is
+ * asked, and a push that did not land is made once more: the gate has passed
+ * by then, so the second push is quick.
+ */
+async function pushHead(
+  options: ShipOptions,
+  branch: string,
+  sha: string,
+): Promise<Outcome | string[]> {
+  const force = options.forceWithLease === true ? ['--force-with-lease'] : [];
+  const push = (): Promise<ExecResult> =>
+    options.exec('git', ['push', ...force, '-u', 'origin', 'HEAD'], {
+      cwd: options.repoRoot,
+    });
+  const first = await push();
+  if (first.code !== 0) {
+    return pushFailure(options, branch, first);
+  }
+  if ((await remoteHead(options, branch)) === sha) {
+    return [];
+  }
+  const second = await push();
+  if (second.code !== 0) {
+    return pushFailure(options, branch, second);
+  }
+  const remote = await remoteHead(options, branch);
+  if (remote === sha) {
+    return [
+      `the first git push exited 0 without updating origin/${branch} ` +
+        `(${endingOf(first)}); pushed again`,
+    ];
+  }
+  return failure(
+    'error',
+    `guardrails ship: git push exited 0 twice, but origin/${branch} is at ` +
+      `${remote || 'nothing'}, not at ${sha} (HEAD). Nothing was checked.\n` +
+      `${output(first)}\n${output(second)}`,
+  );
+}
+
 interface FoundPullRequest {
   pr: PullRequest;
   warnings: string[];
@@ -531,13 +603,11 @@ function judgeChecks(
 async function watchChecks(
   options: ShipOptions,
   pr: PullRequest,
+  sha: string,
 ): Promise<Outcome> {
   const delay = options.delay ?? defaultDelay;
   const number = String(pr.number);
   const found = { pr: pr.number, url: pr.url };
-  const head = await options.exec('git', ['rev-parse', 'HEAD'], {
-    cwd: options.repoRoot,
-  });
   const required = await requiredChecks(options);
   for (let attempt = 0; ; attempt += 1) {
     const watch = await options.exec(
@@ -551,7 +621,7 @@ async function watchChecks(
     if (checks === undefined) {
       return { ...found, state: 'error', failing: [], tail: tailOf(listing) };
     }
-    const listed = await readRuns(options, head.stdout.trim());
+    const listed = await readRuns(options, sha);
     if (listed.runs === undefined) {
       return {
         ...found,
@@ -631,22 +701,21 @@ async function shipOutcome(
   if (unavailable !== undefined) {
     return { ...failure('error', unavailable), warnings: [] };
   }
-  const force = options.forceWithLease === true ? ['--force-with-lease'] : [];
-  const pushed = await options.exec(
-    'git',
-    ['push', ...force, '-u', 'origin', 'HEAD'],
-    { cwd: options.repoRoot },
-  );
-  if (pushed.code !== 0) {
-    return { ...(await pushFailure(options, branch, pushed)), warnings: [] };
+  const head = await options.exec('git', ['rev-parse', 'HEAD'], {
+    cwd: options.repoRoot,
+  });
+  const sha = head.stdout.trim();
+  const pushed = await pushHead(options, branch, sha);
+  if (!Array.isArray(pushed)) {
+    return { ...pushed, warnings: [] };
   }
   const found = await findOrOpenPullRequest(options, branch);
   if (typeof found === 'string') {
     return { ...failure('error', found), warnings: [] };
   }
   return {
-    ...(await watchChecks(options, found.pr)),
-    warnings: found.warnings,
+    ...(await watchChecks(options, found.pr, sha)),
+    warnings: [...pushed, ...found.warnings],
   };
 }
 

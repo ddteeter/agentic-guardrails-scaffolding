@@ -842,7 +842,10 @@ ship.log 2>&1 &`), finish the task, and let whoever started the agent read
   fails to start creates no checks at all. A cancelled run does not count when
   another run of the same workflow on that commit was not cancelled. A check the base branch requires
   (by ruleset or branch protection) that never reported is `ci-red` too, as
-  `<check> (required, not reported)`, after about two minutes of waiting. It needs
+  `<check> (required, not reported)`, after about two minutes of waiting.
+  After the push, ship asks `origin` whether the branch is at the commit it
+  pushed. If it is not, ship pushes once more and says so in `warnings`; if it
+  still is not, the state is `error` and no checks are read. It needs
   `gh`, authenticated, and checks that before pushing: a missing or logged-out
   `gh` is an `error` that says how to fix it, and nothing is pushed.
   `ship --help` prints all of this and pushes nothing.
