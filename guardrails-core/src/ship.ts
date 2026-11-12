@@ -282,12 +282,18 @@ async function remoteHead(
   options: ShipOptions,
   branch: string,
 ): Promise<string> {
-  const listed = await options.exec(
-    'git',
-    ['ls-remote', '--heads', 'origin', branch],
-    { cwd: options.repoRoot },
-  );
-  return listed.stdout.split(/\s/, 1).join('');
+  const reference = `refs/heads/${branch}`;
+  const listed = await options.exec('git', ['ls-remote', 'origin', reference], {
+    cwd: options.repoRoot,
+  });
+  // ls-remote matches the END of a ref, so another branch's line can come
+  // back too: only the line for this exact ref counts.
+  return listed.stdout
+    .split('\n')
+    .map((line) => line.split('\t'))
+    .filter(([, name]) => name === reference)
+    .map(([commit]) => commit)
+    .join('');
 }
 
 /**
@@ -472,6 +478,10 @@ async function readRuns(
     'list',
     '--commit',
     sha,
+    // gh lists 20 runs unless told otherwise, and a red run past the cut
+    // would not be seen.
+    '--limit',
+    '100',
     '--json',
     'workflowName,conclusion',
   ]);
@@ -705,6 +715,16 @@ async function shipOutcome(
     cwd: options.repoRoot,
   });
   const sha = head.stdout.trim();
+  if (sha === '') {
+    return {
+      ...failure(
+        'error',
+        'guardrails ship: git rev-parse HEAD named no commit, so a push ' +
+          `could not be confirmed. Nothing was pushed.\n${output(head)}`,
+      ),
+      warnings: [],
+    };
+  }
   const pushed = await pushHead(options, branch, sha);
   if (!Array.isArray(pushed)) {
     return { ...pushed, warnings: [] };

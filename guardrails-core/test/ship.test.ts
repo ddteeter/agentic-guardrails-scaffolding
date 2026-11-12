@@ -75,6 +75,8 @@ const HAPPY: Record<string, ExecResult | ExecResult[]> = {
   'gh pr view': ok(PR_JSON),
   'gh pr checks 42 --json': ok(HAPPY_CHECKS),
   'gh run list': ok('[]'),
+  'git rev-parse HEAD': ok('abc123\n'),
+  'git ls-remote': ok('abc123\trefs/heads/feat/x\n'),
 };
 
 function options(exec: Exec, over: Partial<ShipOptions> = {}): ShipOptions {
@@ -562,9 +564,51 @@ describe('ship: a push that exited 0 without reaching the remote (#170)', () => 
   it('asks the remote where the branch is, in the repository it ships', async () => {
     const { calls } = await shipped({ ...HEAD_AT, 'git ls-remote': LANDED });
     expect(calls).toContainEqual({
-      line: 'git ls-remote --heads origin feat/x',
+      line: 'git ls-remote origin refs/heads/feat/x',
       cwd: root,
     });
+  });
+
+  it('stops before pushing when HEAD cannot be read', async () => {
+    const { status, calls } = await shipped({
+      'git rev-parse HEAD': failed('fatal: bad object HEAD', 128),
+    });
+    expect(status).toMatchObject({
+      state: 'error',
+      pr: null,
+      warnings: [],
+      tail:
+        'guardrails ship: git rev-parse HEAD named no commit, so a push ' +
+        'could not be confirmed. Nothing was pushed.\nfatal: bad object HEAD',
+    });
+    expect(pushesIn(calls)).toEqual([]);
+  });
+
+  it('stops before pushing when HEAD reads as nothing', async () => {
+    const { status, calls } = await shipped({ 'git rev-parse HEAD': ok('\n') });
+    expect(status.state).toBe('error');
+    expect(pushesIn(calls)).toEqual([]);
+  });
+
+  it('does not take a branch that only ends in the same name for this one', async () => {
+    // `git ls-remote` matches a pattern against the END of a ref.
+    const { calls } = await shipped({
+      'git ls-remote': [
+        ok('abc123\trefs/heads/team/refs/heads/feat/x\n'),
+        ok('abc123\trefs/heads/feat/x\n'),
+      ],
+    });
+    expect(pushesIn(calls)).toHaveLength(2);
+  });
+
+  it('finds this branch after one that only ends in the same name', async () => {
+    const { status, calls } = await shipped({
+      'git ls-remote': ok(
+        '0ld\trefs/heads/team/refs/heads/feat/x\nabc123\trefs/heads/feat/x\n',
+      ),
+    });
+    expect(status.warnings).toEqual([]);
+    expect(pushesIn(calls)).toHaveLength(1);
   });
 
   it('pushes once when the remote has the commit', async () => {
@@ -1029,7 +1073,9 @@ describe('ship: workflow runs and required checks (#172)', () => {
       calls.filter((call) => call.line === 'git rev-parse HEAD'),
     ).toHaveLength(1);
     expect(calls).toContainEqual({
-      line: 'gh run list --commit abc123 --json workflowName,conclusion',
+      line:
+        'gh run list --commit abc123 --limit 100 ' +
+        '--json workflowName,conclusion',
       cwd: root,
     });
   });
