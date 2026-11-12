@@ -5448,6 +5448,9 @@ function shipExec(bucket: string, calls: string[] = []): Exec {
     if (line.startsWith('gh pr checks 42 --json')) {
       return Promise.resolve(ok(JSON.stringify([{ name: 'build', bucket }])));
     }
+    if (line.startsWith('gh run list')) {
+      return Promise.resolve(ok('[]'));
+    }
     return Promise.resolve(ok(''));
   };
 }

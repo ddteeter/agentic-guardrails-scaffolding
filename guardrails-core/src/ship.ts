@@ -144,33 +144,66 @@ function parsePullRequest(text: string): PullRequest | undefined {
     : undefined;
 }
 
-interface Check {
+/**
+ * One row of a gh listing: a check and its bucket from `gh pr checks`, or a
+ * workflow and its conclusion from `gh run list`.
+ */
+interface Listed {
   name: string;
-  bucket: string;
+  outcome: string;
 }
 
 /**
- * The checks `gh pr checks --json name,bucket` printed, or `undefined` when
- * it printed no list. A malformed row is dropped, not trusted.
+ * The rows of a `gh ... --json <name>,<outcome>` listing, or `undefined` when
+ * gh printed no list. A malformed row is dropped, not trusted.
  */
-function parseChecks(text: string): Check[] | undefined {
+function parseRows(
+  text: string,
+  name: string,
+  outcome: string,
+): Listed[] | undefined {
   const { parsed } = parseJsonText(text);
   if (!Array.isArray(parsed)) {
     return undefined;
   }
-  return parsed.flatMap((row: unknown) =>
-    isRecord(row) &&
-    typeof row.name === 'string' &&
-    typeof row.bucket === 'string'
-      ? [{ name: row.name, bucket: row.bucket }]
-      : [],
-  );
+  return parsed.flatMap((row: unknown): Listed[] => {
+    const fields = isRecord(row) ? row : {};
+    const named = fields[name];
+    const ended = fields[outcome];
+    return typeof named === 'string' && typeof ended === 'string'
+      ? [{ name: named, outcome: ended }]
+      : [];
+  });
 }
 
 /**
 `gh pr checks` buckets that mean the check did not pass.
 */
 const RED_BUCKETS: ReadonlySet<string> = new Set(['fail', 'cancel']);
+
+/**
+ * Workflow run conclusions that mean the run did not pass. `startup_failure`
+ * is why runs are read at all: a workflow that fails to start creates no
+ * check runs, so `gh pr checks` shows nothing wrong (#172).
+ */
+const RED_CONCLUSIONS: ReadonlySet<string> = new Set([
+  'startup_failure',
+  'failure',
+  'timed_out',
+  'cancelled',
+]);
+
+/**
+What CI says about the pushed commit, from every place ship reads it.
+*/
+interface Evidence {
+  checks: readonly Listed[];
+  runs: readonly Listed[];
+  /**
+  The names of the checks the base branch requires.
+  */
+  required: readonly string[];
+}
 
 type Outcome = Omit<ShipStatus, 'branch' | 'finishedAt' | 'warnings'>;
 
@@ -338,7 +371,7 @@ function defaultDelay(ms: number): Promise<void> {
 async function readChecks(
   options: ShipOptions,
   number: string,
-): Promise<{ checks: Check[] | undefined; listing: string }> {
+): Promise<{ checks: Listed[] | undefined; listing: string }> {
   const listed = await gh(options, [
     'pr',
     'checks',
@@ -350,11 +383,98 @@ async function readChecks(
   // this sentence on stderr. That is "none yet", not "unreadable".
   const checks = output(listed).includes(NO_CHECKS_YET)
     ? []
-    : parseChecks(listed.stdout);
+    : parseRows(listed.stdout, 'name', 'bucket');
   return { checks, listing: output(listed) };
 }
 
+/**
+ * The workflow runs on the pushed commit, with the listing's text for the
+ * error tail. `runs` is `undefined` when the listing was unreadable.
+ */
+async function readRuns(
+  options: ShipOptions,
+  sha: string,
+): Promise<{ runs: Listed[] | undefined; listing: string }> {
+  const listed = await gh(options, [
+    'run',
+    'list',
+    '--commit',
+    sha,
+    '--json',
+    'workflowName,conclusion',
+  ]);
+  return {
+    runs: parseRows(listed.stdout, 'workflowName', 'conclusion'),
+    listing: output(listed),
+  };
+}
+
+/**
+The repository being shipped, as gh fills it in for `gh api`.
+*/
+const REPOSITORY_API = 'repos/{owner}/{repo}';
+
+/**
+ * Where the base branch's required check names are, each a path under the
+ * repository and the jq filter that prints one name per line: rulesets, then
+ * classic branch protection. A repository may use either.
+ */
+const REQUIRED_CHECK_SOURCES: readonly (readonly [string, string])[] = [
+  [
+    'rules/branches',
+    '.[] | select(.type == "required_status_checks") | ' +
+      '.parameters.required_status_checks[].context',
+  ],
+  ['branches', '.protection.required_status_checks.contexts[]?'],
+];
+
+/**
+ * The names of the checks the base branch requires. A source gh could not
+ * read requires nothing: a token may lack access to it, and ship then judges
+ * by the checks and runs it can see.
+ */
+async function requiredChecks(options: ShipOptions): Promise<string[]> {
+  const answers = await Promise.all(
+    REQUIRED_CHECK_SOURCES.map(([source, filter]) =>
+      gh(options, [
+        'api',
+        [REPOSITORY_API, source, options.baseBranch].join('/'),
+        '--jq',
+        filter,
+      ]),
+    ),
+  );
+  return answers
+    .filter((answer) => answer.code === 0)
+    .flatMap((answer) => answer.stdout.split('\n'))
+    .filter((name) => name !== '');
+}
+
 type Verdict = Omit<Outcome, 'pr' | 'url'>;
+
+/**
+The red checks by name, then the red runs by workflow and conclusion.
+*/
+function failingOf(evidence: Evidence): string[] {
+  return [
+    ...evidence.checks
+      .filter((check) => RED_BUCKETS.has(check.outcome))
+      .map((check) => check.name),
+    ...evidence.runs
+      .filter((run) => RED_CONCLUSIONS.has(run.outcome))
+      .map((run) => `${run.name} (${run.outcome})`),
+  ];
+}
+
+/**
+The required checks that no check run reported for.
+*/
+function unreportedOf(evidence: Evidence): string[] {
+  const reported = new Set(evidence.checks.map((check) => check.name));
+  return evidence.required
+    .filter((name) => !reported.has(name))
+    .map((name) => `${name} (required, not reported)`);
+}
 
 /**
  * What one watch-then-list round says, or `undefined` when it is too early to
@@ -362,23 +482,26 @@ type Verdict = Omit<Outcome, 'pr' | 'url'>;
  * registration window has run out.
  */
 function judgeChecks(
-  checks: readonly Check[],
+  evidence: Evidence,
   watchText: string,
   canWait: boolean,
 ): Verdict | undefined {
+  const { checks } = evidence;
+  const tail = tailOf(watchText);
+  const failing = failingOf(evidence);
+  if (failing.length > 0) {
+    return { state: 'ci-red', failing, tail };
+  }
+  const unreported = unreportedOf(evidence);
+  if (unreported.length > 0) {
+    return canWait ? undefined : { state: 'ci-red', failing: unreported, tail };
+  }
   if (checks.length === 0) {
     return canWait
       ? undefined
       : { state: 'green', failing: [], tail: 'no checks reported' };
   }
-  const tail = tailOf(watchText);
-  const failing = checks
-    .filter((check) => RED_BUCKETS.has(check.bucket))
-    .map((check) => check.name);
-  if (failing.length > 0) {
-    return { state: 'ci-red', failing, tail };
-  }
-  const isSettled = checks.every((check) => check.bucket !== 'pending');
+  const isSettled = checks.every((check) => check.outcome !== 'pending');
   // A watch that exited with "no checks reported" never watched: CI
   // registered between it and the listing. Pending then means "watch now",
   // not "the watch broke" -- the race seen on dialed.run #191.
@@ -396,6 +519,10 @@ async function watchChecks(
   const delay = options.delay ?? defaultDelay;
   const number = String(pr.number);
   const found = { pr: pr.number, url: pr.url };
+  const head = await options.exec('git', ['rev-parse', 'HEAD'], {
+    cwd: options.repoRoot,
+  });
+  const required = await requiredChecks(options);
   for (let attempt = 0; ; attempt += 1) {
     const watch = await options.exec(
       'gh',
@@ -408,8 +535,17 @@ async function watchChecks(
     if (checks === undefined) {
       return { ...found, state: 'error', failing: [], tail: tailOf(listing) };
     }
+    const listed = await readRuns(options, head.stdout.trim());
+    if (listed.runs === undefined) {
+      return {
+        ...found,
+        state: 'error',
+        failing: [],
+        tail: tailOf(listed.listing),
+      };
+    }
     const verdict = judgeChecks(
-      checks,
+      { checks, runs: listed.runs, required },
       output(watch),
       attempt < NO_CHECKS_RETRIES,
     );

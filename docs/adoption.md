@@ -835,7 +835,13 @@ ship.log 2>&1 &`), finish the task, and let whoever started the agent read
   `.guardrails/state/ship-status.json` (`--status-file=<f>` to move it):
   `{state, branch, pr, url, failing, tail, finishedAt, warnings}`. `state` is
   `green`, `gate-blocked`, `lock-timeout`, `ci-red` (with the failing check
-  names) or `error`. It prints one line and exits 0 only on green. It needs
+  names) or `error`. It prints one line and exits 0 only on green. Checks are
+  not the only thing it reads: a workflow run on the pushed commit that ended
+  `startup_failure`, `failure`, `timed_out` or `cancelled` is `ci-red` and is
+  named in `failing` as `<workflow> (<conclusion>)`, because a workflow that
+  fails to start creates no checks at all. A check the base branch requires
+  (by ruleset or branch protection) that never reported is `ci-red` too, as
+  `<check> (required, not reported)`, after about two minutes of waiting. It needs
   `gh`, authenticated, and checks that before pushing: a missing or logged-out
   `gh` is an `error` that says how to fix it, and nothing is pushed.
   `ship --help` prints all of this and pushes nothing.

@@ -11,6 +11,7 @@ import {
   classifyPushFailure,
   ship,
   type ShipOptions,
+  type ShipStatus,
   shipSummary,
   writeShipStatus,
 } from '../src/ship.js';
@@ -64,15 +65,16 @@ function fakeExec(answers: Record<string, ExecResult | ExecResult[]>): {
   return { exec, calls };
 }
 
+const HAPPY_CHECKS = JSON.stringify([
+  { name: 'build', bucket: 'pass' },
+  { name: 'lint', bucket: 'skipping' },
+]);
+
 const HAPPY: Record<string, ExecResult | ExecResult[]> = {
   'git rev-parse --abbrev-ref HEAD': ok('feat/x\n'),
   'gh pr view': ok(PR_JSON),
-  'gh pr checks 42 --json': ok(
-    JSON.stringify([
-      { name: 'build', bucket: 'pass' },
-      { name: 'lint', bucket: 'skipping' },
-    ]),
-  ),
+  'gh pr checks 42 --json': ok(HAPPY_CHECKS),
+  'gh run list': ok('[]'),
 };
 
 function options(exec: Exec, over: Partial<ShipOptions> = {}): ShipOptions {
@@ -833,6 +835,214 @@ describe('ship: CI', () => {
     expect(status).toMatchObject({ state: 'green', failing: [] });
     expect(delays).toHaveLength(8);
     expect(status.tail).toContain('no checks reported');
+  });
+});
+
+/**
+Ship `feat/x` as PR 42 over `HAPPY` plus `answers`, recording each wait.
+*/
+async function shipped(
+  answers: Record<string, ExecResult | ExecResult[]>,
+): Promise<{ status: ShipStatus; delays: number[]; calls: Call[] }> {
+  const delays: number[] = [];
+  const { exec, calls } = fakeExec({ ...HAPPY, ...answers });
+  const status = await ship(
+    options(exec, {
+      delay: (ms) => {
+        delays.push(ms);
+        return Promise.resolve();
+      },
+    }),
+  );
+  return { status, delays, calls };
+}
+
+describe('ship: workflow runs and required checks (#172)', () => {
+  const RULES = 'gh api repos/{owner}/{repo}/rules/branches/main';
+  const PROTECTION = 'gh api repos/{owner}/{repo}/branches/main';
+  const runs = (...rows: unknown[]): ExecResult => ok(JSON.stringify(rows));
+  const SKIPPED_ONLY = ok(
+    JSON.stringify([{ name: 'review', bucket: 'skipping' }]),
+  );
+
+  it('is ci-red when a workflow failed to start, though no check failed', async () => {
+    // dialed.run #602: every workflow ended in startup_failure, which creates
+    // no check runs, so the only checks were another workflow's skipped jobs.
+    const { status } = await shipped({
+      'gh pr checks 42 --watch': ok('review\tskipping'),
+      'gh pr checks 42 --json': SKIPPED_ONLY,
+      'gh run list': runs(
+        { workflowName: 'CI', conclusion: 'startup_failure' },
+        { workflowName: 'Dependabot PR', conclusion: 'skipped' },
+        { workflowName: 'Mutation', conclusion: 'startup_failure' },
+      ),
+    });
+    expect(status).toMatchObject({
+      state: 'ci-red',
+      pr: 42,
+      failing: ['CI (startup_failure)', 'Mutation (startup_failure)'],
+      tail: 'review\tskipping',
+    });
+  });
+
+  it('lists the runs of the commit it pushed, in the repository it ships', async () => {
+    const { calls } = await shipped({ 'git rev-parse HEAD': ok('abc123\n') });
+    expect(calls).toContainEqual({
+      line: 'gh run list --commit abc123 --json workflowName,conclusion',
+      cwd: root,
+    });
+  });
+
+  it.each(['failure', 'timed_out', 'cancelled'])(
+    'counts a run that ended %s as red',
+    async (conclusion) => {
+      const { status } = await shipped({
+        'gh run list': runs({ workflowName: 'CI', conclusion }),
+      });
+      expect(status.state).toBe('ci-red');
+      expect(status.failing).toEqual([`CI (${conclusion})`]);
+    },
+  );
+
+  it.each(['success', 'skipped', 'neutral', ''])(
+    'does not count a run with conclusion "%s" as red',
+    async (conclusion) => {
+      const { status } = await shipped({
+        'gh run list': runs({ workflowName: 'CI', conclusion }),
+      });
+      expect(status).toMatchObject({ state: 'green', failing: [] });
+    },
+  );
+
+  it('names failing checks before failing runs', async () => {
+    const { status } = await shipped({
+      'gh pr checks 42 --json': ok(
+        JSON.stringify([{ name: 'build', bucket: 'fail' }]),
+      ),
+      'gh run list': runs({ workflowName: 'CI', conclusion: 'failure' }),
+    });
+    expect(status.failing).toEqual(['build', 'CI (failure)']);
+  });
+
+  it('does not wait for checks once a run has failed to start', async () => {
+    const { status, delays } = await shipped({
+      'gh pr checks 42 --json': ok('[]'),
+      'gh run list': runs({
+        workflowName: 'CI',
+        conclusion: 'startup_failure',
+      }),
+    });
+    expect(status.state).toBe('ci-red');
+    expect(delays).toEqual([]);
+  });
+
+  it('drops a malformed run row', async () => {
+    const { status } = await shipped({
+      'gh run list': runs(
+        { workflowName: 5, conclusion: 'failure' },
+        { workflowName: 'CI' },
+        'junk',
+        null,
+      ),
+    });
+    expect(status).toMatchObject({ state: 'green', failing: [] });
+  });
+
+  it('is an error when the run listing cannot be read', async () => {
+    const { status } = await shipped({
+      'gh run list': failed('HTTP 502: Bad Gateway'),
+    });
+    expect(status).toMatchObject({
+      state: 'error',
+      pr: 42,
+      failing: [],
+      tail: 'HTTP 502: Bad Gateway',
+    });
+  });
+
+  it('is ci-red when a required check never reported', async () => {
+    const { status, delays, calls } = await shipped({
+      'gh pr checks 42 --watch': ok('watched'),
+      [RULES]: ok('build\nguardrails\n'),
+    });
+    expect(status).toMatchObject({
+      state: 'ci-red',
+      failing: ['guardrails (required, not reported)'],
+      tail: 'watched',
+    });
+    expect(delays).toHaveLength(8);
+    expect(calls.find((call) => call.line.startsWith(RULES))).toEqual({
+      line:
+        `${RULES} --jq ` +
+        '.[] | select(.type == "required_status_checks") | ' +
+        '.parameters.required_status_checks[].context',
+      cwd: root,
+    });
+  });
+
+  it('reads required checks from classic branch protection too', async () => {
+    const { status, calls } = await shipped({
+      [PROTECTION]: ok('e2e\n'),
+    });
+    expect(status).toMatchObject({
+      state: 'ci-red',
+      failing: ['e2e (required, not reported)'],
+    });
+    expect(calls.find((call) => call.line.startsWith(PROTECTION))).toEqual({
+      line: `${PROTECTION} --jq .protection.required_status_checks.contexts[]?`,
+      cwd: root,
+    });
+  });
+
+  it('asks for the required checks of the base branch, once', async () => {
+    const { exec, calls } = fakeExec({
+      ...HAPPY,
+      'gh pr checks 42 --json': [ok('[]'), ok('[]'), ok(HAPPY_CHECKS)],
+    });
+    await ship(options(exec, { baseBranch: 'develop' }));
+    const asked = calls
+      .filter((call) => call.line.startsWith('gh api'))
+      .map((call) => call.line.split(' --jq ', 1)[0]);
+    expect(asked).toEqual([
+      'gh api repos/{owner}/{repo}/rules/branches/develop',
+      'gh api repos/{owner}/{repo}/branches/develop',
+    ]);
+  });
+
+  it('is green when every required check reported, passed or skipped', async () => {
+    const { status, delays } = await shipped({
+      [RULES]: ok('build\n'),
+      [PROTECTION]: ok('lint\n'),
+    });
+    expect(status).toMatchObject({ state: 'green', failing: [] });
+    expect(delays).toEqual([]);
+  });
+
+  it('waits for a required check that registers late', async () => {
+    const { status, delays } = await shipped({
+      [RULES]: ok('guardrails\n'),
+      'gh pr checks 42 --json': [
+        ok(JSON.stringify([{ name: 'build', bucket: 'pass' }])),
+        ok(
+          JSON.stringify([
+            { name: 'build', bucket: 'pass' },
+            { name: 'guardrails', bucket: 'pass' },
+          ]),
+        ),
+      ],
+    });
+    expect(status).toMatchObject({ state: 'green', failing: [] });
+    expect(delays).toEqual([15_000]);
+  });
+
+  it('requires nothing when the required checks cannot be read', async () => {
+    // A token without access to the rules, or a forge without them: ship
+    // judges by the checks and runs it can see.
+    const { status } = await shipped({
+      [RULES]: { stdout: 'guardrails\n', stderr: 'HTTP 403', code: 1 },
+      [PROTECTION]: { stdout: 'e2e\n', stderr: 'HTTP 404', code: 1 },
+    });
+    expect(status).toMatchObject({ state: 'green', failing: [] });
   });
 });
 
