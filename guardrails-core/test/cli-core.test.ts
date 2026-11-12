@@ -5448,6 +5448,15 @@ function shipExec(bucket: string, calls: string[] = []): Exec {
     if (line.startsWith('gh pr checks 42 --json')) {
       return Promise.resolve(ok(JSON.stringify([{ name: 'build', bucket }])));
     }
+    if (line.startsWith('gh run list')) {
+      return Promise.resolve(ok('[]'));
+    }
+    if (line === 'git rev-parse HEAD') {
+      return Promise.resolve(ok('abc123\n'));
+    }
+    if (line.startsWith('git ls-remote')) {
+      return Promise.resolve(ok('abc123\trefs/heads/feat/x\n'));
+    }
     return Promise.resolve(ok(''));
   };
 }

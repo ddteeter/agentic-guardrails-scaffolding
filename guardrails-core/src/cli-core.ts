@@ -1784,7 +1784,9 @@ const SHIP_HELP =
   '  --attach=<f>[#alt] attach an image or video (repeatable): on a new PR\n' +
   '                     with it, on an open one as a comment -- each run\n' +
   '                     posts again. A failed upload is a warning only.\n\n' +
-  'states: green | gate-blocked | lock-timeout | ci-red | error\n';
+  'states: green | gate-blocked | lock-timeout | ci-red | error\n' +
+  'ci-red also covers a workflow run that failed to start, and a required\n' +
+  'check that never reported.\n';
 
 /**
  * `ship`: push, find or open the pull request, wait for its checks, and write

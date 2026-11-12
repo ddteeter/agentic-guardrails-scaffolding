@@ -11,6 +11,7 @@ import {
   classifyPushFailure,
   ship,
   type ShipOptions,
+  type ShipStatus,
   shipSummary,
   writeShipStatus,
 } from '../src/ship.js';
@@ -64,15 +65,18 @@ function fakeExec(answers: Record<string, ExecResult | ExecResult[]>): {
   return { exec, calls };
 }
 
+const HAPPY_CHECKS = JSON.stringify([
+  { name: 'build', bucket: 'pass' },
+  { name: 'lint', bucket: 'skipping' },
+]);
+
 const HAPPY: Record<string, ExecResult | ExecResult[]> = {
   'git rev-parse --abbrev-ref HEAD': ok('feat/x\n'),
   'gh pr view': ok(PR_JSON),
-  'gh pr checks 42 --json': ok(
-    JSON.stringify([
-      { name: 'build', bucket: 'pass' },
-      { name: 'lint', bucket: 'skipping' },
-    ]),
-  ),
+  'gh pr checks 42 --json': ok(HAPPY_CHECKS),
+  'gh run list': ok('[]'),
+  'git rev-parse HEAD': ok('abc123\n'),
+  'git ls-remote': ok('abc123\trefs/heads/feat/x\n'),
 };
 
 function options(exec: Exec, over: Partial<ShipOptions> = {}): ShipOptions {
@@ -520,6 +524,202 @@ describe('ship: a push that did not go through', () => {
   });
 });
 
+/**
+Ship `feat/x` as PR 42 over `HAPPY` plus `answers`, recording each wait.
+*/
+async function shipped(
+  answers: Record<string, ExecResult | ExecResult[]>,
+): Promise<{ status: ShipStatus; delays: number[]; calls: Call[] }> {
+  const delays: number[] = [];
+  const { exec, calls } = fakeExec({ ...HAPPY, ...answers });
+  const status = await ship(
+    options(exec, {
+      delay: (ms) => {
+        delays.push(ms);
+        return Promise.resolve();
+      },
+    }),
+  );
+  return { status, delays, calls };
+}
+
+/**
+The `git push` command lines among `calls`, in order.
+*/
+function pushesIn(calls: Call[]): string[] {
+  return calls
+    .map((call) => call.line)
+    .filter((line) => line.startsWith('git push'));
+}
+
+describe('ship: a push that exited 0 without reaching the remote (#170)', () => {
+  const HEAD_AT = { 'git rev-parse HEAD': ok('abc123\n') };
+  const LANDED = ok('abc123\trefs/heads/feat/x\n');
+  const KILLED: ExecResult = {
+    stdout: '',
+    stderr: 'Enumerating objects: 5, done.',
+    code: 0,
+    signal: 'SIGPIPE',
+  };
+  it('asks the remote where the branch is, in the repository it ships', async () => {
+    const { calls } = await shipped({ ...HEAD_AT, 'git ls-remote': LANDED });
+    expect(calls).toContainEqual({
+      line: 'git ls-remote origin refs/heads/feat/x',
+      cwd: root,
+    });
+  });
+
+  it('stops before pushing when HEAD cannot be read', async () => {
+    const { status, calls } = await shipped({
+      'git rev-parse HEAD': failed('fatal: bad object HEAD', 128),
+    });
+    expect(status).toMatchObject({
+      state: 'error',
+      pr: null,
+      warnings: [],
+      tail:
+        'guardrails ship: git rev-parse HEAD named no commit, so a push ' +
+        'could not be confirmed. Nothing was pushed.\nfatal: bad object HEAD',
+    });
+    expect(pushesIn(calls)).toEqual([]);
+  });
+
+  it('stops before pushing when HEAD reads as nothing', async () => {
+    const { status, calls } = await shipped({ 'git rev-parse HEAD': ok('\n') });
+    expect(status.state).toBe('error');
+    expect(pushesIn(calls)).toEqual([]);
+  });
+
+  it('does not take a branch that only ends in the same name for this one', async () => {
+    // `git ls-remote` matches a pattern against the END of a ref.
+    const { calls } = await shipped({
+      'git ls-remote': [
+        ok('abc123\trefs/heads/team/refs/heads/feat/x\n'),
+        ok('abc123\trefs/heads/feat/x\n'),
+      ],
+    });
+    expect(pushesIn(calls)).toHaveLength(2);
+  });
+
+  it('finds this branch after one that only ends in the same name', async () => {
+    const { status, calls } = await shipped({
+      'git ls-remote': ok(
+        '0ld\trefs/heads/team/refs/heads/feat/x\nabc123\trefs/heads/feat/x\n',
+      ),
+    });
+    expect(status.warnings).toEqual([]);
+    expect(pushesIn(calls)).toHaveLength(1);
+  });
+
+  it('pushes once when the remote has the commit', async () => {
+    const { status, calls } = await shipped({
+      ...HEAD_AT,
+      'git ls-remote': LANDED,
+    });
+    expect(status).toMatchObject({ state: 'green', warnings: [] });
+    expect(pushesIn(calls)).toHaveLength(1);
+  });
+
+  it('pushes again when a killed push left the remote without the commit', async () => {
+    // Seen three times after a cold push gate: git push ended by a signal,
+    // which the exec seam reports as exit 0, and nothing on the remote.
+    const { status, calls } = await shipped({
+      ...HEAD_AT,
+      'git push': [KILLED, ok('')],
+      'git ls-remote': [ok(''), LANDED],
+    });
+    expect(status).toMatchObject({
+      state: 'green',
+      pr: 42,
+      warnings: [
+        'the first git push exited 0 without updating origin/feat/x ' +
+          '(ended by SIGPIPE); pushed again',
+      ],
+    });
+    expect(pushesIn(calls)).toEqual([
+      'git push -u origin HEAD',
+      'git push -u origin HEAD',
+    ]);
+  });
+
+  it('pushes again when the remote still has the previous commit', async () => {
+    const { status, calls } = await shipped({
+      ...HEAD_AT,
+      'git ls-remote': [ok('0ld\trefs/heads/feat/x\n'), LANDED],
+    });
+    expect(status.warnings).toEqual([
+      'the first git push exited 0 without updating origin/feat/x ' +
+        '(no signal reported); pushed again',
+    ]);
+    expect(pushesIn(calls)).toHaveLength(2);
+  });
+
+  it('keeps --force-with-lease on the second push', async () => {
+    const { exec, calls } = fakeExec({
+      ...HAPPY,
+      ...HEAD_AT,
+      'git ls-remote': [ok(''), LANDED],
+    });
+    await ship(options(exec, { forceWithLease: true }));
+    expect(pushesIn(calls)).toEqual([
+      'git push --force-with-lease -u origin HEAD',
+      'git push --force-with-lease -u origin HEAD',
+    ]);
+  });
+
+  it('keeps the attachment warnings after the push warning', async () => {
+    const { exec } = fakeExec({
+      ...HAPPY,
+      ...HEAD_AT,
+      'git ls-remote': [ok(''), LANDED],
+      'gh pr comment': failed('upload failed'),
+    });
+    const status = await ship(options(exec, { attach: ['a.png'] }));
+    expect(status.warnings).toEqual([
+      'the first git push exited 0 without updating origin/feat/x ' +
+        '(no signal reported); pushed again',
+      'attachments not posted: upload failed',
+    ]);
+  });
+
+  it('is an error, not a look at stale checks, when the second push does not land either', async () => {
+    const { status, calls } = await shipped({
+      ...HEAD_AT,
+      'git push': [KILLED, ok('Everything up-to-date')],
+      'git ls-remote': ok('0ld\trefs/heads/feat/x\n'),
+    });
+    expect(status).toMatchObject({
+      state: 'error',
+      pr: null,
+      failing: [],
+      warnings: [],
+      tail:
+        'guardrails ship: git push exited 0 twice, but origin/feat/x is at ' +
+        '0ld, not at abc123 (HEAD). Nothing was checked.\n' +
+        'Enumerating objects: 5, done.\nEverything up-to-date',
+    });
+    expect(pushesIn(calls)).toHaveLength(2);
+    expect(calls.some((call) => call.line.startsWith('gh pr'))).toBe(false);
+  });
+
+  it('says so when the remote has no such branch after both pushes', async () => {
+    const { status } = await shipped({ ...HEAD_AT, 'git ls-remote': ok('') });
+    expect(status.tail).toContain('origin/feat/x is at nothing, not at abc123');
+  });
+
+  it('classifies a second push the gate blocked as any blocked push', async () => {
+    const { status } = await shipped({
+      ...HEAD_AT,
+      'git push': [
+        KILLED,
+        failed('guardrails: push blocked — resolve violations'),
+      ],
+      'git ls-remote': ok(''),
+    });
+    expect(status).toMatchObject({ state: 'gate-blocked', pr: 42 });
+  });
+});
+
 describe('ship: a branch rewritten since its last push', () => {
   const HINT =
     'guardrails ship: the branch was rewritten since its last push ' +
@@ -833,6 +1033,248 @@ describe('ship: CI', () => {
     expect(status).toMatchObject({ state: 'green', failing: [] });
     expect(delays).toHaveLength(8);
     expect(status.tail).toContain('no checks reported');
+  });
+});
+
+describe('ship: workflow runs and required checks (#172)', () => {
+  const RULES = 'gh api repos/{owner}/{repo}/rules/branches/main';
+  const PROTECTION = 'gh api repos/{owner}/{repo}/branches/main';
+  const runs = (...rows: unknown[]): ExecResult => ok(JSON.stringify(rows));
+  const SKIPPED_ONLY = ok(
+    JSON.stringify([{ name: 'review', bucket: 'skipping' }]),
+  );
+
+  it('is ci-red when a workflow failed to start, though no check failed', async () => {
+    // dialed.run #602: every workflow ended in startup_failure, which creates
+    // no check runs, so the only checks were another workflow's skipped jobs.
+    const { status } = await shipped({
+      'gh pr checks 42 --watch': ok('review\tskipping'),
+      'gh pr checks 42 --json': SKIPPED_ONLY,
+      'gh run list': runs(
+        { workflowName: 'CI', conclusion: 'startup_failure' },
+        { workflowName: 'Dependabot PR', conclusion: 'skipped' },
+        { workflowName: 'Mutation', conclusion: 'startup_failure' },
+      ),
+    });
+    expect(status).toMatchObject({
+      state: 'ci-red',
+      pr: 42,
+      failing: ['CI (startup_failure)', 'Mutation (startup_failure)'],
+      tail: 'review\tskipping',
+    });
+  });
+
+  it('lists the runs of the commit it pushed, in the repository it ships', async () => {
+    const { calls } = await shipped({
+      'git rev-parse HEAD': ok('abc123\n'),
+      'git ls-remote': ok('abc123\trefs/heads/feat/x\n'),
+    });
+    expect(
+      calls.filter((call) => call.line === 'git rev-parse HEAD'),
+    ).toHaveLength(1);
+    expect(calls).toContainEqual({
+      line:
+        'gh run list --commit abc123 --limit 100 ' +
+        '--json workflowName,conclusion',
+      cwd: root,
+    });
+  });
+
+  it.each(['failure', 'timed_out', 'cancelled'])(
+    'counts a run that ended %s as red',
+    async (conclusion) => {
+      const { status } = await shipped({
+        'gh run list': runs({ workflowName: 'CI', conclusion }),
+      });
+      expect(status.state).toBe('ci-red');
+      expect(status.failing).toEqual([`CI (${conclusion})`]);
+    },
+  );
+
+  it.each(['success', 'skipped', 'neutral', ''])(
+    'does not count a run with conclusion "%s" as red',
+    async (conclusion) => {
+      const { status } = await shipped({
+        'gh run list': runs({ workflowName: 'CI', conclusion }),
+      });
+      expect(status).toMatchObject({ state: 'green', failing: [] });
+    },
+  );
+
+  it.each(['success', ''])(
+    'does not count a cancelled run that a later "%s" run of its workflow replaced',
+    async (conclusion) => {
+      // `concurrency: cancel-in-progress` leaves the cancelled run on the
+      // commit after the run that replaced it has passed.
+      const { status } = await shipped({
+        'gh run list': runs(
+          { workflowName: 'CI', conclusion: 'cancelled' },
+          { workflowName: 'CI', conclusion },
+        ),
+      });
+      expect(status).toMatchObject({ state: 'green', failing: [] });
+    },
+  );
+
+  it('counts a cancelled run that only another workflow outlived', async () => {
+    const { status } = await shipped({
+      'gh run list': runs(
+        { workflowName: 'CI', conclusion: 'cancelled' },
+        { workflowName: 'Docs', conclusion: 'success' },
+      ),
+    });
+    expect(status.failing).toEqual(['CI (cancelled)']);
+  });
+
+  it('counts a cancelled run when every run of its workflow was cancelled', async () => {
+    const { status } = await shipped({
+      'gh run list': runs(
+        { workflowName: 'CI', conclusion: 'cancelled' },
+        { workflowName: 'CI', conclusion: 'cancelled' },
+      ),
+    });
+    expect(status.failing).toEqual(['CI (cancelled)', 'CI (cancelled)']);
+  });
+
+  it('names the failed run, not the cancelled one it replaced', async () => {
+    const { status } = await shipped({
+      'gh run list': runs(
+        { workflowName: 'CI', conclusion: 'cancelled' },
+        { workflowName: 'CI', conclusion: 'failure' },
+      ),
+    });
+    expect(status.failing).toEqual(['CI (failure)']);
+  });
+
+  it('names failing checks before failing runs', async () => {
+    const { status } = await shipped({
+      'gh pr checks 42 --json': ok(
+        JSON.stringify([{ name: 'build', bucket: 'fail' }]),
+      ),
+      'gh run list': runs({ workflowName: 'CI', conclusion: 'failure' }),
+    });
+    expect(status.failing).toEqual(['build', 'CI (failure)']);
+  });
+
+  it('does not wait for checks once a run has failed to start', async () => {
+    const { status, delays } = await shipped({
+      'gh pr checks 42 --json': ok('[]'),
+      'gh run list': runs({
+        workflowName: 'CI',
+        conclusion: 'startup_failure',
+      }),
+    });
+    expect(status.state).toBe('ci-red');
+    expect(delays).toEqual([]);
+  });
+
+  it('drops a malformed run row', async () => {
+    const { status } = await shipped({
+      'gh run list': runs(
+        { workflowName: 5, conclusion: 'failure' },
+        { workflowName: 'CI' },
+        'junk',
+        null,
+      ),
+    });
+    expect(status).toMatchObject({ state: 'green', failing: [] });
+  });
+
+  it('is an error when the run listing cannot be read', async () => {
+    const { status } = await shipped({
+      'gh run list': failed('HTTP 502: Bad Gateway'),
+    });
+    expect(status).toMatchObject({
+      state: 'error',
+      pr: 42,
+      failing: [],
+      tail: 'HTTP 502: Bad Gateway',
+    });
+  });
+
+  it('is ci-red when a required check never reported', async () => {
+    const { status, delays, calls } = await shipped({
+      'gh pr checks 42 --watch': ok('watched'),
+      [RULES]: ok('build\nguardrails\n'),
+    });
+    expect(status).toMatchObject({
+      state: 'ci-red',
+      failing: ['guardrails (required, not reported)'],
+      tail: 'watched',
+    });
+    expect(delays).toHaveLength(8);
+    expect(calls.find((call) => call.line.startsWith(RULES))).toEqual({
+      line:
+        `${RULES} --paginate --jq ` +
+        '.[] | select(.type == "required_status_checks") | ' +
+        '.parameters.required_status_checks[].context',
+      cwd: root,
+    });
+  });
+
+  it('reads required checks from classic branch protection too', async () => {
+    const { status, calls } = await shipped({
+      [PROTECTION]: ok('e2e\n'),
+    });
+    expect(status).toMatchObject({
+      state: 'ci-red',
+      failing: ['e2e (required, not reported)'],
+    });
+    expect(calls.find((call) => call.line.startsWith(PROTECTION))).toEqual({
+      line: `${PROTECTION} --paginate --jq .protection.required_status_checks.contexts[]?`,
+      cwd: root,
+    });
+  });
+
+  it('asks for the required checks of the base branch, once', async () => {
+    const { exec, calls } = fakeExec({
+      ...HAPPY,
+      'gh pr checks 42 --json': [ok('[]'), ok('[]'), ok(HAPPY_CHECKS)],
+    });
+    await ship(options(exec, { baseBranch: 'develop' }));
+    const asked = calls
+      .filter((call) => call.line.startsWith('gh api'))
+      .map((call) => call.line.split(' --paginate ', 1)[0]);
+    expect(asked).toEqual([
+      'gh api repos/{owner}/{repo}/rules/branches/develop',
+      'gh api repos/{owner}/{repo}/branches/develop',
+    ]);
+  });
+
+  it('is green when every required check reported, passed or skipped', async () => {
+    const { status, delays } = await shipped({
+      [RULES]: ok('build\n'),
+      [PROTECTION]: ok('lint\n'),
+    });
+    expect(status).toMatchObject({ state: 'green', failing: [] });
+    expect(delays).toEqual([]);
+  });
+
+  it('waits for a required check that registers late', async () => {
+    const { status, delays } = await shipped({
+      [RULES]: ok('guardrails\n'),
+      'gh pr checks 42 --json': [
+        ok(JSON.stringify([{ name: 'build', bucket: 'pass' }])),
+        ok(
+          JSON.stringify([
+            { name: 'build', bucket: 'pass' },
+            { name: 'guardrails', bucket: 'pass' },
+          ]),
+        ),
+      ],
+    });
+    expect(status).toMatchObject({ state: 'green', failing: [] });
+    expect(delays).toEqual([15_000]);
+  });
+
+  it('requires nothing when the required checks cannot be read', async () => {
+    // A token without access to the rules, or a forge without them: ship
+    // judges by the checks and runs it can see.
+    const { status } = await shipped({
+      [RULES]: { stdout: 'guardrails\n', stderr: 'HTTP 403', code: 1 },
+      [PROTECTION]: { stdout: 'e2e\n', stderr: 'HTTP 404', code: 1 },
+    });
+    expect(status).toMatchObject({ state: 'green', failing: [] });
   });
 });
 
