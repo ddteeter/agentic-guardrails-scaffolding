@@ -24,11 +24,14 @@ import {
   LOCKFILE_NAMES,
   serializeFingerprint,
   strykerVersionFrom,
+  describeDifference,
   isSameFingerprint,
+  parseFingerprint,
   type CacheFingerprint,
   type DependencyEvidence,
   type Lockfile,
 } from './cache-fingerprint.js';
+import type { SeedFetch } from './seed-cache.js';
 import { isTestFile, isTestSupportFile } from './git.js';
 import {
   cacheTestFiles,
@@ -76,9 +79,7 @@ export interface CacheSeams {
    * `seed-cache.ts`, which checks it was measured under `fingerprint`).
    * Absent when the project configures no seed.
    */
-  seed?:
-    | ((fingerprint: CacheFingerprint) => Promise<string | undefined>)
-    | undefined;
+  seed?: ((fingerprint: CacheFingerprint) => Promise<SeedFetch>) | undefined;
   /**
    * The installed versions that can change a verdict (#177,
    * `verdict-dependencies.ts`), or `undefined` when they cannot be read.
@@ -264,28 +265,69 @@ async function trusted(
 }
 
 /**
- * The local cache this run may reuse, or `undefined` for none: written under
+ * What `prepareIncrementalCache` did, for the run log (#176): whether the
+ * local cache was kept, absent or discarded, whether a seed was used,
+ * refused, not needed, skipped (this run could not use one) or not
+ * configured, and why a cache was discarded or a seed refused.
+ */
+export interface CacheOutcome {
+  local: 'kept' | 'none' | 'discarded';
+  seed: 'used' | 'refused' | 'not-needed' | 'skipped' | 'off';
+  why?: string;
+}
+
+interface LocalVerdict {
+  cache?: IncrementalCache;
+  local: CacheOutcome['local'];
+  why?: string;
+}
+
+/**
+Why a cache's sidecar does not match this checkout, in words.
+*/
+function staleWhy(
+  previous: string,
+  current: CacheFingerprint | undefined,
+): string {
+  const recorded = parseFingerprint(previous);
+  if (recorded === undefined) {
+    return 'its fingerprint is missing or unreadable';
+  }
+  return current === undefined
+    ? 'no installed stryker to fingerprint this checkout'
+    : `it was measured under ${describeDifference(recorded, current)}`;
+}
+
+/**
+ * The local cache this run may reuse, and what became of it: written under
  * this run's fingerprint, admissible, and then the invalidation rule, with
  * "changed since" read off the cache file's timestamp.
  */
 async function reusableCache(
   seams: CacheSeams,
   run: CacheRun,
-  isFingerprintCurrent: boolean,
-): Promise<IncrementalCache | undefined> {
-  if (!isFingerprintCurrent) {
-    return undefined;
+  fingerprint: CacheFingerprint | undefined,
+  previous: string,
+): Promise<LocalVerdict> {
+  const text = await readOrEmpty(
+    seams,
+    path.join(seams.repoRoot, STRYKER_INCREMENTAL_PATH),
+  );
+  if (text === '') {
+    return { local: 'none' };
   }
-  const cache = admissible(
-    await readOrEmpty(
-      seams,
-      path.join(seams.repoRoot, STRYKER_INCREMENTAL_PATH),
-    ),
-    run,
-  );
-  return (
-    cache && trusted(cache, run, (files) => testsNewerThanCache(seams, files))
-  );
+  if (!isSameFingerprint(previous, fingerprint)) {
+    return { local: 'discarded', why: staleWhy(previous, fingerprint) };
+  }
+  const admitted = admissible(text, run);
+  const cache =
+    admitted &&
+    (await trusted(admitted, run, (files) =>
+      testsNewerThanCache(seams, files),
+    ));
+  return cache === undefined
+    ? { local: 'discarded', why: 'this change set invalidates it' }
+    : { cache, local: 'kept' };
 }
 
 /**
@@ -327,20 +369,25 @@ async function withSeed(
   run: CacheRun,
   fingerprint: CacheFingerprint | undefined,
   local: IncrementalCache | undefined,
-): Promise<string | undefined> {
+): Promise<SeedVerdict> {
   const missing = run.mutateFiles.filter((file) => !local?.files.has(file));
   const { seed: fetchSeed } = seams;
-  if (
-    fingerprint === undefined ||
-    fetchSeed === undefined ||
-    missing.length === 0 ||
-    !canUseSeed(run)
-  ) {
-    return undefined;
+  if (fingerprint === undefined || fetchSeed === undefined) {
+    return { seed: 'off' };
   }
-  const admitted = admissible((await fetchSeed(fingerprint)) ?? '', run);
+  if (missing.length === 0) {
+    return { seed: 'not-needed' };
+  }
+  if (!canUseSeed(run)) {
+    return { seed: 'skipped' };
+  }
+  const fetched = await fetchSeed(fingerprint);
+  if ('why' in fetched) {
+    return { seed: 'refused', why: fetched.why };
+  }
+  const admitted = admissible(fetched.seed, run);
   if (admitted === undefined) {
-    return undefined;
+    return { seed: 'refused', why: 'it holds no per-test coverage' };
   }
   // The invalidation rule, judged by this branch's changed files alone.
   // Under `any-test-change` a changed test never gets here (`canUseSeed`),
@@ -352,15 +399,28 @@ async function withSeed(
       : dropUntrusted(scoped, new Set(run.changedFiles));
   const seedJson = serializeIncrementalCache(seed);
   if (local === undefined) {
-    return seedJson;
+    return { json: seedJson, seed: 'used' };
   }
   const merged = parseIncrementalCache(
     mergeSeedInto(serializeIncrementalCache(local), seedJson) ?? '',
   );
-  return (
-    merged &&
-    serializeIncrementalCache(dropUnresolvedKills(merged, new Set(missing)))
-  );
+  return merged === undefined
+    ? { seed: 'refused', why: 'it could not be merged into the local cache' }
+    : {
+        json: serializeIncrementalCache(
+          dropUnresolvedKills(merged, new Set(missing)),
+        ),
+        seed: 'used',
+      };
+}
+
+interface SeedVerdict {
+  /**
+  The cache to write, when a seed was used.
+  */
+  json?: string;
+  seed: CacheOutcome['seed'];
+  why?: string;
 }
 
 async function writeOrRemove(
@@ -428,21 +488,17 @@ export async function writeFingerprintSidecar(
 export async function prepareIncrementalCache(
   seams: CacheSeams,
   run: CacheRun,
-): Promise<void> {
+): Promise<CacheOutcome> {
   const [fingerprint, previous] = await Promise.all([
     checkoutFingerprint(seams, run.strykerConfig),
     readOrEmpty(seams, path.join(seams.repoRoot, STRYKER_FINGERPRINT_PATH)),
   ]);
-  const local = await reusableCache(
-    seams,
-    run,
-    isSameFingerprint(previous, fingerprint),
-  );
-  const seeded = await withSeed(seams, run, fingerprint, local);
+  const local = await reusableCache(seams, run, fingerprint, previous);
+  const seeded = await withSeed(seams, run, fingerprint, local.cache);
   await writeOrRemove(
     seams,
     path.join(seams.repoRoot, STRYKER_INCREMENTAL_PATH),
-    seeded ?? (local && serializeIncrementalCache(local)),
+    seeded.json ?? (local.cache && serializeIncrementalCache(local.cache)),
   );
   // Stamped BEFORE the run, for the cache stryker writes at its end — a cold
   // run included. A sidecar that cannot be written leaves the next run
@@ -452,4 +508,10 @@ export async function prepareIncrementalCache(
     path.join(seams.repoRoot, STRYKER_FINGERPRINT_PATH),
     fingerprint && serializeFingerprint(fingerprint),
   );
+  const why = [local.why, seeded.why].filter((reason) => reason !== undefined);
+  return {
+    local: local.local,
+    seed: seeded.seed,
+    ...(why.length > 0 && { why: why.join('; ') }),
+  };
 }

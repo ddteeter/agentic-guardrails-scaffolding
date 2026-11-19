@@ -154,7 +154,7 @@ export interface MutationLock {
  * `releasedAt`. Who held it and how many waited are from the first look,
  * taken only when the lock was busy.
  */
-interface LockTiming {
+export interface LockTiming {
   queuedAt: number;
   releasedAt: number;
   holderOnArrival?: string;

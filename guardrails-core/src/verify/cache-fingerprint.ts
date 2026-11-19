@@ -268,3 +268,26 @@ export function strykerVersionFrom(manifestJson: string): string | undefined {
     ? parsed.version
     : undefined;
 }
+
+/**
+ * What differs between a seed's fingerprint and this checkout's, in words,
+ * so a cold run says why (#177): `a different stryker version (10.1.0, here
+ * 10.0.0)`, `different stryker options`, `different dependency versions`.
+ */
+export function describeDifference(
+  seed: CacheFingerprint,
+  current: CacheFingerprint,
+): string {
+  const parts = fingerprintDifference(seed, current).map((field) => {
+    if (field === 'stryker') {
+      return `a different stryker version (${seed.stryker}, here ${current.stryker})`;
+    }
+    return field === 'options'
+      ? 'different stryker options'
+      : 'different dependency versions';
+  });
+  const last = parts.pop();
+  return parts.length === 0
+    ? String(last)
+    : `${parts.join(', ')} and ${String(last)}`;
+}

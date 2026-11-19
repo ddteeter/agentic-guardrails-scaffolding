@@ -58,11 +58,13 @@ import {
   MUTATION_LOCK_TIMEOUT_RULE,
   type MutationLock,
   runUnderLock,
+  type LockedRun,
 } from '../mutation-lock.js';
 import { type Exec, type ExecResult, signalFromExitCode } from '../exec.js';
 import { parseJsonText, readJsonFile } from '../json-file.js';
 import {
   holderEnvironment,
+  runSummaryPath,
   PROGRESS_REPORTER,
   progressPluginBeside,
 } from '../lock-holder.js';
@@ -108,8 +110,15 @@ import {
 import {
   prepareIncrementalCache,
   writeFingerprintSidecar,
+  type CacheOutcome,
 } from './prepare-cache.js';
-import { fetchSeed, nodeSeedSeams, type SeedSettings } from './seed-cache.js';
+import {
+  fetchSeedOutcome,
+  nodeSeedSeams,
+  type SeedSettings,
+} from './seed-cache.js';
+import { concurrencyOf } from '../run-log.js';
+import { type MutationRunRecord, mutationRunRecord } from './mutation-run.js';
 import {
   gitManifestLister,
   nodeDependencySeams,
@@ -236,6 +245,10 @@ export interface VerifyOptions {
    * Injected in tests; defaults to reading `<repoRoot>/package.json`.
    */
   declaredProviders?: ReadonlySet<string>;
+  /**
+  Told what the stryker run amounted to, once it has run or been put off.
+  */
+  onMutationRun?: ((record: MutationRunRecord) => void) | undefined;
 }
 
 export interface VerifyResult {
@@ -252,6 +265,11 @@ export interface VerifyResult {
    * five analyzers, and only `init` ever said so.
    */
   skippedAnalyzers: readonly (readonly [string, string])[];
+  /**
+   * What the stryker run amounted to, for the run log (#176): absent when
+   * nothing was in mutation scope.
+   */
+  mutationRun?: MutationRunRecord;
 }
 
 /** How much of a failed tool's stderr reaches the violation message. Five
@@ -1754,6 +1772,56 @@ function pinsReader(
     );
 }
 
+/**
+ * The run-log record of one stryker run (#176): what `mutationRunRecord`
+ * makes of the lock's timing, the cache outcome, and -- when stryker ran --
+ * the plugin's summary and stryker's report.
+ */
+async function recordOf(
+  locked: LockedRun,
+  context: {
+    files: number;
+    cache: CacheOutcome;
+    readFile: (filePath: string) => Promise<string>;
+    repoRoot: string;
+    concurrency: string;
+  },
+): Promise<MutationRunRecord> {
+  const { readFile, repoRoot } = context;
+  const didRun = locked.kind === 'ran';
+  const read = (filePath: string): Promise<string> =>
+    didRun ? readOrEmptyText(readFile, filePath) : Promise.resolve('');
+  const [summaryText, reportText] = await Promise.all([
+    read(runSummaryPath(repoRoot)),
+    read(path.join(repoRoot, STRYKER_REPORT_PATH)),
+  ]);
+  return {
+    ...mutationRunRecord({
+      files: context.files,
+      cache: context.cache,
+      timing: locked.timing,
+      didRun,
+      summaryText,
+      reportText,
+    }),
+    concurrency: context.concurrency,
+  };
+}
+
+/**
+`filePath`'s text, or `''` when it cannot be read.
+*/
+async function readOrEmptyText(
+  readFile: (filePath: string) => Promise<string>,
+  filePath: string,
+): Promise<string> {
+  try {
+    return await readFile(filePath);
+  } catch {
+    return '';
+  }
+}
+
 function readUtf8(filePath: string): Promise<string> {
   return fsReadFile(filePath, 'utf8');
 }
@@ -1861,7 +1929,7 @@ async function runStryker(
   // The project's own `!` exclusions applied, so a cached file this run will
   // not mutate cannot survive — see `applyMutateNegations`.
   const cacheFiles = applyMutateNegations(inScope, negations, repoRoot);
-  await prepareIncrementalCache(
+  const cache = await prepareIncrementalCache(
     {
       readFile,
       writeFile,
@@ -1876,7 +1944,7 @@ async function runStryker(
       seed:
         seed &&
         ((fingerprint) =>
-          fetchSeed(
+          fetchSeedOutcome(
             nodeSeedSeams({
               exec,
               repoRoot,
@@ -1918,6 +1986,9 @@ async function runStryker(
     '--mutate',
     mutate,
   ];
+  // The plugin's summary is this run's or nothing: a stale one would time the
+  // run before it.
+  await removeFile(runSummaryPath(repoRoot));
   const lock = options.mutationLock;
   const plugin =
     options.strykerProgressPlugin ?? progressPluginBeside(import.meta.url);
@@ -1944,6 +2015,15 @@ async function runStryker(
     cwd: repoRoot,
     progress: warn,
   });
+  options.onMutationRun?.(
+    await recordOf(locked, {
+      files: inScope.length,
+      cache,
+      readFile,
+      repoRoot,
+      concurrency: concurrencyOf(strykerConfig),
+    }),
+  );
   if (locked.kind === 'deferred') {
     return [
       ...outOfScope,
@@ -2466,7 +2546,15 @@ export function isAnalyzerSelected(
 
 export async function runVerify(options: VerifyOptions): Promise<VerifyResult> {
   const { exec, failures } = trackSpawnFailures(options.exec);
-  const tracked = { ...options, exec };
+  let mutationRun: MutationRunRecord | undefined;
+  const tracked: VerifyOptions = {
+    ...options,
+    exec,
+    onMutationRun: (record) => {
+      mutationRun = record;
+      options.onMutationRun?.(record);
+    },
+  };
   const { files, violations: gitViolations } =
     await changedTypeScriptFiles(tracked);
   const resolveBin = options.resolveBin ?? ((tool) => tool);
@@ -2542,5 +2630,6 @@ export async function runVerify(options: VerifyOptions): Promise<VerifyResult> {
   return {
     violations: withPackages(scoped, loadWorkspaceResolver(options.repoRoot)),
     skippedAnalyzers: silentlySkippedAnalyzers(analyzers, declared),
+    ...(mutationRun !== undefined && { mutationRun }),
   };
 }

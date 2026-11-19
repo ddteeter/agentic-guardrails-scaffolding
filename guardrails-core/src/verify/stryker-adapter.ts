@@ -397,3 +397,26 @@ export function haveTestsChangedSinceCache(
 ): boolean {
   return testModified.some((modified) => modified >= cacheModified);
 }
+
+/**
+ * How many mutants the report holds, in all, and per status (#176), or
+ * `undefined` for a payload that is not a report. A status no mutant had is
+ * absent.
+ */
+export function statusCounts(
+  reportJson: string,
+): ({ total: number } & Partial<Record<string, number>>) | undefined {
+  const parsed = parseReport(reportJson);
+  if (parsed === undefined) {
+    return undefined;
+  }
+  const counts: Partial<Record<string, number>> = {};
+  let total = 0;
+  for (const file of Object.values(parsed.files)) {
+    for (const mutant of file.mutants) {
+      counts[mutant.status] = (counts[mutant.status] ?? 0) + 1;
+      total += 1;
+    }
+  }
+  return { ...counts, total };
+}
