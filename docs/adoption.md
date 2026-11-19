@@ -831,11 +831,18 @@ ship.log 2>&1 &`), finish the task, and let whoever started the agent read
 - **`guardrails ship`** is the one command to background. It runs
   `git push -u origin HEAD` (and with it the pre-push gate), finds the branch's
   pull request or opens one (`--body-file=<f>`, else `gh pr create --fill`),
-  waits with `gh pr checks --watch`, and writes
+  waits with `gh pr checks --watch --fail-fast`, and writes
   `.guardrails/state/ship-status.json` (`--status-file=<f>` to move it):
   `{state, branch, pr, url, failing, tail, finishedAt, warnings}`. `state` is
   `green`, `gate-blocked`, `lock-timeout`, `ci-red` (with the failing check
-  names) or `error`. It prints one line and exits 0 only on green. Checks are
+  names), `behind`, `conflicting` (with the conflicted files) or `error`. It
+  prints one line and exits 0 only on green. The watch ends at the first
+  failed check, so `ci-red` names it while slower checks are still running.
+  Before pushing, and so before the gate lock, ship fetches the base and
+  refuses a branch that does not contain `origin/<base>`: `conflicting` when
+  it would not merge cleanly, `behind` when it would. Rebase and ship again.
+  If the base cannot be fetched, ship pushes anyway and says so in
+  `warnings`. Checks are
   not the only thing it reads: a workflow run on the pushed commit that ended
   `startup_failure`, `failure`, `timed_out` or `cancelled` is `ci-red` and is
   named in `failing` as `<workflow> (<conclusion>)`, because a workflow that
@@ -951,7 +958,9 @@ makes pushes take turns, so each lane ships itself:
   `run_in_background`, ends its turn, and is woken once with one status.
 - A lane that is still active fixes its own `gate-blocked` or `ci-red` from
   the status file's `tail` and `failing`. On `lock-timeout` it runs
-  `guardrails ship` again, which re-queues.
+  `guardrails ship` again, which re-queues. On `behind` or `conflicting` it
+  rebases onto the base and ships again with `--force-with-lease` if the
+  branch was already pushed.
 - The coordinator merges and cleans up. For a lane whose work is finished, it
   hands a failure to a **fresh** fixer agent with the failure output and the
   diff, rather than reviving the lane's large context.

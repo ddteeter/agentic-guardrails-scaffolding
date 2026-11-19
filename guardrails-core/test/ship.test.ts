@@ -182,7 +182,7 @@ describe('ship: the happy path', () => {
     });
     const lines = calls.map((call) => call.line);
     expect(lines).toContain('git push -u origin HEAD');
-    expect(lines).toContain('gh pr checks 42 --watch');
+    expect(lines).toContain('gh pr checks 42 --watch --fail-fast');
     expect(lines.some((line) => line.startsWith('gh pr create'))).toBe(false);
     expect(calls.every((call) => call.cwd === root)).toBe(true);
   });
@@ -878,7 +878,9 @@ describe('ship: CI', () => {
     expect(status.state).toBe('green');
     expect(delays).toEqual([15_000]);
     expect(
-      calls.filter((call) => call.line === 'gh pr checks 42 --watch'),
+      calls.filter(
+        (call) => call.line === 'gh pr checks 42 --watch --fail-fast',
+      ),
     ).toHaveLength(2);
   });
 
@@ -983,7 +985,9 @@ describe('ship: CI', () => {
     expect(status.state).toBe('ci-red');
     expect(delays).toEqual([15_000, 15_000]);
     expect(
-      calls.filter((call) => call.line === 'gh pr checks 42 --watch'),
+      calls.filter(
+        (call) => call.line === 'gh pr checks 42 --watch --fail-fast',
+      ),
     ).toHaveLength(3);
   });
 
@@ -1434,7 +1438,9 @@ describe('ship: the details a reader acts on', () => {
       const shipped = ship({ exec, repoRoot: root, baseBranch: 'main' });
       await vi.advanceTimersByTimeAsync(14_999);
       expect(
-        calls.filter((call) => call.line === 'gh pr checks 42 --watch'),
+        calls.filter(
+          (call) => call.line === 'gh pr checks 42 --watch --fail-fast',
+        ),
       ).toHaveLength(1);
       await vi.advanceTimersByTimeAsync(1);
       const result = await shipped;
@@ -1442,5 +1448,249 @@ describe('ship: the details a reader acts on', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+function hasPushed(calls: readonly Call[]): boolean {
+  return calls.some((call) => call.line.startsWith('git push'));
+}
+
+describe('ship: a branch behind or conflicting with its base (#178)', () => {
+  const NOT_CONTAINED = failed('', 1);
+  const BEHIND: Record<string, ExecResult | ExecResult[]> = {
+    ...HAPPY,
+    'git merge-base --is-ancestor': NOT_CONTAINED,
+    'git merge-tree': ok('4b825dc642cb6eb9a060e54bf8d69288fbee4904\n'),
+  };
+
+  it('refuses a branch that is behind, before pushing', async () => {
+    const { exec, calls } = fakeExec(BEHIND);
+    const status = await ship(options(exec));
+    expect(status).toMatchObject({
+      state: 'behind',
+      pr: null,
+      url: null,
+      failing: [],
+      warnings: [],
+    });
+    expect(status.tail).toBe(
+      'guardrails ship: feat/x does not contain origin/main. Rebase it onto ' +
+        'origin/main (or merge origin/main into it), then ship again. ' +
+        'Nothing was pushed.',
+    );
+    expect(hasPushed(calls)).toBe(false);
+  });
+
+  it('refuses a branch that conflicts, naming the conflicted files', async () => {
+    // merge-tree prints on stdout even when it exits 1.
+    const { exec, calls } = fakeExec({
+      ...BEHIND,
+      'git merge-tree': {
+        stdout:
+          '4b825dc642cb6eb9a060e54bf8d69288fbee4904\nsrc/a.ts\ndocs/b.md\n',
+        stderr: '',
+        code: 1,
+      },
+    });
+    const status = await ship(options(exec));
+    expect(status).toMatchObject({
+      state: 'conflicting',
+      failing: ['src/a.ts', 'docs/b.md'],
+    });
+    expect(status.tail).toBe(
+      'guardrails ship: feat/x conflicts with origin/main in 2 file(s). ' +
+        'Rebase it onto origin/main and resolve them, then ship again. ' +
+        'Nothing was pushed.',
+    );
+    expect(hasPushed(calls)).toBe(false);
+  });
+
+  it.each<[string, ExecResult]>([
+    ['cannot answer', failed('usage: git merge-tree', 129)],
+    ['exits 1 naming no file', failed('', 1)],
+    ['merges cleanly, whatever else it printed', ok('4b825dc\nsrc/a.ts\n')],
+  ])(
+    'is behind, not conflicting, when merge-tree %s',
+    async (_label, answer) => {
+      const { exec } = fakeExec({ ...BEHIND, 'git merge-tree': answer });
+      expect(await ship(options(exec))).toMatchObject({
+        state: 'behind',
+        failing: [],
+      });
+    },
+  );
+
+  it('fetches the base, then asks, all before pushing and in the repository it ships', async () => {
+    const { exec, calls } = fakeExec(BEHIND);
+    await ship(options(exec, { baseBranch: 'develop' }));
+    const lines = calls.map((call) => call.line);
+    const fetch = lines.indexOf('git fetch --quiet origin develop');
+    const asked = lines.indexOf(
+      'git merge-base --is-ancestor origin/develop HEAD',
+    );
+    const merged = lines.indexOf(
+      'git merge-tree --write-tree --name-only --no-messages HEAD origin/develop',
+    );
+    expect(fetch).toBeGreaterThan(-1);
+    expect(asked).toBeGreaterThan(fetch);
+    expect(merged).toBeGreaterThan(asked);
+    for (const index of [fetch, asked, merged]) {
+      expect(calls[index]?.cwd).toBe(root);
+    }
+  });
+
+  it('asks after gh and the body file are checked', async () => {
+    const { exec, calls } = fakeExec({
+      ...BEHIND,
+      'gh auth status': failed('You are not logged into any GitHub hosts.'),
+    });
+    await ship(options(exec));
+    expect(calls.some((call) => call.line.startsWith('git fetch'))).toBe(false);
+  });
+
+  it('ships as before when the branch contains the base, without merge-tree', async () => {
+    const { exec, calls } = fakeExec(HAPPY);
+    const status = await ship(options(exec));
+    expect(status.state).toBe('green');
+    expect(status.warnings).toEqual([]);
+    expect(calls.some((call) => call.line.startsWith('git merge-tree'))).toBe(
+      false,
+    );
+  });
+
+  it('ships with a warning when the base cannot be fetched', async () => {
+    const { exec, calls } = fakeExec({
+      ...BEHIND,
+      'git fetch': failed('fatal: unable to access', 128),
+    });
+    const status = await ship(options(exec));
+    expect(status.state).toBe('green');
+    expect(status.warnings).toEqual([
+      'could not fetch origin/main, so whether feat/x is behind it was not checked',
+    ]);
+    expect(calls.some((call) => call.line.startsWith('git merge-base'))).toBe(
+      false,
+    );
+    expect(hasPushed(calls)).toBe(true);
+  });
+
+  it.each<[string, ExecResult]>([
+    ['exits with an error', failed('fatal: Not a valid object name', 128)],
+    ['is killed', { stdout: '', stderr: '', code: 0, signal: 'SIGTERM' }],
+  ])(
+    'ships with a warning when the ancestry check %s',
+    async (_label, answer) => {
+      const { exec, calls } = fakeExec({
+        ...BEHIND,
+        'git merge-base --is-ancestor': answer,
+      });
+      const status = await ship(options(exec));
+      expect(status.state).toBe('green');
+      expect(status.warnings).toEqual([
+        'could not tell whether feat/x contains origin/main, so it was not checked',
+      ]);
+      expect(hasPushed(calls)).toBe(true);
+    },
+  );
+
+  it('ships with a warning when the fetch is killed', async () => {
+    const { exec } = fakeExec({
+      ...BEHIND,
+      'git fetch': { stdout: '', stderr: '', code: 0, signal: 'SIGTERM' },
+    });
+    const status = await ship(options(exec));
+    expect(status.warnings).toEqual([
+      'could not fetch origin/main, so whether feat/x is behind it was not checked',
+    ]);
+  });
+
+  it('keeps the fetch warning ahead of the push and attachment warnings', async () => {
+    const { exec } = fakeExec({
+      ...HAPPY,
+      'git fetch': failed('offline', 128),
+      'gh pr comment': failed('upload failed'),
+    });
+    const status = await ship(
+      options(exec, { attach: [path.join(root, 'demo.png')] }),
+    );
+    expect(status.warnings[0]).toBe(
+      'could not fetch origin/main, so whether feat/x is behind it was not checked',
+    );
+    expect(status.warnings).toHaveLength(2);
+  });
+});
+
+describe('ship: the first failed check ends the wait (#178)', () => {
+  it('watches with --fail-fast', async () => {
+    const { exec, calls } = fakeExec(HAPPY);
+    await ship(options(exec));
+    expect(calls.map((call) => call.line)).toContain(
+      'gh pr checks 42 --watch --fail-fast',
+    );
+  });
+
+  it('is ci-red on a failed check while others are still running', async () => {
+    const { exec } = fakeExec({
+      ...HAPPY,
+      'gh pr checks 42 --watch': failed('X build'),
+      'gh pr checks 42 --json': ok(
+        JSON.stringify([
+          { name: 'build', bucket: 'fail' },
+          { name: 'mutation (shard 3)', bucket: 'pending' },
+        ]),
+      ),
+    });
+    expect(await ship(options(exec))).toMatchObject({
+      state: 'ci-red',
+      failing: ['build'],
+    });
+  });
+
+  it('watches without --fail-fast when gh does not know it', async () => {
+    const { exec, calls } = fakeExec({
+      ...HAPPY,
+      'gh pr checks 42 --watch --fail-fast': failed(
+        'unknown flag: --fail-fast\n\nUsage:  gh pr checks',
+      ),
+    });
+    const status = await ship(options(exec));
+    expect(status.state).toBe('green');
+    const watches = calls
+      .map((call) => call.line)
+      .filter((line) => line.startsWith('gh pr checks 42 --watch'));
+    expect(watches).toEqual([
+      'gh pr checks 42 --watch --fail-fast',
+      'gh pr checks 42 --watch',
+    ]);
+  });
+});
+
+describe('classifyPushFailure: the hook’s own line decides (#178)', () => {
+  it('is a gate block when the uninstalled text appears only in earlier output', () => {
+    expect(
+      classifyPushFailure(
+        failed(
+          // As a test of the hook itself prints it, ahead of the real verdict.
+          `guardrails: push blocked — ${NOT_INSTALLED_MARKER}\n` +
+            'src/a.ts:1 [stryker/survived]\n' +
+            "guardrails: push blocked — resolve violations or run 'guardrails verify'.",
+        ),
+      ),
+    ).toBe('gate-blocked');
+  });
+
+  it('is an error when the last push-blocked line says the checkout is not installed', () => {
+    expect(
+      classifyPushFailure(
+        failed(
+          `guardrails: push blocked — ${NOT_INSTALLED_MARKER}. Run 'npm ci' here, then push again.\n` +
+            'error: failed to push some refs',
+        ),
+      ),
+    ).toBe('error');
+  });
+
+  it('is an error, not a gate block, with no push-blocked line at all', () => {
+    expect(classifyPushFailure(failed(NOT_INSTALLED_MARKER))).toBe('error');
   });
 });

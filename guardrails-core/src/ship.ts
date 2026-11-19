@@ -22,7 +22,14 @@ import { isRecord } from './is-record.js';
 import { parseJsonText } from './json-file.js';
 import { LOCK_TIMEOUT_MARKER } from './mutation-lock.js';
 
-type ShipState = 'green' | 'gate-blocked' | 'lock-timeout' | 'ci-red' | 'error';
+type ShipState =
+  | 'green'
+  | 'gate-blocked'
+  | 'lock-timeout'
+  | 'ci-red'
+  | 'behind'
+  | 'conflicting'
+  | 'error';
 
 export interface ShipStatus {
   state: ShipState;
@@ -30,7 +37,8 @@ export interface ShipStatus {
   pr: number | null;
   url: string | null;
   /**
-  The checks that failed or were cancelled, on `ci-red`.
+  The checks that failed or were cancelled, on `ci-red`; the files that
+  conflict with the base, on `conflicting`.
   */
   failing: string[];
   /**
@@ -116,6 +124,10 @@ function tailOf(text: string): string {
  * Why a push failed, from what the hook printed. A lock timeout is checked
  * first: the hook that timed out also says the push was blocked. An
  * uninstalled checkout says so too, but no gate ran, so it is an error.
+ *
+ * Only the hook's own last `push blocked` line says whether the checkout was
+ * uninstalled (#178). The gate's output runs the project's tests, and text
+ * from anywhere in it once turned a gate block into an `error`.
  */
 export function classifyPushFailure(
   result: ExecResult,
@@ -124,10 +136,13 @@ export function classifyPushFailure(
   if (text.includes(LOCK_TIMEOUT_MARKER)) {
     return 'lock-timeout';
   }
-  if (text.includes(NOT_INSTALLED_MARKER)) {
+  const verdict = text
+    .split('\n')
+    .findLast((line) => line.startsWith(GATE_BLOCK_MARKER));
+  if (verdict === undefined || verdict.includes(NOT_INSTALLED_MARKER)) {
     return 'error';
   }
-  return text.includes(GATE_BLOCK_MARKER) ? 'gate-blocked' : 'error';
+  return 'gate-blocked';
 }
 
 interface PullRequest {
@@ -610,6 +625,27 @@ function judgeChecks(
   return { state: isSettled ? 'green' : 'error', failing, tail };
 }
 
+/**
+What gh says when it is older than a flag ship passes.
+*/
+const UNKNOWN_FLAG = 'unknown flag: --fail-fast';
+
+/**
+ * Watch the checks until they settle or one fails (#178). Without
+ * `--fail-fast` the watch ends only with the slowest check, which can be the
+ * better part of an hour after the first one went red; the checks still
+ * running are left to run. A gh that predates the flag is watched without it.
+ */
+async function watchUntilFirstFailure(
+  options: ShipOptions,
+  number: string,
+): Promise<ExecResult> {
+  const watch = (flags: readonly string[]): Promise<ExecResult> =>
+    gh(options, ['pr', 'checks', number, '--watch', ...flags]);
+  const fast = await watch(['--fail-fast']);
+  return output(fast).includes(UNKNOWN_FLAG) ? watch([]) : fast;
+}
+
 async function watchChecks(
   options: ShipOptions,
   pr: PullRequest,
@@ -620,13 +656,7 @@ async function watchChecks(
   const found = { pr: pr.number, url: pr.url };
   const required = await requiredChecks(options);
   for (let attempt = 0; ; attempt += 1) {
-    const watch = await options.exec(
-      'gh',
-      ['pr', 'checks', number, '--watch'],
-      {
-        cwd: options.repoRoot,
-      },
-    );
+    const watch = await watchUntilFirstFailure(options, number);
     const { checks, listing } = await readChecks(options, number);
     if (checks === undefined) {
       return { ...found, state: 'error', failing: [], tail: tailOf(listing) };
@@ -702,6 +732,74 @@ function bodyFileUnreadable(options: ShipOptions): string | undefined {
   }
 }
 
+/**
+ * Whether the branch can merge into its base, asked BEFORE the push and so
+ * before the gate lock (#178): a branch that is behind fails its required
+ * checks or goes CONFLICTING mid-gate, after the lane has paid for the gate.
+ *
+ * Answers an outcome to stop on, or the warnings to carry on with. A branch
+ * that contains `origin/<base>` cannot conflict with it, so merge-tree runs
+ * only for one that does not. Anything git cannot answer -- an offline fetch,
+ * a missing ref, a kill -- ships as before with a warning: this check saves a
+ * gate, and must never be the reason a push did not happen.
+ */
+async function baseCheck(
+  options: ShipOptions,
+  branch: string,
+): Promise<Outcome | string[]> {
+  const git = (args: string[]): Promise<ExecResult> =>
+    options.exec('git', args, { cwd: options.repoRoot });
+  const base = `origin/${options.baseBranch}`;
+  const fetched = await git(['fetch', '--quiet', 'origin', options.baseBranch]);
+  if (fetched.code !== 0 || fetched.signal !== undefined) {
+    return [
+      `could not fetch ${base}, so whether ${branch} is behind it was not checked`,
+    ];
+  }
+  const contained = await git(['merge-base', '--is-ancestor', base, 'HEAD']);
+  if (contained.signal === undefined && contained.code === 0) {
+    return [];
+  }
+  // A kill reports exit 0, so the check above already passed it over.
+  if (contained.code !== 1) {
+    return [
+      `could not tell whether ${branch} contains ${base}, so it was not checked`,
+    ];
+  }
+  const merged = await git([
+    'merge-tree',
+    '--write-tree',
+    '--name-only',
+    '--no-messages',
+    'HEAD',
+    base,
+  ]);
+  // Exit 1 is a conflict; the tree id comes first, then one file per line.
+  const conflicted =
+    merged.code === 1
+      ? merged.stdout
+          .split('\n')
+          .slice(1)
+          .filter((line) => line !== '')
+      : [];
+  if (conflicted.length > 0) {
+    return {
+      ...failure(
+        'conflicting',
+        `guardrails ship: ${branch} conflicts with ${base} in ` +
+          `${String(conflicted.length)} file(s). Rebase it onto ${base} and ` +
+          'resolve them, then ship again. Nothing was pushed.',
+      ),
+      failing: conflicted,
+    };
+  }
+  return failure(
+    'behind',
+    `guardrails ship: ${branch} does not contain ${base}. Rebase it onto ` +
+      `${base} (or merge ${base} into it), then ship again. Nothing was pushed.`,
+  );
+}
+
 async function shipOutcome(
   options: ShipOptions,
   branch: string,
@@ -725,6 +823,10 @@ async function shipOutcome(
       warnings: [],
     };
   }
+  const based = await baseCheck(options, branch);
+  if (!Array.isArray(based)) {
+    return { ...based, warnings: [] };
+  }
   const pushed = await pushHead(options, branch, sha);
   if (!Array.isArray(pushed)) {
     return { ...pushed, warnings: [] };
@@ -735,7 +837,7 @@ async function shipOutcome(
   }
   return {
     ...(await watchChecks(options, found.pr, sha)),
-    warnings: [...pushed, ...found.warnings],
+    warnings: [...based, ...pushed, ...found.warnings],
   };
 }
 
