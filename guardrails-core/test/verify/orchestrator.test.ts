@@ -3289,6 +3289,28 @@ describe('stryker fails open twice (defect 3)', () => {
     expect(reported).toEqual([mutationRun]);
   });
 
+  it('records a run whose summary and report cannot be read as having neither (#176)', async () => {
+    const { exec } = execWithStryker({ stdout: '', stderr: '', code: 1 });
+    const { mutationRun } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      profile: 'commit',
+      readFile: () => Promise.reject(new Error('ENOENT')),
+      writeFile: () => Promise.resolve(),
+      removeFile: () => Promise.resolve(),
+    });
+    expect(mutationRun).toEqual({
+      didRun: true,
+      stryker: {
+        files: 1,
+        cache: { local: 'none', seed: 'off' },
+        report: 'missing',
+      },
+      concurrency: 'default',
+    });
+  });
+
   it('returns no run-log record when nothing is in mutation scope (#176)', async () => {
     const { exec } = fakeExec();
     const result = await runVerify({

@@ -344,19 +344,26 @@ function withStrykerHandler(signals: FakeSignals): string[] {
 describe('ProgressReporter: the run summary (#176)', () => {
   const SUMMARY_FILE = '/repo/reports/guardrails-run.json';
 
+  /**
+  The summaries written, and the path of every write to neither file.
+  */
   function summaryFake(environment: Record<string, string | undefined>): {
     f: Fake;
     summaries: unknown[];
+    elsewhere: string[];
   } {
     const summaries: unknown[] = [];
+    const elsewhere: string[] = [];
     const f = fake(environment, {
       write: (filePath, content) => {
         if (filePath === SUMMARY_FILE) {
           summaries.push(JSON.parse(content));
+        } else if (filePath !== HOLDER_FILE) {
+          elsewhere.push(filePath);
         }
       },
     });
-    return { f, summaries };
+    return { f, summaries, elsewhere };
   }
 
   it('writes when the plan is ready and when the report is, with the start', () => {
@@ -390,11 +397,26 @@ describe('ProgressReporter: the run summary (#176)', () => {
       { GUARDRAILS_RUN_SUMMARY_FILE: SUMMARY_FILE },
     ],
   ])('writes no summary %s', (_label, environment) => {
-    const { f, summaries } = summaryFake(environment);
+    const { f, summaries, elsewhere } = summaryFake(environment);
     const reporter = new ProgressReporter(f.io);
     reporter.onMutationTestingPlanReady(plans(1, 0));
     reporter.onMutationTestReportReady(...report);
     expect(summaries).toEqual([]);
+    expect(elsewhere).toEqual([]);
+  });
+
+  it('writes the report’s summary once, however often the report is ready', () => {
+    const { f, summaries } = summaryFake({
+      ...LOCK_ENV,
+      GUARDRAILS_RUN_SUMMARY_FILE: SUMMARY_FILE,
+    });
+    const reporter = new ProgressReporter(f.io);
+    reporter.onMutationTestReportReady(...report);
+    f.advance(1000);
+    reporter.onMutationTestReportReady(...report);
+    expect(summaries).toEqual([
+      { startedAt: 1_000_000, reportReadyAt: 1_000_000, total: 0, reused: 0 },
+    ]);
   });
 
   it('never fails the run over a summary it cannot write', () => {

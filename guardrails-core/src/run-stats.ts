@@ -10,6 +10,8 @@
  */
 import type { GateRow, RunRow, ShipRow } from './run-log.js';
 
+type StrykerPart = NonNullable<GateRow['stryker']>;
+
 export interface Spread {
   median: number;
   p90: number;
@@ -100,13 +102,11 @@ function tally(keys: readonly string[]): Record<string, number> {
 /**
 Did this gate's stryker start from a usable cache?
 */
-function isWarm(row: GateRow): boolean {
-  const cache = row.stryker?.cache;
+function isWarm({ cache }: StrykerPart): boolean {
   return cache?.local === 'kept' || cache?.seed === 'used';
 }
 
-function coldReason(row: GateRow): string {
-  const cache = row.stryker?.cache;
+function coldReason({ cache }: StrykerPart): string {
   if (cache?.why !== undefined) {
     return cache.why;
   }
@@ -114,8 +114,8 @@ function coldReason(row: GateRow): string {
 }
 
 function rungSummary(rows: readonly GateRow[]): RungSummary {
-  const mutated = rows.filter((row) => row.stryker !== undefined);
-  const cold = mutated.filter((row) => !isWarm(row));
+  const mutated = present(rows.map((row) => row.stryker));
+  const cold = mutated.filter((stryker) => !isWarm(stryker));
   return {
     runs: rows.length,
     outcomes: tally(rows.map((row) => row.outcome)),
@@ -126,7 +126,7 @@ function rungSummary(rows: readonly GateRow[]): RungSummary {
     mutated: mutated.length,
     warm: mutated.length - cold.length,
     coldReasons: Object.entries(
-      tally(cold.map((row) => coldReason(row))),
+      tally(cold.map((stryker) => coldReason(stryker))),
     ).toSorted(([, left], [, right]) => right - left),
   };
 }
@@ -143,11 +143,11 @@ function shipSummary(rows: readonly ShipRow[]): ShipSummary {
 
 const DEPTHS = ['0', '1', '2', '3+'] as const;
 
-function depthBucket(row: GateRow): string | undefined {
-  const depth = row.lock?.depthOnArrival;
-  if (depth === undefined) {
+function depthBucket({ lock }: GateRow): string | undefined {
+  if (lock === undefined) {
     return undefined;
   }
+  const depth = lock.depthOnArrival;
   return depth >= 3 ? '3+' : String(depth);
 }
 
@@ -171,14 +171,12 @@ function buckets(
   bucketOf: (row: GateRow) => string | undefined,
 ): Bucket[] {
   return names.map((bucket) => {
-    const inBucket = rows.filter(
-      (row) => row.stryker?.dryRunMs !== undefined && bucketOf(row) === bucket,
+    const dryRuns = present(
+      rows
+        .filter((row) => bucketOf(row) === bucket)
+        .map((row) => row.stryker?.dryRunMs),
     );
-    return {
-      bucket,
-      runs: inBucket.length,
-      dryRunMs: spreadOf(present(inBucket.map((row) => row.stryker?.dryRunMs))),
-    };
+    return { bucket, runs: dryRuns.length, dryRunMs: spreadOf(dryRuns) };
   });
 }
 
@@ -262,16 +260,14 @@ function rungText(rung: string, summary: RungSummary): string[] {
 }
 
 function bucketText(title: string, rows: readonly Bucket[]): string[] {
-  const filled = rows.filter((row) => row.dryRunMs !== undefined);
-  return filled.length === 0
-    ? []
-    : [
-        title,
-        ...filled.map(
-          (row) =>
-            `  ${row.bucket}: ${String(row.runs)} run(s), median ${duration(row.dryRunMs?.median ?? 0)}`,
-        ),
-      ];
+  const lines = rows.flatMap(({ bucket, runs, dryRunMs }) =>
+    dryRunMs === undefined
+      ? []
+      : [
+          `  ${bucket}: ${String(runs)} run(s), median ${duration(dryRunMs.median)}`,
+        ],
+  );
+  return lines.length === 0 ? [] : [title, ...lines];
 }
 
 /**

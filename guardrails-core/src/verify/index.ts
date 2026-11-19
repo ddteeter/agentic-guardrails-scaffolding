@@ -109,6 +109,7 @@ import {
 } from './mutate-ranges.js';
 import {
   prepareIncrementalCache,
+  readOrEmpty,
   writeFingerprintSidecar,
   type CacheOutcome,
 } from './prepare-cache.js';
@@ -1789,8 +1790,12 @@ async function recordOf(
 ): Promise<MutationRunRecord> {
   const { readFile, repoRoot } = context;
   const didRun = locked.kind === 'ran';
+  // Read whether or not stryker ran: `mutationRunRecord` ignores both texts
+  // of a run that did not.
+  // `prepare-cache.ts`'s reader, whose `''` for a missing file is pinned by
+  // the cache outcome there; here no caller could tell `''` from nothing.
   const read = (filePath: string): Promise<string> =>
-    didRun ? readOrEmptyText(readFile, filePath) : Promise.resolve('');
+    readOrEmpty({ readFile, repoRoot }, filePath);
   const [summaryText, reportText] = await Promise.all([
     read(runSummaryPath(repoRoot)),
     read(path.join(repoRoot, STRYKER_REPORT_PATH)),
@@ -1806,20 +1811,6 @@ async function recordOf(
     }),
     concurrency: context.concurrency,
   };
-}
-
-/**
-`filePath`'s text, or `''` when it cannot be read.
-*/
-async function readOrEmptyText(
-  readFile: (filePath: string) => Promise<string>,
-  filePath: string,
-): Promise<string> {
-  try {
-    return await readFile(filePath);
-  } catch {
-    return '';
-  }
 }
 
 function readUtf8(filePath: string): Promise<string> {
@@ -1878,7 +1869,7 @@ function writeStderrLine(line: string): void {
 }
 
 async function runStryker(
-  options: VerifyOptions,
+  options: AnalyzerOptions,
   resolveBin: (tool: string) => string,
   files: string[],
 ): Promise<Violation[]> {
@@ -2015,7 +2006,7 @@ async function runStryker(
     cwd: repoRoot,
     progress: warn,
   });
-  options.onMutationRun?.(
+  options.onMutationRun(
     await recordOf(locked, {
       files: inScope.length,
       cache,
@@ -2158,6 +2149,14 @@ async function strykerRunVerdict(
 
 type Scope = 'whole-project' | 'changed-files';
 
+/**
+ * `VerifyOptions` as an analyzer receives them: `runVerify` always listens for
+ * the mutation run, so a runner reports it unconditionally.
+ */
+type AnalyzerOptions = VerifyOptions & {
+  onMutationRun: (record: MutationRunRecord) => void;
+};
+
 interface Analyzer {
   tool: string;
   /** npm package providing the binary — named in the missing-analyzer message
@@ -2179,7 +2178,7 @@ interface Analyzer {
    *  (and receives the list); 'whole-project' runs whenever the rung is active. */
   scope: Scope;
   run: (
-    options: VerifyOptions,
+    options: AnalyzerOptions,
     resolveBin: (tool: string) => string,
     files: string[],
   ) => Promise<Violation[]>;
@@ -2547,7 +2546,7 @@ export function isAnalyzerSelected(
 export async function runVerify(options: VerifyOptions): Promise<VerifyResult> {
   const { exec, failures } = trackSpawnFailures(options.exec);
   let mutationRun: MutationRunRecord | undefined;
-  const tracked: VerifyOptions = {
+  const tracked: AnalyzerOptions = {
     ...options,
     exec,
     onMutationRun: (record) => {

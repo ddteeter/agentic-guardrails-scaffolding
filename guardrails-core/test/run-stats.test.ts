@@ -55,6 +55,19 @@ function ship(over: Partial<ShipRow> = {}): ShipRow {
   };
 }
 
+/**
+A gate that ran cold, for `why`.
+*/
+function coldFor(why: string): GateRow {
+  return gate({
+    stryker: {
+      files: 1,
+      cache: { local: 'none', seed: 'refused', why },
+      report: 'read',
+    },
+  });
+}
+
 describe('spreadOf', () => {
   it('gives the median and the 90th percentile by nearest rank', () => {
     expect(spreadOf([5, 1, 4, 2, 3, 10, 9, 8, 7, 6])).toEqual({
@@ -186,6 +199,80 @@ describe('summarizeRuns', () => {
     ]);
   });
 
+  it('includes a run that started exactly at either edge of the window, and none after it', () => {
+    const edges = [
+      gate({ startedAt: '2026-11-12T12:00:00.000Z' }),
+      gate({ startedAt: '2026-11-19T12:00:00.000Z' }),
+      gate({ startedAt: '2026-11-19T12:00:00.001Z' }),
+      gate({ startedAt: '2026-11-12T11:59:59.999Z' }),
+    ];
+    expect(summarizeRuns(edges, { now: NOW, sinceMs: WEEK }).rows).toBe(2);
+  });
+
+  it('lists cold reasons most common first', () => {
+    const reasons = summarizeRuns(
+      [
+        coldFor('once'),
+        coldFor('thrice'),
+        coldFor('twice'),
+        coldFor('thrice'),
+        coldFor('twice'),
+        coldFor('thrice'),
+      ],
+      { now: NOW, sinceMs: WEEK },
+    ).rungs.push?.coldReasons;
+    expect(reasons).toEqual([
+      ['thrice', 3],
+      ['twice', 2],
+      ['once', 1],
+    ]);
+  });
+
+  it('counts a run with no cache record as cold, for an unknown reason', () => {
+    const uncached = gate({ stryker: { files: 1, report: 'missing' } });
+    expect(
+      summarizeRuns([uncached], { now: NOW, sinceMs: WEEK }).rungs.push,
+    ).toMatchObject({
+      mutated: 1,
+      warm: 0,
+      coldReasons: [['local cache unknown, seed unknown', 1]],
+    });
+  });
+
+  it('buckets no run without a lock record by depth, nor one without a usable machine by load', () => {
+    const unbucketed = [
+      gate({ lock: undefined, machine: undefined }),
+      gate({
+        lock: undefined,
+        machine: {
+          cores: 0,
+          concurrency: 'default',
+          start: { load1: 2, freeMb: 1 },
+          end: { load1: 2, freeMb: 1 },
+        },
+      }),
+    ];
+    const stats = summarizeRuns(unbucketed, { now: NOW, sinceMs: WEEK });
+    expect(stats.byDepth.map((bucket) => bucket.runs)).toEqual([0, 0, 0, 0]);
+    expect(stats.byLoad.map((bucket) => bucket.runs)).toEqual([0, 0, 0]);
+  });
+
+  it('puts a load of exactly half a core in the middle bucket', () => {
+    const atHalf = gate({
+      machine: {
+        cores: 4,
+        concurrency: 'default',
+        start: { load1: 2, freeMb: 1 },
+        end: { load1: 2, freeMb: 1 },
+      },
+    });
+    expect(
+      summarizeRuns([atHalf], { now: NOW, sinceMs: WEEK }).byLoad.map(
+        (bucket) => bucket.runs,
+      ),
+    ).toEqual([0, 1, 0]);
+  });
+
   it('puts a load of exactly one per core in the middle bucket', () => {
     const atOne = gate({
       machine: {
@@ -244,6 +331,24 @@ describe('formatStats', () => {
         '  0: 2 run(s), median 30s',
         'dry run by load at start:',
         '  under 0.5 per core: 2 run(s), median 30s',
+        '',
+      ].join('\n'),
+    );
+  });
+
+  it('prints nothing for a rung’s missing times, mutation or buckets, nor for no ships', () => {
+    const bare = gate({
+      rung: 'commit',
+      lock: undefined,
+      stryker: undefined,
+      machine: undefined,
+    });
+    expect(
+      formatStats(summarizeRuns([bare], { now: NOW, sinceMs: WEEK })),
+    ).toBe(
+      [
+        'guardrails stats: 1 run(s) from 2026-11-12T12:00:00.000Z to 2026-11-19T12:00:00.000Z',
+        'commit: 1 run(s) (pass 1)',
         '',
       ].join('\n'),
     );

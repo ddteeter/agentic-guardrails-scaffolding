@@ -99,6 +99,7 @@ describe('mutationRunRecord', () => {
       heldMs: 1000,
       depthOnArrival: 0,
     });
+    expect(record.lock).not.toHaveProperty('holderOnArrival');
     expect(record.stryker).not.toHaveProperty('dryRunMs');
     expect(record.stryker).not.toHaveProperty('reused');
   });
@@ -135,6 +136,24 @@ describe('mutationRunRecord', () => {
     expect(record.stryker).not.toHaveProperty('mutatingMs');
     expect(record.stryker).not.toHaveProperty('mutants');
     expect(record).not.toHaveProperty('lock');
+  });
+
+  it('times no phase of a run whose summary has no plan', () => {
+    const record = mutationRunRecord({
+      files: 1,
+      cache: CACHE,
+      didRun: true,
+      summaryText: JSON.stringify({
+        startedAt: 0,
+        reportReadyAt: 90,
+        total: 0,
+        reused: 1,
+      }),
+      reportText: REPORT,
+    });
+    expect(record.stryker).toMatchObject({ reused: 1, report: 'read' });
+    expect(record.stryker).not.toHaveProperty('dryRunMs');
+    expect(record.stryker).not.toHaveProperty('mutatingMs');
   });
 
   it('only queued, and read nothing, when the run never got the lock', () => {

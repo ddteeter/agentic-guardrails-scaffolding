@@ -165,11 +165,14 @@ export function appendRun(file: string, row: RunRow): string | undefined {
 
 type Fields = Record<string, unknown>;
 
+function isFiniteNumber(value: unknown): value is number {
+  // `Number.isFinite` does not coerce, so it is false for every non-number.
+  return Number.isFinite(value);
+}
+
 function numberOf(fields: Fields, key: string): number | undefined {
   const value = fields[key];
-  return typeof value === 'number' && Number.isFinite(value)
-    ? value
-    : undefined;
+  return isFiniteNumber(value) ? value : undefined;
 }
 
 function stringOf(fields: Fields, key: string): string | undefined {

@@ -93,8 +93,8 @@ export function runSummaryPath(repoRoot: string): string {
  */
 export interface RunSummary {
   startedAt: number;
-  planReadyAt?: number;
-  reportReadyAt?: number;
+  planReadyAt?: number | undefined;
+  reportReadyAt?: number | undefined;
   total: number;
   reused: number;
 }

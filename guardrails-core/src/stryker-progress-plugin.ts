@@ -166,7 +166,7 @@ interface Target {
   /**
   Where the run summary goes (#176); absent when the env names no file.
   */
-  summaryFile?: string;
+  summaryFile?: string | undefined;
 }
 
 /**
@@ -190,7 +190,7 @@ function targetFrom(io: ProgressIo): Target | undefined {
   }
   return {
     file,
-    ...(summaryFile !== undefined && summaryFile !== '' && { summaryFile }),
+    summaryFile: summaryFile === '' ? undefined : summaryFile,
     holder: {
       repo,
       rung,
@@ -281,10 +281,8 @@ export class ProgressReporter {
     const { holder } = target;
     const summary: RunSummary = {
       startedAt: holder.startedAt,
-      ...(holder.mutatingSince !== undefined && {
-        planReadyAt: holder.mutatingSince,
-      }),
-      ...(reportReadyAt !== undefined && { reportReadyAt }),
+      planReadyAt: holder.mutatingSince,
+      reportReadyAt,
       total: holder.total,
       reused: holder.reused,
     };

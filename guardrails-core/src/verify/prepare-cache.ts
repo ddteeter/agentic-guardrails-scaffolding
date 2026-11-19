@@ -108,7 +108,10 @@ export interface CacheRun {
   invalidation: CacheInvalidation;
 }
 
-async function readOrEmpty(
+/**
+`filePath`'s text, or `''` when it cannot be read.
+*/
+export async function readOrEmpty(
   seams: ReadSeams,
   filePath: string,
 ): Promise<string> {

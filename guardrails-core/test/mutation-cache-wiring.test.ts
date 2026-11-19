@@ -18,7 +18,7 @@ import {
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { Exec } from '../src/exec.js';
 import { runCommitGate, runStopGate } from '../src/gate.js';
@@ -351,5 +351,33 @@ describe('the gates’ rows in the run log', () => {
       mutationLock: { path: path.join(root, 'gate.lock'), config: lockConfig },
     });
     expect(logged()[0]).toMatchObject({ outcome });
+  });
+
+  it('warns on stderr, and still answers, when its row cannot be written', async () => {
+    mkdirSync(path.join(root, 'gate.lock.runs.jsonl'));
+    const stderr = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
+    try {
+      const result = await runCommitGate({
+        repoRoot: root,
+        baseBranch: 'main',
+        exec: passing,
+        config,
+        resolveBin: (tool) => tool,
+        analyzers: ONLY_STRYKER,
+        mutationLock: {
+          path: path.join(root, 'gate.lock'),
+          config: lockConfig,
+        },
+      });
+      expect(result).toBeDefined();
+      const lines = stderr.mock.calls.map(([chunk]) => String(chunk));
+      expect(
+        lines.filter((line) =>
+          /^guardrails: could not write the run log \(.+\)\.\n$/.test(line),
+        ),
+      ).toHaveLength(1);
+    } finally {
+      stderr.mockRestore();
+    }
   });
 });

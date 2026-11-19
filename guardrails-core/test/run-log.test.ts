@@ -142,6 +142,54 @@ describe('appendRun and parseRuns', () => {
     });
   });
 
+  it.each<[string, Record<string, unknown>]>([
+    ['without a rung', { ...GATE, rung: undefined }],
+    ['without an outcome', { ...GATE, outcome: 7 }],
+    ['without a state', { ...SHIP, state: undefined }],
+    ['without a push time', { ...SHIP, pushMs: '40m' }],
+    ['of a ship row’s fields but another kind', { ...SHIP, kind: 'other' }],
+  ])('skips a row %s', (_label, row) => {
+    const text = [JSON.stringify(row), JSON.stringify(SHIP)].join('\n');
+    expect(parseRuns(text)).toEqual([SHIP]);
+  });
+
+  it('skips a ship row whose push time overflows to infinity', () => {
+    const text = JSON.stringify(SHIP).replace(
+      '"pushMs":2400000',
+      '"pushMs":1e999',
+    );
+    expect(text).toContain('1e999');
+    expect(parseRuns(`${text}\n${JSON.stringify(GATE)}`)).toEqual([GATE]);
+  });
+
+  it.each<[string, Record<string, unknown>]>([
+    ['its cores', { ...MACHINE, cores: 'ten' }],
+    ['its concurrency', { ...MACHINE, concurrency: undefined }],
+    ['its start', { ...MACHINE, start: { load1: 6.1 } }],
+    ['its end', { ...MACHINE, end: 'later' }],
+  ])('drops a machine part missing %s', (_label, machine) => {
+    const [parsed] = parseRuns(JSON.stringify({ ...SHIP, machine }));
+    expect(parsed).toEqual({ ...SHIP, machine: undefined });
+    expect(parsed).not.toHaveProperty('machine');
+  });
+
+  it.each<[string, Record<string, unknown>]>([
+    ['without a file count', { ...GATE.stryker, files: undefined }],
+    ['with a report of no known state', { ...GATE.stryker, report: 'lost' }],
+    ['without a report state', { ...GATE.stryker, report: undefined }],
+  ])('drops a stryker part %s', (_label, stryker) => {
+    const [parsed] = parseRuns(JSON.stringify({ ...GATE, stryker }));
+    expect(parsed).toEqual({ ...GATE, stryker: undefined });
+    expect(parsed).not.toHaveProperty('stryker');
+  });
+
+  it('keeps a stryker part whose report went missing', () => {
+    const stryker = { files: 2, report: 'missing' };
+    expect(parseRuns(JSON.stringify({ ...GATE, stryker }))).toEqual([
+      { ...GATE, stryker },
+    ]);
+  });
+
   it('reads a ship row with no PR, gate or CI time', () => {
     const row: ShipRow = {
       ...SHIP,

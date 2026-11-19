@@ -13,6 +13,7 @@ import {
 import { parseIncrementalCache } from '../../src/verify/incremental-cache.js';
 import {
   fetchSeed,
+  fetchSeedOutcome,
   nodeSeedSeams,
   type SeedSeams,
 } from '../../src/verify/seed-cache.js';
@@ -313,6 +314,23 @@ describe('fetchSeed', () => {
     expect(seededFiles(await fetchSeed(fake.seams, settings, CURRENT))).toEqual(
       ['src/a.ts'],
     );
+  });
+});
+
+describe('fetchSeedOutcome', () => {
+  it('answers why there is no seed, as the warning words it', async () => {
+    const fake = fakeSeams(uploaded('a.json', shard('src/a.ts')), { code: 4 });
+    expect(await fetchSeedOutcome(fake.seams, settings, CURRENT)).toEqual({
+      why: 'failed (exit 4)',
+    });
+  });
+
+  it('answers the seed when there is one', async () => {
+    const fake = fakeSeams(uploaded('a.json', shard('src/a.ts')));
+    const outcome = await fetchSeedOutcome(fake.seams, settings, CURRENT);
+    expect(seededFiles('seed' in outcome ? outcome.seed : undefined)).toEqual([
+      'src/a.ts',
+    ]);
   });
 });
 
