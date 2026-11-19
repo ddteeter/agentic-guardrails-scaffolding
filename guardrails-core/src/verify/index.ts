@@ -92,7 +92,7 @@ import {
   mergeChangedFiles,
   nestedWorktreePaths,
   parseFileList,
-  resolveBaseReference,
+  resolveDiffBase,
 } from './git.js';
 import { parseKnipJson } from './knip-adapter.js';
 import { parseNpmLsJson } from './npm-peers-adapter.js';
@@ -460,7 +460,7 @@ function withReportCheck(
  *  changed" — so every diff-scoped analyzer is skipped for want of a file list
  *  and the whole run comes back clean without having checked anything.
  *
- *  No spawn-failure guard is needed here any more: `resolveBaseReference` runs
+ *  No spawn-failure guard is needed here any more: `resolveDiffBase` runs
  *  two git calls before either of these and returns early on `spawnFailed`, so
  *  by the time this is reached git has already been proven to start. Keeping a
  *  `spawnFailed !== true` half would be unreachable code that no test can
@@ -500,7 +500,7 @@ async function changedTypeScriptFiles(
       violations: [],
     };
   }
-  const base = await resolveBaseReference(exec, repoRoot, baseBranch);
+  const base = await resolveDiffBase(exec, repoRoot, baseBranch);
   if (base.spawnFailed === true) {
     // A spawn failure is git being absent entirely; runVerify reports that
     // separately via its own tracker, so stay silent here rather than blaming

@@ -12,6 +12,7 @@ import {
   parseFileList,
   parseNestedWorktrees,
   resolveBaseReference,
+  resolveDiffBase,
 } from '../../src/verify/git.js';
 
 describe('parseFileList', () => {
@@ -234,6 +235,127 @@ describe('resolveBaseReference', () => {
     expect(
       await resolveBaseReference(spawnFailedExec, '/repo', 'main'),
     ).toEqual({
+      spawnFailed: true,
+    });
+  });
+});
+
+const SHA1 = 'a'.repeat(40);
+const SHA256 = 'b'.repeat(64);
+
+/**
+ * A git that resolves `resolvable` refs and answers `merge-base` with
+ * `mergeBase`, recording each merge-base call's arguments.
+ */
+function diffBaseExec(
+  resolvable: readonly string[],
+  mergeBase: ExecResult,
+): { exec: Exec; mergeBaseCalls: string[][] } {
+  const mergeBaseCalls: string[][] = [];
+  const exec: Exec = (_command, args) => {
+    if (args[0] === 'merge-base') {
+      mergeBaseCalls.push(args);
+      return Promise.resolve(mergeBase);
+    }
+    const ref = (args.at(-1) ?? '').replace('^{commit}', '');
+    return Promise.resolve({
+      stdout: '',
+      stderr: '',
+      code: resolvable.includes(ref) ? 0 : 1,
+    });
+  };
+  return { exec, mergeBaseCalls };
+}
+
+const answered = (stdout: string): ExecResult => ({
+  stdout: `${stdout}\n`,
+  stderr: '',
+  code: 0,
+});
+
+describe('resolveDiffBase', () => {
+  it('measures from the merge-base of HEAD with both forms of the base', async () => {
+    const { exec, mergeBaseCalls } = diffBaseExec(
+      ['main', 'origin/main'],
+      answered(SHA1),
+    );
+    expect(await resolveDiffBase(exec, '/repo', 'main')).toEqual({
+      ref: SHA1,
+    });
+    expect(mergeBaseCalls).toEqual([
+      ['merge-base', 'HEAD', 'main', 'origin/main'],
+    ]);
+  });
+
+  it('accepts a SHA-256 object id', async () => {
+    const { exec } = diffBaseExec(['main'], answered(SHA256));
+    expect(await resolveDiffBase(exec, '/repo', 'main')).toEqual({
+      ref: SHA256,
+    });
+  });
+
+  it('asks with the local base alone when origin has none', async () => {
+    const { exec, mergeBaseCalls } = diffBaseExec(['main'], answered(SHA1));
+    await resolveDiffBase(exec, '/repo', 'main');
+    expect(mergeBaseCalls).toEqual([['merge-base', 'HEAD', 'main']]);
+  });
+
+  it('asks with origin alone when only origin resolves', async () => {
+    const { exec, mergeBaseCalls } = diffBaseExec(
+      ['origin/develop'],
+      answered(SHA1),
+    );
+    await resolveDiffBase(exec, '/repo', 'develop');
+    expect(mergeBaseCalls).toEqual([['merge-base', 'HEAD', 'origin/develop']]);
+  });
+
+  it('leaves out an origin ref whose probe was killed', async () => {
+    const mergeBaseCalls: string[][] = [];
+    const exec: Exec = (_command, args) => {
+      if (args[0] === 'merge-base') {
+        mergeBaseCalls.push(args);
+        return Promise.resolve(answered(SHA1));
+      }
+      const isKilled = args.at(-1)?.startsWith('origin/') === true;
+      return Promise.resolve({
+        stdout: '',
+        stderr: '',
+        code: 0,
+        ...(isKilled && { signal: 'SIGTERM' as const }),
+      });
+    };
+    await resolveDiffBase(exec, '/repo', 'main');
+    expect(mergeBaseCalls).toEqual([['merge-base', 'HEAD', 'main']]);
+  });
+
+  it.each<[string, ExecResult]>([
+    ['exits non-zero', { stdout: `${SHA1}\n`, stderr: '', code: 1 }],
+    [
+      'is killed',
+      { stdout: `${SHA1}\n`, stderr: '', code: 0, signal: 'SIGTERM' },
+    ],
+    ['prints nothing', answered('')],
+    ['prints a short id', answered('a'.repeat(39))],
+    ['prints a long one', answered('a'.repeat(41))],
+    ['prints something else', answered(`x${'a'.repeat(39)}`)],
+    ['prints an id with a tail', answered(`${SHA1} extra`)],
+    // 64 characters, but the last 24 are not hex: not a SHA-256 id.
+    ['prints a 64-character non-id', answered(`${SHA1}${'g'.repeat(24)}`)],
+  ])(
+    'falls back to the resolved ref when merge-base %s',
+    async (_label, result) => {
+      const { exec } = diffBaseExec(['main', 'origin/main'], result);
+      expect(await resolveDiffBase(exec, '/repo', 'main')).toEqual({
+        ref: 'main',
+      });
+    },
+  );
+
+  it('answers what the base resolution did when no base resolves', async () => {
+    const { exec, mergeBaseCalls } = diffBaseExec([], answered(SHA1));
+    expect(await resolveDiffBase(exec, '/repo', 'main')).toEqual({});
+    expect(mergeBaseCalls).toEqual([]);
+    expect(await resolveDiffBase(spawnFailedExec, '/repo', 'main')).toEqual({
       spawnFailed: true,
     });
   });

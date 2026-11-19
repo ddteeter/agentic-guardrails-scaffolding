@@ -65,6 +65,71 @@ export async function resolveBaseReference(
   return {};
 }
 
+/** A full object id, SHA-1 or SHA-256 — the only answer `merge-base` gives
+ *  that this accepts. */
+const OBJECT_ID = /^[\da-f]{40}(?:[\da-f]{24})?$/;
+
+/**
+ * The commit the branch's change set is measured from (#179): the newest one
+ * HEAD shares with the base branch, locally or on `origin`.
+ *
+ * A diff against the base REF measures from wherever that ref happens to be.
+ * When local `main` is behind the commit the branch forked from, the diff holds
+ * every upstream change the branch inherited; when it is ahead, every change
+ * main gained since reads as the branch's own. Either way the diff-scoped
+ * analyzers run over files the branch never touched, and stryker can block on
+ * survivors that are not its.
+ *
+ * Both forms of the base are passed to one `merge-base`, which reads the second
+ * and later commits as one hypothetical merge of them: the answer is the
+ * newest commit HEAD shares with EITHER, so a local `main` that never pulled
+ * cannot pull the base back behind `origin/main`'s fork point.
+ *
+ * Anything but an object id falls back to the resolved ref — a shallow clone
+ * with no common history, a killed or failed `merge-base` — which is what the
+ * gate measured from before this, never something narrower.
+ */
+export async function resolveDiffBase(
+  exec: Exec,
+  repoRoot: string,
+  baseBranch: string,
+): Promise<BaseReferenceResolution> {
+  const base = await resolveBaseReference(exec, repoRoot, baseBranch);
+  if (base.ref === undefined) {
+    return base;
+  }
+  const remote = `origin/${baseBranch}`;
+  const candidates =
+    base.ref === remote
+      ? [remote]
+      : [base.ref, ...(await ifResolves(exec, repoRoot, remote))];
+  const mergeBase = await exec('git', ['merge-base', 'HEAD', ...candidates], {
+    cwd: repoRoot,
+  });
+  const sha = mergeBase.stdout.trim();
+  return mergeBase.code === 0 &&
+    mergeBase.signal === undefined &&
+    OBJECT_ID.test(sha)
+    ? { ref: sha }
+    : base;
+}
+
+/**
+`[ref]` when `ref` names a commit, else `[]`.
+*/
+async function ifResolves(
+  exec: Exec,
+  repoRoot: string,
+  ref: string,
+): Promise<string[]> {
+  const result = await exec(
+    'git',
+    ['rev-parse', '--verify', '--quiet', `${ref}${COMMIT_PEEL}`],
+    { cwd: repoRoot },
+  );
+  return result.code === 0 && result.signal === undefined ? [ref] : [];
+}
+
 export function parseFileList(stdout: string): string[] {
   return stdout
     .split('\n')
