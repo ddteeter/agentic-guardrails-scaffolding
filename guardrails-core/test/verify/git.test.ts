@@ -339,6 +339,8 @@ describe('resolveDiffBase', () => {
     ['prints a long one', answered('a'.repeat(41))],
     ['prints something else', answered(`x${'a'.repeat(39)}`)],
     ['prints an id with a tail', answered(`${SHA1} extra`)],
+    // 64 characters, but the last 24 are not hex: not a SHA-256 id.
+    ['prints a 64-character non-id', answered(`${SHA1}${'g'.repeat(24)}`)],
   ])(
     'falls back to the resolved ref when merge-base %s',
     async (_label, result) => {
