@@ -26,6 +26,7 @@ import {
   strykerVersionFrom,
   isSameFingerprint,
   type CacheFingerprint,
+  type DependencyEvidence,
   type Lockfile,
 } from './cache-fingerprint.js';
 import { isTestFile, isTestSupportFile } from './git.js';
@@ -78,6 +79,12 @@ export interface CacheSeams {
   seed?:
     | ((fingerprint: CacheFingerprint) => Promise<string | undefined>)
     | undefined;
+  /**
+   * The installed versions that can change a verdict (#177,
+   * `verdict-dependencies.ts`), or `undefined` when they cannot be read.
+   * Absent, or `undefined`, fingerprints the lockfiles instead.
+   */
+  dependencyPins?: (() => Promise<readonly string[] | undefined>) | undefined;
 }
 
 export interface CacheRun {
@@ -136,6 +143,18 @@ async function installedStrykerVersion(
     }
   }
   return undefined;
+}
+
+/**
+The pinned versions when they can be read, else the lockfiles (#177).
+*/
+async function dependencyEvidence(
+  seams: ReadSeams,
+): Promise<DependencyEvidence> {
+  const pins = await seams.dependencyPins?.();
+  return pins === undefined
+    ? { lockfiles: await presentLockfiles(seams) }
+    : { pins };
 }
 
 async function presentLockfiles(seams: ReadSeams): Promise<Lockfile[]> {
@@ -361,7 +380,7 @@ async function writeOrRemove(
   await seams.removeFile(filePath);
 }
 
-type ReadSeams = Pick<CacheSeams, 'readFile' | 'repoRoot'>;
+type ReadSeams = Pick<CacheSeams, 'readFile' | 'repoRoot' | 'dependencyPins'>;
 
 /**
  * This checkout's fingerprint under `strykerConfig`, or `undefined` when no
@@ -372,14 +391,14 @@ async function checkoutFingerprint(
   seams: ReadSeams,
   strykerConfig: string,
 ): Promise<CacheFingerprint | undefined> {
-  const [strykerVersion, lockfiles] = await Promise.all([
+  const [strykerVersion, dependencies] = await Promise.all([
     installedStrykerVersion(seams),
-    presentLockfiles(seams),
+    dependencyEvidence(seams),
   ]);
   return computeFingerprint({
     strykerVersion,
     config: strykerConfig,
-    lockfiles,
+    dependencies,
   });
 }
 

@@ -111,6 +111,11 @@ import {
 } from './prepare-cache.js';
 import { fetchSeed, nodeSeedSeams, type SeedSettings } from './seed-cache.js';
 import {
+  gitManifestLister,
+  nodeDependencySeams,
+  verdictDependencyPins,
+} from './verdict-dependencies.js';
+import {
   isStrykerReportJson,
   parseStrykerJson,
   reportedFiles,
@@ -186,6 +191,11 @@ export interface VerifyOptions {
    * (`RepoConfig.mutationCache.invalidation`). Defaults to `targeted`.
    */
   mutationCacheInvalidation?: CacheInvalidation | undefined;
+  /**
+   * Extra packages the mutation-cache fingerprint counts
+   * (`RepoConfig.mutationCache.verdictDependencies`, #177).
+   */
+  mutationVerdictDependencies?: readonly string[] | undefined;
   /**
    * How far `--mutate` narrows to the changed lines
    * (`RepoConfig.mutationScope`, #155). Defaults to `DEFAULT_MUTATION_SCOPE`.
@@ -1709,11 +1719,14 @@ export interface StrykerScope {
  */
 export async function writeMutationFingerprint(
   repoRoot: string,
+  exec: Exec,
+  verdictDependencies: readonly string[],
 ): Promise<string | undefined> {
   return writeFingerprintSidecar(
     {
       repoRoot,
       readFile: readUtf8,
+      dependencyPins: pinsReader(exec, repoRoot, verdictDependencies),
       writeFile: async (filePath, contents) => {
         await fsMkdir(path.dirname(filePath), { recursive: true });
         await fsWriteFile(filePath, contents);
@@ -1721,6 +1734,24 @@ export async function writeMutationFingerprint(
     },
     (await readStrykerConfig(repoRoot, readUtf8)) ?? '',
   );
+}
+
+/**
+ * The fingerprint's dependency pins for this checkout (#177), read the same
+ * way by the gate and by `guardrails mutation-fingerprint`, so a seed CI
+ * fingerprinted matches a checkout of the same commit.
+ */
+function pinsReader(
+  exec: Exec,
+  repoRoot: string,
+  verdictDependencies: readonly string[],
+): () => Promise<string[] | undefined> {
+  return () =>
+    verdictDependencyPins(
+      nodeDependencySeams(gitManifestLister(exec, repoRoot)),
+      repoRoot,
+      verdictDependencies,
+    );
 }
 
 function readUtf8(filePath: string): Promise<string> {
@@ -1837,6 +1868,11 @@ async function runStryker(
       removeFile,
       fileModifiedTime,
       repoRoot,
+      dependencyPins: pinsReader(
+        exec,
+        repoRoot,
+        options.mutationVerdictDependencies ?? [],
+      ),
       seed:
         seed &&
         ((fingerprint) =>

@@ -23,7 +23,9 @@ function fingerprintOf(lock: string): CacheFingerprint {
   const fingerprint = computeFingerprint({
     strykerVersion: '10.0.0',
     config: '{}',
-    lockfiles: [{ name: 'package-lock.json', contents: lock }],
+    dependencies: {
+      lockfiles: [{ name: 'package-lock.json', contents: lock }],
+    },
   });
   if (fingerprint === undefined) {
     throw new Error('no fingerprint');
@@ -201,9 +203,31 @@ describe('fetchSeed', () => {
         'left shards whose fingerprints disagree',
       ],
       [
-        'the fingerprint is not this checkout’s',
+        'its dependency versions are not this checkout’s',
         uploaded('a.json', shard('src/a.ts'), fingerprintOf('{"other":true}')),
-        'was measured under another stryker version, stryker config or lockfile than this checkout',
+        'was measured under different dependency versions from this checkout',
+      ],
+      [
+        'its stryker version is not this checkout’s',
+        uploaded('a.json', shard('src/a.ts'), {
+          ...CURRENT,
+          stryker: '10.1.0',
+        }),
+        'was measured under a different stryker version (10.1.0, here 10.0.0) from this checkout',
+      ],
+      [
+        'its stryker options are not this checkout’s',
+        uploaded('a.json', shard('src/a.ts'), { ...CURRENT, options: 'x' }),
+        'was measured under different stryker options from this checkout',
+      ],
+      [
+        'all three differ',
+        uploaded('a.json', shard('src/a.ts'), {
+          stryker: '9.0.0',
+          options: 'x',
+          dependencies: 'y',
+        }),
+        'was measured under a different stryker version (9.0.0, here 10.0.0), different stryker options and different dependency versions from this checkout',
       ],
     ])('discards the seed when %s', async (_label, landed, why) => {
       const fake = fakeSeams(landed);

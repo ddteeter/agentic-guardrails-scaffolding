@@ -751,8 +751,35 @@ describe('mutationCache', () => {
       invalidation: 'targeted',
       seedFrom: undefined,
       seedTimeoutSeconds: 120,
+      verdictDependencies: [],
     });
   });
+
+  it('reads extra fingerprint packages, keeping only non-blank names (#177)', () => {
+    writeFileSync(
+      path.join(root, 'guardrails.config.json'),
+      JSON.stringify({
+        mutationCache: {
+          verdictDependencies: [' @vitejs/plugin-react ', '', 3, '  ', 'msw'],
+        },
+      }),
+    );
+    expect(loadConfig(root).mutationCache.verdictDependencies).toEqual([
+      '@vitejs/plugin-react',
+      'msw',
+    ]);
+  });
+
+  it.each([['msw'], [{ name: 'msw' }], [undefined]])(
+    'counts no extra fingerprint packages for %j',
+    (verdictDependencies) => {
+      writeFileSync(
+        path.join(root, 'guardrails.config.json'),
+        JSON.stringify({ mutationCache: { verdictDependencies } }),
+      );
+      expect(loadConfig(root).mutationCache.verdictDependencies).toEqual([]);
+    },
+  );
 
   it('reads a seed command and its timeout (#157)', () => {
     writeFileSync(

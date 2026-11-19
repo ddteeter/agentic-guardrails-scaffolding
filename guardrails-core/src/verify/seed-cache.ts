@@ -36,6 +36,7 @@ import process from 'node:process';
 
 import type { Exec, ExecResult } from '../exec.js';
 import {
+  fingerprintDifference,
   isFingerprintEqual,
   parseFingerprint,
   serializeFingerprint,
@@ -153,10 +154,36 @@ async function fingerprintFailure(
   if (fingerprints.every((each) => isFingerprintEqual(each, current))) {
     return undefined;
   }
+  // `reports` is never empty here, so `first` always names a shard; the
+  // default only satisfies the type.
+  const [first = current] = fingerprints;
   return new Set(fingerprints.map((each) => serializeFingerprint(each))).size >
     1
     ? 'left shards whose fingerprints disagree'
-    : 'was measured under another stryker version, stryker config or lockfile than this checkout';
+    : `was measured under ${differenceText(first, current)} from this checkout`;
+}
+
+/**
+ * What differs between a seed's fingerprint and this checkout's, in words,
+ * so a cold run says why (#177): `a different stryker version (10.1.0, here
+ * 10.0.0)`, `different stryker options`, `different dependency versions`.
+ */
+function differenceText(
+  seed: CacheFingerprint,
+  current: CacheFingerprint,
+): string {
+  const parts = fingerprintDifference(seed, current).map((field) => {
+    if (field === 'stryker') {
+      return `a different stryker version (${seed.stryker}, here ${current.stryker})`;
+    }
+    return field === 'options'
+      ? 'different stryker options'
+      : 'different dependency versions';
+  });
+  const last = parts.pop();
+  return parts.length === 0
+    ? String(last)
+    : `${parts.join(', ')} and ${String(last)}`;
 }
 
 type Outcome =

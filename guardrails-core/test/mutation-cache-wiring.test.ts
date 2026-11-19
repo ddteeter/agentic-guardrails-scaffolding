@@ -7,7 +7,13 @@
  * is described in `mutation-cache-fixture.ts`; the CLI's half of the wiring is
  * in `cli-core.test.ts`.
  */
-import { mkdtempSync, rmSync } from 'node:fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -18,8 +24,13 @@ import { runCommitGate, runStopGate } from '../src/gate.js';
 import type { GateConfig } from '../src/gate-decision.js';
 import type { CacheInvalidation } from '../src/verify/incremental-cache.js';
 import {
+  computeFingerprint,
+  serializeFingerprint,
+} from '../src/verify/cache-fingerprint.js';
+import {
   CHANGED_FILES,
   SEED_COMMAND,
+  STRYKER_CONFIG,
   keptKills,
   seedFixtureExec,
   writeCacheFixture,
@@ -130,5 +141,79 @@ describe.each<
       ...policy,
     });
     expect(keptKills(root)).toBe(kills);
+  });
+});
+
+/**
+The fixture's git, which also lists one tracked package.json.
+*/
+const tracking: Exec = (command, args) =>
+  args[0] === 'ls-files' && args.includes('*/package.json')
+    ? Promise.resolve({ stdout: 'package.json\0', stderr: '', code: 0 })
+    : exec(command, args);
+
+function writtenSidecar(): string {
+  return readFileSync(
+    path.join(root, 'reports', 'stryker-incremental.fingerprint.json'),
+    'utf8',
+  );
+}
+
+/**
+ * The fingerprint's dependency pins reach the sidecar through both gates
+ * (#177), with `mutationCache.verdictDependencies` added to them. The
+ * fixture tracks one manifest depending on an installed `zod`.
+ */
+describe.each<[string, readonly string[] | undefined, string[]]>([
+  ['by default', undefined, ['zod@4.1.0']],
+  ['with extra names', ['extra'], ['extra@missing', 'zod@4.1.0']],
+])('the fingerprint’s dependency pins, %s', (_label, extra, pins) => {
+  beforeEach(() => {
+    writeFileSync(
+      path.join(root, 'package.json'),
+      JSON.stringify({ dependencies: { zod: '*' } }),
+    );
+    mkdirSync(path.join(root, 'node_modules', 'zod'), { recursive: true });
+    writeFileSync(
+      path.join(root, 'node_modules', 'zod', 'package.json'),
+      JSON.stringify({ name: 'zod', version: '4.1.0' }),
+    );
+  });
+
+  function expectedSidecar(): string {
+    const fingerprint = computeFingerprint({
+      strykerVersion: '10.0.0',
+      config: STRYKER_CONFIG,
+      dependencies: { pins },
+    });
+    return fingerprint === undefined ? '' : serializeFingerprint(fingerprint);
+  }
+
+  it('is the stop gate’s', async () => {
+    await runStopGate({
+      repoRoot: root,
+      sessionId: 'sid',
+      baseBranch: 'main',
+      exec: tracking,
+      config,
+      resolveBin: (tool) => tool,
+      analyzers: { stryker: 'required' },
+      analyzerRungs: { stryker: 'stop' },
+      mutationVerdictDependencies: extra,
+    });
+    expect(writtenSidecar()).toBe(expectedSidecar());
+  });
+
+  it('is the commit gate’s', async () => {
+    await runCommitGate({
+      repoRoot: root,
+      baseBranch: 'main',
+      exec: tracking,
+      config,
+      resolveBin: (tool) => tool,
+      analyzers: { stryker: 'required' },
+      mutationVerdictDependencies: extra,
+    });
+    expect(writtenSidecar()).toBe(expectedSidecar());
   });
 });

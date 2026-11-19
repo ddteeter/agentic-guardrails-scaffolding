@@ -111,6 +111,10 @@ export interface StopGateOptions {
    */
   mutationCacheInvalidation?: CacheInvalidation | undefined;
   /**
+   * Extra fingerprint packages — see `VerifyOptions.mutationVerdictDependencies`.
+   */
+  mutationVerdictDependencies?: readonly string[] | undefined;
+  /**
    * Line-range mutation — see `VerifyOptions.mutationScope`.
    */
   mutationScope?: MutationScopeSettings | undefined;
@@ -183,6 +187,10 @@ export interface CommitGateOptions {
    * The incremental-cache rule — see `VerifyOptions.mutationCacheInvalidation`.
    */
   mutationCacheInvalidation?: CacheInvalidation | undefined;
+  /**
+   * Extra fingerprint packages — see `VerifyOptions.mutationVerdictDependencies`.
+   */
+  mutationVerdictDependencies?: readonly string[] | undefined;
   /**
    * Line-range mutation — see `VerifyOptions.mutationScope`.
    */
@@ -699,6 +707,7 @@ export async function runStopGate(
     // mutant suppressed costs a sanction that has to be justified forever.
     analyzerRungs: options.analyzerRungs,
     mutationCacheInvalidation: options.mutationCacheInvalidation,
+    mutationVerdictDependencies: options.mutationVerdictDependencies,
     mutationScope: options.mutationScope,
     mutationCacheSeed: options.mutationCacheSeed,
     mutationLock: options.mutationLock,
@@ -941,6 +950,7 @@ export async function runCommitGate(
     // Straight through, not conditionally spread — see the stop gate's note.
     analyzerRungs: options.analyzerRungs,
     mutationCacheInvalidation: options.mutationCacheInvalidation,
+    mutationVerdictDependencies: options.mutationVerdictDependencies,
     mutationScope: options.mutationScope,
     mutationCacheSeed: options.mutationCacheSeed,
     ...(options.changedScope && { changedScope: options.changedScope }),

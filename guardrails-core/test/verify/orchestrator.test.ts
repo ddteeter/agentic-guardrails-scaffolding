@@ -3104,7 +3104,7 @@ function sidecarFor(config: string): string {
   const fingerprint = computeFingerprint({
     strykerVersion: '10.0.0',
     config,
-    lockfiles: [],
+    dependencies: { lockfiles: [] },
   });
   return fingerprint === undefined ? '' : serializeFingerprint(fingerprint);
 }
