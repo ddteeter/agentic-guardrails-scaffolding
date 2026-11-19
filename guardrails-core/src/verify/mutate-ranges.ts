@@ -34,7 +34,7 @@
 import path from 'node:path';
 
 import type { Exec, ExecResult } from '../exec.js';
-import { resolveBaseReference } from './git.js';
+import { resolveDiffBase } from './git.js';
 
 /**
 Lines `start` to `end` of one file, 1-based and inclusive.
@@ -347,7 +347,7 @@ export async function changedLineRanges(
 ): Promise<Map<string, LineRange[]>> {
   let target: string[] = ['--cached'];
   if (scope.changedScope !== 'staged') {
-    const base = await resolveBaseReference(exec, repoRoot, scope.baseBranch);
+    const base = await resolveDiffBase(exec, repoRoot, scope.baseBranch);
     if (base.ref === undefined) {
       return new Map();
     }
