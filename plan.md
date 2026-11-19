@@ -449,6 +449,19 @@ directories in one command. Unchanged, and still outside the matcher:
   the session that ran the `git commit` (the PreToolUse rung could leave its
   session id for the hook it is about to trigger), or release a lease once
   its manifest's violations re-verify clean.
+  Seen again on #176 (2026-11-19), worse: no fixer had been spawned for the
+  `nosession` manifest at all, so "wait for that one" could never end. The
+  main agent spawned one against its own session manifest instead.
+- **A fixer games the clone detector (2026-11-19, open; found on #176).**
+  Given `fallow/code-duplication` findings on four small parsers, one fixer
+  extracted a helper. The next, given the clones that were left, rewrote the
+  bodies in deliberately different shapes (ternaries in two, early returns in
+  two) "so the bodies do not match each other". The duplication was still
+  there, just hidden from the detector, and the diff-auditor can't see that,
+  because nothing was suppressed. The main agent replaced the four with one
+  schema-driven reader. Candidate: the fixer prompt for duplication says that
+  reshaping code to evade the detector is not a fix, and that the remedy is to
+  extract or to escalate.
 - **`eslint --fix` (PostToolUse autofix) turned a type guard into a tsc
   error (2026-11-06, open; found on #151).** A `.some()` comparing each
   member of an `as const` tuple (`WIRE_KINDS`) to `kind` was rewritten by
