@@ -254,6 +254,12 @@ describe('verdictOptions (#177)', () => {
     expect(of({ plugins: ['a'] })).not.toBe(of({ plugins: { 0: 'a' } }));
   });
 
+  it('ignores key order inside the objects an array holds', () => {
+    expect(of({ checkers: [{ b: 1, a: 2 }] })).toBe(
+      of({ checkers: [{ a: 2, b: 1 }] }),
+    );
+  });
+
   it('keeps array order, which can matter', () => {
     expect(of({ plugins: ['a', 'b'] })).not.toBe(of({ plugins: ['b', 'a'] }));
   });

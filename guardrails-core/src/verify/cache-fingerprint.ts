@@ -132,7 +132,7 @@ function sortedKeys(value: unknown): unknown {
  */
 export function verdictOptions(config: string): string {
   const { parsed } = parseJsonText(config);
-  if (!isRecord(parsed) || Array.isArray(parsed)) {
+  if (!isRecord(parsed)) {
     return config;
   }
   const kept = Object.fromEntries(
