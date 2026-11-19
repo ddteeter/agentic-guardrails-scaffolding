@@ -3,6 +3,8 @@ version: unreleased
 supersedes:
   - search: 'local main'
     because: 'if it tells an agent to fast-forward or pull local main before a push so the gate scopes correctly, the gate now measures from the merge-base and local main no longer matters'
+  - search: 'CONFLICTING'
+    because: 'if it checks that the branch is up to date with, or not conflicting with, the base before `guardrails ship`, ship now refuses a branch that is behind or conflicting itself, before the push'
 ---
 
 # Unreleased — what changed for an agent
@@ -21,10 +23,36 @@ origin/<base>`: the newest commit HEAD shares with either form of the base.
   against the base ref as before. Line-range planning for Stryker measures
   from the same commit.
 
+- **`guardrails ship` reports `ci-red` at the first failed check (#178).**
+  The watch is `gh pr checks --watch --fail-fast`, so ship returns as soon as
+  any check fails, naming it in `failing`, and leaves the slower checks
+  running. Before, it waited for every check to finish, which could be the
+  better part of an hour after the first one went red. A `gh` too old for
+  `--fail-fast` is watched without it.
+- **`guardrails ship` refuses a branch that is behind its base, before the
+  push and so before the gate lock.** It fetches `origin/<base>`. If HEAD does
+  not contain it, the state is `conflicting` when the two would not merge
+  cleanly (`failing` names the files, from `git merge-tree`) and `behind`
+  when they would. Nothing is pushed. Rebase onto the base and ship again,
+  with `--force-with-lease` if the branch was pushed before. If the base
+  cannot be fetched or the ancestry cannot be read, ship pushes as before and
+  says so in `warnings`.
+- **A gate block is no longer misreported as `error`.** Ship looked for the
+  "not installed" text anywhere in the push output, and the gate's own test
+  output can contain it. Only the hook's last `push blocked` line decides it
+  now.
+
 ## Instructions this supersedes
 
 - Any step that fast-forwards or pulls local `main` before a push so that the
   push gate's scope is right.
+
+- Any step that rebases or checks that the branch is up to date with the
+  base before running `guardrails ship`. Ship refuses a branch that is
+  behind with a state of its own; act on that instead.
+- Any handling of the `guardrails ship` states that treats an unknown state
+  as `error`: `behind` and `conflicting` are new, and both mean "rebase, then
+  ship again".
 
 ## What to wire
 
