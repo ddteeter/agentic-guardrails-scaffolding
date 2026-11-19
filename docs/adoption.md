@@ -939,6 +939,29 @@ gate lock`, which `guardrails ship` reports as `lock-timeout` rather than as
   guardrails' progress plugin absorbs any repeat inside stryker. A run still
   alive `mutationLock.stopGraceSeconds` (30) after the SIGINT is SIGKILLed,
   so a hung one cannot hold the lock.
+- **Every gate and ship is logged, machine-wide.** Each commit and push gate,
+  each stop turn that mutated something, and each `guardrails ship` appends
+  one JSON line to `<lock>.runs.jsonl`, beside the gate lock (so
+  `$HOME/.guardrails-gate.lock.runs.jsonl` by default, shared by every repo).
+  A gate's row has its outcome (`pass`, `block`, `defer`, `lock-timeout`),
+  how long it queued for the lock and held it, who held it and how many
+  waited when it arrived, whether stryker started warm (a kept local cache
+  or a used seed) and, if not, why, the dry-run and mutating times, the
+  mutant, timeout, survivor and no-coverage counts, and the load average and
+  free memory at the start and the end. A ship's row has its push time (gate
+  included), its gate's time, its CI time, the PR and the final state.
+  Counts come from stryker's JSON report, which the gate always asks for;
+  `report: "missing"` means the run left none. The times come from
+  guardrails' progress plugin, so a run without the built plugin has counts
+  but no phase times. Writing the log never fails a gate or a ship.
+- **`guardrails stats`** summarizes the log for the last week
+  (`--since=24h`, `--since=90m`), for every repo or one (`--repo=<name>`):
+  per rung, the queue and hold times, the dry-run and mutating times
+  (median and p90), how many runs started warm and why the rest went cold;
+  per ship, the final states and the push, gate and CI times; and the
+  dry-run time by queue depth on arrival and by load per core at the start,
+  which is what decides whether the machine can afford more concurrent
+  lanes. `--json` prints the same as JSON.
 
 A `CLAUDE.md` snippet for adopters:
 

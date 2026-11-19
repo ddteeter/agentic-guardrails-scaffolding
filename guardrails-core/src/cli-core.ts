@@ -113,6 +113,8 @@ import {
   silentSkipWarning,
   writeMutationFingerprint,
 } from './verify/index.js';
+import { parseRuns, runLogPath } from './run-log.js';
+import { formatStats, parseSince, summarizeRuns } from './run-stats.js';
 import { resolveBaseReference } from './verify/git.js';
 
 export interface CliDependencies {
@@ -2294,6 +2296,43 @@ async function lockStatusCommand(
 }
 
 /**
+ * `stats` (#176): what the machine-wide run log says about the last
+ * `--since` (7 days by default), for one `--repo` or all, as text or
+ * `--json`. The log sits beside the gate lock; a missing one reads as empty.
+ */
+function statsCommand(dependencies: CliDependencies, rest: string[]): number {
+  const since = flag(rest, 'since') ?? '7d';
+  const sinceMs = parseSince(since);
+  if (sinceMs === undefined) {
+    dependencies.stderr(
+      `guardrails stats: --since=${since} is not a span like 7d, 24h or 90m.\n`,
+    );
+    return 1;
+  }
+  const lock = machineLock(
+    loadConfig(dependencies.cwd).mutationLock,
+    dependencies.env ?? process.env,
+  );
+  let text = '';
+  try {
+    text = readFileSync(runLogPath(lock.path), 'utf8');
+  } catch {
+    // No log yet: nothing has run since this version was installed.
+  }
+  const stats = summarizeRuns(parseRuns(text), {
+    now: new Date(),
+    sinceMs,
+    repo: flag(rest, 'repo'),
+  });
+  dependencies.stdout(
+    rest.includes('--json')
+      ? `${JSON.stringify(stats, undefined, 2)}\n`
+      : formatStats(stats),
+  );
+  return 0;
+}
+
+/**
 The commands that take nothing but the dependencies.
 */
 type PlainCommand = (dependencies: CliDependencies) => number | Promise<number>;
@@ -2357,6 +2396,9 @@ export async function runCommand(
     case 'ship': {
       return shipCommand(dependencies, rest);
     }
+    case 'stats': {
+      return statsCommand(dependencies, rest);
+    }
     default: {
       dependencies.stderr(
         'usage: guardrails-core <command>\n' +
@@ -2368,6 +2410,7 @@ export async function runCommand(
           '  sanction [--from=<violations manifest>]\n' +
           `  ${SHIP_USAGE}\n` +
           '  lock-status | mutation-fingerprint\n' +
+          '  stats [--since=7d|24h|90m] [--repo=<name>] [--json]\n' +
           '  autofix | audit | sanctions-check | install-hooks\n' +
           '  state | report | scope-check | session-start | session-end\n',
       );
