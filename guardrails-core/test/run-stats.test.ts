@@ -273,6 +273,15 @@ describe('summarizeRuns', () => {
     ).toEqual([0, 1, 0]);
   });
 
+  it('buckets a gate that mutated nothing without a dry run', () => {
+    const quiet = summarizeRuns([gate({ stryker: undefined })], {
+      now: NOW,
+      sinceMs: WEEK,
+    });
+    expect(quiet.byDepth[0]).toEqual({ bucket: '0', runs: 0 });
+    expect(quiet.byLoad[0]).toEqual({ bucket: 'under 0.5 per core', runs: 0 });
+  });
+
   it('puts a load of exactly one per core in the middle bucket', () => {
     const atOne = gate({
       machine: {
