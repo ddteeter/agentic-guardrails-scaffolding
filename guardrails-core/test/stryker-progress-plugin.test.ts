@@ -341,6 +341,81 @@ function withStrykerHandler(signals: FakeSignals): string[] {
   return heard;
 }
 
+describe('ProgressReporter: the run summary (#176)', () => {
+  const SUMMARY_FILE = '/repo/reports/guardrails-run.json';
+
+  function summaryFake(environment: Record<string, string | undefined>): {
+    f: Fake;
+    summaries: unknown[];
+  } {
+    const summaries: unknown[] = [];
+    const f = fake(environment, {
+      write: (filePath, content) => {
+        if (filePath === SUMMARY_FILE) {
+          summaries.push(JSON.parse(content));
+        }
+      },
+    });
+    return { f, summaries };
+  }
+
+  it('writes when the plan is ready and when the report is, with the start', () => {
+    const { f, summaries } = summaryFake({
+      ...LOCK_ENV,
+      GUARDRAILS_RUN_SUMMARY_FILE: SUMMARY_FILE,
+    });
+    const reporter = new ProgressReporter(f.io);
+    expect(summaries).toEqual([]);
+    f.advance(30_000);
+    reporter.onMutationTestingPlanReady(plans(3, 2));
+    f.advance(60_000);
+    reporter.onMutationTestReportReady(...report);
+    expect(summaries).toEqual([
+      { startedAt: 1_000_000, planReadyAt: 1_030_000, total: 5, reused: 2 },
+      {
+        startedAt: 1_000_000,
+        planReadyAt: 1_030_000,
+        reportReadyAt: 1_090_000,
+        total: 5,
+        reused: 2,
+      },
+    ]);
+  });
+
+  it.each([
+    ['without its file', { ...LOCK_ENV }],
+    ['with an empty file', { ...LOCK_ENV, GUARDRAILS_RUN_SUMMARY_FILE: '' }],
+    [
+      'when the run holds no lock',
+      { GUARDRAILS_RUN_SUMMARY_FILE: SUMMARY_FILE },
+    ],
+  ])('writes no summary %s', (_label, environment) => {
+    const { f, summaries } = summaryFake(environment);
+    const reporter = new ProgressReporter(f.io);
+    reporter.onMutationTestingPlanReady(plans(1, 0));
+    reporter.onMutationTestReportReady(...report);
+    expect(summaries).toEqual([]);
+  });
+
+  it('never fails the run over a summary it cannot write', () => {
+    const f = fake(
+      { ...LOCK_ENV, GUARDRAILS_RUN_SUMMARY_FILE: SUMMARY_FILE },
+      {
+        write: (filePath) => {
+          if (filePath === SUMMARY_FILE) {
+            failing();
+          }
+        },
+      },
+    );
+    const reporter = new ProgressReporter(f.io);
+    expect(() => {
+      reporter.onMutationTestingPlanReady(plans(1, 0));
+      reporter.onMutationTestReportReady(...report);
+    }).not.toThrow();
+  });
+});
+
 describe('absorbRepeatStopSignals', () => {
   // Measured (plan.md, 2026-11-07): a tree-kill gives stryker two SIGTERMs
   // 7ms apart -- its own and the gate's forward -- and stryker's second-signal

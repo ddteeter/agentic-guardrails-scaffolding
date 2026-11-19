@@ -1,3 +1,5 @@
+import path from 'node:path';
+
 import { describe, expect, it } from 'vitest';
 
 import { type JsonFileResult, parseJsonText } from '../src/json-file.js';
@@ -5,6 +7,7 @@ import {
   describeHolder,
   type Holder,
   holderEnvironment,
+  parseRunSummary,
   holderPath,
   lockQueue,
   progressPluginBeside,
@@ -329,6 +332,11 @@ describe('holderEnvironment', () => {
       GUARDRAILS_LOCK_HOLDER_FILE: '/locks/gate.lock.holder.json',
       GUARDRAILS_LOCK_RUNG: 'push',
       GUARDRAILS_LOCK_REPO: '/r/app',
+      GUARDRAILS_RUN_SUMMARY_FILE: path.join(
+        '/r/app',
+        'reports',
+        'guardrails-run.json',
+      ),
     });
   });
 });
@@ -354,5 +362,44 @@ describe('progressPluginBeside', () => {
     expect(
       progressPluginBeside('file:///pkg/src/verify/index.ts', () => false),
     ).toBeUndefined();
+  });
+});
+
+describe('parseRunSummary (#176)', () => {
+  it('reads every time and count the plugin writes', () => {
+    const summary = {
+      startedAt: 1,
+      planReadyAt: 2,
+      reportReadyAt: 3,
+      total: 10,
+      reused: 4,
+    };
+    expect(parseRunSummary(JSON.stringify(summary))).toEqual(summary);
+  });
+
+  it('reads a run that stopped before its plan was ready', () => {
+    expect(parseRunSummary('{"startedAt":1,"total":0,"reused":0}')).toEqual({
+      startedAt: 1,
+      total: 0,
+      reused: 0,
+    });
+  });
+
+  it.each([
+    ['not JSON', 'nope'],
+    ['not an object', '[]'],
+    ['no start', '{"total":0,"reused":0}'],
+    ['a non-numeric count', '{"startedAt":1,"total":"0","reused":0}'],
+    ['a non-numeric reuse', '{"startedAt":1,"total":0,"reused":null}'],
+  ])('reads nothing from %s', (_label, text) => {
+    expect(parseRunSummary(text)).toBeUndefined();
+  });
+
+  it('drops a time that is not a number', () => {
+    expect(
+      parseRunSummary(
+        '{"startedAt":1,"planReadyAt":"x","reportReadyAt":3,"total":0,"reused":0}',
+      ),
+    ).toEqual({ startedAt: 1, reportReadyAt: 3, total: 0, reused: 0 });
   });
 });

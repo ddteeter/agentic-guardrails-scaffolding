@@ -149,19 +149,38 @@ export interface MutationLock {
 }
 
 /**
-What became of a run offered to `runUnderLock`.
-*/
+ * How a run that asked for the lock fared with it (#176), epoch
+ * milliseconds: asked at `queuedAt`, done with it (or given up) at
+ * `releasedAt`. Who held it and how many waited are from the first look,
+ * taken only when the lock was busy.
+ */
+interface LockTiming {
+  queuedAt: number;
+  releasedAt: number;
+  holderOnArrival?: string;
+  depthOnArrival: number;
+}
+
+/**
+ * What became of a run offered to `runUnderLock`. `timing` is present
+ * whenever the lock was asked for, and absent on every bare run.
+ */
 export type LockedRun =
-  | { kind: 'ran'; result: ExecResult }
+  | { kind: 'ran'; result: ExecResult; timing?: LockTiming }
   /**
   The lock stayed busy on a rung that defers: nothing ran.
   */
-  | { kind: 'deferred'; holding: string }
+  | { kind: 'deferred'; holding: string; timing?: LockTiming }
   /**
   The lock stayed busy on a rung that blocks: nothing ran. Carries the lock, so
   the report that names it never has to guess whether there was one.
   */
-  | { kind: 'timed-out'; lock: MutationLock; holding: string };
+  | {
+      kind: 'timed-out';
+      lock: MutationLock;
+      holding: string;
+      timing?: LockTiming;
+    };
 
 export interface LockedRunOptions {
   exec: Exec;
@@ -192,6 +211,10 @@ export interface LockedRunOptions {
   Seams for looking at who holds the lock while this run waits.
   */
   watch?: LockWatchSeams;
+  /**
+  The clock `timing` is read from. Defaults to `Date.now`.
+  */
+  clock?: () => number;
 }
 
 interface LockWatchSeams {
@@ -335,6 +358,8 @@ export async function runUnderLock(
     progress(unusableLockNote(lockPath));
     return runBare();
   }
+  const clock = options.clock ?? Date.now;
+  const queuedAt = clock();
   // Both lockers are silent while they wait, and a quiet half hour looks like
   // a hang -- so ask once without waiting, and say so before the real wait.
   const probe = lockerArgv(locker, lockPath, 0, 'true', []);
@@ -342,13 +367,22 @@ export async function runUnderLock(
   const isBusy = probed.code === LOCK_TIMEOUT_EXIT;
   const look = (): Promise<LockSighting> =>
     lookAtLock(exec, lockPath, options.watch);
+  const arrival = (sighting: LockSighting | undefined) =>
+    sighting === undefined
+      ? { depthOnArrival: 0 }
+      : { holderOnArrival: sighting.holding, depthOnArrival: sighting.waiting };
   if (isBusy && wait.waitSeconds === 0) {
-    const { holding: busyWith } = await look();
-    return { kind: 'deferred', holding: busyWith };
+    const sighting = await look();
+    return {
+      kind: 'deferred',
+      holding: sighting.holding,
+      timing: { queuedAt, releasedAt: clock(), ...arrival(sighting) },
+    };
   }
-  const stopWatching = isBusy
+  const watching = isBusy
     ? await watchTheWait(look, wait.waitSeconds, progress, options.watch)
     : undefined;
+  const stopWatching = watching?.stop;
   const holding = options.locked;
   const run = lockerArgv(
     locker,
@@ -374,26 +408,32 @@ export async function runUnderLock(
     // to report `guardrails/analyzer-missing`, the only honest verdict here.
     return runBare();
   }
+  const timing: LockTiming = {
+    queuedAt,
+    releasedAt: clock(),
+    ...arrival(watching?.first),
+  };
   if (result.code !== LOCK_TIMEOUT_EXIT) {
-    return { kind: 'ran', result };
+    return { kind: 'ran', result, timing };
   }
   const { holding: heldBy } = await look();
   return wait.onTimeout === 'defer'
-    ? { kind: 'deferred', holding: heldBy }
-    : { kind: 'timed-out', lock, holding: heldBy };
+    ? { kind: 'deferred', holding: heldBy, timing }
+    : { kind: 'timed-out', lock, holding: heldBy, timing };
 }
 
 /**
  * Say who holds the lock before a real wait, then again each minute until our
  * own run holds it or the wait settles: both lockers are silent while they
- * wait, and a quiet half hour reads as a hang. Returns the stop function.
+ * wait, and a quiet half hour reads as a hang. Returns the first look and the
+ * stop function.
  */
 async function watchTheWait(
   look: () => Promise<LockSighting>,
   waitSeconds: number,
   progress: (line: string) => void,
   seams: LockWatchSeams = {},
-): Promise<() => void> {
+): Promise<{ first: LockSighting; stop: () => void }> {
   const first = await look();
   pendingWait.set('holding', first.holding);
   progress(
@@ -419,10 +459,13 @@ async function watchTheWait(
       );
     });
   });
-  return () => {
-    isWatching = false;
-    pendingWait.clear();
-    stop();
+  return {
+    first,
+    stop: () => {
+      isWatching = false;
+      pendingWait.clear();
+      stop();
+    },
   };
 }
 

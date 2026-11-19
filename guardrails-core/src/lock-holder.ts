@@ -14,7 +14,7 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import type { JsonFileResult } from './json-file.js';
+import { type JsonFileResult, parseJsonText } from './json-file.js';
 import { isRung, type Rung } from './verify/analyzer-policy.js';
 import { isRecord } from './verify/report-shape.js';
 
@@ -73,6 +73,50 @@ export function holderEnvironment(
     GUARDRAILS_LOCK_HOLDER_FILE: holderPath(lockPath),
     GUARDRAILS_LOCK_RUNG: rung,
     GUARDRAILS_LOCK_REPO: repo,
+    GUARDRAILS_RUN_SUMMARY_FILE: runSummaryPath(repo),
+  };
+}
+
+/**
+ * Where the progress plugin leaves its run summary (#176): in the repo's
+ * `reports/`, beside stryker's own report, for the gate to read after the
+ * run.
+ */
+export function runSummaryPath(repoRoot: string): string {
+  return path.join(repoRoot, 'reports', 'guardrails-run.json');
+}
+
+/**
+ * When a locked stryker run reached each point, epoch milliseconds, and its
+ * plan's counts. `startedAt` is when stryker started, which is when the lock
+ * was taken; `planReadyAt` ends the dry run; `reportReadyAt` ends mutation.
+ */
+export interface RunSummary {
+  startedAt: number;
+  planReadyAt?: number;
+  reportReadyAt?: number;
+  total: number;
+  reused: number;
+}
+
+/**
+The run summary in `text`, or `undefined` when it holds no start and counts.
+*/
+export function parseRunSummary(text: string): RunSummary | undefined {
+  const { parsed } = parseJsonText(text);
+  if (!isRecord(parsed)) {
+    return undefined;
+  }
+  const { startedAt, planReadyAt, reportReadyAt, total, reused } = parsed;
+  if (!isCount(startedAt) || !isCount(total) || !isCount(reused)) {
+    return undefined;
+  }
+  return {
+    startedAt,
+    ...(isCount(planReadyAt) && { planReadyAt }),
+    ...(isCount(reportReadyAt) && { reportReadyAt }),
+    total,
+    reused,
   };
 }
 

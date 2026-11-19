@@ -43,7 +43,9 @@ import { readJsonFile } from '../../src/json-file.js';
 import {
   holderEnvironment,
   holderPath,
+  parseRunSummary,
   PROGRESS_REPORTER,
+  runSummaryPath,
 } from '../../src/lock-holder.js';
 import {
   parseStrykerJson,
@@ -205,6 +207,15 @@ describe.skipIf(isUnderMutationRun(here))(
       expect(seen.length).toBeGreaterThan(0);
       expect(seen[0]).toMatchObject({ repo: directory, rung: 'push' });
       expect(existsSync(holderFile)).toBe(false);
+      // The run summary the gate reads back (#176): every point reached.
+      const summary = parseRunSummary(
+        await readFile(runSummaryPath(directory), 'utf8'),
+      );
+      expect(summary).toMatchObject({
+        planReadyAt: expect.any(Number),
+        reportReadyAt: expect.any(Number),
+      });
+      expect(summary?.total).toBeGreaterThan(0);
     }, 300_000);
   },
 );

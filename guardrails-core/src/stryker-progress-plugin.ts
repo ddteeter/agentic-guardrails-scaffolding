@@ -21,7 +21,11 @@
 import { renameSync, rmSync, writeFileSync } from 'node:fs';
 import process from 'node:process';
 
-import { type Holder, PROGRESS_REPORTER } from './lock-holder.js';
+import {
+  type Holder,
+  PROGRESS_REPORTER,
+  type RunSummary,
+} from './lock-holder.js';
 import { isRung } from './verify/analyzer-policy.js';
 
 /**
@@ -155,6 +159,10 @@ export function defaultIo(): ProgressIo {
 interface Target {
   file: string;
   holder: Holder;
+  /**
+  Where the run summary goes (#176); absent when the env names no file.
+  */
+  summaryFile?: string;
 }
 
 /**
@@ -165,6 +173,7 @@ function targetFrom(io: ProgressIo): Target | undefined {
     GUARDRAILS_LOCK_HOLDER_FILE: file,
     GUARDRAILS_LOCK_RUNG: rung,
     GUARDRAILS_LOCK_REPO: repo,
+    GUARDRAILS_RUN_SUMMARY_FILE: summaryFile,
   } = io.environment;
   if (
     file === undefined ||
@@ -177,6 +186,7 @@ function targetFrom(io: ProgressIo): Target | undefined {
   }
   return {
     file,
+    ...(summaryFile !== undefined && summaryFile !== '' && { summaryFile }),
     holder: {
       repo,
       rung,
@@ -254,6 +264,33 @@ export class ProgressReporter {
     }
   }
 
+  /**
+   * The run summary the gate reads after the run (#176): when the lock was
+   * taken, the dry run ended and mutation ended, and the plan's counts.
+   * Written at the plan and at the report, never throttled: two writes a run.
+   */
+  #writeSummary(reportReadyAt?: number): void {
+    const target = this.#target;
+    if (target?.summaryFile === undefined) {
+      return;
+    }
+    const { holder } = target;
+    const summary: RunSummary = {
+      startedAt: holder.startedAt,
+      ...(holder.mutatingSince !== undefined && {
+        planReadyAt: holder.mutatingSince,
+      }),
+      ...(reportReadyAt !== undefined && { reportReadyAt }),
+      total: holder.total,
+      reused: holder.reused,
+    };
+    try {
+      this.#io.write(target.summaryFile, JSON.stringify(summary));
+    } catch {
+      // Never fail a run over a measurement.
+    }
+  }
+
   onMutationTestingPlanReady(event: PlanReadyEvent): void {
     this.#update((holder) => {
       holder.phase = 'mutating';
@@ -263,6 +300,7 @@ export class ProgressReporter {
       ).length;
       holder.mutatingSince = this.#io.now();
     });
+    this.#writeSummary();
   }
 
   onMutantTested(result: TestedMutant): void {
@@ -278,6 +316,9 @@ export class ProgressReporter {
   The run is over: the holder file goes, and nothing writes it again.
   */
   onMutationTestReportReady(_report: unknown, _metrics: unknown): void {
+    if (!this.#done) {
+      this.#writeSummary(this.#io.now());
+    }
     this.#done = true;
     this.#cancelFlush?.();
     this.#cancelFlush = undefined;

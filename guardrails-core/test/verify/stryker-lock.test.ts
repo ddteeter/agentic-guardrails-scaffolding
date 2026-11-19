@@ -296,6 +296,11 @@ describe('runStryker loads the progress plugin while it holds the lock', () => {
         GUARDRAILS_LOCK_HOLDER_FILE: `${lockPath}.holder.json`,
         GUARDRAILS_LOCK_RUNG: 'push',
         GUARDRAILS_LOCK_REPO: '/repo',
+        GUARDRAILS_RUN_SUMMARY_FILE: path.join(
+          '/repo',
+          'reports',
+          'guardrails-run.json',
+        ),
       },
     ]);
   });
