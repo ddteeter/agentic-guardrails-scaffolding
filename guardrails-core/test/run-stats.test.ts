@@ -123,12 +123,15 @@ describe('summarizeRuns', () => {
     ship({ state: 'ci-red', gateMs: undefined, ciMs: 300_000 }),
   ];
 
-  const stats = summarizeRuns(rows, { now: NOW, sinceMs: WEEK, repo: 'app' });
+  // Summarized inside each test, not here: a throw at collection is a file
+  // error, which stryker's runner does not count as a failing test.
+  const appStats = (): ReturnType<typeof summarizeRuns> =>
+    summarizeRuns(rows, { now: NOW, sinceMs: WEEK, repo: 'app' });
 
   it('keeps the rows inside the window and the repo', () => {
-    expect(stats.rows).toBe(6);
-    expect(stats.from).toBe('2026-11-12T12:00:00.000Z');
-    expect(stats.to).toBe('2026-11-19T12:00:00.000Z');
+    expect(appStats().rows).toBe(6);
+    expect(appStats().from).toBe('2026-11-12T12:00:00.000Z');
+    expect(appStats().to).toBe('2026-11-19T12:00:00.000Z');
   });
 
   it('takes every repo when none is named', () => {
@@ -136,7 +139,7 @@ describe('summarizeRuns', () => {
   });
 
   it('summarizes each rung: outcomes, lock and phase times, warm share and cold reasons', () => {
-    expect(stats.rungs.push).toEqual({
+    expect(appStats().rungs.push).toEqual({
       runs: 3,
       outcomes: { pass: 2, block: 1 },
       queuedMs: { median: 60_000, p90: 900_000 },
@@ -147,7 +150,11 @@ describe('summarizeRuns', () => {
       warm: 2,
       coldReasons: [['different stryker options', 1]],
     });
-    expect(stats.rungs.commit).toMatchObject({ runs: 1, mutated: 0, warm: 0 });
+    expect(appStats().rungs.commit).toMatchObject({
+      runs: 1,
+      mutated: 0,
+      warm: 0,
+    });
   });
 
   it('names a cold run with no reason by its cache and seed', () => {
@@ -165,7 +172,7 @@ describe('summarizeRuns', () => {
   });
 
   it('summarizes ships: states and where their time went', () => {
-    expect(stats.ships).toEqual({
+    expect(appStats().ships).toEqual({
       runs: 2,
       states: { green: 1, 'ci-red': 1 },
       pushMs: { median: 600_000, p90: 600_000 },
@@ -175,7 +182,7 @@ describe('summarizeRuns', () => {
   });
 
   it('buckets dry-run time by queue depth on arrival', () => {
-    expect(stats.byDepth).toEqual([
+    expect(appStats().byDepth).toEqual([
       { bucket: '0', runs: 1, dryRunMs: { median: 90_000, p90: 90_000 } },
       { bucket: '1', runs: 1, dryRunMs: { median: 100_000, p90: 100_000 } },
       { bucket: '2', runs: 0 },
@@ -184,7 +191,7 @@ describe('summarizeRuns', () => {
   });
 
   it('buckets dry-run time by load per core at the start', () => {
-    expect(stats.byLoad).toEqual([
+    expect(appStats().byLoad).toEqual([
       {
         bucket: 'under 0.5 per core',
         runs: 2,

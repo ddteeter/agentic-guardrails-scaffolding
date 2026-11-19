@@ -137,6 +137,12 @@ Families that recur (all genuinely equivalent):
 
 This is the most common reason a mutant survives a test that _looks_ thorough.
 
+**Work done at describe level.** A value computed in a `describe` body runs
+while the file is collected, not inside a test. If the mutant makes it throw,
+vitest reports a file error, and stryker's runner counts no failed test: the
+mutant survives though the suite is red. Compute it inside each `it`, or in a
+`beforeEach`, so the throw fails a test.
+
 **Guards that fail open.** If a parser returns `[]` for malformed input, then
 `expect(parse(garbage)).toEqual([])` passes even when the guard is entirely
 broken — because the _happy path also produces `[]`_ for that input. The mutant
