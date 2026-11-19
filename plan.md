@@ -1271,6 +1271,18 @@ core/src/audit.ts`) surfaced that it was a context-free text scan: it flagged
   inherits the gap. Possible fix: add `R` to the filter (or pass
   `--no-renames`), with the rename's new path as the changed file. It
   changes what every analyzer sees, so it wants its own issue and tests.
+- **Open (2026-11-18, found on #177): the Stop gate spends fix attempts
+  while a fixer is still running.** The main session spawned
+  `guardrail-fixer` (it runs in the background) and ended its turn to wait.
+  Each turn end re-ran the gate, which found the manifest unchanged, said
+  "a fixer is most likely still running", and still counted the block as an
+  attempt: the second block named `guardrail-fixer-thorough`, the third
+  declared the loop spent ("survived the fix loop") and told the main agent
+  to read the manifest itself, all before the one fixer had reported. By
+  then its edits had landed and only one violation was left. An
+  "unchanged, fixer running" block should not advance the attempt count, or
+  the gate should wait for the fixer's report instead of re-verifying on
+  every turn end.
 
 ## Roadmap: analyzer opt-in (pack composition, not all-or-nothing) — shipped
 
