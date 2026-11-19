@@ -62,6 +62,33 @@ describe('countUp', () => {
 });
 `;
 
+const FIXTURE_MANIFEST = {
+  name: 'stryker-timeout-fixture',
+  private: true,
+  type: 'module',
+};
+
+/**
+ * A short `timeoutMS`, so the hanging mutant costs seconds, not the
+ * default's tens of them.
+ */
+const STRYKER_CONFIG = {
+  testRunner: 'vitest',
+  plugins: ['@stryker-mutator/vitest-runner'],
+  reporters: ['json'],
+  vitest: { configFile: 'vitest.config.ts' },
+  mutate: ['src/count.ts'],
+  coverageAnalysis: 'perTest',
+  timeoutMS: 1000,
+};
+
+/**
+The fixture's stryker config with `change` applied, as file text.
+*/
+function strykerConfigWith(change: Record<string, unknown>): string {
+  return `${JSON.stringify({ ...STRYKER_CONFIG, ...change })}\n`;
+}
+
 /**
 Every analyzer but stryker off, so the verdict is stryker's alone.
 */
@@ -111,19 +138,9 @@ async function buildFixture(): Promise<string> {
     'src/count.ts': COUNT_SOURCE,
     'count.test.ts': COUNT_TEST,
     '.gitignore': 'node_modules\nreports\n.stryker-tmp\n',
-    'package.json': `${JSON.stringify({ name: 'stryker-timeout-fixture', private: true, type: 'module' })}\n`,
+    'package.json': `${JSON.stringify(FIXTURE_MANIFEST)}\n`,
     'vitest.config.ts': `import { defineConfig } from 'vitest/config';\n\nexport default defineConfig({ test: { include: ['*.test.ts'] } });\n`,
-    // A short `timeoutMS`, so the hanging mutant costs seconds, not the
-    // default's tens of them.
-    'stryker.conf.json': `${JSON.stringify({
-      testRunner: 'vitest',
-      plugins: ['@stryker-mutator/vitest-runner'],
-      reporters: ['json'],
-      vitest: { configFile: 'vitest.config.ts' },
-      mutate: ['src/count.ts'],
-      coverageAnalysis: 'perTest',
-      timeoutMS: 1000,
-    })}\n`,
+    'stryker.conf.json': strykerConfigWith({}),
   };
   for (const [file, contents] of Object.entries(files)) {
     const target = path.join(directory, file);
@@ -175,34 +192,72 @@ function pushGate(
   });
 }
 
+/** Runs stryker on `main`, as CI does, and returns a directory holding its
+ *  report and fingerprint sidecar: what a seed command copies. */
+async function seedFromMain(directory: string): Promise<string> {
+  await run(directory, path.join(binDirectory, 'stryker'), 'run');
+  const seedDirectory = mkdtempSync(
+    path.join(tmpdir(), 'guardrails-stryker-timeout-seed-'),
+  );
+  const mainReport = await readReport(directory);
+  expect(statusesOf(mainReport, 'src/count.ts')).toContain('Timeout');
+  writeFileSync(path.join(seedDirectory, 'mutation.json'), mainReport);
+  const sidecar = await writeMutationFingerprint(directory, exec, []);
+  expect(sidecar).toBeDefined();
+  cpSync(
+    path.join(directory, String(sidecar)),
+    path.join(seedDirectory, 'mutation.fingerprint.json'),
+  );
+  rmSync(path.join(directory, 'reports'), { recursive: true });
+  return seedDirectory;
+}
+
+/**
+The branch: count.ts changes, its loop does not; `files` change too.
+*/
+async function branch(
+  directory: string,
+  files: Record<string, string> = {},
+): Promise<void> {
+  await run(directory, 'git', 'checkout', '-q', '-b', 'feature');
+  writeFileSync(
+    path.join(directory, 'src', 'count.ts'),
+    `${COUNT_SOURCE}// The loop above is unchanged on this branch.\n`,
+  );
+  for (const [file, contents] of Object.entries(files)) {
+    writeFileSync(path.join(directory, file), contents);
+  }
+  await run(directory, 'git', 'add', '-A');
+  await run(directory, 'git', 'commit', '-q', '-m', 'feature');
+}
+
+/**
+The push gate with the seed in `seedDirectory`, and its progress lines.
+*/
+async function seededPushGate(
+  directory: string,
+  seedDirectory: string,
+): Promise<{ violations: unknown[]; progress: string }> {
+  const lines: string[] = [];
+  const result = await pushGate(directory, {
+    mutationCacheSeed: {
+      command: `cp "${seedDirectory}"/* "$GUARDRAILS_SEED_DIR"/`,
+      timeoutSeconds: 60,
+    },
+    progress: (line) => {
+      lines.push(line);
+    },
+  });
+  return { violations: result.violations, progress: lines.join('\n') };
+}
+
 describe.skipIf(isUnderMutationRun(here))(
   'drift-guard: a stryker Timeout at the push gate',
   () => {
     it('blocks nothing, cold or seeded', async () => {
       const directory = await buildFixture();
-      // main's report, as CI writes it, with the fingerprint a seed needs.
-      await run(directory, path.join(binDirectory, 'stryker'), 'run');
-      const seedDirectory = mkdtempSync(
-        path.join(tmpdir(), 'guardrails-stryker-timeout-seed-'),
-      );
-      const mainReport = await readReport(directory);
-      expect(statusesOf(mainReport, 'src/count.ts')).toContain('Timeout');
-      writeFileSync(path.join(seedDirectory, 'mutation.json'), mainReport);
-      const sidecar = await writeMutationFingerprint(directory);
-      expect(sidecar).toBeDefined();
-      cpSync(
-        path.join(directory, String(sidecar)),
-        path.join(seedDirectory, 'mutation.fingerprint.json'),
-      );
-      rmSync(path.join(directory, 'reports'), { recursive: true });
-
-      // The branch: count.ts changes, its loop does not.
-      await run(directory, 'git', 'checkout', '-q', '-b', 'feature');
-      writeFileSync(
-        path.join(directory, 'src', 'count.ts'),
-        `${COUNT_SOURCE}// The loop above is unchanged on this branch.\n`,
-      );
-      await run(directory, 'git', 'commit', '-q', '-am', 'feature');
+      const seedDirectory = await seedFromMain(directory);
+      await branch(directory);
 
       const cold = await pushGate(directory);
       expect(cold.violations).toEqual([]);
@@ -211,20 +266,51 @@ describe.skipIf(isUnderMutationRun(here))(
       );
 
       rmSync(path.join(directory, 'reports'), { recursive: true });
-      const progress: string[] = [];
-      const seeded = await pushGate(directory, {
-        mutationCacheSeed: {
-          command: `cp "${seedDirectory}"/* "$GUARDRAILS_SEED_DIR"/`,
-          timeoutSeconds: 60,
-        },
-        progress: (line) => {
-          progress.push(line);
-        },
-      });
-      expect(progress.join('\n')).toContain('seeded the mutation cache from 1');
+      const seeded = await seededPushGate(directory, seedDirectory);
+      expect(seeded.progress).toContain('seeded the mutation cache from 1');
       expect(seeded.violations).toEqual([]);
       expect(statusesOf(await readReport(directory), 'src/count.ts')).toContain(
         'Timeout',
+      );
+    }, 600_000);
+  },
+);
+
+/**
+ * #177: a seed survives what cannot change a verdict, through the real gate.
+ * The branch adds a `mutate` entry for another module, changes the reporters,
+ * adds a formatter devDependency and writes a lockfile -- each of which threw
+ * every seed away when the fingerprint hashed the whole config and lockfile.
+ * A change to an option that judges mutants still does.
+ */
+describe.skipIf(isUnderMutationRun(here))(
+  'drift-guard: the seed fingerprint (#177)',
+  () => {
+    it('keeps the seed across changes that cannot change a verdict', async () => {
+      const directory = await buildFixture();
+      const seedDirectory = await seedFromMain(directory);
+      await branch(directory, {
+        'stryker.conf.json': strykerConfigWith({
+          mutate: ['src/count.ts', 'src/other.ts'],
+          reporters: ['json', 'clear-text'],
+        }),
+        'package.json': `${JSON.stringify({ ...FIXTURE_MANIFEST, devDependencies: { prettier: '*' } })}\n`,
+        'package-lock.json': '{"lockfileVersion":3,"packages":{}}\n',
+      });
+      const seeded = await seededPushGate(directory, seedDirectory);
+      expect(seeded.progress).toContain('seeded the mutation cache from 1');
+      expect(seeded.violations).toEqual([]);
+    }, 600_000);
+
+    it('rejects the seed when an option that judges mutants changed', async () => {
+      const directory = await buildFixture();
+      const seedDirectory = await seedFromMain(directory);
+      await branch(directory, {
+        'stryker.conf.json': strykerConfigWith({ timeoutMS: 2000 }),
+      });
+      const seeded = await seededPushGate(directory, seedDirectory);
+      expect(seeded.progress).toContain(
+        'was measured under different stryker options from this checkout',
       );
     }, 600_000);
   },

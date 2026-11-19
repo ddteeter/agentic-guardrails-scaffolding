@@ -40,7 +40,7 @@ function fixtureSidecar(): string {
   const fingerprint = computeFingerprint({
     strykerVersion: '10.0.0',
     config: STRYKER_CONFIG,
-    lockfiles: [],
+    dependencies: { lockfiles: [] },
   });
   return fingerprint === undefined ? '' : serializeFingerprint(fingerprint);
 }

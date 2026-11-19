@@ -302,9 +302,28 @@ The whole cache is discarded when:
   `setupTests.ts`), a `test-utils`/`test-helpers` module, or a tool config such
   as `vitest.config.ts`;
 - the **fingerprint** in `reports/stryker-incremental.fingerprint.json` does not
-  match: the installed stryker version, a hash of the stryker config, or a hash
-  of the lockfiles. A missing or unreadable sidecar counts as a mismatch, and
-  the gate writes a fresh one before every run;
+  match. It has three parts, each holding only what can change a verdict:
+  - the installed stryker version;
+  - the stryker options, without the keys that cannot change how a mutant is
+    judged: `mutate`, the reporters and their blocks, `thresholds`,
+    `concurrency`, the log levels, the temp-directory and incremental-file
+    settings, `force`, `dryRunOnly` and `$schema`. Any other key counts,
+    including ones this list does not know;
+  - the installed versions of the packages that run the code and its tests:
+    every `dependencies` and required `peerDependencies` entry of every
+    tracked `package.json`, the devDependencies that run tests (stryker,
+    vitest, jest, mocha, ava, jasmine, karma, Testing Library, jsdom,
+    happy-dom, the Cloudflare vitest pool, `typescript`, `tsx`, `esbuild`) and
+    the names in `mutationCache.verdictDependencies`, each followed
+    transitively through `node_modules`. `optionalDependencies` and optional
+    peers are not followed: platform binaries live there, and a macOS checkout
+    and Linux CI install different ones. Where the tracked manifests cannot be
+    listed (no git), the lockfiles are hashed instead.
+
+  So a formatter bump, or a `mutate` entry for another module, keeps the
+  cache. A missing or unreadable sidecar counts as a mismatch, and the gate
+  writes a fresh one before every run;
+
 - the cache does not parse, the run cannot report per-test coverage (the
   `command` runner, or a config the gate cannot read), or no cached mutant names
   a covering test.
@@ -336,10 +355,15 @@ fetches it:
 {
   "mutationCache": {
     "seedFrom": "sh scripts/fetch-mutation-seed.sh",
-    "seedTimeoutSeconds": 120
+    "seedTimeoutSeconds": 120,
+    "verdictDependencies": ["@vitejs/plugin-react"]
   }
 }
 ```
+
+`verdictDependencies` is optional: packages whose versions can change a
+verdict that the fingerprint would not otherwise count, such as a test-time
+plugin outside the list above.
 
 - **What it seeds:** per file. On every run, the seed's entries are taken for
   the in-scope files the local cache lacks, and the local entry is kept where
@@ -362,9 +386,10 @@ fetches it:
   appears at two different sources, or if any report does not parse.
 - **What it checks first:** the fingerprint. Every report must have its
   sidecar, the shards' sidecars must all agree, and they must match this
-  checkout's stryker version, stryker config and lockfile. A branch that
-  upgrades stryker, changes its config or changes dependencies therefore
-  never reuses kills CI measured under the old setup.
+  checkout's fingerprint (above). A branch that upgrades stryker, changes an
+  option that judges mutants, or changes a runtime or test-stack dependency
+  therefore never reuses kills CI measured under the old setup. When a seed
+  is refused, the gate's line says which part differed.
 - **What happens to the seed:** it passes the rules above like a local cache.
   Survivors are dropped, it is cut to this run's files, and a kill stays only
   while its test file is unchanged on this branch. (A seeded kill is not
@@ -449,8 +474,10 @@ download them all with `gh run download "$run" --pattern
 own subdirectory, report and sidecar together, and the gate merges them. The
 shards must split the production files between them: two shards that both
 mutated one file refuse the whole seed. Every shard writes the same
-fingerprint, so shards that disagree (a runner with a different lockfile or
-stryker) refuse it too.
+fingerprint, so shards that disagree (a runner with different dependencies or
+stryker) refuse it too. Every shard writes the same fingerprint because the
+`mutate` array is not part of it: a shard that passes its own `--mutate`, or
+a config whose `mutate` lists every shard's scope, fingerprints alike.
 
 ## The clean-baseline prerequisite
 

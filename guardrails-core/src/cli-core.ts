@@ -188,6 +188,7 @@ function commitGateOptionsFromConfig(
   | 'analyzers'
   | 'analyzerRungs'
   | 'mutationCacheInvalidation'
+  | 'mutationVerdictDependencies'
   | 'mutationScope'
   | 'mutationCacheSeed'
   | 'config'
@@ -203,6 +204,7 @@ function commitGateOptionsFromConfig(
     analyzers: config.analyzers,
     analyzerRungs: config.analyzerRungs,
     mutationCacheInvalidation: config.mutationCache.invalidation,
+    mutationVerdictDependencies: config.mutationCache.verdictDependencies,
     mutationScope: config.mutationScope,
     mutationCacheSeed: seedSettingsOf(config),
     config: toGateConfig(config),
@@ -380,6 +382,7 @@ async function verifyCommand(
     analyzers: config.analyzers,
     analyzerRungs: config.analyzerRungs,
     mutationCacheInvalidation: config.mutationCache.invalidation,
+    mutationVerdictDependencies: config.mutationCache.verdictDependencies,
     mutationScope: config.mutationScope,
     mutationCacheSeed: seedSettingsOf(config),
   });
@@ -500,6 +503,7 @@ async function gateStopCommand(
     analyzers: config.analyzers,
     analyzerRungs: config.analyzerRungs,
     mutationCacheInvalidation: config.mutationCache.invalidation,
+    mutationVerdictDependencies: config.mutationCache.verdictDependencies,
     mutationScope: config.mutationScope,
     mutationCacheSeed: seedSettingsOf(config),
     isRetry: input.stopHookActive,
@@ -2260,7 +2264,12 @@ function gateCommand(
 async function mutationFingerprintCommand(
   dependencies: CliDependencies,
 ): Promise<number> {
-  const written = await writeMutationFingerprint(dependencies.cwd);
+  const repoRoot = findGitRoot(dependencies.cwd) ?? dependencies.cwd;
+  const written = await writeMutationFingerprint(
+    dependencies.cwd,
+    dependencies.exec,
+    loadConfig(repoRoot).mutationCache.verdictDependencies,
+  );
   if (written === undefined) {
     dependencies.stderr(
       'guardrails: mutation-fingerprint found no installed @stryker-mutator/core; nothing written.\n',

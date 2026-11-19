@@ -42,6 +42,22 @@ origin/<base>`: the newest commit HEAD shares with either form of the base.
   output can contain it. Only the hook's last `push blocked` line decides it
   now.
 
+- **The mutation-cache fingerprint counts only what can change a verdict
+  (#177).** A local cache or a `seedFrom` seed was thrown away when anything
+  in the stryker config or any lockfile differed, so a formatter bump or a
+  `mutate` entry for another module made the next push gate cold. The
+  fingerprint is now the stryker version, the stryker options without the
+  keys that judge no mutant (`mutate`, reporters, thresholds, concurrency,
+  logging and the like), and the installed versions of the runtime
+  dependencies and the test stack, followed transitively. A refused seed's
+  line now says which part differed. `mutationCache.verdictDependencies`
+  adds packages to the dependency part. See docs/adoption.md ("The mutation
+  cache between runs").
+- **The first gate after upgrading runs cold once,** and seeds match again
+  only once CI runs this version's `guardrails mutation-fingerprint`. The
+  sidecar's fields were renamed, so one an older version wrote reads as no
+  fingerprint.
+
 ## Instructions this supersedes
 
 - Any step that fast-forwards or pulls local `main` before a push so that the
@@ -54,6 +70,12 @@ origin/<base>`: the newest commit HEAD shares with either form of the base.
   as `error`: `behind` and `conflicting` are new, and both mean "rebase, then
   ship again".
 
+- Any step that avoids editing `stryker.conf.json`'s `mutate` array, or
+  holds back a dependency bump, to keep other branches' mutation seeds
+  usable. Neither invalidates a seed now unless the bump is to a runtime or
+  test-stack dependency.
+
 ## What to wire
 
-- Nothing.
+- CI that uploads mutation seeds must run this version's
+  `guardrails mutation-fingerprint`, as before; nothing else changes.

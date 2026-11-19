@@ -83,7 +83,21 @@ function sidecar(config = CONFIG, version = '10.0.0', lock = LOCK): string {
   const fingerprint = computeFingerprint({
     strykerVersion: version,
     config,
-    lockfiles: [{ name: 'package-lock.json', contents: lock }],
+    dependencies: {
+      lockfiles: [{ name: 'package-lock.json', contents: lock }],
+    },
+  });
+  if (fingerprint === undefined) {
+    throw new Error('no fingerprint');
+  }
+  return serializeFingerprint(fingerprint);
+}
+
+function pinnedSidecar(pins: readonly string[]): string {
+  const fingerprint = computeFingerprint({
+    strykerVersion: '10.0.0',
+    config: CONFIG,
+    dependencies: { pins },
   });
   if (fingerprint === undefined) {
     throw new Error('no fingerprint');
@@ -319,7 +333,7 @@ describe('prepareIncrementalCache', () => {
   it.each([
     [
       'the stryker config',
-      { strykerConfig: '{"testRunner":"vitest","mutate":[]}' },
+      { strykerConfig: '{"testRunner":"vitest","timeoutMS":1}' },
     ],
   ])('discards the whole cache when %s changed', async (_label, overrides) => {
     const { files, seams } = healthyRepo();
@@ -336,6 +350,66 @@ describe('prepareIncrementalCache', () => {
     const { files, seams } = healthyRepo(overrides);
     await prepareIncrementalCache(seams, run);
     expect(files.has(CACHE)).toBe(false);
+  });
+
+  it('keeps the cache when only options that judge no mutant changed (#177)', async () => {
+    const { files, seams } = healthyRepo();
+    await prepareIncrementalCache(seams, {
+      ...run,
+      strykerConfig:
+        '{"testRunner":"vitest","mutate":["src/other.ts"],"reporters":["html"]}',
+    });
+    expect(kept(files)).toEqual({
+      'src/a.ts': ['Killed'],
+      'src/b.ts': ['Killed'],
+    });
+  });
+
+  describe('with the dependency pins readable (#177)', () => {
+    const PINS = ['vitest@4.1.10', 'zod@4.1.0'];
+
+    it('keeps the cache across a lockfile change the pins do not see', async () => {
+      const { files, seams } = healthyRepo({
+        [SIDECAR]: pinnedSidecar(PINS),
+        [path.join(ROOT, 'package-lock.json')]: '{"prettier":"bumped"}',
+      });
+      await prepareIncrementalCache(
+        { ...seams, dependencyPins: () => Promise.resolve(PINS) },
+        run,
+      );
+      expect(files.has(CACHE)).toBe(true);
+    });
+
+    it('discards the whole cache when a pinned version changed', async () => {
+      const { files, seams } = healthyRepo({ [SIDECAR]: pinnedSidecar(PINS) });
+      await prepareIncrementalCache(
+        {
+          ...seams,
+          dependencyPins: () => Promise.resolve(['vitest@4.2.0', 'zod@4.1.0']),
+        },
+        run,
+      );
+      expect(files.has(CACHE)).toBe(false);
+    });
+
+    it('stamps the pins, not the lockfile, on the sidecar it writes', async () => {
+      const { files, seams } = healthyRepo();
+      await prepareIncrementalCache(
+        { ...seams, dependencyPins: () => Promise.resolve(PINS) },
+        run,
+      );
+      expect(files.get(SIDECAR)?.contents).toBe(pinnedSidecar(PINS));
+    });
+
+    it('falls back to the lockfile when the pins cannot be read', async () => {
+      const { files, seams } = healthyRepo();
+      await prepareIncrementalCache(
+        { ...seams, dependencyPins: () => Promise.resolve(undefined) },
+        run,
+      );
+      expect(files.has(CACHE)).toBe(true);
+      expect(files.get(SIDECAR)?.contents).toBe(sidecar());
+    });
   });
 
   it('discards the whole cache when its sidecar is missing', async () => {
@@ -622,7 +696,9 @@ describe('prepareIncrementalCache', () => {
         computeFingerprint({
           strykerVersion: '10.0.0',
           config: CONFIG,
-          lockfiles: [{ name: 'package-lock.json', contents: LOCK }],
+          dependencies: {
+            lockfiles: [{ name: 'package-lock.json', contents: LOCK }],
+          },
         }),
       ]);
     });

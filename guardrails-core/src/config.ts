@@ -121,6 +121,13 @@ interface MutationCacheConfig {
   How long `seedFrom` may run before the gate gives up on it and runs cold.
   */
   seedTimeoutSeconds: number;
+  /**
+   * Packages whose installed versions count in the mutation-cache
+   * fingerprint beyond the runtime dependencies and the built-in test stack
+   * (#177) -- a test-time plugin that list does not know, say. Each is
+   * followed transitively, like the rest.
+   */
+  verdictDependencies: string[];
 }
 
 export interface RepoConfig {
@@ -318,6 +325,7 @@ export function defaultConfig(): RepoConfig {
       invalidation: 'targeted',
       seedFrom: undefined,
       seedTimeoutSeconds: 120,
+      verdictDependencies: [],
     },
     mutationScope: { ...DEFAULT_MUTATION_SCOPE },
     denyForegroundWaits: true,
@@ -692,7 +700,20 @@ function pickMutationCache(
       section.seedTimeoutSeconds,
       defaults.seedTimeoutSeconds,
     ),
+    verdictDependencies: pickNames(section.verdictDependencies),
   };
+}
+
+/**
+The non-blank strings of an array, trimmed; anything else is none.
+*/
+function pickNames(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.flatMap((name: unknown) =>
+    typeof name === 'string' && name.trim() !== '' ? [name.trim()] : [],
+  );
 }
 
 /**
