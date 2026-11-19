@@ -40,6 +40,10 @@ interface StrykerRecord {
 }
 
 export interface MutationRunRecord {
+  /**
+  Stryker ran, rather than being deferred or giving up on the lock.
+  */
+  didRun: boolean;
   lock?: LockRecord;
   stryker: StrykerRecord;
   /**
@@ -133,6 +137,7 @@ export function mutationRunRecord(
     report: counts === undefined ? 'missing' : 'read',
   };
   return {
+    didRun: inputs.didRun,
     ...(inputs.timing !== undefined && {
       lock: lockRecord(inputs.timing, inputs.didRun, summary),
     }),

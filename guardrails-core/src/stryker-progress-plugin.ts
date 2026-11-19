@@ -18,7 +18,8 @@
  * (`absorbRepeatStopSignals`): stryker saves a partial incremental report on
  * the first, and exits without one on the second.
  */
-import { renameSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
 import process from 'node:process';
 
 import {
@@ -124,6 +125,9 @@ const WRITE_INTERVAL_MS = 5000;
  * reading the holder file never sees half of it.
  */
 export function writeAtomically(filePath: string, content: string): void {
+  // The run summary goes in `reports/`, which stryker's own reporter only
+  // creates at the end of the run (#176).
+  mkdirSync(path.dirname(filePath), { recursive: true });
   const temporary = `${filePath}.${String(process.pid)}.tmp`;
   writeFileSync(temporary, content);
   renameSync(temporary, filePath);

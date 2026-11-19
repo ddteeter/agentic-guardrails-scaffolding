@@ -63,6 +63,7 @@ describe('mutationRunRecord', () => {
         reportText: REPORT,
       }),
     ).toEqual({
+      didRun: true,
       lock: {
         queuedMs: 300,
         heldMs: 700,
@@ -152,6 +153,7 @@ describe('mutationRunRecord', () => {
         reportText: REPORT,
       }),
     ).toEqual({
+      didRun: false,
       lock: {
         queuedMs: 60_000,
         heldMs: 0,

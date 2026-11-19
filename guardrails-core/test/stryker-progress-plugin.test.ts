@@ -515,6 +515,12 @@ describe('writeAtomically', () => {
     rmSync(directory, { recursive: true, force: true });
   });
 
+  it('creates the directory it writes into', () => {
+    const file = path.join(directory, 'reports', 'guardrails-run.json');
+    writeAtomically(file, '{}');
+    expect(readFileSync(file, 'utf8')).toBe('{}');
+  });
+
   it('writes the content and leaves no temp file behind', () => {
     const target = path.join(directory, 'gate.lock.holder.json');
     writeAtomically(target, '{"a":1}');

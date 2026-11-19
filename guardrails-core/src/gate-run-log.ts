@@ -1,0 +1,196 @@
+/**
+ * The gate's rows in the machine-wide run log (#176).
+ *
+ * A gate records when it started and how loaded the machine was, collects
+ * the stryker run's record from `runVerify`, and appends one row when it
+ * finishes. Commit and push gates always write one; a stop gate only when
+ * stryker had something in scope, since a stop turn with nothing to mutate
+ * is noise and there are hundreds. Nothing here can fail a gate: a log that
+ * cannot be written is one line on stderr.
+ */
+import { availableParallelism } from 'node:os';
+import path from 'node:path';
+
+import type { Exec } from './exec.js';
+import { readFileSync } from 'node:fs';
+
+import {
+  appendRun,
+  type GateRow,
+  parseRuns,
+  type ShipRow,
+  type MachineSample,
+  runLogPath,
+  sampleMachine,
+} from './run-log.js';
+import type { MutationRunRecord } from './verify/mutation-run.js';
+
+export interface RunStart {
+  startedAt: string;
+  machine: MachineSample;
+}
+
+export interface RunClock {
+  now: () => Date;
+  sample: () => MachineSample;
+  cores: () => number;
+}
+
+const SYSTEM_CLOCK: RunClock = {
+  now: () => new Date(),
+  sample: () => sampleMachine(),
+  cores: availableParallelism,
+};
+
+export function startRun(clock: RunClock = SYSTEM_CLOCK): RunStart {
+  return { startedAt: clock.now().toISOString(), machine: clock.sample() };
+}
+
+export interface GateRunInput {
+  /**
+  The gate lock's path; no lock, no machine-wide log to write to.
+  */
+  lockPath: string | undefined;
+  repoRoot: string;
+  exec: Exec;
+  rung: string;
+  start: RunStart;
+  mutationRun: MutationRunRecord | undefined;
+  isBlocked: boolean;
+  /**
+  `GUARDRAILS_SHIP_ID` and the like.
+  */
+  environment: Readonly<Record<string, string | undefined>>;
+  warn: (line: string) => void;
+  clock?: RunClock;
+}
+
+/**
+ * What the gate amounted to: a block or a pass, or -- when stryker never got
+ * the lock -- a timeout (blocking) or a deferral (passing).
+ */
+function outcomeOf(
+  mutationRun: MutationRunRecord | undefined,
+  isBlocked: boolean,
+): string {
+  if (mutationRun?.didRun === false) {
+    return isBlocked ? 'lock-timeout' : 'defer';
+  }
+  return isBlocked ? 'block' : 'pass';
+}
+
+async function branchOf(
+  exec: Exec,
+  repoRoot: string,
+): Promise<string | undefined> {
+  const head = await exec('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
+    cwd: repoRoot,
+  });
+  const branch = head.stdout.trim();
+  return branch !== '' && head.code === 0 ? branch : undefined;
+}
+
+/**
+Append this gate's row, when it should have one.
+*/
+export async function logGateRun(input: GateRunInput): Promise<void> {
+  const { lockPath, mutationRun } = input;
+  const isStopWithoutStryker =
+    input.rung === 'stop' && mutationRun === undefined;
+  if (lockPath === undefined || isStopWithoutStryker) {
+    return;
+  }
+  const clock = input.clock ?? SYSTEM_CLOCK;
+  const ship = input.environment.GUARDRAILS_SHIP_ID;
+  const row: GateRow = {
+    v: 1,
+    kind: 'gate',
+    rung: input.rung,
+    repo: path.basename(input.repoRoot),
+    branch: await branchOf(input.exec, input.repoRoot),
+    ship: ship === '' ? undefined : ship,
+    startedAt: input.start.startedAt,
+    finishedAt: clock.now().toISOString(),
+    outcome: outcomeOf(mutationRun, input.isBlocked),
+    ...(mutationRun?.lock !== undefined && { lock: mutationRun.lock }),
+    ...(mutationRun !== undefined && { stryker: mutationRun.stryker }),
+    machine: {
+      cores: clock.cores(),
+      concurrency: mutationRun?.concurrency ?? 'default',
+      start: input.start.machine,
+      end: clock.sample(),
+    },
+  };
+  const error = appendRun(runLogPath(lockPath), row);
+  if (error !== undefined) {
+    input.warn(`guardrails: could not write the run log (${error}).`);
+  }
+}
+
+export interface ShipRunInput {
+  lockPath: string | undefined;
+  repoRoot: string;
+  shipId: string;
+  start: RunStart;
+  status: { state: string; branch: string; pr: number | null };
+  pushMs: number | undefined;
+  ciMs: number | undefined;
+  warn: (line: string) => void;
+  clock?: RunClock | undefined;
+}
+
+/**
+ * How long the gate this ship's push ran took: the last gate row stamped
+ * with its id, or `undefined` when the gate wrote none (no stryker lock, an
+ * older hook, a push that never reached the gate).
+ */
+function gateMsOf(file: string, shipId: string): number | undefined {
+  let text: string;
+  try {
+    text = readFileSync(file, 'utf8');
+  } catch {
+    return undefined;
+  }
+  const gate = parseRuns(text).findLast(
+    (row) => row.kind === 'gate' && row.ship === shipId,
+  );
+  return gate === undefined
+    ? undefined
+    : Date.parse(gate.finishedAt) - Date.parse(gate.startedAt);
+}
+
+/**
+Append a ship's row, with its gate's time read back from the gate's row.
+*/
+export function logShipRun(input: ShipRunInput): void {
+  const { lockPath } = input;
+  if (lockPath === undefined) {
+    return;
+  }
+  const clock = input.clock ?? SYSTEM_CLOCK;
+  const file = runLogPath(lockPath);
+  const row: ShipRow = {
+    v: 1,
+    kind: 'ship',
+    repo: path.basename(input.repoRoot),
+    branch: input.status.branch,
+    ship: input.shipId,
+    startedAt: input.start.startedAt,
+    finishedAt: clock.now().toISOString(),
+    pr: input.status.pr,
+    state: input.status.state,
+    pushMs: input.pushMs ?? 0,
+    gateMs: gateMsOf(file, input.shipId),
+    ciMs: input.ciMs,
+    machine: {
+      cores: clock.cores(),
+      concurrency: 'default',
+      start: input.start.machine,
+      end: clock.sample(),
+    },
+  };
+  const error = appendRun(file, row);
+  if (error !== undefined) {
+    input.warn(`guardrails: could not write the run log (${error}).`);
+  }
+}

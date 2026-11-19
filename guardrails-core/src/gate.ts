@@ -30,6 +30,7 @@
 
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import process from 'node:process';
 
 import { auditDiff, findingKey, type AuditFinding } from './audit.js';
 import type { SanctionedFile, SanctionedSuppression } from './config.js';
@@ -85,6 +86,8 @@ import { runVerify } from './verify/index.js';
 import type { MutationLock } from './mutation-lock.js';
 import { loadWorkspaceResolver, withPackages } from './workspaces.js';
 import { repoSourceReader } from './repo-source.js';
+import { logGateRun, startRun } from './gate-run-log.js';
+import type { MutationRunRecord } from './verify/mutation-run.js';
 import { resolveBaseReference } from './verify/git.js';
 
 export interface StopGateOptions {
@@ -642,8 +645,64 @@ function forTheFixer(
   );
 }
 
+/**
+ * The stop gate, with its row in the machine-wide run log (#176) when stryker
+ * had something in scope.
+ */
 export async function runStopGate(
   options: StopGateOptions,
+): Promise<StopGateResult> {
+  return loggedGateRun(
+    options,
+    'stop',
+    (onMutationRun) => stopGate(options, onMutationRun),
+    // `release` lets the turn end too: the gate has given up on this loop.
+    (result) =>
+      result.decision.outcome === 'delegate' ||
+      result.decision.outcome === 'escalate',
+  );
+}
+
+/**
+ * Run a gate, capturing the stryker record it reports, then append its row to
+ * the machine-wide run log.
+ */
+async function loggedGateRun<Result>(
+  options: {
+    mutationLock?: MutationLock | undefined;
+    repoRoot: string;
+    exec: Exec;
+  },
+  rung: string,
+  run: (onMutationRun: (record: MutationRunRecord) => void) => Promise<Result>,
+  isBlocked: (result: Result) => boolean,
+): Promise<Result> {
+  const start = startRun();
+  let mutationRun: MutationRunRecord | undefined;
+  const result = await run((record) => {
+    mutationRun = record;
+  });
+  await logGateRun({
+    lockPath: options.mutationLock?.path,
+    repoRoot: options.repoRoot,
+    exec: options.exec,
+    rung,
+    start,
+    mutationRun,
+    isBlocked: isBlocked(result),
+    environment: process.env,
+    warn: writeWarning,
+  });
+  return result;
+}
+
+function writeWarning(line: string): void {
+  process.stderr.write(`${line}\n`);
+}
+
+async function stopGate(
+  options: StopGateOptions,
+  onMutationRun: (record: MutationRunRecord) => void,
 ): Promise<StopGateResult> {
   const { repoRoot, sessionId, baseBranch, exec, config } = options;
   const directory = stateDirectory(repoRoot);
@@ -711,6 +770,7 @@ export async function runStopGate(
     mutationScope: options.mutationScope,
     mutationCacheSeed: options.mutationCacheSeed,
     mutationLock: options.mutationLock,
+    onMutationRun,
   };
   // No open loop is the precondition: a fixer mid-flight has to have its
   // progress measured, never assumed from an earlier clean turn.
@@ -924,8 +984,23 @@ function isRememberedPass(
   );
 }
 
+/**
+ * The commit or push gate, with its row in the machine-wide run log (#176).
+ */
 export async function runCommitGate(
   options: CommitGateOptions,
+): Promise<CommitGateResult> {
+  return loggedGateRun(
+    options,
+    options.profile ?? 'commit',
+    (onMutationRun) => commitGate(options, onMutationRun),
+    (result) => result.blocked,
+  );
+}
+
+async function commitGate(
+  options: CommitGateOptions,
+  onMutationRun: (record: MutationRunRecord) => void,
 ): Promise<CommitGateResult> {
   const directory = stateDirectory(options.repoRoot);
   // Taken BEFORE the analyzers run: what is remembered must be the tree that
@@ -955,6 +1030,7 @@ export async function runCommitGate(
     mutationCacheSeed: options.mutationCacheSeed,
     ...(options.changedScope && { changedScope: options.changedScope }),
     mutationLock: options.mutationLock,
+    onMutationRun,
   });
   // The commit gate audits the branch's CUMULATIVE diff and has no per-loop
   // snapshot baseline (unlike runStopGate), so a deliberately-sanctioned

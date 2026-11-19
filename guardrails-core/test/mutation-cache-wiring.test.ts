@@ -8,6 +8,7 @@
  * in `cli-core.test.ts`.
  */
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -23,6 +24,7 @@ import type { Exec } from '../src/exec.js';
 import { runCommitGate, runStopGate } from '../src/gate.js';
 import type { GateConfig } from '../src/gate-decision.js';
 import type { CacheInvalidation } from '../src/verify/incremental-cache.js';
+import { parseRuns } from '../src/run-log.js';
 import {
   computeFingerprint,
   serializeFingerprint,
@@ -215,5 +217,139 @@ describe.each<[string, readonly string[] | undefined, string[]]>([
       mutationVerdictDependencies: extra,
     });
     expect(writtenSidecar()).toBe(expectedSidecar());
+  });
+});
+
+function logged(): ReturnType<typeof parseRuns> {
+  const file = path.join(root, 'gate.lock.runs.jsonl');
+  return existsSync(file) ? parseRuns(readFileSync(file, 'utf8')) : [];
+}
+
+/**
+Every analyzer off but stryker, so a gate's verdict is stryker's alone.
+*/
+const ONLY_STRYKER = {
+  eslint: 'off',
+  tsc: 'off',
+  knip: 'off',
+  'npm-peers': 'off',
+  'dependency-cruiser': 'off',
+  stryker: 'required',
+  dupes: 'off',
+  complexity: 'off',
+} as const;
+
+/**
+ * Both gates write their row to the run log beside the gate lock (#176). The
+ * fixture's fake git answers everything with success, so it reads as a
+ * machine with `lockf`, and the lock file is a real one in the temp repo.
+ */
+describe('the gates’ rows in the run log', () => {
+  const lockConfig = {
+    commitWaitSeconds: 60,
+    pushWaitSeconds: 60,
+    stopGraceSeconds: 1,
+  };
+
+  it('is written by the commit gate, with its stryker part', async () => {
+    await runCommitGate({
+      repoRoot: root,
+      baseBranch: 'main',
+      exec,
+      config,
+      resolveBin: (tool) => tool,
+      analyzers: { stryker: 'required' },
+      mutationLock: { path: path.join(root, 'gate.lock'), config: lockConfig },
+    });
+    expect(logged()).toMatchObject([
+      {
+        kind: 'gate',
+        rung: 'commit',
+        repo: path.basename(root),
+        stryker: { files: 1, cache: { local: 'kept', seed: 'off' } },
+      },
+    ]);
+  });
+
+  it('is written by the stop gate when stryker had something in scope', async () => {
+    await runStopGate({
+      repoRoot: root,
+      sessionId: 'sid',
+      baseBranch: 'main',
+      exec,
+      config,
+      resolveBin: (tool) => tool,
+      analyzers: { stryker: 'required' },
+      analyzerRungs: { stryker: 'stop' },
+      mutationLock: { path: path.join(root, 'gate.lock'), config: lockConfig },
+    });
+    expect(logged()).toMatchObject([{ kind: 'gate', rung: 'stop' }]);
+  });
+
+  it('is not written by a stop gate with nothing to mutate', async () => {
+    await runStopGate({
+      repoRoot: root,
+      sessionId: 'sid',
+      baseBranch: 'main',
+      exec,
+      config,
+      resolveBin: (tool) => tool,
+      analyzers: { stryker: 'off' },
+      mutationLock: { path: path.join(root, 'gate.lock'), config: lockConfig },
+    });
+    expect(logged()).toEqual([]);
+  });
+
+  /**
+   * The fixture's git, with a stryker that leaves an empty report behind, so
+   * the gate has nothing to block on.
+   */
+  const passing: Exec = (command, args) => {
+    const line = new Set([command, ...args]);
+    if (line.has('stryker') && line.has('run')) {
+      mkdirSync(path.join(root, 'reports', 'mutation'), { recursive: true });
+      writeFileSync(
+        path.join(root, 'reports', 'mutation', 'mutation.json'),
+        '{"files":{}}',
+      );
+    }
+    return exec(command, args);
+  };
+
+  it.each<[string, Exec, Partial<GateConfig>, string]>([
+    ['a delegation', exec, {}, 'block'],
+    ['an escalation', exec, { maxAttempts: 0 }, 'block'],
+    ['a clean turn', passing, {}, 'pass'],
+  ])('records the stop gate’s %s', async (_label, run, change, outcome) => {
+    await runStopGate({
+      repoRoot: root,
+      sessionId: 'sid',
+      baseBranch: 'main',
+      exec: run,
+      config: { ...config, ...change },
+      resolveBin: (tool) => tool,
+      analyzers: ONLY_STRYKER,
+      analyzerRungs: { stryker: 'stop' },
+      mutationLock: { path: path.join(root, 'gate.lock'), config: lockConfig },
+    });
+    expect(logged()[0]?.kind === 'gate' && logged()[0]).toMatchObject({
+      outcome,
+    });
+  });
+
+  it.each<[string, Exec, string]>([
+    ['a block', exec, 'block'],
+    ['a pass', passing, 'pass'],
+  ])('records the commit gate’s %s', async (_label, run, outcome) => {
+    await runCommitGate({
+      repoRoot: root,
+      baseBranch: 'main',
+      exec: run,
+      config,
+      resolveBin: (tool) => tool,
+      analyzers: ONLY_STRYKER,
+      mutationLock: { path: path.join(root, 'gate.lock'), config: lockConfig },
+    });
+    expect(logged()[0]).toMatchObject({ outcome });
   });
 });

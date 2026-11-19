@@ -1830,6 +1830,7 @@ async function shipCommand(
     attach: flags(rest, 'attach').map((file) =>
       resolveAttachment(dependencies.cwd, file),
     ),
+    lockPath: machineLock(loadConfig(repoRoot).mutationLock).path,
   });
   writeShipStatus(statusPath, status);
   dependencies.stdout(

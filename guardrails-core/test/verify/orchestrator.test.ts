@@ -3271,6 +3271,7 @@ describe('stryker fails open twice (defect 3)', () => {
       },
     });
     expect(mutationRun).toEqual({
+      didRun: true,
       stryker: {
         files: 1,
         cache: { local: 'none', seed: 'off' },
