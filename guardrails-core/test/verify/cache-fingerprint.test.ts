@@ -250,6 +250,10 @@ describe('verdictOptions (#177)', () => {
     );
   });
 
+  it('tells an array apart from an object keyed by its indexes', () => {
+    expect(of({ plugins: ['a'] })).not.toBe(of({ plugins: { 0: 'a' } }));
+  });
+
   it('keeps array order, which can matter', () => {
     expect(of({ plugins: ['a', 'b'] })).not.toBe(of({ plugins: ['b', 'a'] }));
   });

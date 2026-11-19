@@ -98,6 +98,7 @@ describe('verdictDependencyPins', () => {
     'mocha',
     'ava',
     'jasmine',
+    'karma',
     'karma-chrome-launcher',
     '@testing-library/react',
     'jsdom',
@@ -111,6 +112,15 @@ describe('verdictDependencyPins', () => {
     install(root, name, '1.0.0');
     expect(await pinsOf()).toEqual([`${name}@1.0.0`]);
   });
+
+  it.each(['karmafoo', 'not-karma', 'xkarma-runner'])(
+    'does not count %s, which only contains karma',
+    async (name) => {
+      writeManifest(root, { devDependencies: { [name]: '*' } });
+      install(root, name, '1.0.0');
+      expect(await pinsOf()).toEqual([]);
+    },
+  );
 
   it('follows dependencies and peers transitively, but not optional ones', async () => {
     writeManifest(root, { dependencies: { app: '*' } });

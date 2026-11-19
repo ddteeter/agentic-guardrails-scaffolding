@@ -31,7 +31,7 @@ What the fixture's change set holds, as `git diff --name-only` prints it.
 */
 export const CHANGED_FILES = 'src/foo.ts\ntest/foo.test.ts\n';
 
-const STRYKER_CONFIG = JSON.stringify({ testRunner: 'vitest' });
+export const STRYKER_CONFIG = JSON.stringify({ testRunner: 'vitest' });
 
 /**
 The fixture checkout's fingerprint sidecar, as `cache-fingerprint.ts` writes it.

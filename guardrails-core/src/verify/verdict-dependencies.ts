@@ -68,9 +68,7 @@ function isTestStack(name: string): boolean {
   if (TEST_STACK_NAMES.has(name) || /^karma(?:-.+)?$/.test(name)) {
     return true;
   }
-  return TEST_STACK_SCOPES.some(
-    (scope) => name.length > scope.length && name.startsWith(scope),
-  );
+  return TEST_STACK_SCOPES.some((scope) => name.startsWith(scope));
 }
 
 export interface DependencySeams {
@@ -217,7 +215,7 @@ async function readTrackedManifests(
       const directory = path.join(repoRoot, path.dirname(file));
       try {
         const manifest = parseManifest(
-          await seams.readFile(path.join(directory, 'package.json')),
+          await seams.readFile(path.join(repoRoot, file)),
         );
         return manifest === undefined ? [] : [{ directory, manifest }];
       } catch {

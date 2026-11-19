@@ -2264,11 +2264,10 @@ function gateCommand(
 async function mutationFingerprintCommand(
   dependencies: CliDependencies,
 ): Promise<number> {
-  const repoRoot = findGitRoot(dependencies.cwd) ?? dependencies.cwd;
   const written = await writeMutationFingerprint(
     dependencies.cwd,
     dependencies.exec,
-    loadConfig(repoRoot).mutationCache.verdictDependencies,
+    loadConfig(dependencies.cwd).mutationCache.verdictDependencies,
   );
   if (written === undefined) {
     dependencies.stderr(

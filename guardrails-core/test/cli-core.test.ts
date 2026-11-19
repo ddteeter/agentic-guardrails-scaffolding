@@ -17,6 +17,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { type CliDependencies, runCommand } from '../src/cli-core.js';
 import { type Exec, type ExecResult, spawnExec } from '../src/exec.js';
 import {
+  computeFingerprint,
+  serializeFingerprint,
+} from '../src/verify/cache-fingerprint.js';
+import {
   appendDecision,
   isAgentIdentityReported,
   leasesFile,
@@ -6155,6 +6159,36 @@ describe('mutation-fingerprint: the sidecar a CI seed needs', () => {
     expect(readFileSync(sidecarPath(), 'utf8')).toBe(expected);
     expect(out.join('')).toBe(
       `${path.join('reports', 'stryker-incremental.fingerprint.json')}\n`,
+    );
+  });
+
+  it('counts the project’s verdictDependencies in the fingerprint (#177)', async () => {
+    writeCacheFixture(root);
+    writeFileSync(
+      path.join(root, 'guardrails.config.json'),
+      JSON.stringify({ mutationCache: { verdictDependencies: ['extra'] } }),
+    );
+    writeFileSync(path.join(root, 'package.json'), '{}');
+    const code = await runCommand(
+      'mutation-fingerprint',
+      [],
+      dependencies({
+        exec: (command, args) =>
+          Promise.resolve(
+            command === 'git' && args[0] === 'ls-files'
+              ? { stdout: 'package.json\0', stderr: '', code: 0 }
+              : { stdout: '', stderr: '', code: 1 },
+          ),
+      }),
+    );
+    expect(code).toBe(0);
+    const fingerprint = computeFingerprint({
+      strykerVersion: '10.0.0',
+      config: JSON.stringify({ testRunner: 'vitest' }),
+      dependencies: { pins: ['extra@missing'] },
+    });
+    expect(readFileSync(sidecarPath(), 'utf8')).toBe(
+      fingerprint === undefined ? '' : serializeFingerprint(fingerprint),
     );
   });
 
