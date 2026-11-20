@@ -184,6 +184,22 @@ describe('runStryker under the mutation lock', () => {
     expect(message).toContain('do not wait for the lock');
   });
 
+  it('records a run that never got the lock as one that did not run (#176)', async () => {
+    const { exec } = machine({ busy: true, timesOut: true });
+    const { mutationRun } = await verify(exec, 'commit');
+    expect(mutationRun).toMatchObject({
+      didRun: false,
+      stryker: { report: 'missing' },
+      lock: { heldMs: 0 },
+    });
+  });
+
+  it('records a run that held the lock as one that ran (#176)', async () => {
+    const { exec } = machine({ busy: false });
+    const { mutationRun } = await verify(exec, 'commit');
+    expect(mutationRun?.didRun).toBe(true);
+  });
+
   it('defers the stop rung to commit without waiting', async () => {
     const { exec } = machine({ busy: true });
     const { violations } = await verify(exec, 'stop', [], { stryker: 'stop' });
@@ -296,6 +312,11 @@ describe('runStryker loads the progress plugin while it holds the lock', () => {
         GUARDRAILS_LOCK_HOLDER_FILE: `${lockPath}.holder.json`,
         GUARDRAILS_LOCK_RUNG: 'push',
         GUARDRAILS_LOCK_REPO: '/repo',
+        GUARDRAILS_RUN_SUMMARY_FILE: path.join(
+          '/repo',
+          'reports',
+          'guardrails-run.json',
+        ),
       },
     ]);
   });

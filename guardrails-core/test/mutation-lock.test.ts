@@ -178,6 +178,7 @@ function locked(
       lines.push(line);
     },
     canOpenLock: () => true,
+    clock: atZero,
   });
   return { run, lines };
 }
@@ -199,6 +200,7 @@ describe('runUnderLock', () => {
     expect(await run).toEqual({
       kind: 'ran',
       result: { stdout: 'ran', stderr: '', code: 0 },
+      timing: { queuedAt: 0, releasedAt: 0, depthOnArrival: 0 },
     });
     expect(calls.at(-1)).toEqual({
       line: 'lockf -k -s -t 60 /locks/gate.lock stryker run',
@@ -241,6 +243,12 @@ describe('runUnderLock', () => {
     expect(await run).toEqual({
       kind: 'deferred',
       holding: 'another checkout holds it',
+      timing: {
+        queuedAt: 0,
+        releasedAt: 0,
+        holderOnArrival: 'another checkout holds it',
+        depthOnArrival: 0,
+      },
     });
     expect(calls.some((call) => call.line.includes('stryker'))).toBe(false);
   });
@@ -251,6 +259,12 @@ describe('runUnderLock', () => {
     expect(await run).toEqual({
       kind: 'deferred',
       holding: 'another checkout holds it',
+      timing: {
+        queuedAt: 0,
+        releasedAt: 0,
+        holderOnArrival: 'another checkout holds it',
+        depthOnArrival: 0,
+      },
     });
   });
 
@@ -261,6 +275,12 @@ describe('runUnderLock', () => {
       kind: 'timed-out',
       lock: { path: '/locks/gate.lock', config: lockConfig },
       holding: 'another checkout holds it',
+      timing: {
+        queuedAt: 0,
+        releasedAt: 0,
+        holderOnArrival: 'another checkout holds it',
+        depthOnArrival: 0,
+      },
     });
   });
 
@@ -499,6 +519,7 @@ describe('runUnderLock with a missing command', () => {
         stderr: 'note: failed to execute stryker\n',
         code: 0,
       },
+      timing: { queuedAt: 0, releasedAt: 0, depthOnArrival: 0 },
     });
     expect(calls.at(-1)).toMatch(/^lockf /);
   });
@@ -712,6 +733,7 @@ function watchedOptions(exec: Exec, rung: 'stop' | 'commit' | 'push') {
       lines.push(line);
     },
     canOpenLock: () => true,
+    clock: atZero,
     watch: {
       readJson: readHolderJson,
       now: atZero,
@@ -864,6 +886,12 @@ describe('runUnderLock names who holds the lock and the queue', () => {
     expect(await runUnderLock(options)).toEqual({
       kind: 'deferred',
       holding: 'dialed-164 (push) is running the dry run',
+      timing: {
+        queuedAt: 0,
+        releasedAt: 0,
+        holderOnArrival: 'dialed-164 (push) is running the dry run',
+        depthOnArrival: 2,
+      },
     });
   });
 
@@ -876,6 +904,12 @@ describe('runUnderLock names who holds the lock and the queue', () => {
     expect(await run).toEqual({
       kind: 'deferred',
       holding: 'dialed-164 (push) is running the dry run',
+      timing: {
+        queuedAt: 0,
+        releasedAt: 0,
+        holderOnArrival: 'dialed-164 (push) is running the dry run',
+        depthOnArrival: 2,
+      },
     });
   });
 
@@ -889,6 +923,12 @@ describe('runUnderLock names who holds the lock and the queue', () => {
       kind: 'timed-out',
       lock: options.lock,
       holding: 'dialed-164 (push) is running the dry run',
+      timing: {
+        queuedAt: 0,
+        releasedAt: 0,
+        holderOnArrival: 'dialed-164 (push) is running the dry run',
+        depthOnArrival: 2,
+      },
     });
   });
 
@@ -914,6 +954,12 @@ describe('runUnderLock names who holds the lock and the queue', () => {
     expect(await runUnderLock(watchedOptions(exec, 'stop').options)).toEqual({
       kind: 'deferred',
       holding: 'another checkout holds it',
+      timing: {
+        queuedAt: 0,
+        releasedAt: 0,
+        holderOnArrival: 'another checkout holds it',
+        depthOnArrival: 0,
+      },
     });
   });
 });
@@ -991,5 +1037,94 @@ describe('lockWaitInProgress', () => {
     expect(lockWaitInProgress()).toBeUndefined();
     machine.finish(0);
     await run;
+  });
+});
+
+/**
+A clock that answers each of `times` in turn, then the last one again.
+*/
+function clockOf(...times: number[]): () => number {
+  let call = 0;
+  return () => {
+    const time = times[Math.min(call, times.length - 1)] ?? 0;
+    call += 1;
+    return time;
+  };
+}
+
+describe('runUnderLock times the lock (#176)', () => {
+  it('times a free lock from the ask to the release, with no one ahead', async () => {
+    const { exec } = lockfMachine({ busy: false });
+    const result = await runUnderLock({
+      exec,
+      rung: 'push',
+      lock: { path: '/locks/gate.lock', config: lockConfig },
+      command: 'stryker',
+      args: ['run'],
+      cwd: '/repo',
+      progress: ignoreLine,
+      canOpenLock: () => true,
+      clock: clockOf(100, 900),
+    });
+    expect(result).toMatchObject({
+      kind: 'ran',
+      timing: { queuedAt: 100, releasedAt: 900, depthOnArrival: 0 },
+    });
+    expect(result.timing).not.toHaveProperty('holderOnArrival');
+  });
+
+  it('names the holder and the queue the run arrived behind', async () => {
+    const machine = pendingMachine();
+    const { options } = watchedOptions(machine.exec, 'push');
+    const run = runUnderLock({ ...options, clock: clockOf(10, 70) });
+    await flush();
+    machine.finish(0);
+    expect(await run).toMatchObject({
+      kind: 'ran',
+      timing: {
+        queuedAt: 10,
+        releasedAt: 70,
+        holderOnArrival: 'dialed-164 (push) is running the dry run',
+        depthOnArrival: 2,
+      },
+    });
+  });
+
+  it.each<['stop' | 'commit' | 'push', string]>([
+    ['stop', 'deferred'],
+    ['commit', 'deferred'],
+    ['push', 'timed-out'],
+  ])('times a %s run that never got the lock', async (rung, kind) => {
+    const { exec } = lockfMachine({ busy: true, timesOut: true });
+    const result = await runUnderLock({
+      exec,
+      rung,
+      lock: { path: '/locks/gate.lock', config: lockConfig },
+      command: 'stryker',
+      args: ['run'],
+      cwd: '/repo',
+      progress: ignoreLine,
+      canOpenLock: () => true,
+      clock: clockOf(5, 65),
+    });
+    expect(result).toMatchObject({
+      kind,
+      timing: { queuedAt: 5, releasedAt: 65 },
+    });
+  });
+
+  it('has no timing for a run that took no lock', async () => {
+    const { exec } = lockfMachine({ busy: false });
+    const bare = await runUnderLock({
+      exec,
+      rung: 'ci',
+      lock: { path: '/locks/gate.lock', config: lockConfig },
+      command: 'stryker',
+      args: ['run'],
+      cwd: '/repo',
+      progress: ignoreLine,
+      canOpenLock: () => true,
+    });
+    expect(bare).not.toHaveProperty('timing');
   });
 });

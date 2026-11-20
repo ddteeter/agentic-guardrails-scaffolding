@@ -6227,3 +6227,91 @@ describe('command dispatch', () => {
     expect(errors.join('')).toContain('usage: guardrails-core <command>');
   });
 });
+
+/**
+ * `stats` (#176) reads the run log beside the gate lock `GUARDRAILS_GATE_LOCK`
+ * names: always set here, so no test reads the developer's real log.
+ */
+function lockEnvironment(): Record<string, string> {
+  return { GUARDRAILS_GATE_LOCK: path.join(root, 'gate.lock') };
+}
+
+function logRow(repo: string): string {
+  return JSON.stringify({
+    v: 1,
+    kind: 'gate',
+    rung: 'push',
+    repo,
+    startedAt: new Date(Date.now() - 3_600_000).toISOString(),
+    finishedAt: new Date().toISOString(),
+    outcome: 'pass',
+  });
+}
+
+describe('stats: the run log, summarized', () => {
+  beforeEach(() => {
+    writeFileSync(
+      path.join(root, 'gate.lock.runs.jsonl'),
+      `${logRow('app')}\n${logRow('other')}\n`,
+    );
+  });
+
+  it('prints the last week’s runs', async () => {
+    const code = await runCommand(
+      'stats',
+      [],
+      dependencies({ env: lockEnvironment() }),
+    );
+    expect(code).toBe(0);
+    expect(out.join('')).toMatch(/^guardrails stats: 2 run\(s\) from /);
+    expect(out.join('')).toContain('push: 2 run(s) (pass 2)');
+  });
+
+  it('narrows to one repo, and prints JSON when asked', async () => {
+    await runCommand(
+      'stats',
+      ['--repo=app', '--json', '--since=24h'],
+      dependencies({ env: lockEnvironment() }),
+    );
+    const stats = JSON.parse(out.join('')) as { rows: number; from: string };
+    expect(stats.rows).toBe(1);
+    expect(Date.now() - Date.parse(stats.from)).toBeGreaterThanOrEqual(
+      86_400_000,
+    );
+  });
+
+  it('leaves out runs older than the window', async () => {
+    await runCommand(
+      'stats',
+      ['--since=30m'],
+      dependencies({ env: lockEnvironment() }),
+    );
+    expect(out.join('')).toMatch(/^guardrails stats: no gate or ship runs/);
+  });
+
+  it('reads a missing log as empty', async () => {
+    rmSync(path.join(root, 'gate.lock.runs.jsonl'));
+    expect(
+      await runCommand('stats', [], dependencies({ env: lockEnvironment() })),
+    ).toBe(0);
+    expect(out.join('')).toMatch(/^guardrails stats: no gate or ship runs/);
+  });
+
+  it('refuses a window it cannot read', async () => {
+    expect(
+      await runCommand(
+        'stats',
+        ['--since=a week'],
+        dependencies({ env: lockEnvironment() }),
+      ),
+    ).toBe(1);
+    expect(errors.join('')).toBe(
+      'guardrails stats: --since=a week is not a span like 7d, 24h or 90m.\n',
+    );
+  });
+
+  it('is listed in the usage', async () => {
+    await runCommand('no-such-command', [], dependencies());
+    expect(errors.join('')).toContain('stats [--since=');
+  });
+});

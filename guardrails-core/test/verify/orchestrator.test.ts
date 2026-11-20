@@ -3226,6 +3226,103 @@ describe('stryker fails open twice (defect 3)', () => {
     return { exec, calls };
   }
 
+  it('returns the stryker run as a run-log record (#176)', async () => {
+    const { exec } = execWithStryker({ stdout: '', stderr: '', code: 0 });
+    const files: Record<string, string> = {
+      [path.join('/repo', 'reports', 'mutation', 'mutation.json')]:
+        JSON.stringify({
+          files: {
+            'src/foo.ts': {
+              mutants: [
+                {
+                  status: 'Timeout',
+                  mutatorName: 'UpdateOperator',
+                  location: { start: { line: 1 } },
+                },
+              ],
+            },
+          },
+        }),
+      [path.join('/repo', 'reports', 'guardrails-run.json')]: JSON.stringify({
+        startedAt: 10,
+        planReadyAt: 30,
+        reportReadyAt: 90,
+        total: 1,
+        reused: 0,
+      }),
+      [path.join('/repo', 'stryker.conf.json')]: '{"concurrency":3}',
+    };
+    const reported: unknown[] = [];
+    const { mutationRun } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      profile: 'commit',
+      readFile: (filePath) => {
+        const text = files[filePath];
+        return text === undefined
+          ? Promise.reject(new Error('ENOENT'))
+          : Promise.resolve(text);
+      },
+      writeFile: () => Promise.resolve(),
+      removeFile: () => Promise.resolve(),
+      onMutationRun: (record) => {
+        reported.push(record);
+      },
+    });
+    expect(mutationRun).toEqual({
+      didRun: true,
+      stryker: {
+        files: 1,
+        cache: { local: 'none', seed: 'off' },
+        dryRunMs: 20,
+        mutatingMs: 60,
+        reused: 0,
+        mutants: 1,
+        timeouts: 1,
+        survivors: 0,
+        noCoverage: 0,
+        report: 'read',
+      },
+      concurrency: '3',
+    });
+    expect(reported).toEqual([mutationRun]);
+  });
+
+  it('records a run whose summary and report cannot be read as having neither (#176)', async () => {
+    const { exec } = execWithStryker({ stdout: '', stderr: '', code: 1 });
+    const { mutationRun } = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      profile: 'commit',
+      readFile: () => Promise.reject(new Error('ENOENT')),
+      writeFile: () => Promise.resolve(),
+      removeFile: () => Promise.resolve(),
+    });
+    expect(mutationRun).toEqual({
+      didRun: true,
+      stryker: {
+        files: 1,
+        cache: { local: 'none', seed: 'off' },
+        report: 'missing',
+      },
+      concurrency: 'default',
+    });
+  });
+
+  it('returns no run-log record when nothing is in mutation scope (#176)', async () => {
+    const { exec } = fakeExec();
+    const result = await runVerify({
+      repoRoot: '/repo',
+      baseBranch: 'main',
+      exec,
+      profile: 'commit',
+      analyzers: { stryker: 'off' },
+    });
+    expect(result).not.toHaveProperty('mutationRun');
+  });
+
   it('flags analyzer-failed and does NOT read clean when stryker crashes (non-zero exit)', async () => {
     // A crash leaves no report behind — `runStryker` deletes the default path
     // before every run — so the missing report is what distinguishes a crash

@@ -36,7 +36,7 @@ import process from 'node:process';
 
 import type { Exec, ExecResult } from '../exec.js';
 import {
-  fingerprintDifference,
+  describeDifference,
   isFingerprintEqual,
   parseFingerprint,
   serializeFingerprint,
@@ -160,30 +160,7 @@ async function fingerprintFailure(
   return new Set(fingerprints.map((each) => serializeFingerprint(each))).size >
     1
     ? 'left shards whose fingerprints disagree'
-    : `was measured under ${differenceText(first, current)} from this checkout`;
-}
-
-/**
- * What differs between a seed's fingerprint and this checkout's, in words,
- * so a cold run says why (#177): `a different stryker version (10.1.0, here
- * 10.0.0)`, `different stryker options`, `different dependency versions`.
- */
-function differenceText(
-  seed: CacheFingerprint,
-  current: CacheFingerprint,
-): string {
-  const parts = fingerprintDifference(seed, current).map((field) => {
-    if (field === 'stryker') {
-      return `a different stryker version (${seed.stryker}, here ${current.stryker})`;
-    }
-    return field === 'options'
-      ? 'different stryker options'
-      : 'different dependency versions';
-  });
-  const last = parts.pop();
-  return parts.length === 0
-    ? String(last)
-    : `${parts.join(', ')} and ${String(last)}`;
+    : `was measured under ${describeDifference(first, current)} from this checkout`;
 }
 
 type Outcome =
@@ -263,6 +240,20 @@ export async function fetchSeed(
   settings: SeedSettings,
   current: CacheFingerprint,
 ): Promise<string | undefined> {
+  const fetched = await fetchSeedOutcome(seams, settings, current);
+  return 'seed' in fetched ? fetched.seed : undefined;
+}
+
+/**
+ * A seed, or why there is none (#176): what `fetchSeed` answers, with the
+ * reason a seed was refused kept as data for the run log. Says which on one
+ * line through `seams.warn`, as `fetchSeed` does.
+ */
+export async function fetchSeedOutcome(
+  seams: SeedSeams,
+  settings: SeedSettings,
+  current: CacheFingerprint,
+): Promise<SeedFetch> {
   let outcome: Outcome;
   try {
     outcome = await collectInScratchDirectory(seams, settings, current);
@@ -273,10 +264,15 @@ export async function fetchSeed(
     seams.warn(
       `guardrails: mutation cache seed (mutationCache.seedFrom) ${outcome.why}; running cold for the files it would have covered.`,
     );
-    return undefined;
+    return { why: outcome.why };
   }
   seams.warn(
     `guardrails: seeded the mutation cache from ${String(outcome.count)} report(s) (mutationCache.seedFrom).`,
   );
-  return outcome.seed;
+  return { seed: outcome.seed };
 }
+
+/**
+A fetched seed's JSON, or why none could be used.
+*/
+export type SeedFetch = { readonly seed: string } | { readonly why: string };

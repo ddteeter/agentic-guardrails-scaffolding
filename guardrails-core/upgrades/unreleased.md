@@ -58,6 +58,17 @@ origin/<base>`: the newest commit HEAD shares with either form of the base.
   sidecar's fields were renamed, so one an older version wrote reads as no
   fingerprint.
 
+- **A machine-wide run log, and `guardrails stats` (#176).** Every commit
+  and push gate, every stop turn that mutated something, and every
+  `guardrails ship` appends one JSON line to `<gate lock>.runs.jsonl`
+  (`$HOME/.guardrails-gate.lock.runs.jsonl` by default): lock queue and hold
+  times, whether stryker started warm and why not, dry-run and mutating
+  times, mutant counts, ship push/gate/CI times, and the machine's load.
+  `guardrails stats [--since=7d] [--repo=<name>] [--json]` summarizes it.
+  See docs/adoption.md ("Agents and slow work").
+- **Ship passes `GUARDRAILS_SHIP_ID` to `git push`,** so the pre-push gate's
+  row names the ship that ran it.
+
 ## Instructions this supersedes
 
 - Any step that fast-forwards or pulls local `main` before a push so that the
@@ -70,6 +81,8 @@ origin/<base>`: the newest commit HEAD shares with either form of the base.
   as `error`: `behind` and `conflicting` are new, and both mean "rebase, then
   ship again".
 
+- Any step that rebuilds gate, lock or ship timings from transcripts or by
+  hand. `guardrails stats` reads them from the run log.
 - Any step that avoids editing `stryker.conf.json`'s `mutate` array, or
   holds back a dependency bump, to keep other branches' mutation seeds
   usable. Neither invalidates a seed now unless the bump is to a runtime or

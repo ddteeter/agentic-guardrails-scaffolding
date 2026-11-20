@@ -1,10 +1,19 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import process from 'node:process';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { Exec, ExecResult } from '../src/exec.js';
+import { parseRuns } from '../src/run-log.js';
 import {
   LOCK_TIMEOUT_MARKER,
   NOT_INSTALLED_MARKER,
@@ -1692,5 +1701,158 @@ describe('classifyPushFailure: the hook’s own line decides (#178)', () => {
 
   it('is an error, not a gate block, with no push-blocked line at all', () => {
     expect(classifyPushFailure(failed(NOT_INSTALLED_MARKER))).toBe('error');
+  });
+});
+
+/**
+A clock that moves one second on every look.
+*/
+function steppingClock() {
+  let at = Date.parse('2026-11-19T10:00:00.000Z');
+  return {
+    now: () => {
+      at += 1000;
+      return new Date(at);
+    },
+    sample: () => ({ load1: 4, freeMb: 3000 }),
+    cores: () => 8,
+  };
+}
+
+function logFile(): string {
+  return path.join(root, 'gate.lock.runs.jsonl');
+}
+
+describe('ship: its row in the run log (#176)', () => {
+  it('hands its id to the push, for the gate’s row to carry', async () => {
+    const pushes: (string | undefined)[] = [];
+    const { exec: base } = fakeExec(HAPPY);
+    const exec: Exec = (command, args, execOptions) => {
+      if (command === 'git' && args[0] === 'push') {
+        pushes.push(execOptions?.env?.GUARDRAILS_SHIP_ID);
+      }
+      return base(command, args, execOptions);
+    };
+    await ship(options(exec, { shipId: 'ship-42' }));
+    expect(pushes).toEqual(['ship-42']);
+  });
+
+  it('makes up an id when given none', async () => {
+    const pushes: (string | undefined)[] = [];
+    const { exec: base } = fakeExec(HAPPY);
+    const exec: Exec = (command, args, execOptions) => {
+      if (args[0] === 'push') {
+        pushes.push(execOptions?.env?.GUARDRAILS_SHIP_ID);
+      }
+      return base(command, args, execOptions);
+    };
+    await ship(options(exec));
+    expect(pushes[0]).toMatch(/^[\da-f-]{36}$/);
+  });
+
+  it('appends a row with its push, gate and CI times', async () => {
+    writeFileSync(
+      logFile(),
+      `${JSON.stringify({
+        v: 1,
+        kind: 'gate',
+        rung: 'push',
+        repo: 'r',
+        ship: 'ship-42',
+        startedAt: '2026-11-19T10:00:00.000Z',
+        finishedAt: '2026-11-19T10:00:30.000Z',
+        outcome: 'pass',
+      })}\n`,
+    );
+    const { exec } = fakeExec(HAPPY);
+    const status = await ship(
+      options(exec, {
+        shipId: 'ship-42',
+        lockPath: path.join(root, 'gate.lock'),
+        runClock: steppingClock(),
+      }),
+    );
+    const rows = parseRuns(readFileSync(logFile(), 'utf8'));
+    expect(rows.at(-1)).toEqual({
+      v: 1,
+      kind: 'ship',
+      repo: path.basename(root),
+      branch: 'feat/x',
+      ship: 'ship-42',
+      startedAt: '2026-11-19T10:00:01.000Z',
+      finishedAt: '2026-11-19T10:00:06.000Z',
+      pr: 42,
+      state: status.state,
+      pushMs: 1000,
+      gateMs: 30_000,
+      ciMs: 1000,
+      machine: {
+        cores: 8,
+        concurrency: 'default',
+        start: { load1: 4, freeMb: 3000 },
+        end: { load1: 4, freeMb: 3000 },
+      },
+    });
+  });
+
+  it('records a blocked push with no CI time and no gate it can find', async () => {
+    const { exec } = fakeExec({
+      ...HAPPY,
+      'gh pr view': failed('no pull requests found'),
+      'git push': failed(
+        "guardrails: push blocked — resolve violations or run 'guardrails verify'.",
+      ),
+    });
+    await ship(
+      options(exec, {
+        lockPath: path.join(root, 'gate.lock'),
+        runClock: steppingClock(),
+      }),
+    );
+    const [row] = parseRuns(readFileSync(logFile(), 'utf8'));
+    expect(row).toMatchObject({
+      kind: 'ship',
+      state: 'gate-blocked',
+      pr: null,
+    });
+    expect(row).not.toHaveProperty('ciMs');
+    expect(row).not.toHaveProperty('gateMs');
+  });
+
+  it('records a ship that never pushed, with no push time', async () => {
+    const { exec } = fakeExec({
+      ...HAPPY,
+      'gh auth status': failed('You are not logged into any GitHub hosts.'),
+    });
+    await ship(options(exec, { lockPath: path.join(root, 'gate.lock') }));
+    const [row] = parseRuns(readFileSync(logFile(), 'utf8'));
+    expect(row).toMatchObject({ kind: 'ship', state: 'error', pushMs: 0 });
+  });
+
+  it('writes no row without a lock to sit beside', async () => {
+    const { exec } = fakeExec(HAPPY);
+    await ship(options(exec));
+    expect(existsSync(logFile())).toBe(false);
+  });
+
+  it('says on stderr when its row cannot be written', async () => {
+    chmodSync(root, 0o500);
+    const written: string[] = [];
+    const spy = vi.spyOn(process.stderr, 'write').mockImplementation((text) => {
+      written.push(String(text));
+      return true;
+    });
+    try {
+      const { exec } = fakeExec(HAPPY);
+      await ship(options(exec, { lockPath: path.join(root, 'gate.lock') }));
+    } finally {
+      spy.mockRestore();
+      chmodSync(root, 0o700);
+    }
+    expect(written).toEqual([
+      expect.stringMatching(
+        /^guardrails: could not write the run log \(.+\)\.\n$/,
+      ),
+    ]);
   });
 });

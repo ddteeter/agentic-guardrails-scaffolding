@@ -192,7 +192,9 @@ function freshWorktree(seedJson: string | undefined) {
     ...fs.seams,
     seed: (fingerprint: unknown) => {
       fingerprints.push(fingerprint);
-      return Promise.resolve(seedJson);
+      return Promise.resolve(
+        seedJson === undefined ? { why: 'none on offer' } : { seed: seedJson },
+      );
     },
   };
   return {
@@ -760,11 +762,16 @@ describe('prepareIncrementalCache', () => {
         },
       };
       const { files, seams } = oldCheckout(JSON.stringify(seed));
-      await prepareIncrementalCache(seams, {
+      const outcome = await prepareIncrementalCache(seams, {
         ...run,
         mutateFiles: ['src/a.ts', 'src/c.ts'],
       });
       expect(kept(files)).toEqual({ 'src/a.ts': ['Killed'] });
+      expect(outcome).toEqual({
+        local: 'kept',
+        seed: 'refused',
+        why: 'it could not be merged into the local cache',
+      });
     });
 
     it('drops a seed whose own scope shows no per-test coverage', async () => {
@@ -777,8 +784,13 @@ describe('prepareIncrementalCache', () => {
         }
       }
       const { files, seams } = freshWorktree(JSON.stringify(seed));
-      await prepareIncrementalCache(seams, run);
+      const outcome = await prepareIncrementalCache(seams, run);
       expect(files.has(CACHE)).toBe(false);
+      expect(outcome).toEqual({
+        local: 'none',
+        seed: 'refused',
+        why: 'it holds no per-test coverage',
+      });
     });
 
     it('under any-test-change, drops a seed once this branch changed any test', async () => {
@@ -835,5 +847,103 @@ describe('prepareIncrementalCache', () => {
       ]).toEqual([0, 0, 0]);
       expect(noStryker.files.has(CACHE)).toBe(false);
     });
+  });
+});
+
+describe('prepareIncrementalCache says what it did (#176)', () => {
+  it('kept the local cache, with no seed configured', async () => {
+    const { seams } = healthyRepo();
+    expect(await prepareIncrementalCache(seams, run)).toEqual({
+      local: 'kept',
+      seed: 'off',
+    });
+  });
+
+  it('had no local cache', async () => {
+    const { files, seams } = healthyRepo();
+    files.delete(CACHE);
+    expect(await prepareIncrementalCache(seams, run)).toEqual({
+      local: 'none',
+      seed: 'off',
+    });
+  });
+
+  it.each<[string, Record<string, string>, string]>([
+    [
+      'a stryker upgrade',
+      { [STRYKER_MANIFEST]: '{"version":"10.1.1"}' },
+      'it was measured under a different stryker version (10.0.0, here 10.1.1)',
+    ],
+    [
+      'a sidecar that cannot be read',
+      { [SIDECAR]: 'nope' },
+      'its fingerprint is missing or unreadable',
+    ],
+    [
+      'no installed stryker',
+      { [STRYKER_MANIFEST]: '{}' },
+      'no installed stryker to fingerprint this checkout',
+    ],
+  ])(
+    'discarded the local cache after %s, and says why',
+    async (_label, overrides, why) => {
+      const { seams } = healthyRepo(overrides);
+      expect(await prepareIncrementalCache(seams, run)).toEqual({
+        local: 'discarded',
+        seed: 'off',
+        why,
+      });
+    },
+  );
+
+  it('discarded the local cache this change set invalidates', async () => {
+    const { seams } = healthyRepo();
+    expect(
+      await prepareIncrementalCache(seams, {
+        ...run,
+        changedFiles: [...run.changedFiles, 'test/helpers.ts'],
+      }),
+    ).toEqual({
+      local: 'discarded',
+      seed: 'off',
+      why: 'this change set invalidates it',
+    });
+  });
+
+  it('used a seed in a fresh worktree', async () => {
+    const { seams } = freshWorktree(cacheJson());
+    expect(await prepareIncrementalCache(seams, run)).toEqual({
+      local: 'none',
+      seed: 'used',
+    });
+  });
+
+  it('was refused a seed, and says why', async () => {
+    const { seams } = freshWorktree(undefined);
+    expect(await prepareIncrementalCache(seams, run)).toEqual({
+      local: 'none',
+      seed: 'refused',
+      why: 'none on offer',
+    });
+  });
+
+  it('needed no seed when the local cache covers every file', async () => {
+    const { seams, seedCalls } = oldCheckout(cacheJson());
+    expect(await prepareIncrementalCache(seams, run)).toEqual({
+      local: 'kept',
+      seed: 'not-needed',
+    });
+    expect(seedCalls()).toBe(0);
+  });
+
+  it('skipped a seed this run could not use', async () => {
+    const { seams, seedCalls } = freshWorktree(cacheJson());
+    expect(
+      await prepareIncrementalCache(seams, {
+        ...run,
+        changedFiles: [...run.changedFiles, 'test/helpers.ts'],
+      }),
+    ).toEqual({ local: 'none', seed: 'skipped' });
+    expect(seedCalls()).toBe(0);
   });
 });

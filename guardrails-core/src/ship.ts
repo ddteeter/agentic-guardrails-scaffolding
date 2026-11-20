@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 /**
  * `guardrails ship`: push the branch, find or open its pull request, wait for
  * its checks, and write down how it went -- as ONE command an agent can run
@@ -16,10 +17,12 @@
 
 import { accessSync, constants, mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import process from 'node:process';
 
 import type { Exec, ExecResult } from './exec.js';
 import { isRecord } from './is-record.js';
 import { parseJsonText } from './json-file.js';
+import { logShipRun, type RunClock, startRun } from './gate-run-log.js';
 import { LOCK_TIMEOUT_MARKER } from './mutation-lock.js';
 
 type ShipState =
@@ -78,6 +81,23 @@ export interface ShipOptions {
   Waits between looks for checks that have not registered; a seam for tests.
   */
   delay?: (ms: number) => Promise<void>;
+  /**
+  The gate lock's path; the ship's row goes in the run log beside it (#176).
+  */
+  lockPath?: string | undefined;
+  /**
+  This ship's id in the run log; a fresh one by default.
+  */
+  shipId?: string;
+  runClock?: RunClock;
+}
+
+/**
+When ship pushed and watched CI, epoch milliseconds, for its run-log row.
+*/
+interface ShipTimes {
+  pushMs?: number;
+  ciMs?: number;
 }
 
 /**
@@ -337,9 +357,12 @@ async function pushHead(
   sha: string,
 ): Promise<Outcome | string[]> {
   const force = options.forceWithLease === true ? ['--force-with-lease'] : [];
+  // The gate the pre-push hook runs stamps this id on its run-log row, which
+  // is how this ship finds its gate's time afterwards (#176).
   const push = (): Promise<ExecResult> =>
     options.exec('git', ['push', ...force, '-u', 'origin', 'HEAD'], {
       cwd: options.repoRoot,
+      env: { ...process.env, GUARDRAILS_SHIP_ID: shipIdOf(options) },
     });
   const first = await push();
   if (first.code !== 0) {
@@ -800,9 +823,19 @@ async function baseCheck(
   );
 }
 
+function shipIdOf(options: ShipOptions): string {
+  return options.shipId ?? 'unset';
+}
+
+function clockOf(options: ShipOptions): () => number {
+  const clock = options.runClock;
+  return clock === undefined ? Date.now : () => clock.now().getTime();
+}
+
 async function shipOutcome(
   options: ShipOptions,
   branch: string,
+  times: ShipTimes,
 ): Promise<Outcome & { warnings: string[] }> {
   const unavailable =
     (await ghUnavailable(options)) ?? bodyFileUnreadable(options);
@@ -827,7 +860,10 @@ async function shipOutcome(
   if (!Array.isArray(based)) {
     return { ...based, warnings: [] };
   }
+  const now = clockOf(options);
+  const pushStart = now();
   const pushed = await pushHead(options, branch, sha);
+  times.pushMs = now() - pushStart;
   if (!Array.isArray(pushed)) {
     return { ...pushed, warnings: [] };
   }
@@ -835,8 +871,11 @@ async function shipOutcome(
   if (typeof found === 'string') {
     return { ...failure('error', found), warnings: [] };
   }
+  const watchStart = now();
+  const watched = await watchChecks(options, found.pr, sha);
+  times.ciMs = now() - watchStart;
   return {
-    ...(await watchChecks(options, found.pr, sha)),
+    ...watched,
     warnings: [...based, ...pushed, ...found.warnings],
   };
 }
@@ -844,7 +883,31 @@ async function shipOutcome(
 /**
 Ship the current branch, and say how it went.
 */
-export async function ship(options: ShipOptions): Promise<ShipStatus> {
+export async function ship(given: ShipOptions): Promise<ShipStatus> {
+  const options = { ...given, shipId: given.shipId ?? randomUUID() };
+  const start = startRun(options.runClock);
+  const times: ShipTimes = {};
+  const status = await shipStatus(options, times);
+  logShipRun({
+    lockPath: options.lockPath,
+    repoRoot: options.repoRoot,
+    shipId: options.shipId,
+    start,
+    status,
+    pushMs: times.pushMs,
+    ciMs: times.ciMs,
+    warn: (line) => {
+      process.stderr.write(`${line}\n`);
+    },
+    clock: options.runClock,
+  });
+  return status;
+}
+
+async function shipStatus(
+  options: ShipOptions,
+  times: ShipTimes,
+): Promise<ShipStatus> {
   const head = await options.exec(
     'git',
     ['rev-parse', '--abbrev-ref', 'HEAD'],
@@ -858,7 +921,7 @@ export async function ship(options: ShipOptions): Promise<ShipStatus> {
   const isShippable =
     branch !== 'HEAD' && branch !== options.baseBranch && head.code === 0;
   const outcome = isShippable
-    ? await shipOutcome(options, branch)
+    ? await shipOutcome(options, branch, times)
     : {
         warnings: [],
         ...failure(
