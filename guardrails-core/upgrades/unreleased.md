@@ -5,6 +5,8 @@ supersedes:
     because: 'if it tells an agent to fast-forward or pull local main before a push so the gate scopes correctly, the gate now measures from the merge-base and local main no longer matters'
   - search: 'CONFLICTING'
     because: 'if it checks that the branch is up to date with, or not conflicting with, the base before `guardrails ship`, ship now refuses a branch that is behind or conflicting itself, before the push'
+  - search: 'gh pr edit'
+    because: 'if it retitles the pull request after `guardrails ship` opens it, ship now takes the title from `--title` or from a `# <title>` first line in the body file'
 ---
 
 # Unreleased — what changed for an agent
@@ -69,6 +71,15 @@ origin/<base>`: the newest commit HEAD shares with either form of the base.
 - **Ship passes `GUARDRAILS_SHIP_ID` to `git push`,** so the pre-push gate's
   row names the ship that ran it.
 
+- **`guardrails ship` titles a new pull request on purpose (#175).** It used
+  the last commit's subject, so a branch ending in a docs or test commit
+  opened its code change under that commit's type, and a squash merge carried
+  it onto the base. The title is now `--title=<t>` when given, else the body
+  file's first line when it is `# <title>` (dropped from the body), else the
+  last commit's subject as before. On that fallback, when the subject's type
+  differs from the branch prefix's (`fix/` against `docs(...)`), `warnings`
+  says so. An open pull request's title is never changed.
+
 ## Instructions this supersedes
 
 - Any step that fast-forwards or pulls local `main` before a push so that the
@@ -87,6 +98,10 @@ origin/<base>`: the newest commit HEAD shares with either form of the base.
   holds back a dependency bump, to keep other branches' mutation seeds
   usable. Neither invalidates a seed now unless the bump is to a runtime or
   test-stack dependency.
+
+- Any step that edits a pull request's title after `guardrails ship` opens
+  it, or that adds a last commit just to set the title. Put `# <title>` on
+  the body file's first line, or pass `--title=<t>`.
 
 ## What to wire
 

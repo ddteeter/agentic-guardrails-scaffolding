@@ -5437,6 +5437,21 @@ describe('pretooluse reads the foreground-wait policy where the command runs', (
 });
 
 /**
+A passing ship on a branch with no PR yet: the first view finds none.
+*/
+function newPrShipExec(calls: string[]): Exec {
+  const inner = shipExec('pass', calls);
+  let views = 0;
+  return (command, args, options) => {
+    if (views === 0 && args.includes('number,url')) {
+      views += 1;
+      return Promise.resolve({ stdout: '', stderr: 'none', code: 1 });
+    }
+    return inner(command, args, options);
+  };
+}
+
+/**
 A git + gh that ships `feat/x` as PR 42, whose checks land in `bucket`.
 */
 function shipExec(bucket: string, calls: string[] = []): Exec {
@@ -5511,18 +5526,23 @@ describe('runCommand — ship', () => {
     // ship checks the body file exists before it pushes.
     writeFileSync(path.join(root, 'pr.md'), 'the body\n');
     const calls: string[] = [];
-    const inner = shipExec('pass', calls);
-    let views = 0;
-    const exec: Exec = (command, args, options) => {
-      if (views === 0 && args.includes('number,url')) {
-        views += 1;
-        return Promise.resolve({ stdout: '', stderr: 'none', code: 1 });
-      }
-      return inner(command, args, options);
-    };
+    const exec = newPrShipExec(calls);
     await runCommand('ship', ['--body-file=pr.md'], dependencies({ exec }));
     expect(calls.find((line) => line.startsWith('gh pr create'))).toBe(
       `gh pr create --base develop --title  --body-file ${path.join(root, 'pr.md')}`,
+    );
+  });
+
+  it('opens a missing PR titled by --title', async () => {
+    const calls: string[] = [];
+    const exec = newPrShipExec(calls);
+    await runCommand(
+      'ship',
+      ['--title=fix(ship): the change'],
+      dependencies({ exec }),
+    );
+    expect(calls.find((line) => line.startsWith('gh pr create'))).toBe(
+      'gh pr create --base main --title fix(ship): the change --fill',
     );
   });
 
@@ -5585,6 +5605,8 @@ describe('runCommand — ship', () => {
       const printed = out.join('');
       for (const name of [
         '--body-file=',
+        '--title=',
+        '# <title>',
         '--status-file=',
         '--base=',
         '--force-with-lease',
@@ -5607,7 +5629,7 @@ describe('runCommand — ship', () => {
   it('is listed in the usage', async () => {
     await runCommand('nope', [], dependencies());
     expect(errors.join('')).toContain(
-      'ship [--body-file=<f>] [--status-file=<f>] [--base=<ref>]',
+      'ship [--body-file=<f>] [--title=<t>] [--status-file=<f>] [--base=<ref>]',
     );
   });
 });
