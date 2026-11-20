@@ -30,7 +30,11 @@ import { isRecord } from './is-record.js';
 import { parseJsonText } from './json-file.js';
 import { logShipRun, type RunClock, startRun } from './gate-run-log.js';
 import { LOCK_TIMEOUT_MARKER } from './mutation-lock.js';
-import { splitTitleLine, titleTypeMismatch } from './pr-title.js';
+import {
+  splitTitleLine,
+  titleTypeMismatch,
+  type TypeMismatch,
+} from './pr-title.js';
 
 type ShipState =
   | 'green'
@@ -447,9 +451,10 @@ What `gh pr create` is given for the title and body.
 interface Opening {
   args: string[];
   /**
-  The last commit's subject, when it is the title: nobody chose it.
+  How the last commit's subject, when nobody chose a title, disagrees with
+  the branch.
   */
-  fallback?: string;
+  mismatch?: TypeMismatch | undefined;
 }
 
 /**
@@ -458,7 +463,10 @@ interface Opening {
  * subject. Without a body file gh fills the body. The file is read here, as
  * gh read it before, so an edit made while the gate ran is what opens.
  */
-async function openingOf(options: ShipOptions): Promise<Opening | string> {
+async function openingOf(
+  options: ShipOptions,
+  branch: string,
+): Promise<Opening | string> {
   const given = options.title?.trim() ?? '';
   const named = given === '' ? [] : ['--title', given];
   const { bodyFile } = options;
@@ -487,7 +495,10 @@ async function openingOf(options: ShipOptions): Promise<Opening | string> {
     cwd: options.repoRoot,
   });
   const subject = lastCommit.stdout.trim();
-  return { args: ['--title', subject, ...body], fallback: subject };
+  return {
+    args: ['--title', subject, ...body],
+    mismatch: titleTypeMismatch(branch, subject),
+  };
 }
 
 /**
@@ -495,18 +506,15 @@ async function openingOf(options: ShipOptions): Promise<Opening | string> {
  * the branch's, which a squash merge would carry onto the base (#175).
  */
 function titleWarnings(
-  branch: string,
   pr: PullRequest,
-  fallback: string | undefined,
+  mismatch: TypeMismatch | undefined,
 ): string[] {
-  const mismatch =
-    fallback === undefined ? undefined : titleTypeMismatch(branch, fallback);
   if (mismatch === undefined) {
     return [];
   }
   const number = String(pr.number);
   return [
-    `PR #${number} is titled by the last commit, "${String(fallback)}", ` +
+    `PR #${number} is titled by the last commit, "${mismatch.subject}", ` +
       `whose type (${mismatch.found}) is not the branch's ` +
       `(${mismatch.wanted}): retitle it with gh pr edit ${number} --title, ` +
       'and pass --title or start the body file with "# <title>" next time',
@@ -524,7 +532,7 @@ async function findOrOpenPullRequest(
       warnings: await commentAttachments(options, existing.pr),
     };
   }
-  const opening = await openingOf(options);
+  const opening = await openingOf(options, branch);
   if (typeof opening === 'string') {
     return opening;
   }
@@ -551,7 +559,7 @@ async function findOrOpenPullRequest(
     pr: opened.pr,
     warnings: [
       ...(created.code === 0 ? [] : [attachWarning(created)]),
-      ...titleWarnings(branch, opened.pr, opening.fallback),
+      ...titleWarnings(opened.pr, opening.mismatch),
     ],
   };
 }

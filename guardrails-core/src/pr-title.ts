@@ -9,34 +9,39 @@
  * last commit, it compares that commit's type with the branch's prefix.
  */
 
-/**
-The first non-blank line, when it is `# ` followed by some text.
-*/
-const TITLE_LINE = /^\s*# ([^\n]*\S[^\n]*)/;
-
-/**
-The blank lines between the title line and the body.
-*/
-const LEADING_BLANK_LINES = /^\s*\n/;
-
 export interface TitledBody {
   title: string;
   body: string;
 }
 
+const TITLE_MARK = '# ';
+
 /**
- * The title a body file names on its first line, and the body without it, or
- * `undefined` when the first line is not a title line. Only `# ` counts: a
- * `## ` heading is a section of the body.
+`text` from its first line that is not blank, or `''` when every line is.
+*/
+function fromFirstText(text: string): string {
+  const lines = text.split('\n');
+  const first = lines.findIndex((line) => line.trim() !== '');
+  return first === -1 ? '' : lines.slice(first).join('\n');
+}
+
+/**
+ * The title a body file names on its first non-blank line, `# <title>`, and
+ * the body after it without the blank lines between, or `undefined` when that
+ * line is not a title line. Only `# ` counts: a `## ` heading is a section of
+ * the body.
  */
 export function splitTitleLine(text: string): TitledBody | undefined {
-  const match = TITLE_LINE.exec(text);
-  if (match === null) {
+  const start = fromFirstText(text);
+  const end = start.indexOf('\n');
+  const line = end === -1 ? start : start.slice(0, end);
+  const title = line.slice(TITLE_MARK.length).trim();
+  if (title === '' || !line.startsWith(TITLE_MARK)) {
     return undefined;
   }
   return {
-    title: String(match[1]).trim(),
-    body: text.slice(match[0].length).replace(LEADING_BLANK_LINES, ''),
+    title,
+    body: end === -1 ? '' : fromFirstText(start.slice(end + 1)),
   };
 }
 
@@ -58,10 +63,9 @@ const TYPES: ReadonlySet<string> = new Set([
 ]);
 
 /**
-What a branch prefix names: a type, or another spelling of one.
+Branch prefixes that spell a type another way.
 */
-const BRANCH_TYPES: ReadonlyMap<string, string> = new Map([
-  ...[...TYPES].map((type): [string, string] => [type, type]),
+const BRANCH_ALIASES: ReadonlyMap<string, string> = new Map([
   ['feature', 'feat'],
   ['bugfix', 'fix'],
   ['hotfix', 'fix'],
@@ -80,14 +84,17 @@ export interface TypeMismatch {
   The type the subject has.
   */
   found: string;
+  subject: string;
 }
 
 /**
 The type a branch's prefix names, or `undefined` when it names none.
 */
 function branchType(branch: string): string | undefined {
-  // String() turns "no prefix" into a key no type has.
-  return BRANCH_TYPES.get(String(BRANCH_PREFIX.exec(branch)?.[1]));
+  // String() turns "no prefix" into a word no type is.
+  const prefix = String(BRANCH_PREFIX.exec(branch)?.[1]);
+  const type = BRANCH_ALIASES.get(prefix) ?? prefix;
+  return TYPES.has(type) ? type : undefined;
 }
 
 function subjectType(subject: string): string | undefined {
@@ -108,5 +115,5 @@ export function titleTypeMismatch(
   const found = subjectType(subject);
   return wanted === undefined || found === undefined || wanted === found
     ? undefined
-    : { wanted, found };
+    : { wanted, found, subject };
 }

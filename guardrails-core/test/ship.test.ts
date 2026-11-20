@@ -378,6 +378,26 @@ describe('ship: the title a new pull request opens with (#175)', () => {
     expect(opened.status.warnings).toEqual([]);
   });
 
+  it.each([
+    ['spaces around it', '#   spaced out  \nb\n', 'spaced out'],
+    ['one character', '# x\nb\n', 'x'],
+  ])('takes a title with %s', async (_label, body, title) => {
+    const opened = await openedWith({}, { body });
+    expect(opened.create).toBe(
+      `gh pr create --base main --title ${title} --body b\n`,
+    );
+  });
+
+  it.each([
+    ['only blank lines', '# t\n\n  ', ''],
+    ['an indented first line', '# t\n\n    code\nmore', '    code\nmore'],
+  ])('keeps a body of %s as written', async (_label, body, kept) => {
+    const opened = await openedWith({}, { body });
+    expect(opened.create).toBe(
+      `gh pr create --base main --title t --body ${kept}`,
+    );
+  });
+
   it('finds the title line past leading blank lines, and leaves an empty body', async () => {
     const opened = await openedWith({}, { body: '\n  \n# fix: only a title' });
     expect(opened.create).toBe(
@@ -431,6 +451,7 @@ describe('ship: the title a new pull request opens with (#175)', () => {
     ['fix/x', 'a docs: y'],
     ['fix', 'docs: y'],
     ['a/fix/x', 'docs: y'],
+    ['release.fix/x', 'docs: y'],
   ])(
     'does not warn for branch %s and last commit %j',
     async (branch, subject) => {
@@ -443,6 +464,7 @@ describe('ship: the title a new pull request opens with (#175)', () => {
   it.each([
     ['feature/x', 'fix: y', 'feat', 'fix'],
     ['hotfix/x', 'test(ship): y', 'fix', 'test'],
+    ['bugfix/x', 'docs: y', 'fix', 'docs'],
     ['docs/x', 'chore!: y', 'docs', 'chore'],
   ])(
     'warns for branch %s and last commit %j',
