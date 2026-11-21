@@ -10,7 +10,8 @@
  * `planScaffold` decided WHAT to do with each path; this module decides HOW:
  * an owned/seed-once `create`/`update` writes `desired[path]` verbatim and (for
  * owned files only) refreshes its manifest checksum; a `drift`/`unchanged`
- * writes nothing; a shared `create` or `merge` is routed to the Task 5 merger
+ * writes nothing, except that an owned `unchanged` whose record is stale has
+ * its record refreshed (`recordStaleUnchanged`); a shared `create` or `merge` is routed to the Task 5 merger
  * for that path. The two OWNED/SEED-ONCE kinds that write (`create`/`update`)
  * never write a no-op: `planScaffold` only ever hands out `create`/`update`
  * when `currentContent !== desiredContent`, so idempotency for those files is
@@ -143,6 +144,31 @@ function applyDirectAction(
 }
 
 /**
+ * An owned `unchanged` file is the template already, so nothing is written to
+ * it, but its record can still be stale. A consumer who takes a release's new
+ * text by hand leaves the checksum of what init last wrote, and the next
+ * template change then reads the file as edited and reports drift on a file
+ * nobody edited. Recording the template here closes that. A record that is
+ * already current is left alone, so a repeat run still writes nothing.
+ */
+function recordStaleUnchanged(
+  action: PlannedAction,
+  desiredContent: string,
+  existing: ScaffoldManifest | undefined,
+  accumulator: ApplyAccumulator,
+): void {
+  if (action.kind !== 'unchanged' || action.fileClass !== 'owned') {
+    return;
+  }
+  const current = checksum(desiredContent);
+  if (existing?.files[action.path] === current) {
+    return;
+  }
+  accumulator.manifestUpdates[action.path] = current;
+  accumulator.fingerprintUpdates[action.path] = fingerprint(desiredContent);
+}
+
+/**
  * Reads back the manifest already on disk, so a rewrite preserves entries for
  * files this run didn't touch. Absent and malformed are NOT the same thing
  * here, unlike the SHARED mergers' fail-closed convention: a brand-new repo
@@ -168,9 +194,9 @@ function readExistingManifest(
 
 /**
  * Rewrites the manifest with the existing FILE entries plus a fresh checksum
- * for every OWNED file this run actually wrote -- never called when nothing
- * was written, which is what keeps a repeat run of an up-to-date repo from
- * touching the manifest at all.
+ * for every OWNED file this run wrote or re-recorded -- never called when
+ * there is neither, which is what keeps a repeat run of an up-to-date repo
+ * from touching the manifest at all.
  *
  * `version` always OVERWRITES whatever `guardrailsVersion` was already on
  * disk; it is never read from `existing`. Preserving it the way file entries
@@ -181,19 +207,13 @@ function readExistingManifest(
  * earlier run happened to record.
  */
 function writeManifest(
-  repoRoot: string,
+  manifestFullPath: string,
+  existing: ScaffoldManifest | undefined,
   manifestUpdates: Readonly<Record<string, string>>,
   fingerprintUpdates: Readonly<Record<string, string>>,
   version: string,
   dependencies: ApplyDependencies,
-  warnings: string[],
 ): void {
-  const manifestFullPath = path.join(repoRoot, MANIFEST_PATH);
-  const existing = readExistingManifest(
-    manifestFullPath,
-    dependencies,
-    warnings,
-  );
   const manifest: ScaffoldManifest = {
     guardrailsVersion: version,
     files: { ...existing?.files, ...manifestUpdates },
@@ -216,6 +236,12 @@ export function applyScaffold(
     manifestUpdates: {},
     fingerprintUpdates: {},
   };
+  const manifestFullPath = path.join(repoRoot, MANIFEST_PATH);
+  const existing = readExistingManifest(
+    manifestFullPath,
+    dependencies,
+    accumulator.warnings,
+  );
 
   for (const action of plan.actions) {
     const desiredContent = desired[action.path];
@@ -253,16 +279,17 @@ export function applyScaffold(
       dependencies,
       accumulator,
     );
+    recordStaleUnchanged(action, desiredContent, existing, accumulator);
   }
 
   if (Object.keys(accumulator.manifestUpdates).length > 0) {
     writeManifest(
-      repoRoot,
+      manifestFullPath,
+      existing,
       accumulator.manifestUpdates,
       accumulator.fingerprintUpdates,
       version,
       dependencies,
-      accumulator.warnings,
     );
     accumulator.written.push(MANIFEST_PATH);
   }
