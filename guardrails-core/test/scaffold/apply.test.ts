@@ -96,6 +96,14 @@ const TEST_DECISIONS: ScaffoldDecisions = {
   shouldForce: false,
 };
 
+/**
+The manifest a harness's files hold, parsed as `init` reads it.
+*/
+function manifestIn(files: ReadonlyMap<string, string>): unknown {
+  const raw = files.get(fullPath(MANIFEST_PATH)) ?? '';
+  return parseManifest(JSON.parse(raw));
+}
+
 function factsWithManifest(manifestRaw: string | undefined): RepoFacts {
   const manifest =
     manifestRaw === undefined
@@ -646,6 +654,126 @@ describe('applyScaffold', () => {
       expect(result.warnings).toEqual([
         `${MANIFEST_PATH} could not be read; treating it as absent`,
       ]);
+    });
+
+    it('re-records an owned file that already matches the template when its record is stale', () => {
+      // A consumer took a release's new text by hand, so the file is the
+      // template but the record is still what init last wrote. Left stale,
+      // the next template change reads the file as edited and reports drift.
+      const existingManifest = JSON.stringify({
+        guardrailsVersion: '1.2.3',
+        files: {
+          'docs/guide.md': checksum('old template'),
+          'kept.md': checksum('kept'),
+        },
+        fingerprints: {
+          'docs/guide.md': fingerprint('old template'),
+          'kept.md': fingerprint('kept'),
+        },
+      });
+      const { deps, files } = makeHarness({
+        [MANIFEST_PATH]: existingManifest,
+        'docs/guide.md': 'new template',
+      });
+      const plan = planOf(
+        action({
+          path: 'docs/guide.md',
+          fileClass: 'owned',
+          kind: 'unchanged',
+        }),
+      );
+      const result = applyScaffold(
+        plan,
+        { 'docs/guide.md': 'new template' },
+        REPO_ROOT,
+        deps,
+        VERSION,
+      );
+      expect(manifestIn(files)).toEqual({
+        guardrailsVersion: VERSION,
+        files: {
+          'docs/guide.md': checksum('new template'),
+          'kept.md': checksum('kept'),
+        },
+        fingerprints: {
+          'docs/guide.md': fingerprint('new template'),
+          'kept.md': fingerprint('kept'),
+        },
+      });
+      expect(files.get(fullPath('docs/guide.md'))).toBe('new template');
+      expect(result.written).toEqual([MANIFEST_PATH]);
+      expect(result.skipped).toEqual(['docs/guide.md']);
+    });
+
+    it('records an owned file that matches the template when there is no manifest yet', () => {
+      const { deps, files } = makeHarness({ 'docs/guide.md': 'template' });
+      const plan = planOf(
+        action({
+          path: 'docs/guide.md',
+          fileClass: 'owned',
+          kind: 'unchanged',
+        }),
+      );
+      applyScaffold(
+        plan,
+        { 'docs/guide.md': 'template' },
+        REPO_ROOT,
+        deps,
+        VERSION,
+      );
+      expect(manifestIn(files)).toEqual({
+        guardrailsVersion: VERSION,
+        files: { 'docs/guide.md': checksum('template') },
+        fingerprints: { 'docs/guide.md': fingerprint('template') },
+      });
+    });
+
+    it('leaves the manifest alone when an unchanged owned file is already recorded', () => {
+      // Written in a shape serializeManifest would not produce, so any
+      // rewrite at all shows up as a changed string.
+      const existingManifest = `{"guardrailsVersion":"1.2.3","files":{"docs/guide.md":"${checksum('template')}"}}`;
+      const { deps, files } = makeHarness({
+        [MANIFEST_PATH]: existingManifest,
+        'docs/guide.md': 'template',
+      });
+      const plan = planOf(
+        action({
+          path: 'docs/guide.md',
+          fileClass: 'owned',
+          kind: 'unchanged',
+        }),
+      );
+      const result = applyScaffold(
+        plan,
+        { 'docs/guide.md': 'template' },
+        REPO_ROOT,
+        deps,
+        VERSION,
+      );
+      expect(files.get(fullPath(MANIFEST_PATH))).toBe(existingManifest);
+      expect(result.written).toEqual([]);
+    });
+
+    it('never records a drifted owned file, even when its record is stale', () => {
+      const existingManifest = JSON.stringify({
+        guardrailsVersion: '1.2.3',
+        files: { 'docs/guide.md': checksum('old template') },
+      });
+      const { deps, files } = makeHarness({
+        [MANIFEST_PATH]: existingManifest,
+        'docs/guide.md': 'consumer edit',
+      });
+      const plan = planOf(
+        action({ path: 'docs/guide.md', fileClass: 'owned', kind: 'drift' }),
+      );
+      applyScaffold(
+        plan,
+        { 'docs/guide.md': 'template' },
+        REPO_ROOT,
+        deps,
+        VERSION,
+      );
+      expect(files.get(fullPath(MANIFEST_PATH))).toBe(existingManifest);
     });
 
     it('is not written at all when no OWNED file was written', () => {
