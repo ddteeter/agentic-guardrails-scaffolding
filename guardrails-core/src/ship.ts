@@ -15,7 +15,13 @@ import { randomUUID } from 'node:crypto';
  * classification is tested without a network.
  */
 
-import { accessSync, constants, mkdirSync, writeFileSync } from 'node:fs';
+import {
+  accessSync,
+  constants,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+} from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 
@@ -24,6 +30,11 @@ import { isRecord } from './is-record.js';
 import { parseJsonText } from './json-file.js';
 import { logShipRun, type RunClock, startRun } from './gate-run-log.js';
 import { LOCK_TIMEOUT_MARKER } from './mutation-lock.js';
+import {
+  splitTitleLine,
+  titleTypeMismatch,
+  type TypeMismatch,
+} from './pr-title.js';
 
 type ShipState =
   | 'green'
@@ -67,6 +78,11 @@ export interface ShipOptions {
   A pull request body to open with; otherwise `gh pr create --fill`.
   */
   bodyFile?: string | undefined;
+  /**
+  The title a new pull request opens with. Otherwise the body file's leading
+  `# <title>` line, else the last commit's subject (#175).
+  */
+  title?: string | undefined;
   /**
   Push with `--force-with-lease`, for a branch rewritten since its last push.
   */
@@ -429,12 +445,86 @@ async function commentAttachments(
   return commented.code === 0 ? [] : [attachWarning(commented)];
 }
 
+/**
+What `gh pr create` is given for the title and body.
+*/
+interface Opening {
+  args: string[];
+  /**
+  How the last commit's subject, when nobody chose a title, disagrees with
+  the branch.
+  */
+  mismatch?: TypeMismatch | undefined;
+}
+
+/**
+ * The title and body a new pull request opens with: `--title`, else the body
+ * file's `# <title>` line (stripped from the body), else the last commit's
+ * subject. Without a body file gh fills the body. The file is read here, as
+ * gh read it before, so an edit made while the gate ran is what opens.
+ */
+async function openingOf(
+  options: ShipOptions,
+  branch: string,
+): Promise<Opening | string> {
+  const given = options.title?.trim() ?? '';
+  const named = given === '' ? [] : ['--title', given];
+  const { bodyFile } = options;
+  if (bodyFile === undefined) {
+    return { args: [...named, '--fill'] };
+  }
+  let text: string;
+  try {
+    text = readFileSync(bodyFile, 'utf8');
+  } catch {
+    return (
+      `guardrails ship: --body-file ${bodyFile} could not be read after the ` +
+      'push, so no pull request was opened. Restore it and ship again.'
+    );
+  }
+  const split = splitTitleLine(text);
+  const body =
+    split === undefined ? ['--body-file', bodyFile] : ['--body', split.body];
+  if (named.length > 0) {
+    return { args: [...named, ...body] };
+  }
+  if (split !== undefined) {
+    return { args: ['--title', split.title, ...body] };
+  }
+  const lastCommit = await options.exec('git', ['log', '-1', '--format=%s'], {
+    cwd: options.repoRoot,
+  });
+  const subject = lastCommit.stdout.trim();
+  return {
+    args: ['--title', subject, ...body],
+    mismatch: titleTypeMismatch(branch, subject),
+  };
+}
+
+/**
+ * The warning for a pull request titled by a last commit whose type is not
+ * the branch's, which a squash merge would carry onto the base (#175).
+ */
+function titleWarnings(
+  pr: PullRequest,
+  mismatch: TypeMismatch | undefined,
+): string[] {
+  if (mismatch === undefined) {
+    return [];
+  }
+  const number = String(pr.number);
+  return [
+    `PR #${number} is titled by the last commit, "${mismatch.subject}", ` +
+      `whose type (${mismatch.found}) is not the branch's ` +
+      `(${mismatch.wanted}): retitle it with gh pr edit ${number} --title, ` +
+      'and pass --title or start the body file with "# <title>" next time',
+  ];
+}
+
 async function findOrOpenPullRequest(
   options: ShipOptions,
   branch: string,
 ): Promise<FoundPullRequest | string> {
-  const run = (command: string, args: string[]) =>
-    options.exec(command, args, { cwd: options.repoRoot });
   const existing = await viewPullRequest(options, branch);
   if (existing.pr !== undefined) {
     return {
@@ -442,19 +532,17 @@ async function findOrOpenPullRequest(
       warnings: await commentAttachments(options, existing.pr),
     };
   }
-  let body = ['--fill'];
-  if (options.bodyFile !== undefined) {
-    const lastCommit = await run('git', ['log', '-1', '--format=%s']);
-    const title = lastCommit.stdout.trim();
-    body = ['--title', title, '--body-file', options.bodyFile];
+  const opening = await openingOf(options, branch);
+  if (typeof opening === 'string') {
+    return opening;
   }
   const attach = attachArguments(options);
-  const created = await run('gh', [
+  const created = await gh(options, [
     'pr',
     'create',
     '--base',
     options.baseBranch,
-    ...body,
+    ...opening.args,
     ...attach,
   ]);
   // gh still opens the PR when an upload fails, and says so with a failing
@@ -469,7 +557,10 @@ async function findOrOpenPullRequest(
   }
   return {
     pr: opened.pr,
-    warnings: created.code === 0 ? [] : [attachWarning(created)],
+    warnings: [
+      ...(created.code === 0 ? [] : [attachWarning(created)]),
+      ...titleWarnings(opened.pr, opening.mismatch),
+    ],
   };
 }
 

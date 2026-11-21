@@ -297,6 +297,272 @@ function newPr(): Record<string, ExecResult | ExecResult[]> {
   };
 }
 
+/**
+ * What ship opens a new pull request with, given `over` and a body file
+ * holding `body` (none when `body` is undefined). The commit log answers
+ * `subject`, and the branch is `branch`.
+ */
+async function openedWith(
+  over: Partial<ShipOptions>,
+  {
+    body,
+    subject = 'docs(designs): records the answers',
+    branch = 'fix/w13-sec',
+  }: { body?: string; subject?: string; branch?: string } = {},
+): Promise<{
+  create: string | undefined;
+  status: ShipStatus;
+  logged: boolean;
+}> {
+  const { exec, calls } = fakeExec({
+    ...newPr(),
+    'git rev-parse --abbrev-ref HEAD': ok(`${branch}\n`),
+    'git ls-remote': ok(`abc123\trefs/heads/${branch}\n`),
+    'git log -1 --format=%s': ok(`${subject}\n`),
+  });
+  const bodyFile = path.join(root, 'pr.md');
+  if (body !== undefined) {
+    writeFileSync(bodyFile, body);
+  }
+  const status = await ship(
+    options(exec, body === undefined ? over : { bodyFile, ...over }),
+  );
+  const lines = calls.map((call) => call.line);
+  return {
+    create: lines.find((line) => line.startsWith('gh pr create')),
+    status,
+    logged: lines.includes('git log -1 --format=%s'),
+  };
+}
+
+describe('ship: the title a new pull request opens with (#175)', () => {
+  it('uses --title as given, without reading the commit log', async () => {
+    const body = path.join(root, 'pr.md');
+    const opened = await openedWith(
+      { title: 'fix(ship): the real change' },
+      { body: 'the body\n' },
+    );
+    expect(opened.create).toBe(
+      `gh pr create --base main --title fix(ship): the real change --body-file ${body}`,
+    );
+    expect(opened.logged).toBe(false);
+    expect(opened.status.warnings).toEqual([]);
+  });
+
+  it('uses --title without a body file, letting gh fill only the body', async () => {
+    const opened = await openedWith({ title: 'fix: it' });
+    expect(opened.create).toBe(
+      'gh pr create --base main --title fix: it --fill',
+    );
+    expect(opened.logged).toBe(false);
+  });
+
+  it.each(['', '  '])(
+    'treats a blank --title (%j) as none given',
+    async (title) => {
+      const opened = await openedWith({ title });
+      expect(opened.create).toBe('gh pr create --base main --fill');
+    },
+  );
+
+  it('takes the title from a leading "# " line, and strips it from the body', async () => {
+    const opened = await openedWith(
+      {},
+      { body: '# fix(ship): the real change \n\n\nthe body\n\n## Why\n' },
+    );
+    expect(opened.create).toBe(
+      'gh pr create --base main --title fix(ship): the real change ' +
+        '--body the body\n\n## Why\n',
+    );
+    expect(opened.logged).toBe(false);
+    expect(opened.status.warnings).toEqual([]);
+  });
+
+  it.each([
+    ['spaces around it', '#   spaced out  \nb\n', 'spaced out'],
+    ['one character', '# x\nb\n', 'x'],
+  ])('takes a title with %s', async (_label, body, title) => {
+    const opened = await openedWith({}, { body });
+    expect(opened.create).toBe(
+      `gh pr create --base main --title ${title} --body b\n`,
+    );
+  });
+
+  it.each([
+    ['only blank lines', '# t\n\n  ', ''],
+    ['an indented first line', '# t\n\n    code\nmore', '    code\nmore'],
+  ])('keeps a body of %s as written', async (_label, body, kept) => {
+    const opened = await openedWith({}, { body });
+    expect(opened.create).toBe(
+      `gh pr create --base main --title t --body ${kept}`,
+    );
+  });
+
+  it('finds the title line past leading blank lines, and leaves an empty body', async () => {
+    const opened = await openedWith({}, { body: '\n  \n# fix: only a title' });
+    expect(opened.create).toBe(
+      'gh pr create --base main --title fix: only a title --body ',
+    );
+  });
+
+  it.each([
+    ['a second-level heading', '## Summary\n\nthe body\n'],
+    ['a hash with no space', '#175 is fixed\n'],
+    ['a heading with no text', '#   \nthe body\n'],
+    ['a heading after the first text', 'the body\n# Not the title\n'],
+  ])('does not take a title from %s', async (_label, body) => {
+    const file = path.join(root, 'pr.md');
+    const opened = await openedWith({}, { body, subject: 'fix: from git' });
+    expect(opened.create).toBe(
+      `gh pr create --base main --title fix: from git --body-file ${file}`,
+    );
+  });
+
+  it('lets --title win over the title line, which is still stripped', async () => {
+    const opened = await openedWith(
+      { title: 'fix: the flag' },
+      { body: '# fix: the line\nthe body\n' },
+    );
+    expect(opened.create).toBe(
+      'gh pr create --base main --title fix: the flag --body the body\n',
+    );
+  });
+
+  it('warns when the last commit titles a fix/ branch as docs', async () => {
+    const opened = await openedWith({}, { body: 'the body\n' });
+    expect(opened.status.warnings).toEqual([
+      'PR #42 is titled by the last commit, "docs(designs): records the ' +
+        'answers", whose type (docs) is not the branch\'s (fix): retitle it ' +
+        'with gh pr edit 42 --title, and pass --title or start the body file ' +
+        'with "# <title>" next time',
+    ]);
+  });
+
+  it.each([
+    ['fix/x', 'fix(ship): y'],
+    ['feat/x', 'feat!: y'],
+    ['feature/x', 'feat(a): y'],
+    ['bugfix/x', 'fix: y'],
+    ['hotfix/x', 'fix: y'],
+    ['175-ship-title', 'docs: y'],
+    ['drew/x', 'docs: y'],
+    ['fix/x', 'Update the readme'],
+    ['fix/x', 'docs y: not a type'],
+    ['fix/x', 'a docs: y'],
+    ['fix', 'docs: y'],
+    ['a/fix/x', 'docs: y'],
+    ['release.fix/x', 'docs: y'],
+  ])(
+    'does not warn for branch %s and last commit %j',
+    async (branch, subject) => {
+      const opened = await openedWith({}, { body: 'b\n', subject, branch });
+      expect(opened.create).toContain(`--title ${subject} --body-file`);
+      expect(opened.status.warnings).toEqual([]);
+    },
+  );
+
+  it.each([
+    ['feature/x', 'fix: y', 'feat', 'fix'],
+    ['hotfix/x', 'test(ship): y', 'fix', 'test'],
+    ['bugfix/x', 'docs: y', 'fix', 'docs'],
+    ['docs/x', 'chore!: y', 'docs', 'chore'],
+  ])(
+    'warns for branch %s and last commit %j',
+    async (branch, subject, wanted, found) => {
+      const opened = await openedWith({}, { body: 'b\n', subject, branch });
+      expect(opened.status.warnings).toHaveLength(1);
+      expect(opened.status.warnings[0]).toContain(
+        `whose type (${found}) is not the branch's (${wanted})`,
+      );
+    },
+  );
+
+  it.each([
+    'feat',
+    'fix',
+    'docs',
+    'test',
+    'chore',
+    'refactor',
+    'perf',
+    'build',
+    'ci',
+    'style',
+    'revert',
+  ])('compares a %s/ branch by its type', async (type) => {
+    const other = type === 'docs' ? 'fix' : 'docs';
+    const differs = await openedWith(
+      {},
+      { body: 'b\n', branch: `${type}/x`, subject: `${other}: y` },
+    );
+    expect(differs.status.warnings[0]).toContain(
+      `whose type (${other}) is not the branch's (${type})`,
+    );
+    const agrees = await openedWith(
+      {},
+      { body: 'b\n', branch: `${other}/x`, subject: `${type}: y` },
+    );
+    expect(agrees.status.warnings[0]).toContain(
+      `whose type (${type}) is not the branch's (${other})`,
+    );
+  });
+
+  it('does not warn for a subject whose word is not a type', async () => {
+    const opened = await openedWith({}, { body: 'b\n', subject: 'Note: y' });
+    expect(opened.status.warnings).toEqual([]);
+  });
+
+  it('carries an attachment warning and the title warning together', async () => {
+    const { exec } = fakeExec({
+      ...newPr(),
+      'git rev-parse --abbrev-ref HEAD': ok('fix/x\n'),
+      'git ls-remote': ok('abc123\trefs/heads/fix/x\n'),
+      'git log -1 --format=%s': ok('docs: y\n'),
+      'gh pr create': failed('upload failed'),
+    });
+    const body = path.join(root, 'pr.md');
+    writeFileSync(body, 'b\n');
+    const status = await ship(
+      options(exec, { bodyFile: body, attach: ['a.png'] }),
+    );
+    expect(status.warnings).toHaveLength(2);
+    expect(status.warnings[0]).toBe('attachments not posted: upload failed');
+    expect(status.warnings[1]).toContain('is titled by the last commit');
+  });
+
+  it('is an error, naming the file, when the body file is gone after the push', async () => {
+    const body = path.join(root, 'pr.md');
+    writeFileSync(body, '# fix: t\nb\n');
+    const { exec: inner, calls } = fakeExec(newPr());
+    const exec: Exec = (command, args, execOptions) => {
+      if (args[0] === 'push') {
+        rmSync(body);
+      }
+      return inner(command, args, execOptions);
+    };
+    const status = await ship(options(exec, { bodyFile: body }));
+    expect(status).toMatchObject({ state: 'error', pr: null });
+    expect(status.tail).toBe(
+      `guardrails ship: --body-file ${body} could not be read after the ` +
+        'push, so no pull request was opened. Restore it and ship again.',
+    );
+    expect(calls.some((call) => call.line.startsWith('gh pr create'))).toBe(
+      false,
+    );
+  });
+
+  it('changes nothing on a pull request that is already open', async () => {
+    const { exec, calls } = fakeExec(HAPPY);
+    const body = path.join(root, 'pr.md');
+    writeFileSync(body, '# fix: new\nthe body\n');
+    const status = await ship(options(exec, { bodyFile: body, title: 'x' }));
+    const lines = calls.map((call) => call.line);
+    expect(lines.some((line) => line.startsWith('gh pr create'))).toBe(false);
+    expect(lines.some((line) => line.startsWith('gh pr edit'))).toBe(false);
+    expect(status.warnings).toEqual([]);
+  });
+});
+
 describe('ship: attaching media to the pull request', () => {
   const ATTACH = ['/r/demo.mp4', '/r/after.png#The fixed state'];
 

@@ -883,6 +883,14 @@ ship.log 2>&1 &`), finish the task, and let whoever started the agent read
   `gh`, authenticated, and checks that before pushing: a missing or logged-out
   `gh` is an `error` that says how to fix it, and nothing is pushed.
   `ship --help` prints all of this and pushes nothing.
+- **A new pull request's title** is `--title=<t>` when given, else the body
+  file's first line when it is `# <title>` (that line is dropped from the
+  body), else the last commit's subject. Ship sets it only when it opens the
+  PR; it never changes an open one. When the last commit's subject is used and
+  its conventional type differs from the one the branch's prefix names (a
+  `fix/` branch, a `docs(...)` subject), `warnings` says so and names the
+  `gh pr edit` that retitles it. A squash merge keeps the title, so a trailing
+  docs or test commit would otherwise label the change on the base too.
 - **A branch rebased after its first push** needs `--force-with-lease`; ship
   never forces on its own. Without the flag, git's rejection comes back as an
   `error` whose tail ends with a line naming the flag.

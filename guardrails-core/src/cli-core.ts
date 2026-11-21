@@ -1771,7 +1771,7 @@ async function installHooksCommand(
 }
 
 const SHIP_USAGE =
-  'ship [--body-file=<f>] [--status-file=<f>] [--base=<ref>]\n' +
+  'ship [--body-file=<f>] [--title=<t>] [--status-file=<f>] [--base=<ref>]\n' +
   '       [--force-with-lease] [--attach=<file>[#alt]]...';
 
 /**
@@ -1783,6 +1783,9 @@ const SHIP_HELP =
   'Push the branch, find or open its pull request, wait for its checks, and\n' +
   'write the outcome as JSON. Run it in the background; exit 0 only on green.\n\n' +
   '  --body-file=<f>    open a missing PR with this body (default: gh --fill)\n' +
+  '  --title=<t>        open a missing PR with this title; otherwise the body\n' +
+  '                     file\'s first line when it is "# <title>" (stripped\n' +
+  "                     from the body), else the last commit's subject\n" +
   '  --status-file=<f>  where the outcome goes\n' +
   '                     (default: .guardrails/state/ship-status.json)\n' +
   '  --base=<ref>       the branch a new PR targets (default: baseBranch)\n' +
@@ -1828,6 +1831,7 @@ async function shipCommand(
       bodyFile === undefined
         ? undefined
         : path.resolve(dependencies.cwd, bodyFile),
+    title: flag(rest, 'title'),
     forceWithLease: rest.includes('--force-with-lease'),
     attach: flags(rest, 'attach').map((file) =>
       resolveAttachment(dependencies.cwd, file),
