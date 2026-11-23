@@ -46,6 +46,15 @@ version: unreleased
   not valid JSON, or was written by another guardrails-core version and
   clears once main's mutation workflow completes a run on this version.
   Only the words changed: which sidecars match is the same as before.
+- **The diff-auditor flags vitest/jest's conditional and placeholder test
+  modifiers as `skipped-test`.** `it.skipIf(cond)(...)`, `it.runIf(cond)(...)`
+  and the bodiless placeholder `it.todo('...')` disable a test the way
+  `.skip` does, and the auditor did not see them. `it`, `test`, `describe`
+  and `suite` are covered, alone or through `concurrent`, `sequential` or
+  `failing` (`it.concurrent.skipIf(...)`). A branch that adds one now gets a
+  finding at the commit and Stop gates. The match needs call syntax, so
+  `config.runIf` or `options.todo` is not a finding. Lines already in the
+  repo are not reported; only added lines are audited.
 
 ## Instructions this supersedes
 

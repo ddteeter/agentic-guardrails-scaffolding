@@ -163,6 +163,30 @@ const SIGNATURES: readonly Signature[] = [
     pattern:
       /\b(?:it|test|describe|context|suite)(?:\.(?:serial|parallel|concurrent|sequential|failing))?\.(?:skip|only)\b/,
   },
+  // HALF 3 -- vitest/jest's conditional and placeholder modifiers (issue
+  // #192): `skipIf(cond)`, `runIf(cond)`, and the placeholder that registers a
+  // test with no body (the last alternative below). Each disables a test the
+  // way `.skip` does, and HALF 2 cannot see them: `.skip\b` stops short of
+  // `.skipIf` because `p` and `I` are both word characters.
+  //
+  // A third entry rather than a wider HALF 2, because the two halves need
+  // different rules. `runIf` and the placeholder name are ordinary
+  // identifiers (`config.runIf`, a to-do list's `options` field), so this half
+  // REQUIRES call syntax, which `.skip`/`.only` do not -- every real use is a
+  // call (`it.skipIf(c)(...)`, the placeholder with a title). And `context` is
+  // left out of the anchor: only mocha spells a suite `context`, mocha has none
+  // of these modifiers, and the same method on an app's `context` object is
+  // ordinary code.
+  //
+  // The grouping modifiers are HALF 2's closed list minus Playwright's
+  // `serial`/`parallel`, which carry none of these: vitest spells
+  // `it.concurrent.skipIf(...)` and `describe.sequential.runIf(...)`.
+  {
+    kind: 'skipped-test',
+    class: 'code',
+    pattern:
+      /\b(?:it|test|describe|suite)(?:\.(?:concurrent|sequential|failing))?\.(?:skipIf|runIf|todo)\s*\(/,
+  },
   // stryker's mutation-suppression directives. `directive` class, so a mention
   // in prose ("we removed the Stryker disable comment") doesn't flag — only a
   // comment that LEADS with the directive does. `restore` is included because a

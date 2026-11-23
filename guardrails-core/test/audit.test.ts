@@ -193,6 +193,59 @@ describe('auditDiff', () => {
     }
   });
 
+  it('flags the conditional and placeholder test modifiers', () => {
+    // Issue #192. `.skip\b` cannot match `.skipIf` (no word boundary between
+    // `p` and `I`), and `runIf` and the placeholder form were never listed, so
+    // each of these disabled a test with no finding -- the stale-signature
+    // failure that fails silently.
+    for (const line of [
+      "+  it.skipIf(process.env.CI)('x', () => {});",
+      "+  test.skipIf(isWindows)('x', () => {});",
+      "+  describe.skipIf(true)('x', () => {});",
+      "+  suite.skipIf(true)('x', () => {});",
+      "+  it.runIf(false)('x', () => {});",
+      "+  test.runIf(false)('x', () => {});",
+      "+  describe.runIf(false)('x', () => {});",
+      "+  it.todo('x');",
+      "+  test.todo('x');",
+      "+  describe.todo('x');",
+      "+  it.concurrent.skipIf(true)('x', () => {});",
+      "+  test.concurrent.todo('x');",
+      "+  describe.sequential.runIf(false)('x', () => {});",
+      "+  it.todo ('x');",
+    ]) {
+      expect(auditDiff(diff('a.test.ts', line)), line).toEqual([
+        expect.objectContaining({ kind: 'skipped-test' }),
+      ]);
+    }
+  });
+
+  it('reports a line with both a skip and a skipIf once', () => {
+    // Two `skipped-test` entries can match one line; the finding is per line.
+    expect(
+      auditDiff(diff('a.test.ts', "+  it.skip('a'); it.skipIf(c)('b');")),
+    ).toHaveLength(1);
+  });
+
+  it('does not flag runIf, skipIf or todo on an ordinary receiver', () => {
+    // The #43/#46 constraint: these are ordinary identifiers, so the match is
+    // anchored on a test-API name and requires call syntax. `context` is left
+    // out of the anchor on purpose -- only mocha spells a suite `context`, and
+    // mocha has none of these modifiers, while the same call on an app's
+    // `context` object is somebody's app state.
+    for (const line of [
+      '+  if (config.runIf) {',
+      '+  const pending = options.todo;',
+      '+  await scheduler.skipIf(isIdle);',
+      '+  store.todo(item);',
+      '+  context.todo(item);',
+      '+  const run = test.runIf;',
+      '+  return it.todoList;',
+    ]) {
+      expect(auditDiff(diff('a.ts', line)), line).toEqual([]);
+    }
+  });
+
   it('does not flag an unrelated chain that merely ends in a known word', () => {
     // The modifier list is closed on purpose. Without that, any `x.y.only(`
     // would match, and `only` is an ordinary enough identifier that #43's
