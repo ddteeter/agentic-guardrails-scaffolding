@@ -401,6 +401,61 @@ describe('planFileRanges', () => {
     ]);
   });
 
+  it('widens a hunk to the span around it, unpadded', () => {
+    expect(
+      planFileRanges([{ start: 50, end: 50 }], 100, settings, [
+        { start: 40, end: 60 },
+      ]),
+    ).toEqual([{ start: 40, end: 60 }]);
+  });
+
+  it('still pads a hunk beyond a span smaller than its padding', () => {
+    expect(
+      planFileRanges([{ start: 50, end: 50 }], 100, settings, [
+        { start: 49, end: 51 },
+      ]),
+    ).toEqual([{ start: 48, end: 52 }]);
+  });
+
+  it('merges a span with the padded hunks it touches and keeps the rest apart', () => {
+    expect(
+      planFileRanges(
+        [
+          { start: 10, end: 10 },
+          { start: 80, end: 80 },
+        ],
+        100,
+        settings,
+        [{ start: 13, end: 20 }],
+      ),
+    ).toEqual([
+      { start: 8, end: 20 },
+      { start: 78, end: 82 },
+    ]);
+  });
+
+  it('clamps a span to the file', () => {
+    expect(
+      planFileRanges([{ start: 5, end: 5 }], 100, settings, [
+        { start: 0, end: 140 },
+      ]),
+    ).toBeUndefined();
+    expect(
+      planFileRanges([{ start: 295, end: 295 }], 300, settings, [
+        { start: 290, end: 340 },
+      ]),
+    ).toEqual([{ start: 290, end: 300 }]);
+  });
+
+  it('mutates the whole file once a span takes the ranges over the threshold', () => {
+    // 20–80 of 100 lines is 61%, above 50%, where the padded hunk alone is 5%.
+    expect(
+      planFileRanges([{ start: 50, end: 50 }], 100, settings, [
+        { start: 20, end: 80 },
+      ]),
+    ).toBeUndefined();
+  });
+
   it('defaults to five lines of padding and whole files above 40%', () => {
     expect(DEFAULT_MUTATION_SCOPE).toEqual({
       lines: true,

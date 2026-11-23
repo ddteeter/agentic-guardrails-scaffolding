@@ -200,21 +200,20 @@ function clamp(value: number, low: number, high: number): number {
 }
 
 /**
-Padded and clamped to the file, sorted by start, with touching ranges merged.
+Clamped to the file, sorted by start, with touching ranges merged.
 */
-function padAndMerge(
+function clampAndMerge(
   ranges: readonly LineRange[],
   lineCount: number,
-  padding: number,
 ): LineRange[] {
-  const padded = ranges
+  const clamped = ranges
     .map((range) => {
-      const start = clamp(range.start - padding, 1, lineCount);
-      return { start, end: clamp(range.end + padding, start, lineCount) };
+      const start = clamp(range.start, 1, lineCount);
+      return { start, end: clamp(range.end, start, lineCount) };
     })
     .toSorted((first, second) => first.start - second.start);
   const merged: LineRange[] = [];
-  for (const range of padded) {
+  for (const range of clamped) {
     const last = merged.at(-1);
     if (last !== undefined && range.start <= last.end + 1) {
       last.end = Math.max(last.end, range.end);
@@ -226,7 +225,9 @@ function padAndMerge(
 }
 
 /**
- * The ranges to mutate in one file, or `undefined` to mutate it whole.
+ * The ranges to mutate in one file, or `undefined` to mutate it whole: each
+ * hunk padded by `settings.padding`, joined by `spans` (the code around the
+ * hunks, `enclosingSpans`), which are taken unpadded.
  *
  * Whole when ranges are off, when there are no hunks to go on, when the
  * file's length is unknown, and when the padded ranges cover more than
@@ -237,13 +238,18 @@ export function planFileRanges(
   ranges: readonly LineRange[],
   lineCount: number,
   settings: MutationScopeSettings,
+  spans: readonly LineRange[] = [],
 ): LineRange[] | undefined {
   // A file of unknown length (0) needs no test of its own: every range
   // clamps to one line of it, and a share of 1/0 is above any threshold.
   if (!settings.lines || ranges.length === 0) {
     return undefined;
   }
-  const merged = padAndMerge(ranges, lineCount, settings.padding);
+  const padded = ranges.map((range) => ({
+    start: range.start - settings.padding,
+    end: range.end + settings.padding,
+  }));
+  const merged = clampAndMerge([...padded, ...spans], lineCount);
   const covered = merged.reduce(
     (total, range) => total + range.end - range.start + 1,
     0,
