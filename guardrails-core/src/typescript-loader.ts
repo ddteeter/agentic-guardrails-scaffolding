@@ -13,7 +13,11 @@ import type * as Ts from 'typescript';
 
 import { isRecord } from './verify/report-shape.js';
 
-export type Typescript = typeof Ts;
+/**
+ * The module as `require` gives it: every export, but no synthesized
+ * `default`, so a default import of `typescript` is one too.
+ */
+export type Typescript = Omit<typeof Ts, 'default'>;
 
 /**
 `typescript` as `repoRoot`'s own `package.json` would import it.
