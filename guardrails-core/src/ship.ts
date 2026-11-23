@@ -228,6 +228,50 @@ function parseRows(
 }
 
 /**
+One row of `gh run list`: a workflow run, the event that started it, and its
+id, which grows with each run.
+*/
+interface Run extends Listed {
+  event: string;
+  id: number;
+}
+
+function runKey(run: Run): string {
+  return `${run.name}\n${run.event}`;
+}
+
+/**
+ * The latest run of each workflow and event, in listed order (#199). A
+ * re-triggered workflow leaves its older run on the commit, and the newer run
+ * is the one that says how the workflow went: an older failure under a newer
+ * pending run is not red. A malformed row is dropped, not trusted.
+ */
+function parseRuns(text: string): Listed[] | undefined {
+  const { parsed } = parseJsonText(text);
+  if (!Array.isArray(parsed)) {
+    return undefined;
+  }
+  const rows = parsed.flatMap((row: unknown): Run[] => {
+    const fields = isRecord(row) ? row : {};
+    const { workflowName, conclusion, event, databaseId } = fields;
+    return typeof workflowName === 'string' &&
+      typeof conclusion === 'string' &&
+      typeof event === 'string' &&
+      typeof databaseId === 'number'
+      ? [{ name: workflowName, outcome: conclusion, event, id: databaseId }]
+      : [];
+  });
+  const latest = new Map<string, number>();
+  for (const run of rows) {
+    const key = runKey(run);
+    latest.set(key, Math.max(latest.get(key) ?? 0, run.id));
+  }
+  return rows
+    .filter((run) => latest.get(runKey(run)) === run.id)
+    .map(({ name, outcome }) => ({ name, outcome }));
+}
+
+/**
 `gh pr checks` buckets that mean the check did not pass.
 */
 const RED_BUCKETS: ReadonlySet<string> = new Set(['fail', 'cancel']);
@@ -612,10 +656,10 @@ async function readRuns(
     '--limit',
     '100',
     '--json',
-    'workflowName,conclusion',
+    'workflowName,conclusion,event,databaseId',
   ]);
   return {
-    runs: parseRows(listed.stdout, 'workflowName', 'conclusion'),
+    runs: parseRuns(listed.stdout),
     listing: output(listed),
   };
 }

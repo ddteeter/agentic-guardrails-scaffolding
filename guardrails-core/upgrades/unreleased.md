@@ -30,6 +30,14 @@ version: unreleased
   invalidated, and a cached survivor newly in range counts. Widening needs
   the repo's own `typescript`; without it the gate warns once per run and
   keeps the padded ranges.
+- **`ship` judges each workflow by its latest run on the commit.** A
+  re-triggered workflow (a relabel, a re-run) leaves its older run on the
+  commit, and `ship` read every run from `gh run list`, so an older failure
+  reported `ci-red` while the newer run was still pending. `ship` now asks
+  `gh run list` for each run's `event` and `databaseId` and keeps only the
+  run with the highest id per workflow name and event. Runs of one workflow
+  from different events, such as `push` and `pull_request`, are still judged
+  apart. A row missing either field is dropped as malformed.
 
 ## Instructions this supersedes
 
