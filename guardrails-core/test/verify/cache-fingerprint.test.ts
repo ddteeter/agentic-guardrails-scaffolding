@@ -9,6 +9,7 @@ import {
   strykerVersionFrom,
   parseFingerprint,
   verdictOptions,
+  whyUnreadFingerprint,
 } from '../../src/verify/cache-fingerprint.js';
 
 const inputs: FingerprintInputs = {
@@ -190,6 +191,24 @@ describe('parseFingerprint', () => {
 
   it('rejects text that is not an object', () => {
     expect(parseFingerprint('[]')).toBeUndefined();
+  });
+});
+
+describe('whyUnreadFingerprint (#203)', () => {
+  const another =
+    "was written by another guardrails-core version; it clears once main's mutation workflow completes a run on this version";
+
+  it.each<[string, string, string]>([
+    ['no text', '', 'is missing'],
+    ['text that is not JSON', 'nope', 'is not valid JSON'],
+    [
+      "the pre-#177 fields (0.14's sidecar)",
+      '{"stryker":"10.0.0","config":"c","lockfile":"l"}',
+      another,
+    ],
+    ['JSON that is not an object', 'null', another],
+  ])('names %s', (_label, sidecar, why) => {
+    expect(whyUnreadFingerprint(sidecar)).toBe(why);
   });
 });
 

@@ -874,10 +874,16 @@ describe('prepareIncrementalCache says what it did (#176)', () => {
       { [STRYKER_MANIFEST]: '{"version":"10.1.1"}' },
       'it was measured under a different stryker version (10.0.0, here 10.1.1)',
     ],
+    ['an empty sidecar', { [SIDECAR]: '' }, 'its fingerprint is missing'],
     [
-      'a sidecar that cannot be read',
+      'a sidecar that is not JSON',
       { [SIDECAR]: 'nope' },
-      'its fingerprint is missing or unreadable',
+      'its fingerprint is not valid JSON',
+    ],
+    [
+      'a sidecar another guardrails-core version wrote (#203)',
+      { [SIDECAR]: '{"stryker":"10.0.0","config":"c","lockfile":"l"}' },
+      "its fingerprint was written by another guardrails-core version; it clears once main's mutation workflow completes a run on this version",
     ],
     [
       'no installed stryker',

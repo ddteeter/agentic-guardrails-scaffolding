@@ -224,6 +224,22 @@ export function parseFingerprint(
 }
 
 /**
+ * Why `parseFingerprint` refused a sidecar's text, as a predicate for "the
+ * fingerprint ..." (#203): it is missing, it is not JSON, or it parses but
+ * not as this version's fields -- what a sidecar another guardrails-core
+ * wrote reads as (0.15 renamed `config` and `lockfile`). Only the words;
+ * whether a sidecar matches is still `parseFingerprint`'s call alone.
+ */
+export function whyUnreadFingerprint(sidecarJson: string): string {
+  if (sidecarJson === '') {
+    return 'is missing';
+  }
+  return parseJsonText(sidecarJson).parsed === undefined
+    ? 'is not valid JSON'
+    : "was written by another guardrails-core version; it clears once main's mutation workflow completes a run on this version";
+}
+
+/**
 The fields on which `a` and `b` disagree, in field order.
 */
 export function fingerprintDifference(

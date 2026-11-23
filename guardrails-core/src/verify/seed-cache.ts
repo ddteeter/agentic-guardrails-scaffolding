@@ -40,6 +40,7 @@ import {
   isFingerprintEqual,
   parseFingerprint,
   serializeFingerprint,
+  whyUnreadFingerprint,
   type CacheFingerprint,
 } from './cache-fingerprint.js';
 import { mergeReports } from './merge-reports.js';
@@ -147,7 +148,7 @@ async function fingerprintFailure(
   for (const [index, text] of texts.entries()) {
     const fingerprint = parseFingerprint(text);
     if (fingerprint === undefined) {
-      return `left a fingerprint that cannot be read (${String(sidecars[index])})`;
+      return `left a fingerprint (${String(sidecars[index])}) that ${whyUnreadFingerprint(text)}`;
     }
     fingerprints.push(fingerprint);
   }

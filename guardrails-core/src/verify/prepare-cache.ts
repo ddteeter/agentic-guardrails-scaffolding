@@ -27,6 +27,7 @@ import {
   describeDifference,
   isSameFingerprint,
   parseFingerprint,
+  whyUnreadFingerprint,
   type CacheFingerprint,
   type DependencyEvidence,
   type Lockfile,
@@ -294,7 +295,7 @@ function staleWhy(
 ): string {
   const recorded = parseFingerprint(previous);
   if (recorded === undefined) {
-    return 'its fingerprint is missing or unreadable';
+    return `its fingerprint ${whyUnreadFingerprint(previous)}`;
   }
   return current === undefined
     ? 'no installed stryker to fingerprint this checkout'
