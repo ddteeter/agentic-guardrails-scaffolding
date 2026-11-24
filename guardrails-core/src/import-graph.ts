@@ -20,15 +20,13 @@
  */
 
 import { existsSync, realpathSync, statSync } from 'node:fs';
-import { createRequire } from 'node:module';
 import path from 'node:path';
 
 import type * as Ts from 'typescript';
 
 import { isWithinRepo } from './scope.js';
+import { type Typescript, loadFromRepo, loaded } from './typescript-loader.js';
 import { isRecord } from './verify/report-shape.js';
-
-type Typescript = typeof Ts;
 
 /**
  * The repo-relative POSIX paths of the in-repo files `text` imports, as seen
@@ -64,22 +62,6 @@ function isTypescript(value: unknown): value is Typescript {
     typeof value.preProcessFile === 'function' &&
     typeof value.resolveModuleName === 'function'
   );
-}
-
-function loadFromRepo(repoRoot: string): unknown {
-  return createRequire(path.join(repoRoot, 'package.json'))('typescript');
-}
-
-/**
- * What `load` gives, or nothing when it throws. A missing install and a
- * non-TypeScript export are then one answer, settled by `isTypescript`.
- */
-function loaded(load: () => unknown): unknown {
-  try {
-    return load();
-  } catch {
-    // Not installed: falls through to undefined, which is not TypeScript.
-  }
 }
 
 function realRootOf(repoRoot: string): string {

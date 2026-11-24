@@ -1,3 +1,4 @@
+import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 
 import type { Exec, ExecResult } from '../../src/exec.js';
@@ -9,6 +10,7 @@ import {
   isLocationInRanges,
   mutateEntries,
   parseDiffHunks,
+  removedIdentifiers,
   planFileRanges,
   planMutateRanges,
   planRunRanges,
@@ -286,6 +288,55 @@ describe('parseDiffHunks', () => {
   });
 });
 
+describe('removedIdentifiers', () => {
+  it('reads the identifiers of removed lines, not added ones', () => {
+    const diff = section('src/a.ts', [
+      '@@ -3,2 +3 @@',
+      '-  const total = helper(value);',
+      '-  return $wrap(total);',
+      '+  return added(value);',
+    ]);
+    expect(removedIdentifiers(diff)).toEqual(
+      new Set(['const', 'total', 'helper', 'value', 'return', '$wrap']),
+    );
+  });
+
+  it('does not read a header line as a removal', () => {
+    const diff = section('src/headerName.ts', [
+      '@@ -3 +3 @@',
+      '-gone',
+      '+kept',
+    ]);
+    expect(removedIdentifiers(diff)).toEqual(new Set(['gone']));
+  });
+
+  it('reads a removed line that looks like a header', () => {
+    // `--- x` is the removal of `-- x`, inside the hunk's counted body.
+    const diff = section('src/a.ts', ['@@ -3 +2,0 @@', '--- decrement']);
+    expect(removedIdentifiers(diff)).toEqual(new Set(['decrement']));
+  });
+
+  it('reads a deleted file, which still plans no ranges', () => {
+    const diff = [
+      'diff --git a/src/caller.ts b/src/caller.ts',
+      'deleted file mode 100644',
+      '--- a/src/caller.ts',
+      '+++ /dev/null',
+      '@@ -1,2 +0,0 @@',
+      "-import { callee } from './callee.js';",
+      '-callee();',
+    ].join('\n');
+    expect(removedIdentifiers(diff)).toEqual(
+      new Set(['import', 'callee', 'from', 'js']),
+    );
+    expect(parseDiffHunks(diff).size).toBe(0);
+  });
+
+  it('is empty for no diff at all', () => {
+    expect(removedIdentifiers('').size).toBe(0);
+  });
+});
+
 describe('countLines', () => {
   it.each([
     ['', 0],
@@ -299,7 +350,12 @@ describe('countLines', () => {
   });
 });
 
-const settings = { lines: true, padding: 2, wholeFileAbove: 0.5 };
+const settings = {
+  lines: true,
+  padding: 2,
+  wholeFileAbove: 0.5,
+  enclosing: false,
+};
 
 describe('planFileRanges', () => {
   it.each<[string, LineRange[], number, LineRange[] | undefined]>([
@@ -401,11 +457,67 @@ describe('planFileRanges', () => {
     ]);
   });
 
-  it('defaults to five lines of padding and whole files above 40%', () => {
+  it('widens a hunk to the span around it, unpadded', () => {
+    expect(
+      planFileRanges([{ start: 50, end: 50 }], 100, settings, [
+        { start: 40, end: 60 },
+      ]),
+    ).toEqual([{ start: 40, end: 60 }]);
+  });
+
+  it('still pads a hunk beyond a span smaller than its padding', () => {
+    expect(
+      planFileRanges([{ start: 50, end: 50 }], 100, settings, [
+        { start: 49, end: 51 },
+      ]),
+    ).toEqual([{ start: 48, end: 52 }]);
+  });
+
+  it('merges a span with the padded hunks it touches and keeps the rest apart', () => {
+    expect(
+      planFileRanges(
+        [
+          { start: 10, end: 10 },
+          { start: 80, end: 80 },
+        ],
+        100,
+        settings,
+        [{ start: 13, end: 20 }],
+      ),
+    ).toEqual([
+      { start: 8, end: 20 },
+      { start: 78, end: 82 },
+    ]);
+  });
+
+  it('clamps a span to the file', () => {
+    expect(
+      planFileRanges([{ start: 5, end: 5 }], 100, settings, [
+        { start: 0, end: 140 },
+      ]),
+    ).toBeUndefined();
+    expect(
+      planFileRanges([{ start: 295, end: 295 }], 300, settings, [
+        { start: 290, end: 340 },
+      ]),
+    ).toEqual([{ start: 290, end: 300 }]);
+  });
+
+  it('mutates the whole file once a span takes the ranges over the threshold', () => {
+    // 20–80 of 100 lines is 61%, above 50%, where the padded hunk alone is 5%.
+    expect(
+      planFileRanges([{ start: 50, end: 50 }], 100, settings, [
+        { start: 20, end: 80 },
+      ]),
+    ).toBeUndefined();
+  });
+
+  it('defaults to enclosing spans, five lines of padding and whole files above 40%', () => {
     expect(DEFAULT_MUTATION_SCOPE).toEqual({
       lines: true,
       padding: 5,
       wholeFileAbove: 0.4,
+      enclosing: true,
     });
   });
 });
@@ -428,12 +540,19 @@ describe('planMutateRanges', () => {
       hunks,
       (file) => lines.get(file) ?? 0,
       settings,
+      () => [],
     );
     expect(plan).toEqual(new Map([['src/big.ts', [{ start: 148, end: 152 }]]]));
   });
 
   it('plans nothing for a file outside the mutate set', () => {
-    const plan = planMutateRanges([], hunks, () => 300, settings);
+    const plan = planMutateRanges(
+      [],
+      hunks,
+      () => 300,
+      settings,
+      () => [],
+    );
     expect(plan.size).toBe(0);
   });
 });
@@ -510,7 +629,7 @@ describe('changedLineRanges', () => {
     expect(diff).toEqual(
       expect.arrayContaining([
         '--unified=0',
-        '--diff-filter=ACM',
+        '--diff-filter=ACMD',
         '--no-color',
         '--no-ext-diff',
         '--src-prefix=a/',
@@ -624,9 +743,29 @@ describe('planRunRanges', () => {
       runSources(() => Promise.reject(new Error('EACCES'))),
       { baseBranch: 'main' },
       ['src/a.ts'],
-      { lines: true, padding: 0, wholeFileAbove: 1 },
+      { lines: true, padding: 0, wholeFileAbove: 1, enclosing: false },
     );
     expect(plan.size).toBe(0);
+  });
+
+  it('says which file it could not read, and mutates it whole', async () => {
+    const warnings: string[] = [];
+    const plan = await planRunRanges(
+      {
+        ...runSources(() => Promise.reject(new Error('ENOENT'))),
+        loadTypescript: () => ts,
+        warn: (line) => {
+          warnings.push(line);
+        },
+      },
+      { baseBranch: 'main' },
+      ['src/a.ts'],
+      settings,
+    );
+    expect(plan.size).toBe(0);
+    expect(warnings).toEqual([
+      'guardrails: could not read src/a.ts to plan its mutation ranges; mutating it whole.',
+    ]);
   });
 
   it('asks git nothing when line ranges are off', async () => {
@@ -639,5 +778,170 @@ describe('planRunRanges', () => {
     );
     expect(plan.size).toBe(0);
     expect(calls).toEqual([]);
+  });
+});
+
+/**
+ * 300 lines: constants, with `big` (lines 140–161) among them, and `callee`
+ * (lines 200–202), an export a deleted file called.
+ */
+function sourceWithFunctions(): string {
+  const lines = Array.from(
+    { length: 300 },
+    (_, index) => `export const value${index + 1} = ${index + 1};`,
+  );
+  lines.splice(
+    139,
+    22,
+    'export function big(value: number): number {',
+    ...Array.from({ length: 20 }, () => '  value += 1;'),
+    '}',
+  );
+  lines.splice(
+    199,
+    3,
+    'export function callee(): number {',
+    '  return 1;',
+    '}',
+  );
+  return `${lines.join('\n')}\n`;
+}
+
+const deletedCaller = [
+  'diff --git a/src/caller.ts b/src/caller.ts',
+  'deleted file mode 100644',
+  '--- a/src/caller.ts',
+  '+++ /dev/null',
+  '@@ -1,2 +0,0 @@',
+  "-import { callee } from './a.js';",
+  '-callee();',
+].join('\n');
+
+function widenSources(
+  diff: string,
+  installed: { typescript?: typeof ts },
+): {
+  sources: Parameters<typeof planRunRanges>[0];
+  warnings: string[];
+  loads: () => number;
+} {
+  const { exec } = recordingExec((args) =>
+    ok(args[0] === 'diff' ? diff : 'abc\n'),
+  );
+  const warnings: string[] = [];
+  let loads = 0;
+  return {
+    sources: {
+      exec,
+      repoRoot: '/repo',
+      readFile: () => Promise.resolve(sourceWithFunctions()),
+      loadTypescript: () => {
+        loads += 1;
+        return installed.typescript;
+      },
+      warn: (line) => {
+        warnings.push(line);
+      },
+    },
+    warnings,
+    loads: () => loads,
+  };
+}
+
+const enclosing = { ...settings, enclosing: true };
+
+describe('planRunRanges — enclosing spans', () => {
+  it('widens a one-line hunk to the whole function around it', async () => {
+    const { sources, warnings } = widenSources(bigDiff, { typescript: ts });
+    const plan = await planRunRanges(
+      sources,
+      { baseBranch: 'main' },
+      ['src/a.ts'],
+      enclosing,
+    );
+    expect(plan).toEqual(new Map([['src/a.ts', [{ start: 140, end: 161 }]]]));
+    expect(warnings).toEqual([]);
+  });
+
+  it('pulls in the declaration of an export whose removed caller was its last', async () => {
+    const { sources } = widenSources(`${bigDiff}\n${deletedCaller}`, {
+      typescript: ts,
+    });
+    const plan = await planRunRanges(
+      sources,
+      { baseBranch: 'main' },
+      ['src/a.ts'],
+      enclosing,
+    );
+    expect(plan).toEqual(
+      new Map([
+        [
+          'src/a.ts',
+          [
+            { start: 140, end: 161 },
+            { start: 200, end: 202 },
+          ],
+        ],
+      ]),
+    );
+  });
+
+  it('plans padding alone, and warns once, when typescript cannot be loaded', async () => {
+    const diff = `${bigDiff}\n${section('src/b.ts', ['@@ -20 +20 @@'])}`;
+    const { sources, warnings } = widenSources(diff, {});
+    const plan = await planRunRanges(
+      sources,
+      { baseBranch: 'main' },
+      ['src/a.ts', 'src/b.ts'],
+      enclosing,
+    );
+    expect(plan).toEqual(
+      new Map([
+        ['src/a.ts', [{ start: 148, end: 152 }]],
+        ['src/b.ts', [{ start: 18, end: 22 }]],
+      ]),
+    );
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(/typescript/);
+    expect(warnings[0]).toMatch(/mutationScope\.enclosing/);
+  });
+
+  it('does not warn when no file has ranges to widen', async () => {
+    const { sources, warnings } = widenSources('', {});
+    await planRunRanges(
+      sources,
+      { baseBranch: 'main' },
+      ['src/a.ts'],
+      enclosing,
+    );
+    expect(warnings).toEqual([]);
+  });
+
+  it('plans padding alone, without loading typescript, when enclosing is off', async () => {
+    const { sources, warnings, loads } = widenSources(
+      `${bigDiff}\n${deletedCaller}`,
+      { typescript: ts },
+    );
+    const plan = await planRunRanges(
+      sources,
+      { baseBranch: 'main' },
+      ['src/a.ts'],
+      settings,
+    );
+    expect(plan).toEqual(new Map([['src/a.ts', [{ start: 148, end: 152 }]]]));
+    expect(loads()).toBe(0);
+    expect(warnings).toEqual([]);
+  });
+
+  it('plans padding alone for a file typescript cannot parse', async () => {
+    const diff = section('src/a.vue', ['@@ -150 +150 @@']);
+    const { sources } = widenSources(diff, { typescript: ts });
+    const plan = await planRunRanges(
+      sources,
+      { baseBranch: 'main' },
+      ['src/a.vue'],
+      enclosing,
+    );
+    expect(plan).toEqual(new Map([['src/a.vue', [{ start: 148, end: 152 }]]]));
   });
 });

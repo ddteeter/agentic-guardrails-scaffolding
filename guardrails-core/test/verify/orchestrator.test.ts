@@ -1059,7 +1059,9 @@ const survivorOn = (line: number): object => ({
 async function runLineRanged(
   extra: Partial<VerifyOptions> = {},
   config = '',
+  big = 'const line = 1;\n'.repeat(300),
 ): Promise<{ calls: Call[]; violations: Violation[] }> {
+  const repoRoot = extra.repoRoot ?? '/repo';
   const calls: Call[] = [];
   const exec: Exec = (command, args, options) => {
     calls.push({ command, args, options });
@@ -1083,22 +1085,26 @@ async function runLineRanged(
     return Promise.resolve(ok(''));
   };
   const report = JSON.stringify({
-    files: { 'src/big.ts': { mutants: [survivorOn(2), survivorOn(150)] } },
+    files: {
+      'src/big.ts': {
+        mutants: [survivorOn(2), survivorOn(150), survivorOn(158)],
+      },
+    },
   });
   const sources: Record<string, string> = {
-    'src/big.ts': 'const line = 1;\n'.repeat(300),
+    'src/big.ts': big,
     'src/new.ts': 'export const fresh = 1;\n',
     'stryker.conf.json': config,
     [path.join('reports', 'mutation', 'mutation.json')]: report,
   };
   const { violations } = await runVerify({
-    repoRoot: '/repo',
+    repoRoot,
     baseBranch: 'main',
     exec,
     profile: 'commit',
     resolveBin: (tool) => tool,
     readFile: (filePath) => {
-      const text = sources[path.relative('/repo', filePath)];
+      const text = sources[path.relative(repoRoot, filePath)];
       return text === undefined || text === ''
         ? Promise.reject(new Error('ENOENT'))
         : Promise.resolve(text);
@@ -1131,20 +1137,54 @@ describe('stryker mutates the changed lines, not the changed files (#155)', () =
 
   it('honours the configured padding and threshold', async () => {
     const { calls } = await runLineRanged({
-      mutationScope: { lines: true, padding: 0, wholeFileAbove: 0.4 },
+      mutationScope: {
+        lines: true,
+        padding: 0,
+        wholeFileAbove: 0.4,
+        enclosing: false,
+      },
     });
     expect(mutateArgumentOf(calls)).toBe('src/big.ts:150-150,src/new.ts');
   });
 
   it('mutates whole files, without reading the diff, when lines are off', async () => {
     const { calls, violations } = await runLineRanged({
-      mutationScope: { lines: false, padding: 5, wholeFileAbove: 0.4 },
+      mutationScope: {
+        lines: false,
+        padding: 5,
+        wholeFileAbove: 0.4,
+        enclosing: true,
+      },
     });
     expect(mutateArgumentOf(calls)).toBe('src/big.ts,src/new.ts');
     expect(calls.some((call) => call.args.includes('--unified=0'))).toBe(false);
     expect(
       violations.filter((violation) => violation.ruleId === 'stryker/survived'),
-    ).toHaveLength(2);
+    ).toHaveLength(3);
+  });
+
+  it('widens the hunk to its function, and counts a cached survivor inside it (#196)', async () => {
+    // This repo has typescript installed; `/repo` does not. Every read still
+    // goes through the fake `readFile`.
+    const lines = 'const line = 1;\n'.repeat(300).split('\n');
+    lines.splice(
+      139,
+      21,
+      'export function big(value: number): number {',
+      ...Array.from({ length: 19 }, () => '  value += 1;'),
+      '}',
+    );
+    const { calls, violations } = await runLineRanged(
+      { repoRoot: path.resolve(import.meta.dirname, '..', '..', '..') },
+      '',
+      lines.join('\n'),
+    );
+    expect(mutateArgumentOf(calls)).toBe('src/big.ts:140-160,src/new.ts');
+    expect(
+      violations
+        .filter((violation) => violation.ruleId === 'stryker/survived')
+        .map((violation) => violation.line),
+    ).toEqual([150, 158]);
   });
 
   it('still appends the project’s own negations after the ranges', async () => {

@@ -23,26 +23,28 @@
  * the run, so the pre-push lock probe, which asks `strykerScope` whether
  * anything will be mutated, cannot disagree with the run about it.
  *
- * KNOWN GAP: stryker mutates a node only when the node lies wholly inside a
- * range, so a mutant spanning the change — a `BlockStatement` emptying the
- * whole function a one-line edit sits in — is not tested at the gate.
- * Padding catches the short ones. CI's whole-scope mutation run is the
- * backstop for the rest, as it already is for an edit in one file changing a
- * verdict in another.
+ * Stryker mutates a node only when the node lies wholly inside a range, so
+ * padding alone left a mutant spanning the change — a `BlockStatement`
+ * emptying the function a one-line edit sits in — untested at the gate. With
+ * `mutationScope.enclosing` (#196, `enclosing-spans.ts`) each hunk is widened
+ * to the function or top-level statement around it, and each ranged file
+ * takes in the declarations of the exports the diff's removed lines named.
+ *
+ * KNOWN GAP: a node larger than the enclosing function (a class body), an
+ * edit changing a verdict in another function or file, and an orphaned
+ * export in a file with no hunks are still not tested at the gate. CI's
+ * whole-scope mutation run is the backstop for those.
  */
 
 import path from 'node:path';
 
 import type { Exec, ExecResult } from '../exec.js';
+import { type Typescript, loadTypescriptParser } from '../typescript-loader.js';
+import { enclosingSpans, orphanedExportSpans } from './enclosing-spans.js';
 import { resolveDiffBase } from './git.js';
+import type { LineRange } from './line-range.js';
 
-/**
-Lines `start` to `end` of one file, 1-based and inclusive.
-*/
-export interface LineRange {
-  start: number;
-  end: number;
-}
+export type { LineRange } from './line-range.js';
 
 /**
 `RepoConfig.mutationScope`: how far line-range mutation narrows a run.
@@ -60,6 +62,12 @@ export interface MutationScopeSettings {
   Above this share of a file's lines, mutate the file whole.
   */
   wholeFileAbove: number;
+  /**
+  Widen each hunk to the function (or top-level statement) around it, and
+  take in the declarations of the exports the change may have orphaned
+  (#196). `false` keeps ranges to the padded hunks alone.
+  */
+  enclosing: boolean;
 }
 
 /**
@@ -71,6 +79,7 @@ export const DEFAULT_MUTATION_SCOPE: MutationScopeSettings = {
   lines: true,
   padding: 5,
   wholeFileAbove: 0.4,
+  enclosing: true,
 };
 
 /**
@@ -148,39 +157,91 @@ function addRange(
 }
 
 /**
- * Per-file changed line ranges, from `git diff --unified=0` output.
- *
- * Files added since the base are left out, and so are deleted files, binary
- * files and quoted paths: a file with no entry is mutated whole. Hunks are
- * returned as git printed them; `planFileRanges` pads and merges them.
- *
- * A hunk's body is skipped by its header's counts, so a removed `-- x` or an
- * added `++ b/y` line of code, which reads as `--- x` and `+++ b/y`, is never
- * taken for a header.
+What a walk over a diff reports: each hunk of a named file, each removed line
+(with its leading `-`, which is no part of an identifier).
+*/
+interface DiffVisitor {
+  hunk?: (file: string, range: LineRange) => void;
+  removed?: (line: string) => void;
+}
+
+/**
+ * Walks `git diff --unified=0` output. A hunk's body is skipped by its
+ * header's counts, so a removed `-- x` or an added `++ b/y` line of code,
+ * which reads as `--- x` and `+++ b/y`, is never taken for a header.
  */
-export function parseDiffHunks(diff: string): Map<string, LineRange[]> {
-  const ranges = new Map<string, LineRange[]>();
+function walkDiff(diff: string, visitor: DiffVisitor): void {
   let file: string | undefined;
   let previous: string | undefined;
   let bodyLeft = 0;
   for (const line of diff.split(/\r?\n/)) {
     if (bodyLeft > 0 && !line.startsWith(NO_NEWLINE_MARKER)) {
       bodyLeft -= 1;
+      if (line.startsWith('-')) {
+        visitor.removed?.(line);
+      }
     } else {
       const hunk = HUNK_HEADER.exec(line);
       if (hunk === null) {
         file = fileAfterHeader(line, previous, file);
       } else {
-        const added = hunkCount(hunk[3]);
-        bodyLeft = hunkCount(hunk[1]) + added;
-        if (file !== undefined) {
-          addRange(ranges, file, hunkRange(Number(hunk[2]), added));
-        }
+        bodyLeft = visitHunk(hunk, file, visitor);
       }
     }
     previous = line;
   }
+}
+
+/**
+Reports one hunk header's range, and answers how many body lines follow it.
+*/
+function visitHunk(
+  hunk: RegExpExecArray,
+  file: string | undefined,
+  visitor: DiffVisitor,
+): number {
+  const added = hunkCount(hunk[3]);
+  if (file !== undefined) {
+    visitor.hunk?.(file, hunkRange(Number(hunk[2]), added));
+  }
+  return hunkCount(hunk[1]) + added;
+}
+
+/**
+ * Per-file changed line ranges, from `git diff --unified=0` output.
+ *
+ * Files added since the base are left out, and so are deleted files, binary
+ * files and quoted paths: a file with no entry is mutated whole. Hunks are
+ * returned as git printed them; `planFileRanges` pads and merges them.
+ */
+export function parseDiffHunks(diff: string): Map<string, LineRange[]> {
+  const ranges = new Map<string, LineRange[]>();
+  walkDiff(diff, {
+    hunk: (file, range) => {
+      addRange(ranges, file, range);
+    },
+  });
   return ranges;
+}
+
+const IDENTIFIER = /[A-Za-z_$][\w$]*/g;
+
+/**
+ * Every identifier-shaped token on a removed line of `diff`, deleted files
+ * included. A deliberate superset — words in strings and comments count — of
+ * the names a change stopped using, so `orphanedExportSpans` can find the
+ * exports whose callers it removed.
+ */
+export function removedIdentifiers(diff: string): Set<string> {
+  const names = new Set<string>();
+  walkDiff(diff, {
+    removed: (line) => {
+      for (const [name] of line.matchAll(IDENTIFIER)) {
+        names.add(name);
+      }
+    },
+  });
+  return names;
 }
 
 /**
@@ -200,21 +261,20 @@ function clamp(value: number, low: number, high: number): number {
 }
 
 /**
-Padded and clamped to the file, sorted by start, with touching ranges merged.
+Clamped to the file, sorted by start, with touching ranges merged.
 */
-function padAndMerge(
+function clampAndMerge(
   ranges: readonly LineRange[],
   lineCount: number,
-  padding: number,
 ): LineRange[] {
-  const padded = ranges
+  const clamped = ranges
     .map((range) => {
-      const start = clamp(range.start - padding, 1, lineCount);
-      return { start, end: clamp(range.end + padding, start, lineCount) };
+      const start = clamp(range.start, 1, lineCount);
+      return { start, end: clamp(range.end, start, lineCount) };
     })
     .toSorted((first, second) => first.start - second.start);
   const merged: LineRange[] = [];
-  for (const range of padded) {
+  for (const range of clamped) {
     const last = merged.at(-1);
     if (last !== undefined && range.start <= last.end + 1) {
       last.end = Math.max(last.end, range.end);
@@ -226,7 +286,9 @@ function padAndMerge(
 }
 
 /**
- * The ranges to mutate in one file, or `undefined` to mutate it whole.
+ * The ranges to mutate in one file, or `undefined` to mutate it whole: each
+ * hunk padded by `settings.padding`, joined by `spans` (the code around the
+ * hunks, `enclosingSpans`), which are taken unpadded.
  *
  * Whole when ranges are off, when there are no hunks to go on, when the
  * file's length is unknown, and when the padded ranges cover more than
@@ -237,13 +299,18 @@ export function planFileRanges(
   ranges: readonly LineRange[],
   lineCount: number,
   settings: MutationScopeSettings,
+  spans: readonly LineRange[] = [],
 ): LineRange[] | undefined {
   // A file of unknown length (0) needs no test of its own: every range
   // clamps to one line of it, and a share of 1/0 is above any threshold.
   if (!settings.lines || ranges.length === 0) {
     return undefined;
   }
-  const merged = padAndMerge(ranges, lineCount, settings.padding);
+  const padded = ranges.map((range) => ({
+    start: range.start - settings.padding,
+    end: range.end + settings.padding,
+  }));
+  const merged = clampAndMerge([...padded, ...spans], lineCount);
   const covered = merged.reduce(
     (total, range) => total + range.end - range.start + 1,
     0,
@@ -260,6 +327,7 @@ export function planMutateRanges(
   hunks: ReadonlyMap<string, readonly LineRange[]>,
   lineCount: (file: string) => number,
   settings: MutationScopeSettings,
+  spansOf: (file: string) => readonly LineRange[],
 ): Map<string, LineRange[]> {
   const plan = new Map<string, LineRange[]>();
   for (const file of files) {
@@ -267,6 +335,7 @@ export function planMutateRanges(
       hunks.get(file) ?? [],
       lineCount(file),
       settings,
+      spansOf(file),
     );
     if (planned !== undefined) {
       plan.set(file, planned);
@@ -310,6 +379,14 @@ export function isLocationInRanges(
 }
 
 /**
+Which diff a run's ranges come from: the branch against its base, or the index.
+*/
+interface DiffScope {
+  baseBranch: string;
+  changedScope?: 'branch' | 'staged' | undefined;
+}
+
+/**
 `git diff` flags that keep its output parseable whatever the user's config.
 */
 const PARSEABLE_DIFF = [
@@ -318,8 +395,10 @@ const PARSEABLE_DIFF = [
   '--no-ext-diff',
   '--src-prefix=a/',
   '--dst-prefix=b/',
-  // The changed-file list's own filter, so both see the same files.
-  '--diff-filter=ACM',
+  // The changed-file list's own filter (ACM), so both see the same files,
+  // plus deletions: a deleted file plans no ranges, but its removed lines
+  // name the exports it stopped calling.
+  '--diff-filter=ACMD',
 ];
 
 /**
@@ -331,86 +410,156 @@ function didDiffFail(result: ExecResult): boolean {
 }
 
 /**
- * The changed line ranges of every tracked file, read from the same diff the
+ * The `git diff --unified=0` of every tracked file, the same diff the
  * changed-file list comes from: the working tree against the base branch (or
- * its `origin/` form), or the index alone for a staged run.
- *
- * Untracked files are not in a diff, so they have no entry and are mutated
- * whole, as new files should be. A diff that fails, or a base that does not
- * resolve, answers no ranges at all: every file whole. The changed-file list
- * reports those failures already, and this must not report them twice.
+ * its `origin/` form), or the index alone for a staged run. Empty when the
+ * diff fails or the base does not resolve: the changed-file list reports
+ * those failures already, and this must not report them twice.
  */
-export async function changedLineRanges(
+async function changedDiff(
   exec: Exec,
   repoRoot: string,
-  scope: { baseBranch: string; changedScope?: 'branch' | 'staged' | undefined },
-): Promise<Map<string, LineRange[]>> {
+  scope: DiffScope,
+): Promise<string> {
   let target: string[] = ['--cached'];
   if (scope.changedScope !== 'staged') {
     const base = await resolveDiffBase(exec, repoRoot, scope.baseBranch);
     if (base.ref === undefined) {
-      return new Map();
+      return '';
     }
     target = [base.ref];
   }
   const result = await exec('git', ['diff', ...PARSEABLE_DIFF, ...target], {
     cwd: repoRoot,
   });
-  return didDiffFail(result) ? new Map() : parseDiffHunks(result.stdout);
+  return didDiffFail(result) ? '' : result.stdout;
 }
 
 /**
-The length of the file at `filePath`, or 0 when it cannot be read.
+ * The changed line ranges of every tracked file, from `changedDiff`.
+ *
+ * Untracked files are not in a diff, so they have no entry and are mutated
+ * whole, as new files should be. A diff that fails, or a base that does not
+ * resolve, answers no ranges at all: every file whole.
+ */
+export async function changedLineRanges(
+  exec: Exec,
+  repoRoot: string,
+  scope: DiffScope,
+): Promise<Map<string, LineRange[]>> {
+  return parseDiffHunks(await changedDiff(exec, repoRoot, scope));
+}
+
+/**
+The text of `file`, or `''` when it cannot be read: an unread file has no
+lines, so `planFileRanges` mutates it whole, and the run says why.
 */
-async function lineCountOf(
-  readFile: (filePath: string) => Promise<string>,
-  filePath: string,
-): Promise<number> {
-  let text = '';
+async function textOf(sources: RunRangeSources, file: string): Promise<string> {
   try {
-    text = await readFile(filePath);
+    return await sources.readFile(path.join(sources.repoRoot, file));
   } catch {
-    // Unread, it has no length, and `planFileRanges` mutates it whole.
+    sources.warn?.(
+      `guardrails: could not read ${file} to plan its mutation ranges; mutating it whole.`,
+    );
+    return '';
   }
-  return countLines(text);
 }
 
 /**
- * The line ranges one stryker run mutates: `changedLineRanges`, planned file
- * by file with `planFileRanges`. Off when `settings.lines` is, without asking
+ * Where `planRunRanges` reads from. `loadTypescript` defaults to the repo's
+ * own `typescript`; `warn` defaults to saying nothing.
+ */
+interface RunRangeSources {
+  exec: Exec;
+  repoRoot: string;
+  readFile: (filePath: string) => Promise<string>;
+  loadTypescript?: (() => Typescript | undefined) | undefined;
+  warn?: ((line: string) => void) | undefined;
+}
+
+/**
+ * The parser `settings.enclosing` asks for, or `undefined` when it is off or
+ * the repo has no `typescript`. Only the second is worth a warning, and only
+ * when some file has ranges it would have widened.
+ */
+function enclosingParser(
+  sources: RunRangeSources,
+  settings: MutationScopeSettings,
+  hasRanges: boolean,
+): Typescript | undefined {
+  if (!hasRanges || !settings.enclosing) {
+    return undefined;
+  }
+  const load =
+    sources.loadTypescript ?? (() => loadTypescriptParser(sources.repoRoot));
+  const ts = load();
+  if (ts === undefined) {
+    sources.warn?.(
+      'guardrails: typescript could not be loaded from this repo, so changed-line mutation ranges are padded hunks only (mutationScope.enclosing); install typescript to widen them to whole functions.',
+    );
+  }
+  return ts;
+}
+
+/**
+ * The line ranges one stryker run mutates: the diff's hunks, planned file by
+ * file with `planFileRanges`. Off when `settings.lines` is, without asking
  * git. A file that cannot be read has no length and is mutated whole.
+ *
+ * With `settings.enclosing`, each hunk is widened to the code around it
+ * (`enclosingSpans`) and each ranged file takes in the declarations of the
+ * exports the diff's removed lines named (`orphanedExportSpans`). Neither
+ * ever adds a file: an export in a file outside `files`, or in one with no
+ * hunks, is not followed.
  */
 export async function planRunRanges(
-  sources: {
-    exec: Exec;
-    repoRoot: string;
-    readFile: (filePath: string) => Promise<string>;
-  },
-  scope: { baseBranch: string; changedScope?: 'branch' | 'staged' | undefined },
+  sources: RunRangeSources,
+  scope: DiffScope,
   files: readonly string[],
   settings: MutationScopeSettings,
 ): Promise<Map<string, LineRange[]>> {
   if (!settings.lines) {
     return new Map();
   }
-  const hunks = await changedLineRanges(sources.exec, sources.repoRoot, scope);
-  const lengths = new Map(
+  const diff = await changedDiff(sources.exec, sources.repoRoot, scope);
+  const hunks = parseDiffHunks(diff);
+  const ranged = files.flatMap((file) => {
+    const fileHunks = hunks.get(file);
+    return fileHunks === undefined ? [] : [{ file, fileHunks }];
+  });
+  const texts = new Map(
     await Promise.all(
-      files
-        .filter((file) => hunks.has(file))
-        .map(async (file): Promise<[string, number]> => [
+      ranged.map(
+        async ({
           file,
-          await lineCountOf(
-            sources.readFile,
-            path.join(sources.repoRoot, file),
-          ),
-        ]),
+          fileHunks,
+        }): Promise<[string, { text: string; fileHunks: LineRange[] }]> => [
+          file,
+          {
+            text: await textOf(sources, file),
+            fileHunks,
+          },
+        ],
+      ),
     ),
   );
+  const ts = enclosingParser(sources, settings, ranged.length > 0);
+  const removed = removedIdentifiers(diff);
+  const spansOf = (file: string): LineRange[] => {
+    const read = texts.get(file);
+    if (ts === undefined || read === undefined) {
+      return [];
+    }
+    return [
+      ...(enclosingSpans(ts, file, read.text, read.fileHunks) ?? []),
+      ...orphanedExportSpans(ts, file, read.text, removed),
+    ];
+  };
   return planMutateRanges(
     files,
     hunks,
-    (file) => lengths.get(file) ?? 0,
+    (file) => countLines(texts.get(file)?.text ?? ''),
     settings,
+    spansOf,
   );
 }

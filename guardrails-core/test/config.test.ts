@@ -867,17 +867,30 @@ function scopeOf(mutationScope: unknown): unknown {
 }
 
 describe('mutationScope', () => {
-  const defaults = { lines: true, padding: 5, wholeFileAbove: 0.4 };
+  const defaults = {
+    lines: true,
+    padding: 5,
+    wholeFileAbove: 0.4,
+    enclosing: true,
+  };
 
   it('mutates changed lines with five lines of padding by default', () => {
     expect(defaultConfig().mutationScope).toEqual(defaults);
   });
 
   it('reads each key', () => {
-    expect(scopeOf({ lines: false, padding: 0, wholeFileAbove: 1 })).toEqual({
+    expect(
+      scopeOf({
+        lines: false,
+        padding: 0,
+        wholeFileAbove: 1,
+        enclosing: false,
+      }),
+    ).toEqual({
       lines: false,
       padding: 0,
       wholeFileAbove: 1,
+      enclosing: false,
     });
   });
 
@@ -887,6 +900,10 @@ describe('mutationScope', () => {
 
   it.each([['no'], [0], [null]])('keeps lines on for %j', (lines) => {
     expect(scopeOf({ lines })).toEqual(defaults);
+  });
+
+  it.each([['no'], [0], [null]])('keeps enclosing on for %j', (enclosing) => {
+    expect(scopeOf({ enclosing })).toEqual(defaults);
   });
 
   it.each([[-1], [2.5], ['5'], [Infinity]])(

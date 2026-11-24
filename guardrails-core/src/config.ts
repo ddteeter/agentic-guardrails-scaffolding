@@ -269,7 +269,10 @@ export interface RepoConfig {
    * How far stryker's `--mutate` narrows to the lines a change touched (#155).
    * `lines` (default `true`) mutates each changed file's diff hunks, padded by
    * `padding` lines (default 5) on each side, and mutates the file whole once
-   * those ranges cover more than `wholeFileAbove` of it (default 0.4). Files
+   * those ranges cover more than `wholeFileAbove` of it (default 0.4).
+   * `enclosing` (default `true`, #196) widens each hunk to the function or
+   * top-level statement around it and adds the declarations of exports whose
+   * callers the change removed; `false` keeps the padded hunks alone. Files
    * new since the base are always whole. `lines: false` mutates every changed
    * file whole, the behaviour before #155. A value of the wrong type or out of
    * range keeps that key's default. See `verify/mutate-ranges.ts`, and
@@ -726,7 +729,7 @@ function isWholeNumber(value: unknown): value is number {
 /**
  * `mutationScope`, key by key. Each key keeps its default unless it is the
  * right type and in range: a whole number of padding lines from 0, and a
- * share from 0 to 1. `lines` stays on unless it is exactly `false`.
+ * share from 0 to 1. `lines` and `enclosing` stay on unless exactly `false`.
  */
 function pickMutationScope(
   value: unknown,
@@ -736,6 +739,7 @@ function pickMutationScope(
   const { padding, wholeFileAbove } = section;
   return {
     lines: section.lines !== false,
+    enclosing: section.enclosing !== false,
     padding:
       isWholeNumber(padding) && padding >= 0 ? padding : defaults.padding,
     wholeFileAbove:
