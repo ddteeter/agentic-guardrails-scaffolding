@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { isTestSpecFile, isTestSupportFile } from '../../src/verify/git.js';
+import {
+  isTestSpecFile,
+  isTestSupportFile,
+  isWiredToEveryTest,
+} from '../../src/verify/git.js';
 
 describe('isTestSpecFile', () => {
   it.each([
@@ -56,5 +60,39 @@ describe('isTestSupportFile', () => {
     ['a manifest', 'package.json'],
   ])('is false for %s', (_label, file) => {
     expect(isTestSupportFile(file)).toBe(false);
+  });
+});
+
+/**
+ * A support file the runner hands every test without an import (#197): a
+ * setup file, a config, a manual mock, a snapshot, or a file a test reads as
+ * data. No import graph says which tests it reaches, so a change to one still
+ * discards the whole cache; the rest are traced to the tests that import them.
+ */
+describe('isWiredToEveryTest', () => {
+  it.each([
+    ['a vitest setup file', 'vitest.setup.ts'],
+    ['a setup file under a test directory', 'test/setup.ts'],
+    ['a setup file named for what it sets up', 'src/setupTests.ts'],
+    ['a config the test runner reads', 'vitest.config.ts'],
+    ['a snapshot', 'src/__snapshots__/a.test.ts.snap'],
+    ['a snapshot outside a snapshot directory', 'src/a.test.ts.snap'],
+    ['a manual mock', 'src/__mocks__/fs.ts'],
+    ['a fixture read as data', 'test/fixtures/user.json'],
+    ['a fixture under __tests__ read as data', 'src/__tests__/fixture.json'],
+    ['a text fixture', 'test/fixtures/report.txt'],
+  ])('is true for %s', (_label, file) => {
+    expect(isWiredToEveryTest(file)).toBe(true);
+  });
+
+  it.each([
+    ['a helper under a test directory', 'guardrails-core/test/helpers.ts'],
+    ['a fixture module', 'src/fixtures/user.ts'],
+    ['a test-utils module', 'src/test-utils.ts'],
+    ['a testUtils module', 'src/testUtils.js'],
+    ['a test_helpers module', 'src/lib/test_helpers.tsx'],
+    ['an ES module helper', 'test/harness.mjs'],
+  ])('is false for %s, which a test has to import', (_label, file) => {
+    expect(isWiredToEveryTest(file)).toBe(false);
   });
 });

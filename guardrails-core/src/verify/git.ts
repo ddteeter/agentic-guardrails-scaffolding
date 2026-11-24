@@ -225,22 +225,38 @@ const TEST_SUPPORT_DIRECTORIES: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * A base name read as WORDS (split on separators and on camelCase humps), so
+ * `contest.ts` holds no `test` and `setupTests.ts` holds `setup`.
+ */
+function nameWords(name: string): string[] {
+  return name
+    .split(/[^A-Za-z]|(?<=[a-z])(?=[A-Z])/)
+    .map((word) => word.toLowerCase());
+}
+
+/**
+ * Does a base name read as a setup file — `vitest.setup.ts`,
+ * `setupTests.ts`, `test/setup.ts`?
+ */
+function isSetupName(name: string): boolean {
+  return nameWords(name).includes('setup');
+}
+
+/**
  * Does a base name read as a setup file or a test-utility module —
  * `vitest.setup.ts`, `setupTests.ts`, `test-utils.ts`, `testHelpers.ts`?
  *
- * Read as WORDS (split on separators and on camelCase humps), so
- * `contest.ts` is not a test and `setupTests.ts` is a setup file. Deliberately
- * broad otherwise: a false positive costs one cold mutation run, a false
+ * Deliberately broad: a false positive costs one cold mutation run, a false
  * negative keeps a verdict nothing re-checked.
  */
 function isTestSupportName(name: string): boolean {
-  const words = name
-    .split(/[^A-Za-z]|(?<=[a-z])(?=[A-Z])/)
-    .map((word) => word.toLowerCase());
-  return words.some(
-    (word, index) =>
-      word === 'setup' ||
-      (word === 'test' && TEST_UTILITY_WORDS.has(words[index + 1] ?? '')),
+  const words = nameWords(name);
+  return (
+    isSetupName(name) ||
+    words.some(
+      (word, index) =>
+        word === 'test' && TEST_UTILITY_WORDS.has(words[index + 1] ?? ''),
+    )
   );
 }
 
@@ -273,6 +289,41 @@ export function isTestSupportFile(file: string): boolean {
     name.endsWith('.snap') ||
     isTestSupportName(name) ||
     isConfigFile(file)
+  );
+}
+
+/**
+ * Directories whose contents reach a test without the test importing them: a
+ * manual mock is substituted by the runner, a snapshot is read by
+ * `toMatchSnapshot`.
+ */
+const WIRED_DIRECTORIES: ReadonlySet<string> = new Set([
+  '__mocks__',
+  '__snapshots__',
+]);
+
+/**
+ * A test-support file that reaches tests some way no import graph shows, so
+ * the tests it affects cannot be traced (#197): a setup file or config the
+ * runner loads for every test, a manual mock or snapshot it substitutes, or a
+ * file that is not JavaScript or TypeScript at all — a `fixtures/*.json` a test
+ * reads as data.
+ *
+ * A change to one still discards the whole cache under every invalidation
+ * rule. Every other test-support file — a helper, a fixture module, a
+ * `test-utils` — reaches a test only through an import, and under `targeted`
+ * costs only the verdicts of the tests that import it.
+ */
+export function isWiredToEveryTest(file: string): boolean {
+  const segments = file.split(/[/\\]/);
+  const name = segments.at(-1) ?? '';
+  return (
+    !/\.[cm]?[jt]sx?$/.test(name) ||
+    isSetupName(name) ||
+    isConfigFile(file) ||
+    // Every segment, the base name included: a base name that IS one of
+    // these has no extension, so it is wired either way.
+    segments.some((segment) => WIRED_DIRECTORIES.has(segment))
   );
 }
 
