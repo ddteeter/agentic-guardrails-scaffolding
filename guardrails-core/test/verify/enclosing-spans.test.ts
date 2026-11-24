@@ -159,15 +159,19 @@ describe('enclosingSpans', () => {
     ).toEqual([{ start: 1, end: 4 }]);
   });
 
-  it.each(['src/a.js', 'src/a.mjs', 'src/a.cjs', 'src/a.jsx', 'src/a.mts'])(
-    'parses %s',
-    (fileName) => {
-      const text = source('function a() {', '  return 1;', '}');
-      expect(
-        enclosingSpans(ts, fileName, text, [{ start: 2, end: 2 }]),
-      ).toEqual([{ start: 1, end: 3 }]);
-    },
-  );
+  it.each([
+    'src/a.js',
+    'src/a.mjs',
+    'src/a.cjs',
+    'src/a.jsx',
+    'src/a.mts',
+    'src/a.cts',
+  ])('parses %s', (fileName) => {
+    const text = source('function a() {', '  return 1;', '}');
+    expect(enclosingSpans(ts, fileName, text, [{ start: 2, end: 2 }])).toEqual([
+      { start: 1, end: 3 },
+    ]);
+  });
 
   it('is undefined for a file typescript has no parser for', () => {
     expect(
@@ -189,6 +193,70 @@ describe('enclosingSpans', () => {
     expect(
       enclosingSpans(ts, 'src/a.ts', text, [{ start: 5, end: 9 }]),
     ).toEqual([]);
+  });
+
+  it('reads a hunk that runs past the end up to the last line', () => {
+    const text = source('const a = 1;');
+    expect(
+      enclosingSpans(ts, 'src/a.ts', text, [{ start: 1, end: 9 }]),
+    ).toEqual([{ start: 1, end: 1 }]);
+  });
+
+  it('takes the function whose first line is the hunk', () => {
+    const text = source('const a = 1;', 'function b() {', '  return 2;', '}');
+    expect(
+      enclosingSpans(ts, 'src/a.ts', text, [{ start: 2, end: 2 }]),
+    ).toEqual([{ start: 2, end: 4 }]);
+  });
+
+  it('takes the function whose JSDoc the hunk is in', () => {
+    const text = source('const a = 1;', '/** Two. */', 'function b() {', '}');
+    expect(
+      enclosingSpans(ts, 'src/a.ts', text, [{ start: 2, end: 2 }]),
+    ).toEqual([{ start: 2, end: 4 }]);
+  });
+
+  it('takes a method whose first line is the hunk, not the object around it', () => {
+    const text = source(
+      'export const handlers = {',
+      '  run() {',
+      '    void 0;',
+      '  },',
+      '};',
+    );
+    expect(
+      enclosingSpans(ts, 'src/a.ts', text, [{ start: 2, end: 2 }]),
+    ).toEqual([{ start: 2, end: 4 }]);
+  });
+
+  it('takes the arrow a closing brace ends, and not the line after it', () => {
+    const text = source('run(() => {', '  void 0;', '}', ');');
+    expect(
+      enclosingSpans(ts, 'src/a.ts', text, [{ start: 3, end: 3 }]),
+    ).toEqual([{ start: 1, end: 3 }]);
+    expect(
+      enclosingSpans(ts, 'src/a.ts', text, [{ start: 4, end: 4 }]),
+    ).toEqual([{ start: 1, end: 4 }]);
+  });
+
+  it('finds nothing for a blank line inside a function', () => {
+    const text = source('function a() {', '  void 0;', '', '  void 1;', '}');
+    expect(
+      enclosingSpans(ts, 'src/a.ts', text, [{ start: 3, end: 3 }]),
+    ).toEqual([]);
+  });
+
+  it('answers in source order whatever order the hunks come in', () => {
+    const text = source('function a() {', '}', 'function b() {', '}');
+    expect(
+      enclosingSpans(ts, 'src/a.ts', text, [
+        { start: 3, end: 3 },
+        { start: 1, end: 1 },
+      ]),
+    ).toEqual([
+      { start: 1, end: 2 },
+      { start: 3, end: 4 },
+    ]);
   });
 
   it('names each enclosing node once however many lines it holds', () => {
