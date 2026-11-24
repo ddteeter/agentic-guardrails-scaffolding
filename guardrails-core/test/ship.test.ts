@@ -13,6 +13,7 @@ import process from 'node:process';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { Exec, ExecResult } from '../src/exec.js';
+import { isRecord } from '../src/is-record.js';
 import { parseRuns } from '../src/run-log.js';
 import {
   LOCK_TIMEOUT_MARKER,
@@ -1318,7 +1319,18 @@ describe('ship: CI', () => {
 describe('ship: workflow runs and required checks (#172)', () => {
   const RULES = 'gh api repos/{owner}/{repo}/rules/branches/main';
   const PROTECTION = 'gh api repos/{owner}/{repo}/branches/main';
-  const runs = (...rows: unknown[]): ExecResult => ok(JSON.stringify(rows));
+  // Each run is newer than the one before it and comes from a pull request,
+  // unless the row says otherwise.
+  const runs = (...rows: unknown[]): ExecResult =>
+    ok(
+      JSON.stringify(
+        rows.map((row, index) =>
+          isRecord(row)
+            ? { databaseId: index + 1, event: 'pull_request', ...row }
+            : row,
+        ),
+      ),
+    );
   const SKIPPED_ONLY = ok(
     JSON.stringify([{ name: 'review', bucket: 'skipping' }]),
   );
@@ -1354,7 +1366,7 @@ describe('ship: workflow runs and required checks (#172)', () => {
     expect(calls).toContainEqual({
       line:
         'gh run list --commit abc123 --limit 100 ' +
-        '--json workflowName,conclusion',
+        '--json workflowName,conclusion,event,databaseId',
       cwd: root,
     });
   });
@@ -1412,7 +1424,56 @@ describe('ship: workflow runs and required checks (#172)', () => {
         { workflowName: 'CI', conclusion: 'cancelled' },
       ),
     });
-    expect(status.failing).toEqual(['CI (cancelled)', 'CI (cancelled)']);
+    expect(status.failing).toEqual(['CI (cancelled)']);
+  });
+
+  it('judges a workflow by its latest run, not an older failure (#199)', async () => {
+    // A relabel re-runs a label-triggered workflow on the same commit. gh
+    // lists the newest run first.
+    const { status } = await shipped({
+      'gh run list': runs(
+        { workflowName: 'Review', conclusion: '', databaseId: 9 },
+        { workflowName: 'Review', conclusion: 'failure', databaseId: 7 },
+      ),
+    });
+    expect(status).toMatchObject({ state: 'green', failing: [] });
+  });
+
+  it('counts a latest run that failed after an older one passed', async () => {
+    const { status } = await shipped({
+      'gh run list': runs(
+        { workflowName: 'Review', conclusion: 'success', databaseId: 7 },
+        { workflowName: 'Review', conclusion: 'failure', databaseId: 9 },
+      ),
+    });
+    expect(status.failing).toEqual(['Review (failure)']);
+  });
+
+  it('judges the runs of each event apart', async () => {
+    const { status } = await shipped({
+      'gh run list': runs(
+        { workflowName: 'CI', conclusion: 'failure', event: 'push' },
+        { workflowName: 'CI', conclusion: 'success' },
+      ),
+    });
+    expect(status.failing).toEqual(['CI (failure)']);
+  });
+
+  it('drops a run row without a numeric id', async () => {
+    const { status } = await shipped({
+      'gh run list': ok(
+        JSON.stringify([
+          { workflowName: 'CI', conclusion: 'failure', event: 'push' },
+          {
+            workflowName: 'CI',
+            conclusion: 'failure',
+            event: 'push',
+            databaseId: '3',
+          },
+        ]),
+      ),
+    });
+    expect(status).toMatchObject({ state: 'green', failing: [] });
   });
 
   it('names the failed run, not the cancelled one it replaced', async () => {
@@ -1445,6 +1506,37 @@ describe('ship: workflow runs and required checks (#172)', () => {
     });
     expect(status.state).toBe('ci-red');
     expect(delays).toEqual([]);
+  });
+
+  it('drops a run row whose conclusion is not a string, rather than letting it hide a failure', async () => {
+    const { status } = await shipped({
+      'gh run list': runs(
+        { workflowName: 'CI', conclusion: 5, databaseId: 9 },
+        { workflowName: 'CI', conclusion: 'failure', databaseId: 7 },
+      ),
+    });
+    expect(status.failing).toEqual(['CI (failure)']);
+  });
+
+  it('drops a run row with a string id, rather than letting it hide a failure', async () => {
+    const { status } = await shipped({
+      'gh run list': runs(
+        { workflowName: 'CI', conclusion: '', databaseId: '9' },
+        { workflowName: 'CI', conclusion: 'failure', databaseId: 7 },
+      ),
+    });
+    expect(status.failing).toEqual(['CI (failure)']);
+  });
+
+  it('drops a run row whose event is not a string', async () => {
+    const { status } = await shipped({
+      'gh run list': runs({
+        workflowName: 'CI',
+        conclusion: 'failure',
+        event: 5,
+      }),
+    });
+    expect(status).toMatchObject({ state: 'green', failing: [] });
   });
 
   it('drops a malformed run row', async () => {
