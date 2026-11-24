@@ -45,6 +45,7 @@ const wholeFiles: MutationScopeSettings = {
   lines: false,
   padding: 5,
   wholeFileAbove: 0.4,
+  enclosing: true,
 };
 
 describe.each<[string, MutationScopeSettings | undefined, string]>([

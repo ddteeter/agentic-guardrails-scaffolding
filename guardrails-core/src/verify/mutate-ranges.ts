@@ -60,6 +60,12 @@ export interface MutationScopeSettings {
   Above this share of a file's lines, mutate the file whole.
   */
   wholeFileAbove: number;
+  /**
+  Widen each hunk to the function (or top-level statement) around it, and
+  take in the declarations of the exports the change may have orphaned
+  (#196). `false` keeps ranges to the padded hunks alone.
+  */
+  enclosing: boolean;
 }
 
 /**
@@ -71,6 +77,7 @@ export const DEFAULT_MUTATION_SCOPE: MutationScopeSettings = {
   lines: true,
   padding: 5,
   wholeFileAbove: 0.4,
+  enclosing: true,
 };
 
 /**

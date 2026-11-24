@@ -349,7 +349,12 @@ describe('countLines', () => {
   });
 });
 
-const settings = { lines: true, padding: 2, wholeFileAbove: 0.5 };
+const settings = {
+  lines: true,
+  padding: 2,
+  wholeFileAbove: 0.5,
+  enclosing: false,
+};
 
 describe('planFileRanges', () => {
   it.each<[string, LineRange[], number, LineRange[] | undefined]>([
@@ -506,11 +511,12 @@ describe('planFileRanges', () => {
     ).toBeUndefined();
   });
 
-  it('defaults to five lines of padding and whole files above 40%', () => {
+  it('defaults to enclosing spans, five lines of padding and whole files above 40%', () => {
     expect(DEFAULT_MUTATION_SCOPE).toEqual({
       lines: true,
       padding: 5,
       wholeFileAbove: 0.4,
+      enclosing: true,
     });
   });
 });
@@ -729,7 +735,7 @@ describe('planRunRanges', () => {
       runSources(() => Promise.reject(new Error('EACCES'))),
       { baseBranch: 'main' },
       ['src/a.ts'],
-      { lines: true, padding: 0, wholeFileAbove: 1 },
+      { lines: true, padding: 0, wholeFileAbove: 1, enclosing: false },
     );
     expect(plan.size).toBe(0);
   });

@@ -187,7 +187,12 @@ function pushGate(
     profile: 'push',
     analyzers: ONLY_STRYKER,
     resolveBin: (tool) => path.join(binDirectory, tool),
-    mutationScope: { lines: false, padding: 0, wholeFileAbove: 0 },
+    mutationScope: {
+      lines: false,
+      padding: 0,
+      wholeFileAbove: 0,
+      enclosing: false,
+    },
     ...extra,
   });
 }

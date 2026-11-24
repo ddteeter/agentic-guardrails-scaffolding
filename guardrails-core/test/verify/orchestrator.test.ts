@@ -1131,14 +1131,24 @@ describe('stryker mutates the changed lines, not the changed files (#155)', () =
 
   it('honours the configured padding and threshold', async () => {
     const { calls } = await runLineRanged({
-      mutationScope: { lines: true, padding: 0, wholeFileAbove: 0.4 },
+      mutationScope: {
+        lines: true,
+        padding: 0,
+        wholeFileAbove: 0.4,
+        enclosing: false,
+      },
     });
     expect(mutateArgumentOf(calls)).toBe('src/big.ts:150-150,src/new.ts');
   });
 
   it('mutates whole files, without reading the diff, when lines are off', async () => {
     const { calls, violations } = await runLineRanged({
-      mutationScope: { lines: false, padding: 5, wholeFileAbove: 0.4 },
+      mutationScope: {
+        lines: false,
+        padding: 5,
+        wholeFileAbove: 0.4,
+        enclosing: true,
+      },
     });
     expect(mutateArgumentOf(calls)).toBe('src/big.ts,src/new.ts');
     expect(calls.some((call) => call.args.includes('--unified=0'))).toBe(false);
