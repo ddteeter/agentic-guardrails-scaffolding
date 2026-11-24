@@ -17,6 +17,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { type CliDependencies, runCommand } from '../src/cli-core.js';
 import { type Exec, type ExecResult, spawnExec } from '../src/exec.js';
 import { PUSH_GATE_ARGS } from '../src/push-hook.js';
+import { gateFailures } from '../src/ship.js';
 import {
   computeFingerprint,
   serializeFingerprint,
@@ -2522,6 +2523,41 @@ describe('cli-core final hardening', () => {
       await runCommand('gate', ['--mode=commit'], dependencies({ exec })),
     ).toBe(1);
     expect(errors.join('')).toContain('added eslint-disable');
+  });
+});
+
+describe('what ship reads out of a blocked gate (#204)', () => {
+  // ship's `failing` is parsed from what the gate prints, so these pin the
+  // parser to the printers rather than to a copy of their format.
+  it('reads each violation as file:line ruleId', async () => {
+    await runCommand(
+      'gate',
+      ['--mode=push'],
+      blockingCommitDependencies('block'),
+    );
+    const failing = gateFailures(errors.join(''));
+    expect(failing[0]).toBe('src/foo.ts:1 no-console');
+    // The analyzers this fixture does not answer fail with no line: `?`.
+    expect(failing).toContain('package.json:? guardrails/analyzer-failed');
+  });
+
+  it('reads each added suppression as file:line added kind', async () => {
+    writeFileSync(
+      path.join(root, 'guardrails.config.json'),
+      JSON.stringify({ enforcement: 'block' }),
+    );
+    const exec = gitExec({
+      'merge-base': 'BASESHA\n',
+      'diff BASESHA': [
+        '+++ b/src/a.ts',
+        '@@ -1,0 +1,1 @@',
+        '+// eslint-disable-next-line',
+      ].join('\n'),
+    });
+    await runCommand('gate', ['--mode=push'], dependencies({ exec }));
+    expect(gateFailures(errors.join(''))).toEqual([
+      'src/a.ts:1 added eslint-disable',
+    ]);
   });
 });
 

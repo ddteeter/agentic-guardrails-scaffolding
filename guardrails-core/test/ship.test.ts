@@ -19,6 +19,7 @@ import {
   LOCK_TIMEOUT_MARKER,
   NOT_INSTALLED_MARKER,
   classifyPushFailure,
+  gateFailures,
   parseChecks,
   ship,
   type ShipOptions,
@@ -238,6 +239,7 @@ describe('ship: the push gate decides before anything is pushed (#204)', () => {
       state: 'gate-blocked',
       pr: null,
       url: null,
+      failing: ['src/a.ts:3 no-console'],
     });
     expect(status.tail).toContain('src/a.ts:3 [no-console]');
     expect(indexOf(calls, 'git push')).toBe(-1);
@@ -304,6 +306,40 @@ describe('ship: the push gate decides before anything is pushed (#204)', () => {
     expect(status.tail).toContain('exited 2');
     expect(status.tail).toContain('unknown flag');
     expect(indexOf(calls, 'git push')).toBe(-1);
+  });
+});
+
+describe('gateFailures (#204)', () => {
+  it('names each violation by file, line and rule', () => {
+    expect(
+      gateFailures(
+        'src/a.ts:3 [no-console] Unexpected console. (eslint)\n' +
+          'src/b.ts:? [ts/2322] Type mismatch (tsc)\n',
+      ),
+    ).toEqual(['src/a.ts:3 no-console', 'src/b.ts:? ts/2322']);
+  });
+
+  it('names each added suppression by file, line and kind', () => {
+    expect(
+      gateFailures('test/a.test.ts:12 added skipped-test: it.skip(\n'),
+    ).toEqual(['test/a.test.ts:12 added skipped-test']);
+  });
+
+  it('reads a violation whose message is cut off', () => {
+    expect(gateFailures('src/a.ts:1 [no-console]')).toEqual([
+      'src/a.ts:1 no-console',
+    ]);
+  });
+
+  it('ignores every other line', () => {
+    expect(
+      gateFailures(
+        'guardrails: 1 violation(s), 0 added suppression(s).\n' +
+          '  src/a.ts:3 [indented] not at the start\n' +
+          'error: failed to push some refs to origin\n' +
+          'see https://example.com:443 [docs]\n',
+      ),
+    ).toEqual([]);
   });
 });
 
@@ -856,7 +892,7 @@ describe('ship: a push that did not go through', () => {
       state: 'gate-blocked',
       pr: null,
       url: null,
-      failing: [],
+      failing: ['src/a.ts:1 no-console'],
     });
     expect(status.tail).toContain('src/a.ts:1 [no-console]');
     // A blocked push only looks the pull request up: it never opens one.
@@ -872,7 +908,7 @@ describe('ship: a push that did not go through', () => {
       state: 'gate-blocked',
       pr: 42,
       url: 'https://github.com/o/r/pull/42',
-      failing: [],
+      failing: ['src/a.ts:1 no-console'],
     });
     expect(status.tail).toContain('src/a.ts:1 [no-console]');
     const view = calls.find((call) => call.line.startsWith('gh pr view'));

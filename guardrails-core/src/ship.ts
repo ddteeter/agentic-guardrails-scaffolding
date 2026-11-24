@@ -225,6 +225,48 @@ export function classifyPushFailure(
   return 'gate-blocked';
 }
 
+/**
+ * The lines a blocked gate prints for what blocked it (`printGateDetail`): a
+ * violation, `<file>:<line> [<rule>] <message> (<tool>)`, and an added
+ * suppression, `<file>:<line> added <kind>: <text>`. Anchored, with classes
+ * that cannot overlap the separators after them, so a match never
+ * backtracks.
+ */
+const VIOLATION_LINE = /^([^\s:]+):(\d+|\?) \[([^\]\s]+)\](?: |$)/;
+const SUPPRESSION_LINE = /^([^\s:]+):(\d+) added ([^\s:]+):/;
+
+/**
+One line of the gate's output as an entry of `failing`, when it is one.
+*/
+function gateFailure(line: string): string[] {
+  const violation = VIOLATION_LINE.exec(line);
+  if (violation !== null) {
+    const [, file = '', at = '', rule = ''] = violation;
+    return [`${file}:${at} ${rule}`];
+  }
+  const suppression = SUPPRESSION_LINE.exec(line);
+  if (suppression !== null) {
+    const [, file = '', at = '', kind = ''] = suppression;
+    return [`${file}:${at} added ${kind}`];
+  }
+  return [];
+}
+
+/**
+ * What a blocked gate printed as blocking it, each `<file>:<line> <rule>` or
+ * `<file>:<line> added <kind>`, in the order it printed them.
+ */
+export function gateFailures(text: string): string[] {
+  return text.split('\n').flatMap((line) => gateFailure(line));
+}
+
+/**
+A gate-blocked outcome, with what blocked it read out of `text`.
+*/
+function gateBlocked(text: string): Outcome {
+  return { ...failure('gate-blocked', text), failing: gateFailures(text) };
+}
+
 interface PullRequest {
   number: number;
   url: string;
@@ -475,10 +517,12 @@ function pushFailure(
   branch: string,
   pushed: ExecResult,
 ): Promise<Outcome> {
+  const text = pushFailureText(pushed);
+  const state = classifyPushFailure(pushed);
   return withExistingPullRequest(
     options,
     branch,
-    failure(classifyPushFailure(pushed), pushFailureText(pushed)),
+    state === 'gate-blocked' ? gateBlocked(text) : failure(state, text),
   );
 }
 
@@ -535,7 +579,7 @@ function gateVerdict(gated: ExecResult): Outcome | undefined {
     return failure('lock-timeout', text);
   }
   if (gated.code === 1) {
-    return failure('gate-blocked', text);
+    return gateBlocked(text);
   }
   return failure(
     'error',
