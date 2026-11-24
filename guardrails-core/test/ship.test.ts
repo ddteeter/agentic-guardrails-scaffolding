@@ -371,6 +371,7 @@ describe('ship: no push connection open while the gate waits (#204)', () => {
 
   it.each([
     'Connection closed by 192.0.2.1 port 22',
+    'Connection to git.example.com closed by 192.0.2.1 port 22',
     'Connection reset by peer',
     'ssh: connect to host git.example.com port 22: Connection timed out',
     'fatal: the remote end hung up unexpectedly',
@@ -485,6 +486,24 @@ describe('gateFailures (#204)', () => {
     expect(
       gateFailures('test/a.test.ts:12 added skipped-test: it.skip(\n'),
     ).toEqual(['test/a.test.ts:12 added skipped-test']);
+  });
+
+  it('reads a line number of several digits', () => {
+    expect(
+      gateFailures(
+        'src/a.ts:123 [no-console] Unexpected console. (eslint)\n' +
+          'test/a.test.ts:456 added skipped-test: it.skip(\n',
+      ),
+    ).toEqual([
+      'src/a.ts:123 no-console',
+      'test/a.test.ts:456 added skipped-test',
+    ]);
+  });
+
+  it('ignores an added-suppression line that does not start at the line start', () => {
+    expect(
+      gateFailures('note test/a.test.ts:12 added skipped-test: it.skip(\n'),
+    ).toEqual([]);
   });
 
   it('reads a violation whose message is cut off', () => {
