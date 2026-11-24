@@ -5594,6 +5594,32 @@ describe('runCommand — ship', () => {
     expect(calls).toContain('git push --force-with-lease -u origin HEAD');
   });
 
+  it('re-runs instead of pushing with --rerun-failed', async () => {
+    const calls: string[] = [];
+    await runCommand(
+      'ship',
+      ['--rerun-failed'],
+      dependencies({ exec: shipExec('pass', calls) }),
+    );
+    expect(calls.some((line) => line.startsWith('git push'))).toBe(false);
+    expect(calls).toContain(
+      'gh run list --commit abc123 --limit 100 ' +
+        '--json workflowName,conclusion,event,databaseId,status,attempt',
+    );
+    expect(out.join('')).toContain('guardrails ship: error — feat/x');
+  });
+
+  it('says what --rerun-failed does, and that behind can follow it', async () => {
+    await runCommand('ship', ['--help'], dependencies());
+    const printed = out.join('');
+    expect(printed).toContain(
+      '  --rerun-failed     push nothing: re-run the failed jobs of the\n',
+    );
+    expect(printed).toContain(
+      'behind: the base moved -- before a push, or since the commit was\n',
+    );
+  });
+
   it.each(['--help', '-h'])(
     'prints its usage on %s, exits 0, and runs nothing',
     async (helpFlag) => {
@@ -5613,6 +5639,7 @@ describe('runCommand — ship', () => {
         '--status-file=',
         '--base=',
         '--force-with-lease',
+        '--rerun-failed',
         '--attach=',
         'green',
         'gate-blocked',

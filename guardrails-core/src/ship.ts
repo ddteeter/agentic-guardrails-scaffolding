@@ -65,6 +65,31 @@ export interface ShipStatus {
   posted. Always present, empty when nothing did.
   */
   warnings: string[];
+  /**
+  What to do next, on `ci-red`; `null` in every other state.
+  */
+  diagnosis: Diagnosis | null;
+}
+
+/**
+ * What can be done about a `ci-red`, from evidence only. Whether a failure
+ * is flaky is never guessed: ship says only whether the base moved since the
+ * commit was tested, and which workflow runs have failed jobs to re-run.
+ */
+interface Diagnosis {
+  /**
+  Whether the pushed commit still contains `origin/<base>`, asked after CI.
+  */
+  base: 'contains' | 'moved' | 'unknown';
+  /**
+  The `gh run list` ids of the runs `--rerun-failed` would re-run.
+  */
+  rerunnable: number[];
+  advice: 'rebase' | 'rerun-failed' | 'fix';
+  /**
+  The advice as one line, for the summary.
+  */
+  next: string;
 }
 
 export interface ShipOptions {
@@ -87,6 +112,11 @@ export interface ShipOptions {
   Push with `--force-with-lease`, for a branch rewritten since its last push.
   */
   forceWithLease?: boolean | undefined;
+  /**
+  Push nothing: re-run the failed jobs of the pushed commit's red runs, then
+  wait for them as a ship waits for CI.
+  */
+  rerunFailed?: boolean | undefined;
   /**
   Media to attach to the pull request, each `<file>[#<alt text>]` as gh takes
   it: on a new PR through `gh pr create`, on an open one as a comment.
@@ -205,35 +235,48 @@ interface Listed {
 }
 
 /**
- * The rows of a `gh ... --json <name>,<outcome>` listing, or `undefined` when
- * gh printed no list. A malformed row is dropped, not trusted.
+ * One row of `gh pr checks`, with the name of the workflow whose run it is
+ * part of: `''` for a check no workflow ran, or a gh too old to say.
  */
-function parseRows(
-  text: string,
-  name: string,
-  outcome: string,
-): Listed[] | undefined {
+interface Check extends Listed {
+  workflow: string;
+}
+
+/**
+ * The rows of a `gh pr checks --json name,bucket[,workflow]` listing, or
+ * `undefined` when gh printed no list. A malformed row is dropped, not
+ * trusted.
+ */
+export function parseChecks(text: string): Check[] | undefined {
   const { parsed } = parseJsonText(text);
   if (!Array.isArray(parsed)) {
     return undefined;
   }
-  return parsed.flatMap((row: unknown): Listed[] => {
+  return parsed.flatMap((row: unknown): Check[] => {
     const fields = isRecord(row) ? row : {};
-    const named = fields[name];
-    const ended = fields[outcome];
-    return typeof named === 'string' && typeof ended === 'string'
-      ? [{ name: named, outcome: ended }]
+    const { name, bucket, workflow } = fields;
+    return typeof name === 'string' && typeof bucket === 'string'
+      ? [
+          {
+            name,
+            outcome: bucket,
+            workflow: typeof workflow === 'string' ? workflow : '',
+          },
+        ]
       : [];
   });
 }
 
 /**
-One row of `gh run list`: a workflow run, the event that started it, and its
-id, which grows with each run.
-*/
+ * One row of `gh run list`: a workflow run, the event that started it, its
+ * id, which grows with each run, whether it is still going, and which attempt
+ * it is on. A re-run keeps the id and bumps the attempt.
+ */
 interface Run extends Listed {
   event: string;
   id: number;
+  status: string;
+  attempt: number;
 }
 
 /**
@@ -244,13 +287,17 @@ function isRunRow(row: unknown): row is {
   conclusion: string;
   event: string;
   databaseId: number;
+  status: string;
+  attempt: number;
 } {
   return (
     isRecord(row) &&
     typeof row.workflowName === 'string' &&
     typeof row.conclusion === 'string' &&
     typeof row.event === 'string' &&
-    typeof row.databaseId === 'number'
+    typeof row.databaseId === 'number' &&
+    typeof row.status === 'string' &&
+    typeof row.attempt === 'number'
   );
 }
 
@@ -264,7 +311,7 @@ function runKey(run: Run): string {
  * is the one that says how the workflow went: an older failure under a newer
  * pending run is not red. A malformed row is dropped, not trusted.
  */
-function parseRuns(text: string): Listed[] | undefined {
+function parseRuns(text: string): Run[] | undefined {
   const { parsed } = parseJsonText(text);
   if (!Array.isArray(parsed)) {
     return undefined;
@@ -274,15 +321,15 @@ function parseRuns(text: string): Listed[] | undefined {
     outcome: row.conclusion,
     event: row.event,
     id: row.databaseId,
+    status: row.status,
+    attempt: row.attempt,
   }));
   const latest = new Map<string, number>();
   for (const run of rows) {
     const key = runKey(run);
     latest.set(key, Math.max(latest.get(key) ?? 0, run.id));
   }
-  return rows
-    .filter((run) => latest.get(runKey(run)) === run.id)
-    .map(({ name, outcome }) => ({ name, outcome }));
+  return rows.filter((run) => latest.get(runKey(run)) === run.id);
 }
 
 /**
@@ -306,15 +353,38 @@ const RED_CONCLUSIONS: ReadonlySet<string> = new Set([
 What CI says about the pushed commit, from every place ship reads it.
 */
 interface Evidence {
-  checks: readonly Listed[];
-  runs: readonly Listed[];
+  checks: readonly Check[];
+  runs: readonly Run[];
   /**
   The names of the checks the base branch requires.
   */
   required: readonly string[];
 }
 
-type Outcome = Omit<ShipStatus, 'branch' | 'finishedAt' | 'warnings'>;
+/**
+What the checks and runs of the pushed commit say, without the required list.
+*/
+type Listing = Omit<Evidence, 'required'>;
+
+type Outcome = Omit<
+  ShipStatus,
+  'branch' | 'finishedAt' | 'warnings' | 'diagnosis'
+>;
+
+/**
+An outcome with what was warned on the way, and the diagnosis of a `ci-red`.
+*/
+type Finished = Outcome & {
+  warnings: string[];
+  diagnosis: Diagnosis | null;
+};
+
+/**
+An outcome reached before CI said anything: no warnings, nothing to diagnose.
+*/
+function stopped(outcome: Outcome): Finished {
+  return { ...outcome, warnings: [], diagnosis: null };
+}
 
 function failure(state: ShipState, tail: string): Outcome {
   return { state, pr: null, url: null, failing: [], tail: tailOf(tail) };
@@ -629,26 +699,31 @@ function defaultDelay(ms: number): Promise<void> {
 }
 
 /**
+What gh says when it is older than the `workflow` field of `gh pr checks`.
+*/
+const UNKNOWN_WORKFLOW_FIELD = 'Unknown JSON field: "workflow"';
+
+/**
  * The checks as `gh pr checks --json` lists them right now, with the listing's
  * text for the error tail. `checks` is `undefined` when the listing was
- * unreadable.
+ * unreadable. A gh too old to name each check's workflow is asked without it,
+ * which loses only the run a still-running failed check is in.
  */
 async function readChecks(
   options: ShipOptions,
   number: string,
-): Promise<{ checks: Listed[] | undefined; listing: string }> {
-  const listed = await gh(options, [
-    'pr',
-    'checks',
-    number,
-    '--json',
-    'name,bucket',
-  ]);
+): Promise<{ checks: Check[] | undefined; listing: string }> {
+  const list = (fields: string): Promise<ExecResult> =>
+    gh(options, ['pr', 'checks', number, '--json', fields]);
+  const first = await list('name,bucket,workflow');
+  const listed = output(first).includes(UNKNOWN_WORKFLOW_FIELD)
+    ? await list('name,bucket')
+    : first;
   // Before CI registers, gh does not print an empty list: it exits 1 with
   // this sentence on stderr. That is "none yet", not "unreadable".
   const checks = output(listed).includes(NO_CHECKS_YET)
     ? []
-    : parseRows(listed.stdout, 'name', 'bucket');
+    : parseChecks(listed.stdout);
   return { checks, listing: output(listed) };
 }
 
@@ -659,7 +734,7 @@ async function readChecks(
 async function readRuns(
   options: ShipOptions,
   sha: string,
-): Promise<{ runs: Listed[] | undefined; listing: string }> {
+): Promise<{ runs: Run[] | undefined; listing: string }> {
   const listed = await gh(options, [
     'run',
     'list',
@@ -670,7 +745,7 @@ async function readRuns(
     '--limit',
     '100',
     '--json',
-    'workflowName,conclusion,event,databaseId',
+    'workflowName,conclusion,event,databaseId,status,attempt',
   ]);
   return {
     runs: parseRuns(listed.stdout),
@@ -728,7 +803,7 @@ type Verdict = Omit<Outcome, 'pr' | 'url'>;
  * cancel-in-progress` leaves the run it replaced behind, and the run that
  * replaced it is the one that says how the workflow went.
  */
-function redRuns(runs: readonly Listed[]): Listed[] {
+function redRuns<T extends Listed>(runs: readonly T[]): T[] {
   const outlived = new Set(
     runs.filter((run) => run.outcome !== 'cancelled').map((run) => run.name),
   );
@@ -818,40 +893,192 @@ async function watchUntilFirstFailure(
   return output(fast).includes(UNKNOWN_FLAG) ? watch([]) : fast;
 }
 
+/**
+ * What CI says about the pushed commit right now, or the listing's text when
+ * the checks or the runs could not be read.
+ */
+async function readEvidence(
+  options: ShipOptions,
+  number: string,
+  sha: string,
+): Promise<Listing | string> {
+  const { checks, listing } = await readChecks(options, number);
+  if (checks === undefined) {
+    return listing;
+  }
+  const listed = await readRuns(options, sha);
+  return listed.runs === undefined
+    ? listed.listing
+    : { checks, runs: listed.runs };
+}
+
+/**
+How a watch ended, and the evidence that made it red, when it was red.
+*/
+interface Watched {
+  outcome: Outcome;
+  red: Evidence | undefined;
+}
+
 async function watchChecks(
   options: ShipOptions,
   pr: PullRequest,
   sha: string,
-): Promise<Outcome> {
+): Promise<Watched> {
   const delay = options.delay ?? defaultDelay;
   const number = String(pr.number);
   const found = { pr: pr.number, url: pr.url };
   const required = await requiredChecks(options);
   for (let attempt = 0; ; attempt += 1) {
     const watch = await watchUntilFirstFailure(options, number);
-    const { checks, listing } = await readChecks(options, number);
-    if (checks === undefined) {
-      return { ...found, state: 'error', failing: [], tail: tailOf(listing) };
-    }
-    const listed = await readRuns(options, sha);
-    if (listed.runs === undefined) {
+    const listing = await readEvidence(options, number, sha);
+    const evidence =
+      typeof listing === 'string' ? listing : { ...listing, required };
+    if (typeof evidence === 'string') {
       return {
-        ...found,
-        state: 'error',
-        failing: [],
-        tail: tailOf(listed.listing),
+        outcome: {
+          ...found,
+          state: 'error',
+          failing: [],
+          tail: tailOf(evidence),
+        },
+        red: undefined,
       };
     }
     const verdict = judgeChecks(
-      { checks, runs: listed.runs, required },
+      evidence,
       output(watch),
       attempt < NO_CHECKS_RETRIES,
     );
     if (verdict !== undefined) {
-      return { ...found, ...verdict };
+      return {
+        outcome: { ...found, ...verdict },
+        red: verdict.state === 'ci-red' ? evidence : undefined,
+      };
     }
     await delay(NO_CHECKS_DELAY_MS);
   }
+}
+
+/**
+ * The runs `--rerun-failed` would re-run: each red run that has jobs to re-run
+ * (a run that failed to start has none), and each run still going whose
+ * workflow a failed check belongs to -- `--fail-fast` ends the watch at the
+ * first failed check, before its run has concluded. Ids come only from
+ * `gh run list`, never from a check's link, whose ids are not run ids.
+ */
+function rerunnableOf(evidence: Listing): Run[] {
+  const failedIn = new Set(
+    evidence.checks
+      .filter((check) => RED_BUCKETS.has(check.outcome))
+      .map((check) => check.workflow)
+      .filter((workflow) => workflow !== ''),
+  );
+  const ended = redRuns(evidence.runs).filter(
+    (run) => run.outcome !== 'startup_failure',
+  );
+  const going = evidence.runs.filter(
+    (run) => run.status !== 'completed' && failedIn.has(run.name),
+  );
+  return [...ended, ...going];
+}
+
+type BaseAnswer = Diagnosis['base'];
+
+/**
+ * Whether the base moved since `sha` was tested, with the warning to carry
+ * when that could not be told. It never changes the state: only the advice.
+ */
+async function baseSinceTested(
+  options: ShipOptions,
+  sha: string,
+): Promise<{ base: BaseAnswer; warnings: string[] }> {
+  const base = `origin/${options.baseBranch}`;
+  const containment = await baseContainment(options, sha);
+  if (containment === 'contains') {
+    return { base: 'contains', warnings: [] };
+  }
+  if (containment === 'missing') {
+    return { base: 'moved', warnings: [] };
+  }
+  return {
+    base: 'unknown',
+    warnings: [
+      containment === 'unfetched'
+        ? `could not fetch ${base} after CI, so whether it moved since this ` +
+          'commit was tested was not checked'
+        : `could not tell whether ${base} moved since this commit was tested`,
+    ],
+  };
+}
+
+const RERUN_ADVICE =
+  're-run the failed jobs with guardrails ship --rerun-failed, or fix them ' +
+  'and ship again';
+
+/**
+The advice, from the evidence, and the line that says it.
+*/
+function adviceOf(
+  options: ShipOptions,
+  base: BaseAnswer,
+  rerunnable: readonly number[],
+): Pick<Diagnosis, 'advice' | 'next'> {
+  const origin = `origin/${options.baseBranch}`;
+  if (base === 'moved') {
+    return {
+      advice: 'rebase',
+      next:
+        `rebase onto ${origin}, which moved after this commit was tested, ` +
+        'and ship again',
+    };
+  }
+  if (rerunnable.length === 0) {
+    return {
+      advice: 'fix',
+      next:
+        'fix the failing checks and ship again: no failed workflow run can ' +
+        'be re-run',
+    };
+  }
+  return {
+    advice: 'rerun-failed',
+    next:
+      base === 'contains'
+        ? `${origin} has not moved since this commit was tested: ${RERUN_ADVICE}`
+        : RERUN_ADVICE,
+  };
+}
+
+/**
+What can be done about a red watch, with the warnings asking it raised.
+*/
+async function diagnoseRed(
+  options: ShipOptions,
+  sha: string,
+  evidence: Evidence,
+): Promise<{ diagnosis: Diagnosis; warnings: string[] }> {
+  const { base, warnings } = await baseSinceTested(options, sha);
+  const rerunnable = rerunnableOf(evidence).map((run) => run.id);
+  return {
+    diagnosis: { base, rerunnable, ...adviceOf(options, base, rerunnable) },
+    warnings,
+  };
+}
+
+/**
+ * Watch the checks, and diagnose them when they are red: how CI ended, with
+ * the warnings the diagnosis raised.
+ */
+async function settle(
+  options: ShipOptions,
+  pr: PullRequest,
+  sha: string,
+): Promise<Finished> {
+  const { outcome, red } = await watchChecks(options, pr, sha);
+  return red === undefined
+    ? stopped(outcome)
+    : { ...outcome, ...(await diagnoseRed(options, sha, red)) };
 }
 
 /**
@@ -905,6 +1132,59 @@ function bodyFileUnreadable(options: ShipOptions): string | undefined {
 }
 
 /**
+ * Whether `commit` contains `origin/<base>`, after fetching it: `unfetched`
+ * when the fetch failed or was killed, `unknown` when git could not say.
+ */
+type Containment = 'contains' | 'missing' | 'unfetched' | 'unknown';
+
+async function baseContainment(
+  options: ShipOptions,
+  commit: string,
+): Promise<Containment> {
+  const git = (args: string[]): Promise<ExecResult> =>
+    options.exec('git', args, { cwd: options.repoRoot });
+  const fetched = await git(['fetch', '--quiet', 'origin', options.baseBranch]);
+  if (fetched.code !== 0 || fetched.signal !== undefined) {
+    return 'unfetched';
+  }
+  const base = `origin/${options.baseBranch}`;
+  const contained = await git(['merge-base', '--is-ancestor', base, commit]);
+  if (contained.signal === undefined && contained.code === 0) {
+    return 'contains';
+  }
+  // A kill reports exit 0, so the check above already passed it over.
+  return contained.code === 1 ? 'missing' : 'unknown';
+}
+
+/**
+The files HEAD conflicts in with `base`, by merge-tree.
+*/
+async function conflictsWith(
+  options: ShipOptions,
+  base: string,
+): Promise<string[]> {
+  const merged = await options.exec(
+    'git',
+    [
+      'merge-tree',
+      '--write-tree',
+      '--name-only',
+      '--no-messages',
+      'HEAD',
+      base,
+    ],
+    { cwd: options.repoRoot },
+  );
+  // Exit 1 is a conflict; the tree id comes first, then one file per line.
+  return merged.code === 1
+    ? merged.stdout
+        .split('\n')
+        .slice(1)
+        .filter((line) => line !== '')
+    : [];
+}
+
+/**
  * Whether the branch can merge into its base, asked BEFORE the push and so
  * before the gate lock (#178): a branch that is behind fails its required
  * checks or goes CONFLICTING mid-gate, after the lane has paid for the gate.
@@ -919,41 +1199,22 @@ async function baseCheck(
   options: ShipOptions,
   branch: string,
 ): Promise<Outcome | string[]> {
-  const git = (args: string[]): Promise<ExecResult> =>
-    options.exec('git', args, { cwd: options.repoRoot });
   const base = `origin/${options.baseBranch}`;
-  const fetched = await git(['fetch', '--quiet', 'origin', options.baseBranch]);
-  if (fetched.code !== 0 || fetched.signal !== undefined) {
+  const containment = await baseContainment(options, 'HEAD');
+  if (containment === 'contains') {
+    return [];
+  }
+  if (containment === 'unfetched') {
     return [
       `could not fetch ${base}, so whether ${branch} is behind it was not checked`,
     ];
   }
-  const contained = await git(['merge-base', '--is-ancestor', base, 'HEAD']);
-  if (contained.signal === undefined && contained.code === 0) {
-    return [];
-  }
-  // A kill reports exit 0, so the check above already passed it over.
-  if (contained.code !== 1) {
+  if (containment === 'unknown') {
     return [
       `could not tell whether ${branch} contains ${base}, so it was not checked`,
     ];
   }
-  const merged = await git([
-    'merge-tree',
-    '--write-tree',
-    '--name-only',
-    '--no-messages',
-    'HEAD',
-    base,
-  ]);
-  // Exit 1 is a conflict; the tree id comes first, then one file per line.
-  const conflicted =
-    merged.code === 1
-      ? merged.stdout
-          .split('\n')
-          .slice(1)
-          .filter((line) => line !== '')
-      : [];
+  const conflicted = await conflictsWith(options, base);
   if (conflicted.length > 0) {
     return {
       ...failure(
@@ -981,52 +1242,288 @@ function clockOf(options: ShipOptions): () => number {
   return clock === undefined ? Date.now : () => clock.now().getTime();
 }
 
-async function shipOutcome(
-  options: ShipOptions,
-  branch: string,
-  times: ShipTimes,
-): Promise<Outcome & { warnings: string[] }> {
-  const unavailable =
-    (await ghUnavailable(options)) ?? bodyFileUnreadable(options);
-  if (unavailable !== undefined) {
-    return { ...failure('error', unavailable), warnings: [] };
-  }
+/**
+ * The commit HEAD names, or the outcome to stop on when git named none: a
+ * push could not then be confirmed.
+ */
+async function headCommit(options: ShipOptions): Promise<string | Outcome> {
   const head = await options.exec('git', ['rev-parse', 'HEAD'], {
     cwd: options.repoRoot,
   });
   const sha = head.stdout.trim();
-  if (sha === '') {
-    return {
-      ...failure(
+  return sha === ''
+    ? failure(
         'error',
         'guardrails ship: git rev-parse HEAD named no commit, so a push ' +
           `could not be confirmed. Nothing was pushed.\n${output(head)}`,
-      ),
-      warnings: [],
-    };
+      )
+    : sha;
+}
+
+/**
+ * The commit HEAD names, when gh can be used and nothing else is `unusable`;
+ * otherwise the outcome to stop on, gh's first.
+ */
+async function usableHead(
+  options: ShipOptions,
+  unusable?: string,
+): Promise<string | Outcome> {
+  const unavailable = (await ghUnavailable(options)) ?? unusable;
+  return unavailable === undefined
+    ? headCommit(options)
+    : failure('error', unavailable);
+}
+
+/**
+ * Everything asked before the push: whether gh and the body file can be
+ * used, the commit to push, and the base. The commit and the warnings to
+ * carry on with, or the outcome to stop on.
+ */
+async function preflight(
+  options: ShipOptions,
+  branch: string,
+): Promise<Outcome | { sha: string; warnings: string[] }> {
+  const sha = await usableHead(options, bodyFileUnreadable(options));
+  if (typeof sha !== 'string') {
+    return sha;
   }
   const based = await baseCheck(options, branch);
-  if (!Array.isArray(based)) {
-    return { ...based, warnings: [] };
+  return Array.isArray(based) ? { sha, warnings: based } : based;
+}
+
+/**
+ * `settle`, with how long it took kept for the run log, and the warnings
+ * gathered before the watch put ahead of the watch's own.
+ */
+async function settleWithWarnings(
+  options: ShipOptions,
+  pr: PullRequest,
+  sha: string,
+  times: ShipTimes,
+  earlier: readonly string[],
+): Promise<Finished> {
+  const now = clockOf(options);
+  const watchStart = now();
+  const settled = await settle(options, pr, sha);
+  times.ciMs = now() - watchStart;
+  return { ...settled, warnings: [...earlier, ...settled.warnings] };
+}
+
+async function shipOutcome(
+  options: ShipOptions,
+  branch: string,
+  times: ShipTimes,
+): Promise<Finished> {
+  const ready = await preflight(options, branch);
+  if (!('sha' in ready)) {
+    return stopped(ready);
   }
+  const { sha } = ready;
   const now = clockOf(options);
   const pushStart = now();
   const pushed = await pushHead(options, branch, sha);
   times.pushMs = now() - pushStart;
   if (!Array.isArray(pushed)) {
-    return { ...pushed, warnings: [] };
+    return stopped(pushed);
   }
   const found = await findOrOpenPullRequest(options, branch);
   if (typeof found === 'string') {
-    return { ...failure('error', found), warnings: [] };
+    return stopped(failure('error', found));
   }
-  const watchStart = now();
-  const watched = await watchChecks(options, found.pr, sha);
-  times.ciMs = now() - watchStart;
-  return {
-    ...watched,
-    warnings: [...based, ...pushed, ...found.warnings],
-  };
+  return settleWithWarnings(options, found.pr, sha, times, [
+    ...ready.warnings,
+    ...pushed,
+    ...found.warnings,
+  ]);
+}
+
+/**
+How many times, and how far apart, ship looks for a re-run's new attempt
+before it watches the checks: watched too early, the old attempt's failure
+reports red at once.
+*/
+const RERUN_START_LOOKS = 8;
+const RERUN_START_DELAY_MS = 15_000;
+
+const RERUN = 'guardrails ship --rerun-failed';
+
+/**
+What a re-run is of: the pushed commit, its pull request, and the runs to
+re-run, with the warnings asking raised.
+*/
+interface RerunPlan {
+  sha: string;
+  pr: PullRequest;
+  targets: Run[];
+  warnings: string[];
+}
+
+/**
+ * The commit origin has for the branch and its pull request, when HEAD is
+ * that commit; otherwise the outcome to stop on. A re-run is only of what
+ * was pushed: the runs on any other commit did not test this one.
+ */
+async function pushedPullRequest(
+  options: ShipOptions,
+  branch: string,
+): Promise<Outcome | { sha: string; pr: PullRequest }> {
+  const sha = await usableHead(options);
+  if (typeof sha !== 'string') {
+    return sha;
+  }
+  const remote = await remoteHead(options, branch);
+  if (remote !== sha) {
+    return failure(
+      'error',
+      `${RERUN}: HEAD (${sha}) is not the commit origin/${branch} has ` +
+        `(${remote || 'nothing'}), so the runs there did not test it. Ship ` +
+        'it instead. Nothing was re-run.',
+    );
+  }
+  const { pr } = await viewPullRequest(options, branch);
+  return pr === undefined
+    ? failure(
+        'error',
+        `${RERUN}: ${branch} has no pull request. Ship it instead. Nothing ` +
+          'was re-run.',
+      )
+    : { sha, pr };
+}
+
+/**
+ * What to re-run, derived afresh from gh -- never from the status file, which
+ * may be another ship's -- or the outcome to stop on. A base that moved since
+ * the commit was tested is `behind`: re-running would test it against the
+ * old base, and only a rebase answers that.
+ */
+async function rerunPlan(
+  options: ShipOptions,
+  branch: string,
+): Promise<Outcome | RerunPlan> {
+  const pushed = await pushedPullRequest(options, branch);
+  if (!('sha' in pushed)) {
+    return pushed;
+  }
+  const { sha, pr } = pushed;
+  const found = { pr: pr.number, url: pr.url };
+  const { base, warnings } = await baseSinceTested(options, sha);
+  const origin = `origin/${options.baseBranch}`;
+  if (base === 'moved') {
+    return {
+      ...failure(
+        'behind',
+        `${RERUN}: ${origin} moved after ${sha} was tested, and a re-run ` +
+          `would test it against the old base. Rebase onto ${origin} and ` +
+          'ship again. Nothing was re-run.',
+      ),
+      ...found,
+    };
+  }
+  const evidence = await readEvidence(options, String(pr.number), sha);
+  if (typeof evidence === 'string') {
+    return { ...failure('error', evidence), ...found };
+  }
+  const targets = rerunnableOf(evidence);
+  if (targets.length === 0) {
+    return {
+      ...failure(
+        'error',
+        `${RERUN}: no failed workflow run on ${sha} has jobs to re-run. Fix ` +
+          'the failing checks and ship again. Nothing was re-run.',
+      ),
+      ...found,
+    };
+  }
+  return { sha, pr, targets, warnings };
+}
+
+/**
+ * Re-run the failed jobs of each target, or say what gh refused. A run still
+ * going is waited for first: GitHub re-runs only a run that has concluded,
+ * and `--fail-fast` reports a failed check before its run has.
+ */
+async function rerunTargets(
+  options: ShipOptions,
+  targets: readonly Run[],
+): Promise<string | undefined> {
+  for (const run of targets) {
+    const id = String(run.id);
+    if (run.status !== 'completed') {
+      await gh(options, ['run', 'watch', id]);
+    }
+    const asked = await gh(options, ['run', 'rerun', id, '--failed']);
+    if (asked.code !== 0) {
+      return output(asked);
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Whether every target has started a new attempt, looked for a bounded
+ * number of times. A re-run keeps its run's id and bumps its attempt.
+ */
+async function haveNewAttemptsStarted(
+  options: ShipOptions,
+  sha: string,
+  targets: readonly Run[],
+): Promise<boolean> {
+  const delay = options.delay ?? defaultDelay;
+  for (let look = 0; look < RERUN_START_LOOKS; look += 1) {
+    const { runs } = await readRuns(options, sha);
+    const haveStarted =
+      runs !== undefined &&
+      targets.every((target) =>
+        runs.some(
+          (run) => run.id === target.id && run.attempt > target.attempt,
+        ),
+      );
+    if (haveStarted) {
+      return true;
+    }
+    await delay(RERUN_START_DELAY_MS);
+  }
+  return false;
+}
+
+/**
+ * `ship --rerun-failed`: re-run the failed jobs of the pushed commit, wait for
+ * the new attempts, then watch and diagnose the checks as a ship does. It
+ * pushes nothing and is only ever asked for: ship never re-runs on its own.
+ */
+async function rerunOutcome(
+  options: ShipOptions,
+  branch: string,
+  times: ShipTimes,
+): Promise<Finished> {
+  const plan = await rerunPlan(options, branch);
+  return 'targets' in plan
+    ? rerunAndWatch(options, plan, times)
+    : stopped(plan);
+}
+
+async function rerunAndWatch(
+  options: ShipOptions,
+  plan: RerunPlan,
+  times: ShipTimes,
+): Promise<Finished> {
+  const found = { pr: plan.pr.number, url: plan.pr.url };
+  const refused = await rerunTargets(options, plan.targets);
+  if (refused !== undefined) {
+    return stopped({ ...failure('error', refused), ...found });
+  }
+  if (!(await haveNewAttemptsStarted(options, plan.sha, plan.targets))) {
+    const ids = plan.targets.map((run) => String(run.id)).join(', ');
+    return stopped({
+      ...failure(
+        'error',
+        `${RERUN}: gh accepted the re-run, but run(s) ${ids} did not start ` +
+          'a new attempt in time, so the checks were not watched.',
+      ),
+      ...found,
+    });
+  }
+  return settleWithWarnings(options, plan.pr, plan.sha, times, plan.warnings);
 }
 
 /**
@@ -1069,17 +1566,17 @@ async function shipStatus(
   // the base branch would push straight to it.
   const isShippable =
     branch !== 'HEAD' && branch !== options.baseBranch && head.code === 0;
+  const settle = options.rerunFailed === true ? rerunOutcome : shipOutcome;
   const outcome = isShippable
-    ? await shipOutcome(options, branch, times)
-    : {
-        warnings: [],
-        ...failure(
+    ? await settle(options, branch, times)
+    : stopped(
+        failure(
           'error',
           `guardrails ship: not on a branch that can be shipped (HEAD is ` +
             `${branch || 'unknown'}; base is ${options.baseBranch}).\n` +
             output(head),
         ),
-      };
+      );
   return {
     ...outcome,
     branch,
@@ -1100,11 +1597,13 @@ export function shipSummary(status: ShipStatus, statusPath: string): string {
     status.pr === null ? 'no PR' : `PR #${status.pr} ${status.url ?? ''}`;
   const failing =
     status.failing.length > 0 ? `; failing: ${status.failing.join(', ')}` : '';
+  const next =
+    status.diagnosis === null ? '' : `; next: ${status.diagnosis.next}`;
   const warnings = status.warnings
     .map((warning) => `; warning: ${warning}`)
     .join('');
   return (
-    `guardrails ship: ${status.state} — ${status.branch}, ${pr}${failing}${warnings} ` +
+    `guardrails ship: ${status.state} — ${status.branch}, ${pr}${failing}${next}${warnings} ` +
     `(status: ${statusPath})`
   );
 }
