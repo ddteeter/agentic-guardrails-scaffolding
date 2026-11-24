@@ -327,7 +327,7 @@ export function planMutateRanges(
   hunks: ReadonlyMap<string, readonly LineRange[]>,
   lineCount: (file: string) => number,
   settings: MutationScopeSettings,
-  spansOf: (file: string) => readonly LineRange[] = () => [],
+  spansOf: (file: string) => readonly LineRange[],
 ): Map<string, LineRange[]> {
   const plan = new Map<string, LineRange[]>();
   for (const file of files) {

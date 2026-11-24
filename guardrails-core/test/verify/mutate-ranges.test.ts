@@ -540,17 +540,19 @@ describe('planMutateRanges', () => {
       hunks,
       (file) => lines.get(file) ?? 0,
       settings,
+      () => [],
     );
     expect(plan).toEqual(new Map([['src/big.ts', [{ start: 148, end: 152 }]]]));
   });
 
-  it('adds no spans when none are given', () => {
-    const plan = planMutateRanges(['src/big.ts'], hunks, () => 300, settings);
-    expect(plan).toEqual(new Map([['src/big.ts', [{ start: 148, end: 152 }]]]));
-  });
-
   it('plans nothing for a file outside the mutate set', () => {
-    const plan = planMutateRanges([], hunks, () => 300, settings);
+    const plan = planMutateRanges(
+      [],
+      hunks,
+      () => 300,
+      settings,
+      () => [],
+    );
     expect(plan.size).toBe(0);
   });
 });
