@@ -192,6 +192,7 @@ function commitGateOptionsFromConfig(
   | 'mutationCacheInvalidation'
   | 'mutationVerdictDependencies'
   | 'mutationCacheMaxTracedModules'
+  | 'mutationTimeoutRetestLimit'
   | 'mutationScope'
   | 'mutationCacheSeed'
   | 'config'
@@ -209,6 +210,7 @@ function commitGateOptionsFromConfig(
     mutationCacheInvalidation: config.mutationCache.invalidation,
     mutationVerdictDependencies: config.mutationCache.verdictDependencies,
     mutationCacheMaxTracedModules: config.mutationCache.maxTracedModules,
+    mutationTimeoutRetestLimit: config.mutationTimeouts.retestLimit,
     mutationScope: config.mutationScope,
     mutationCacheSeed: seedSettingsOf(config),
     config: toGateConfig(config),
@@ -388,6 +390,7 @@ async function verifyCommand(
     mutationCacheInvalidation: config.mutationCache.invalidation,
     mutationVerdictDependencies: config.mutationCache.verdictDependencies,
     mutationCacheMaxTracedModules: config.mutationCache.maxTracedModules,
+    mutationTimeoutRetestLimit: config.mutationTimeouts.retestLimit,
     mutationScope: config.mutationScope,
     mutationCacheSeed: seedSettingsOf(config),
   });
@@ -510,6 +513,7 @@ async function gateStopCommand(
     mutationCacheInvalidation: config.mutationCache.invalidation,
     mutationVerdictDependencies: config.mutationCache.verdictDependencies,
     mutationCacheMaxTracedModules: config.mutationCache.maxTracedModules,
+    mutationTimeoutRetestLimit: config.mutationTimeouts.retestLimit,
     mutationScope: config.mutationScope,
     mutationCacheSeed: seedSettingsOf(config),
     isRetry: input.stopHookActive,

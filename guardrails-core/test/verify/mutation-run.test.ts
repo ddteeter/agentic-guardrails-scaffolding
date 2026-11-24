@@ -182,4 +182,28 @@ describe('mutationRunRecord', () => {
       stryker: { files: 3, cache: CACHE, report: 'missing' },
     });
   });
+
+  it('counts the timeouts re-tested alone, and how many were re-scored (#202)', () => {
+    const record = mutationRunRecord({
+      files: 1,
+      cache: CACHE,
+      didRun: true,
+      summaryText: '',
+      reportText: REPORT,
+      retest: { retested: 3, rescored: 1 },
+    });
+    expect(record.stryker).toMatchObject({ retested: 3, rescored: 1 });
+  });
+
+  it('says nothing of a re-test that did not happen', () => {
+    const record = mutationRunRecord({
+      files: 1,
+      cache: CACHE,
+      didRun: true,
+      summaryText: '',
+      reportText: REPORT,
+    });
+    expect(record.stryker).not.toHaveProperty('retested');
+    expect(record.stryker).not.toHaveProperty('rescored');
+  });
 });
