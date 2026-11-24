@@ -392,6 +392,85 @@ describe('ship: no push connection open while the gate waits (#204)', () => {
   });
 });
 
+describe('ship: HEAD does not move while the gate runs (#204)', () => {
+  it('pushes nothing when HEAD moved under the gate', async () => {
+    const { exec, calls } = fakeExec({
+      ...HAPPY,
+      'git rev-parse HEAD': [ok('abc123\n'), ok('def456\n')],
+    });
+    const status = await ship(options(exec));
+    expect(status).toMatchObject({ state: 'error', pr: 42 });
+    expect(status.tail).toContain('HEAD moved from abc123 to def456');
+    expect(status.tail).toContain('Nothing was pushed');
+    expect(indexOf(calls, GATE_LINE)).toBeLessThan(
+      calls.findLastIndex((call) => call.line === 'git rev-parse HEAD'),
+    );
+    expect(pushesIn(calls)).toEqual([]);
+  });
+
+  it('pushes nothing when HEAD cannot be read after the gate', async () => {
+    const { exec, calls } = fakeExec({
+      ...HAPPY,
+      'git rev-parse HEAD': [ok('abc123\n'), failed('fatal: bad object', 128)],
+    });
+    const status = await ship(options(exec));
+    expect(status.state).toBe('error');
+    expect(status.tail).toContain('fatal: bad object');
+    expect(pushesIn(calls)).toEqual([]);
+  });
+});
+
+describe('ship: a working tree that is not HEAD (#204)', () => {
+  it('warns when the tree has changes HEAD does not, and still ships', async () => {
+    const { exec, calls } = fakeExec({
+      ...HAPPY,
+      'git status --porcelain': ok(' M src/a.ts\n?? notes.txt\n'),
+    });
+    const status = await ship(options(exec));
+    expect(status.state).toBe('green');
+    expect(status.warnings).toEqual([
+      'the working tree has 2 uncommitted or untracked path(s): the push ' +
+        'gate checked the working tree, but only HEAD was pushed',
+    ]);
+    expect(indexOf(calls, 'git status --porcelain')).toBeLessThan(
+      indexOf(calls, GATE_LINE),
+    );
+  });
+
+  it('warns when git cannot say whether the tree is clean', async () => {
+    const { exec } = fakeExec({
+      ...HAPPY,
+      'git status --porcelain': failed('fatal: index file corrupt', 128),
+    });
+    const status = await ship(options(exec));
+    expect(status.warnings).toEqual([
+      'could not tell whether the working tree matches HEAD, which is what ' +
+        'was pushed after the gate checked the working tree',
+    ]);
+  });
+
+  it('warns about a killed git status rather than calling the tree clean', async () => {
+    const { exec } = fakeExec({
+      ...HAPPY,
+      'git status --porcelain': {
+        stdout: '',
+        stderr: '',
+        code: 0,
+        signal: 'SIGTERM',
+      },
+    });
+    const status = await ship(options(exec));
+    expect(status.warnings).toHaveLength(1);
+    expect(status.warnings[0]).toContain('could not tell');
+  });
+
+  it('warns nothing about a clean tree', async () => {
+    const { exec } = fakeExec(HAPPY);
+    const status = await ship(options(exec));
+    expect(status.warnings).toEqual([]);
+  });
+});
+
 describe('gateFailures (#204)', () => {
   it('names each violation by file, line and rule', () => {
     expect(
@@ -1616,9 +1695,10 @@ describe('ship: workflow runs and required checks (#172)', () => {
       'git rev-parse HEAD': ok('abc123\n'),
       'git ls-remote': ok('abc123\trefs/heads/feat/x\n'),
     });
+    // Once before the push gate and once after it, to see it did not move.
     expect(
       calls.filter((call) => call.line === 'git rev-parse HEAD'),
-    ).toHaveLength(1);
+    ).toHaveLength(2);
     expect(calls).toContainEqual({
       line:
         'gh run list --commit abc123 --limit 100 ' +

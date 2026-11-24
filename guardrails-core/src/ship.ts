@@ -615,15 +615,39 @@ function gateVerdict(gated: ExecResult): Outcome | undefined {
 }
 
 /**
- * Run the push gate, then push only on its pass: the warnings to carry on
- * with, or the outcome to stop on.
+ * The outcome to stop on when HEAD is no longer `sha` after the gate, or
+ * `undefined` when it still is. The gate checked one commit; pushing another
+ * would push what it never checked.
+ */
+async function headMoved(
+  options: ShipOptions,
+  sha: string,
+): Promise<Outcome | undefined> {
+  const now = await headCommit(options);
+  if (typeof now !== 'string') {
+    return now;
+  }
+  return now === sha
+    ? undefined
+    : failure(
+        'error',
+        `guardrails ship: HEAD moved from ${sha} to ${now} while the push ` +
+          `gate ran, so the gate did not check what would be pushed. Ship ` +
+          `again. ${NOTHING_PUSHED}`,
+      );
+}
+
+/**
+ * Run the push gate, then push only on its pass, and only the commit it
+ * gated: the warnings to carry on with, or the outcome to stop on.
  */
 async function gateThenPush(
   options: ShipOptions,
   branch: string,
   sha: string,
 ): Promise<Outcome | string[]> {
-  const verdict = gateVerdict(await runPushGate(options));
+  const verdict =
+    gateVerdict(await runPushGate(options)) ?? (await headMoved(options, sha));
   return verdict === undefined
     ? pushHead(options, branch, sha)
     : withExistingPullRequest(options, branch, verdict);
@@ -1462,7 +1486,36 @@ async function preflight(
     return sha;
   }
   const based = await baseCheck(options, branch);
-  return Array.isArray(based) ? { sha, warnings: based } : based;
+  return Array.isArray(based)
+    ? { sha, warnings: [...based, ...(await treeWarnings(options))] }
+    : based;
+}
+
+/**
+ * The warning for a working tree that is not HEAD. The push gate checks the
+ * working tree, untracked files included, but git pushes HEAD, so a gate
+ * that passed did not check exactly what was pushed. A warning only: CI
+ * checks what was pushed.
+ */
+async function treeWarnings(options: ShipOptions): Promise<string[]> {
+  const status = await options.exec('git', ['status', '--porcelain'], {
+    cwd: options.repoRoot,
+  });
+  // A kill reports exit 0 with nothing printed, which reads as clean.
+  if (status.signal !== undefined || status.code !== 0) {
+    return [
+      'could not tell whether the working tree matches HEAD, which is what ' +
+        'was pushed after the gate checked the working tree',
+    ];
+  }
+  const paths = status.stdout.split('\n').filter((line) => line !== '');
+  return paths.length === 0
+    ? []
+    : [
+        `the working tree has ${String(paths.length)} uncommitted or ` +
+          'untracked path(s): the push gate checked the working tree, but ' +
+          'only HEAD was pushed',
+      ];
 }
 
 /**
