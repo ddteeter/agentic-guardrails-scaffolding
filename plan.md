@@ -1296,6 +1296,22 @@ core/src/audit.ts`) surfaced that it was a context-free text scan: it flagged
   "unchanged, fixer running" block should not advance the attempt count, or
   the gate should wait for the fixer's report instead of re-verifying on
   every turn end.
+- **Open (2026-11-23, found on #197's lane): five rough edges in one lane.**
+  - **#215, autofix broke tsc.** The PostToolUse `eslint --fix` turned
+    `iterator.flatMap((t) => t)` into `.flat()`, which iterators lack —
+    most likely `unicorn/prefer-array-flat`'s type-unaware fixer. Autofix is
+    meant to apply only safe mechanical fixes; this one is not.
+  - **#216, a stale manifest read as a fixer in progress.** After husky's
+    pre-commit blocked, the PreToolUse commit gate refused the next commit
+    saying a fixer was already working the manifest, though none had been
+    spawned.
+  - **#217, fixers can't run the check they fix.** No shell, so every fix
+    is blind; two fixes would have failed unchecked, each costing a gate
+    round.
+  - **#218, the commit gate verified an untracked file** that was not part
+    of the commit.
+  - Not ours: Claude Code's worktree Bash guard refused plain heredoc and
+    python edits with no git command ("too complex to verify").
 
 ## Roadmap: analyzer opt-in (pack composition, not all-or-nothing) — shipped
 
