@@ -912,6 +912,59 @@ function bodyFileUnreadable(options: ShipOptions): string | undefined {
 }
 
 /**
+ * Whether `commit` contains `origin/<base>`, after fetching it: `unfetched`
+ * when the fetch failed or was killed, `unknown` when git could not say.
+ */
+type Containment = 'contains' | 'missing' | 'unfetched' | 'unknown';
+
+async function baseContainment(
+  options: ShipOptions,
+  commit: string,
+): Promise<Containment> {
+  const git = (args: string[]): Promise<ExecResult> =>
+    options.exec('git', args, { cwd: options.repoRoot });
+  const fetched = await git(['fetch', '--quiet', 'origin', options.baseBranch]);
+  if (fetched.code !== 0 || fetched.signal !== undefined) {
+    return 'unfetched';
+  }
+  const base = `origin/${options.baseBranch}`;
+  const contained = await git(['merge-base', '--is-ancestor', base, commit]);
+  if (contained.signal === undefined && contained.code === 0) {
+    return 'contains';
+  }
+  // A kill reports exit 0, so the check above already passed it over.
+  return contained.code === 1 ? 'missing' : 'unknown';
+}
+
+/**
+The files HEAD conflicts in with `base`, by merge-tree.
+*/
+async function conflictsWith(
+  options: ShipOptions,
+  base: string,
+): Promise<string[]> {
+  const merged = await options.exec(
+    'git',
+    [
+      'merge-tree',
+      '--write-tree',
+      '--name-only',
+      '--no-messages',
+      'HEAD',
+      base,
+    ],
+    { cwd: options.repoRoot },
+  );
+  // Exit 1 is a conflict; the tree id comes first, then one file per line.
+  return merged.code === 1
+    ? merged.stdout
+        .split('\n')
+        .slice(1)
+        .filter((line) => line !== '')
+    : [];
+}
+
+/**
  * Whether the branch can merge into its base, asked BEFORE the push and so
  * before the gate lock (#178): a branch that is behind fails its required
  * checks or goes CONFLICTING mid-gate, after the lane has paid for the gate.
@@ -926,41 +979,22 @@ async function baseCheck(
   options: ShipOptions,
   branch: string,
 ): Promise<Outcome | string[]> {
-  const git = (args: string[]): Promise<ExecResult> =>
-    options.exec('git', args, { cwd: options.repoRoot });
   const base = `origin/${options.baseBranch}`;
-  const fetched = await git(['fetch', '--quiet', 'origin', options.baseBranch]);
-  if (fetched.code !== 0 || fetched.signal !== undefined) {
+  const containment = await baseContainment(options, 'HEAD');
+  if (containment === 'contains') {
+    return [];
+  }
+  if (containment === 'unfetched') {
     return [
       `could not fetch ${base}, so whether ${branch} is behind it was not checked`,
     ];
   }
-  const contained = await git(['merge-base', '--is-ancestor', base, 'HEAD']);
-  if (contained.signal === undefined && contained.code === 0) {
-    return [];
-  }
-  // A kill reports exit 0, so the check above already passed it over.
-  if (contained.code !== 1) {
+  if (containment === 'unknown') {
     return [
       `could not tell whether ${branch} contains ${base}, so it was not checked`,
     ];
   }
-  const merged = await git([
-    'merge-tree',
-    '--write-tree',
-    '--name-only',
-    '--no-messages',
-    'HEAD',
-    base,
-  ]);
-  // Exit 1 is a conflict; the tree id comes first, then one file per line.
-  const conflicted =
-    merged.code === 1
-      ? merged.stdout
-          .split('\n')
-          .slice(1)
-          .filter((line) => line !== '')
-      : [];
+  const conflicted = await conflictsWith(options, base);
   if (conflicted.length > 0) {
     return {
       ...failure(
