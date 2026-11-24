@@ -544,6 +544,11 @@ describe('planMutateRanges', () => {
     expect(plan).toEqual(new Map([['src/big.ts', [{ start: 148, end: 152 }]]]));
   });
 
+  it('adds no spans when none are given', () => {
+    const plan = planMutateRanges(['src/big.ts'], hunks, () => 300, settings);
+    expect(plan).toEqual(new Map([['src/big.ts', [{ start: 148, end: 152 }]]]));
+  });
+
   it('plans nothing for a file outside the mutate set', () => {
     const plan = planMutateRanges([], hunks, () => 300, settings);
     expect(plan.size).toBe(0);
@@ -739,6 +744,26 @@ describe('planRunRanges', () => {
       { lines: true, padding: 0, wholeFileAbove: 1, enclosing: false },
     );
     expect(plan.size).toBe(0);
+  });
+
+  it('says which file it could not read, and mutates it whole', async () => {
+    const warnings: string[] = [];
+    const plan = await planRunRanges(
+      {
+        ...runSources(() => Promise.reject(new Error('ENOENT'))),
+        loadTypescript: () => ts,
+        warn: (line) => {
+          warnings.push(line);
+        },
+      },
+      { baseBranch: 'main' },
+      ['src/a.ts'],
+      settings,
+    );
+    expect(plan.size).toBe(0);
+    expect(warnings).toEqual([
+      'guardrails: could not read src/a.ts to plan its mutation ranges; mutating it whole.',
+    ]);
   });
 
   it('asks git nothing when line ranges are off', async () => {

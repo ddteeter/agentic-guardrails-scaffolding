@@ -157,7 +157,8 @@ function addRange(
 }
 
 /**
-What a walk over a diff reports: each hunk of a named file, each removed line.
+What a walk over a diff reports: each hunk of a named file, each removed line
+(with its leading `-`, which is no part of an identifier).
 */
 interface DiffVisitor {
   hunk?: (file: string, range: LineRange) => void;
@@ -177,7 +178,7 @@ function walkDiff(diff: string, visitor: DiffVisitor): void {
     if (bodyLeft > 0 && !line.startsWith(NO_NEWLINE_MARKER)) {
       bodyLeft -= 1;
       if (line.startsWith('-')) {
-        visitor.removed?.(line.slice(1));
+        visitor.removed?.(line);
       }
     } else {
       const hunk = HUNK_HEADER.exec(line);
@@ -450,17 +451,17 @@ export async function changedLineRanges(
 }
 
 /**
-The text of the file at `filePath`, or `undefined` when it cannot be read.
+The text of `file`, or `''` when it cannot be read: an unread file has no
+lines, so `planFileRanges` mutates it whole, and the run says why.
 */
-async function textOf(
-  readFile: (filePath: string) => Promise<string>,
-  filePath: string,
-): Promise<string | undefined> {
+async function textOf(sources: RunRangeSources, file: string): Promise<string> {
   try {
-    return await readFile(filePath);
+    return await sources.readFile(path.join(sources.repoRoot, file));
   } catch {
-    // Unread, it has no length, and `planFileRanges` mutates it whole.
-    return undefined;
+    sources.warn?.(
+      `guardrails: could not read ${file} to plan its mutation ranges; mutating it whole.`,
+    );
+    return '';
   }
 }
 
@@ -522,32 +523,42 @@ export async function planRunRanges(
   }
   const diff = await changedDiff(sources.exec, sources.repoRoot, scope);
   const hunks = parseDiffHunks(diff);
-  const ranged = files.filter((file) => hunks.has(file));
+  const ranged = files.flatMap((file) => {
+    const fileHunks = hunks.get(file);
+    return fileHunks === undefined ? [] : [{ file, fileHunks }];
+  });
   const texts = new Map(
     await Promise.all(
-      ranged.map(async (file): Promise<[string, string | undefined]> => [
-        file,
-        await textOf(sources.readFile, path.join(sources.repoRoot, file)),
-      ]),
+      ranged.map(
+        async ({
+          file,
+          fileHunks,
+        }): Promise<[string, { text: string; fileHunks: LineRange[] }]> => [
+          file,
+          {
+            text: await textOf(sources, file),
+            fileHunks,
+          },
+        ],
+      ),
     ),
   );
   const ts = enclosingParser(sources, settings, ranged.length > 0);
-  const removed =
-    ts === undefined ? new Set<string>() : removedIdentifiers(diff);
+  const removed = removedIdentifiers(diff);
   const spansOf = (file: string): LineRange[] => {
-    const text = texts.get(file);
-    if (ts === undefined || text === undefined) {
+    const read = texts.get(file);
+    if (ts === undefined || read === undefined) {
       return [];
     }
     return [
-      ...(enclosingSpans(ts, file, text, hunks.get(file) ?? []) ?? []),
-      ...orphanedExportSpans(ts, file, text, removed),
+      ...(enclosingSpans(ts, file, read.text, read.fileHunks) ?? []),
+      ...orphanedExportSpans(ts, file, read.text, removed),
     ];
   };
   return planMutateRanges(
     files,
     hunks,
-    (file) => countLines(texts.get(file) ?? ''),
+    (file) => countLines(texts.get(file)?.text ?? ''),
     settings,
     spansOf,
   );
