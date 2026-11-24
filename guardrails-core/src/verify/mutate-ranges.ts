@@ -148,39 +148,90 @@ function addRange(
 }
 
 /**
- * Per-file changed line ranges, from `git diff --unified=0` output.
- *
- * Files added since the base are left out, and so are deleted files, binary
- * files and quoted paths: a file with no entry is mutated whole. Hunks are
- * returned as git printed them; `planFileRanges` pads and merges them.
- *
- * A hunk's body is skipped by its header's counts, so a removed `-- x` or an
- * added `++ b/y` line of code, which reads as `--- x` and `+++ b/y`, is never
- * taken for a header.
+What a walk over a diff reports: each hunk of a named file, each removed line.
+*/
+interface DiffVisitor {
+  hunk?: (file: string, range: LineRange) => void;
+  removed?: (line: string) => void;
+}
+
+/**
+ * Walks `git diff --unified=0` output. A hunk's body is skipped by its
+ * header's counts, so a removed `-- x` or an added `++ b/y` line of code,
+ * which reads as `--- x` and `+++ b/y`, is never taken for a header.
  */
-export function parseDiffHunks(diff: string): Map<string, LineRange[]> {
-  const ranges = new Map<string, LineRange[]>();
+function walkDiff(diff: string, visitor: DiffVisitor): void {
   let file: string | undefined;
   let previous: string | undefined;
   let bodyLeft = 0;
   for (const line of diff.split(/\r?\n/)) {
     if (bodyLeft > 0 && !line.startsWith(NO_NEWLINE_MARKER)) {
       bodyLeft -= 1;
+      if (line.startsWith('-')) {
+        visitor.removed?.(line.slice(1));
+      }
     } else {
       const hunk = HUNK_HEADER.exec(line);
       if (hunk === null) {
         file = fileAfterHeader(line, previous, file);
       } else {
-        const added = hunkCount(hunk[3]);
-        bodyLeft = hunkCount(hunk[1]) + added;
-        if (file !== undefined) {
-          addRange(ranges, file, hunkRange(Number(hunk[2]), added));
-        }
+        bodyLeft = visitHunk(hunk, file, visitor);
       }
     }
     previous = line;
   }
+}
+
+/**
+Reports one hunk header's range, and answers how many body lines follow it.
+*/
+function visitHunk(
+  hunk: RegExpExecArray,
+  file: string | undefined,
+  visitor: DiffVisitor,
+): number {
+  const added = hunkCount(hunk[3]);
+  if (file !== undefined) {
+    visitor.hunk?.(file, hunkRange(Number(hunk[2]), added));
+  }
+  return hunkCount(hunk[1]) + added;
+}
+
+/**
+ * Per-file changed line ranges, from `git diff --unified=0` output.
+ *
+ * Files added since the base are left out, and so are deleted files, binary
+ * files and quoted paths: a file with no entry is mutated whole. Hunks are
+ * returned as git printed them; `planFileRanges` pads and merges them.
+ */
+export function parseDiffHunks(diff: string): Map<string, LineRange[]> {
+  const ranges = new Map<string, LineRange[]>();
+  walkDiff(diff, {
+    hunk: (file, range) => {
+      addRange(ranges, file, range);
+    },
+  });
   return ranges;
+}
+
+const IDENTIFIER = /[A-Za-z_$][\w$]*/g;
+
+/**
+ * Every identifier-shaped token on a removed line of `diff`, deleted files
+ * included. A deliberate superset — words in strings and comments count — of
+ * the names a change stopped using, so `orphanedExportSpans` can find the
+ * exports whose callers it removed.
+ */
+export function removedIdentifiers(diff: string): Set<string> {
+  const names = new Set<string>();
+  walkDiff(diff, {
+    removed: (line) => {
+      for (const [name] of line.matchAll(IDENTIFIER)) {
+        names.add(name);
+      }
+    },
+  });
+  return names;
 }
 
 /**
@@ -324,8 +375,10 @@ const PARSEABLE_DIFF = [
   '--no-ext-diff',
   '--src-prefix=a/',
   '--dst-prefix=b/',
-  // The changed-file list's own filter, so both see the same files.
-  '--diff-filter=ACM',
+  // The changed-file list's own filter (ACM), so both see the same files,
+  // plus deletions: a deleted file plans no ranges, but its removed lines
+  // name the exports it stopped calling.
+  '--diff-filter=ACMD',
 ];
 
 /**

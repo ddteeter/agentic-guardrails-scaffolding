@@ -9,6 +9,7 @@ import {
   isLocationInRanges,
   mutateEntries,
   parseDiffHunks,
+  removedIdentifiers,
   planFileRanges,
   planMutateRanges,
   planRunRanges,
@@ -283,6 +284,55 @@ describe('parseDiffHunks', () => {
 
   it('is empty for no diff at all', () => {
     expect(parseDiffHunks('').size).toBe(0);
+  });
+});
+
+describe('removedIdentifiers', () => {
+  it('reads the identifiers of removed lines, not added ones', () => {
+    const diff = section('src/a.ts', [
+      '@@ -3,2 +3 @@',
+      '-  const total = helper(value);',
+      '-  return $wrap(total);',
+      '+  return added(value);',
+    ]);
+    expect(removedIdentifiers(diff)).toEqual(
+      new Set(['const', 'total', 'helper', 'value', 'return', '$wrap']),
+    );
+  });
+
+  it('does not read a header line as a removal', () => {
+    const diff = section('src/headerName.ts', [
+      '@@ -3 +3 @@',
+      '-gone',
+      '+kept',
+    ]);
+    expect(removedIdentifiers(diff)).toEqual(new Set(['gone']));
+  });
+
+  it('reads a removed line that looks like a header', () => {
+    // `--- x` is the removal of `-- x`, inside the hunk's counted body.
+    const diff = section('src/a.ts', ['@@ -3 +2,0 @@', '--- decrement']);
+    expect(removedIdentifiers(diff)).toEqual(new Set(['decrement']));
+  });
+
+  it('reads a deleted file, which still plans no ranges', () => {
+    const diff = [
+      'diff --git a/src/caller.ts b/src/caller.ts',
+      'deleted file mode 100644',
+      '--- a/src/caller.ts',
+      '+++ /dev/null',
+      '@@ -1,2 +0,0 @@',
+      "-import { callee } from './callee.js';",
+      '-callee();',
+    ].join('\n');
+    expect(removedIdentifiers(diff)).toEqual(
+      new Set(['import', 'callee', 'from', 'js']),
+    );
+    expect(parseDiffHunks(diff).size).toBe(0);
+  });
+
+  it('is empty for no diff at all', () => {
+    expect(removedIdentifiers('').size).toBe(0);
   });
 });
 
@@ -565,7 +615,7 @@ describe('changedLineRanges', () => {
     expect(diff).toEqual(
       expect.arrayContaining([
         '--unified=0',
-        '--diff-filter=ACM',
+        '--diff-filter=ACMD',
         '--no-color',
         '--no-ext-diff',
         '--src-prefix=a/',
