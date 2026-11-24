@@ -23,12 +23,17 @@
  * the run, so the pre-push lock probe, which asks `strykerScope` whether
  * anything will be mutated, cannot disagree with the run about it.
  *
- * KNOWN GAP: stryker mutates a node only when the node lies wholly inside a
- * range, so a mutant spanning the change — a `BlockStatement` emptying the
- * whole function a one-line edit sits in — is not tested at the gate.
- * Padding catches the short ones. CI's whole-scope mutation run is the
- * backstop for the rest, as it already is for an edit in one file changing a
- * verdict in another.
+ * Stryker mutates a node only when the node lies wholly inside a range, so
+ * padding alone left a mutant spanning the change — a `BlockStatement`
+ * emptying the function a one-line edit sits in — untested at the gate. With
+ * `mutationScope.enclosing` (#196, `enclosing-spans.ts`) each hunk is widened
+ * to the function or top-level statement around it, and each ranged file
+ * takes in the declarations of the exports the diff's removed lines named.
+ *
+ * KNOWN GAP: a node larger than the enclosing function (a class body), an
+ * edit changing a verdict in another function or file, and an orphaned
+ * export in a file with no hunks are still not tested at the gate. CI's
+ * whole-scope mutation run is the backstop for those.
  */
 
 import path from 'node:path';

@@ -227,9 +227,27 @@ The gate hands stryker the lines a change touched, not every line of every
 file it touched. For each changed production file it reads the diff's hunks,
 from the same diff as the changed-file list (the working tree against the base
 branch, or the index for a staged commit), pads each hunk by a few lines on
-each side, and passes the result as `--mutate "src/a.ts:120-160"`, several
-ranges per file where there are several hunks. Before #155 a one-line change to
-a large component mutated all of it.
+each side, widens it to the function around it, and passes the result as
+`--mutate "src/a.ts:120-160"`, several ranges per file where there are several
+hunks. Before #155 a one-line change to a large component mutated all of it.
+
+- **Each hunk is widened to the code around it** (#196): the innermost
+  function, method, constructor, accessor or arrow function each changed line
+  sits in, from its decorators and JSDoc to its closing brace, or the
+  top-level statement when the line is in no function. Padding stays the
+  minimum. A one-line edit can change what the rest of its function does,
+  and stryker mutates only nodes wholly inside a range, so padding alone left
+  that function's other mutants, and the ones spanning it, untested until CI.
+- **An export the change may have orphaned is taken in**: every exported
+  function, class or variable statement (or the local an `export { a }`
+  names) whose name appears on a line the diff removed, in any file of the
+  diff, deleted files and tests included. A change that removes an export's
+  last caller leaves its mutants `NoCoverage`, outside every hunk. This is a
+  deliberate superset: a name removed in one place and still called in
+  another comes in all the same.
+- **Both read the repo's own `typescript`.** Without it installed the gate
+  warns once per run and plans padded hunks only, as before #196. A file
+  typescript has no parser for (`.vue`, `.svelte`) is padded hunks only too.
 
 - **A file new since the base is mutated whole**, and so is an untracked one.
 - **A file whose padded ranges cover more than `wholeFileAbove` of its lines is
@@ -246,15 +264,31 @@ a large component mutated all of it.
 
 ```json
 {
-  "mutationScope": { "lines": true, "padding": 5, "wholeFileAbove": 0.4 }
+  "mutationScope": {
+    "lines": true,
+    "padding": 5,
+    "wholeFileAbove": 0.4,
+    "enclosing": true
+  }
 }
 ```
 
 Those are the defaults. `padding` is a whole number of lines from 0;
 `wholeFileAbove` is a share from 0 to 1, where `0` mutates every changed file
 whole and `1` never does. `"lines": false` turns ranges off and mutates every
-changed file whole, which is the behaviour before #155. A key of the wrong type
-or out of range keeps its default.
+changed file whole, which is the behaviour before #155. `"enclosing": false`
+keeps ranges to the padded hunks, the behaviour before #196. A key of the wrong
+type or out of range keeps its default. `wholeFileAbove` is applied after
+widening, so a file whose changed functions make up most of it is mutated
+whole.
+
+**`lines: false` and whole-file CI.** A CI run that mutates whole files is a
+superset of the gate: everything the gate tests, plus every mutant in those
+files outside the planned ranges. `lines: false` makes the gate match it, at
+whole-file cost, which on a real diff runs several times as long as ranges;
+that is why `enclosing` widens to functions instead. The first push after upgrading runs
+more mutants than the one before it; the mutation cache is not invalidated by
+the change, and a cached survivor that now falls inside a widened range counts.
 
 The defaults were checked against three ranges of this repo's own history,
 using stryker's instrumenter on the modified (not new) files and leaving the
@@ -263,12 +297,19 @@ whole-file threshold out. With five lines of padding a ranged run tested 4% to
 mutants that overlap a changed line. Two lines of padding included 83% to 96%
 while testing 3% to 34%; ten included 89% to 99% while testing 6% to 47%.
 
-**Known gap.** Stryker mutates a node only when the whole node lies inside a
-range, so a mutant that spans the change, such as a `BlockStatement` mutant
-that empties the function a one-line edit sits in, is not tested at the gate.
-Padding catches the short ones. An edit can also change whether a mutant
-elsewhere in the same file is killed. CI's whole-scope mutation run is the
-backstop for both, as it is for the cross-file gap below.
+**Known gaps.** Widening closes the in-function gap that padding left. What
+it still misses, and CI's whole-scope mutation run still catches:
+
+- A mutant in a node larger than the function, such as a `BlockStatement`
+  mutant that empties a class body, when the edit is in one method.
+- An edit that changes whether a mutant in a _different_ function of the
+  same file, or of another file, is killed (a caller of the changed helper).
+- An orphaned export in a file the diff does not change, or one changed only
+  in lines the planner reads as no hunk: ranges never add a file, so the
+  pre-push lock probe and the run still agree on what is mutated.
+- `export default`, `export *` and re-export barrels, destructured exports,
+  and dynamic access (`module[name]`): the export pass matches names, not
+  references.
 
 ## The mutation cache between runs
 
