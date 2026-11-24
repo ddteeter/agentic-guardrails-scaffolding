@@ -1785,7 +1785,10 @@ const SHIP_USAGE =
 const SHIP_HELP =
   `usage: guardrails ${SHIP_USAGE}\n\n` +
   'Push the branch, find or open its pull request, wait for its checks, and\n' +
-  'write the outcome as JSON. Run it in the background; exit 0 only on green.\n\n' +
+  'write the outcome as JSON. Run it in the background; exit 0 only on green.\n' +
+  'Runs the push gate first, with no connection to the remote open\n' +
+  '(gate --mode=push, as the pre-push hook does); the hook then finds the\n' +
+  'pass and returns at once. Nothing is pushed unless the gate passed.\n\n' +
   '  --body-file=<f>    open a missing PR with this body (default: gh --fill)\n' +
   '  --title=<t>        open a missing PR with this title; otherwise the body\n' +
   '                     file\'s first line when it is "# <title>" (stripped\n' +
@@ -1802,6 +1805,9 @@ const SHIP_HELP =
   '                     posts again. A failed upload is a warning only.\n\n' +
   'states: green | gate-blocked | lock-timeout | ci-red | behind |\n' +
   '        conflicting | error\n' +
+  'gate-blocked lists each finding in failing as <file>:<line> <rule>\n' +
+  '(or <file>:<line> added <kind> for a suppression). A connection that\n' +
+  'drops after the gate passed is an error that says so: ship again.\n' +
   'ci-red also covers a workflow run that failed to start, and a required\n' +
   'check that never reported, and is reported at the first failed check.\n' +
   'On ci-red, "diagnosis" says whether to rebase, re-run the failed jobs\n' +

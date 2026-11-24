@@ -5,11 +5,20 @@ import { randomUUID } from 'node:crypto';
  * with `run_in_background` and be woken by once.
  *
  * The three waits this replaces were the expensive part of shipping. The
- * pre-push gate queues behind a machine-wide lock and can take most of an hour;
+ * push gate queues behind a machine-wide lock and can take most of an hour;
  * CI takes as long again. An agent that watched either in the foreground woke
  * every ten minutes on the tool timeout and re-paid its whole context each time
  * (see `foreground-wait.ts`). Backgrounded as one command, it is woken once,
  * reads one status file, and acts on one of five states.
+ *
+ * ship runs the push gate itself, before `git push` (#204). Run from inside
+ * the pre-push hook, the gate's wait for the lock held the push's connection
+ * open, and a remote that closed it as idle turned a gate verdict into a
+ * transport error. Now the gate waits with no connection open, its exit
+ * decides the outcome, and the hook's own gate finds this tree's pass record
+ * and returns at once. No marker or variable tells the hook to skip: any
+ * miss -- the tree changed, the base moved -- runs the full gate in the hook,
+ * as before.
  *
  * Every git and gh call goes through the injected `Exec`, so the outcome
  * classification is tested without a network.
@@ -201,9 +210,12 @@ function tailOf(text: string): string {
 }
 
 /**
- * Why a push failed, from what the hook printed. A lock timeout is checked
- * first: the hook that timed out also says the push was blocked. An
- * uninstalled checkout says so too, but no gate ran, so it is an error.
+ * Why a push failed, from what the hook printed. ship's own gate has passed
+ * by the time it pushes, so this is reached only when the hook's gate missed
+ * that pass and ran in full (or when git failed for another reason). A lock
+ * timeout is checked first: the hook that timed out also says the push was
+ * blocked. An uninstalled checkout says so too, but no gate ran, so it is an
+ * error.
  *
  * Only the hook's own last `push blocked` line says whether the checkout was
  * uninstalled (#178). The gate's output runs the project's tests, and text

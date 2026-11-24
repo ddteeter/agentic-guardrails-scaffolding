@@ -5675,6 +5675,17 @@ describe('runCommand — ship', () => {
     expect(out.join('')).toContain('guardrails ship: error — feat/x');
   });
 
+  it('says the gate runs before the push, and what gate-blocked carries (#204)', async () => {
+    await runCommand('ship', ['--help'], dependencies());
+    const printed = out.join('');
+    expect(printed).toContain(
+      'Runs the push gate first, with no connection to the remote open\n',
+    );
+    expect(printed).toContain(
+      'gate-blocked lists each finding in failing as <file>:<line> <rule>\n',
+    );
+  });
+
   it('says what --rerun-failed does, and that behind can follow it', async () => {
     await runCommand('ship', ['--help'], dependencies());
     const printed = out.join('');
