@@ -19,6 +19,7 @@ import {
   LOCK_TIMEOUT_MARKER,
   NOT_INSTALLED_MARKER,
   classifyPushFailure,
+  gateFailures,
   parseChecks,
   ship,
   type ShipOptions,
@@ -90,11 +91,18 @@ const HAPPY: Record<string, ExecResult | ExecResult[]> = {
   'git ls-remote': ok('abc123\trefs/heads/feat/x\n'),
 };
 
+/**
+The push gate every test ship runs, and the command line it shows up as.
+*/
+const PUSH_GATE = { command: 'node', args: ['cli.mjs', 'gate', '--mode=push'] };
+const GATE_LINE = 'node cli.mjs gate --mode=push';
+
 function options(exec: Exec, over: Partial<ShipOptions> = {}): ShipOptions {
   return {
     exec,
     repoRoot: root,
     baseBranch: 'main',
+    pushGate: PUSH_GATE,
     now: () => new Date('2026-10-12T12:00:00.000Z'),
     delay: () => Promise.resolve(),
     ...over,
@@ -178,6 +186,343 @@ async function stateOf(exec: Exec): Promise<string> {
   const status = await ship(options(exec));
   return status.state;
 }
+
+/**
+Where the first call starting with `prefix` falls among `calls`; -1 if none.
+*/
+function indexOf(calls: readonly Call[], prefix: string): number {
+  return calls.findIndex((call) => call.line.startsWith(prefix));
+}
+
+describe('ship: the push gate runs before git push (#204)', () => {
+  it('runs the gate after everything asked before the push, and before it', async () => {
+    const { exec, calls } = fakeExec(HAPPY);
+    await ship(options(exec));
+    const gate = indexOf(calls, GATE_LINE);
+    expect(gate).toBeGreaterThan(indexOf(calls, 'gh auth status'));
+    expect(gate).toBeGreaterThan(indexOf(calls, 'git rev-parse HEAD'));
+    expect(gate).toBeGreaterThan(
+      indexOf(calls, 'git merge-base --is-ancestor'),
+    );
+    expect(gate).toBeLessThan(indexOf(calls, 'git push'));
+  });
+
+  it('runs the gate once, in the repository it ships', async () => {
+    const { exec, calls } = fakeExec(HAPPY);
+    await ship(options(exec));
+    const gates = calls.filter((call) => call.line === GATE_LINE);
+    expect(gates).toEqual([{ line: GATE_LINE, cwd: root }]);
+  });
+
+  it('runs no gate when the preflight stops the ship', async () => {
+    const { exec, calls } = fakeExec({
+      ...HAPPY,
+      'gh auth status': failed('You are not logged into any GitHub hosts.'),
+    });
+    await ship(options(exec));
+    expect(indexOf(calls, GATE_LINE)).toBe(-1);
+  });
+});
+
+describe('ship: the push gate decides before anything is pushed (#204)', () => {
+  const BLOCK_TEXT =
+    'src/a.ts:3 [no-console] Unexpected console statement. (eslint)\n';
+
+  it('reports a blocked gate as gate-blocked and pushes nothing', async () => {
+    const { exec, calls } = fakeExec({
+      ...HAPPY,
+      'gh pr view': failed('no pull requests found'),
+      [GATE_LINE]: failed(BLOCK_TEXT),
+    });
+    const status = await ship(options(exec));
+    expect(status).toMatchObject({
+      state: 'gate-blocked',
+      pr: null,
+      url: null,
+      failing: ['src/a.ts:3 no-console'],
+    });
+    expect(status.tail).toContain('src/a.ts:3 [no-console]');
+    expect(indexOf(calls, 'git push')).toBe(-1);
+    expect(indexOf(calls, 'gh pr create')).toBe(-1);
+  });
+
+  it('still names the PR the blocked branch already has', async () => {
+    const { exec } = fakeExec({ ...HAPPY, [GATE_LINE]: failed(BLOCK_TEXT) });
+    const status = await ship(options(exec));
+    expect(status).toMatchObject({
+      state: 'gate-blocked',
+      pr: 42,
+      url: 'https://github.com/o/r/pull/42',
+    });
+  });
+
+  it('reports a gate that gave up on the lock as lock-timeout', async () => {
+    const { exec, calls } = fakeExec({
+      ...HAPPY,
+      [GATE_LINE]: failed(`${LOCK_TIMEOUT_MARKER} after 10800s`, 75),
+    });
+    const status = await ship(options(exec));
+    expect(status.state).toBe('lock-timeout');
+    expect(status.tail).toContain(LOCK_TIMEOUT_MARKER);
+    expect(indexOf(calls, 'git push')).toBe(-1);
+  });
+
+  it('never reads a killed gate as a pass, though it reports exit 0', async () => {
+    const { exec, calls } = fakeExec({
+      ...HAPPY,
+      [GATE_LINE]: { stdout: '', stderr: '', code: 0, signal: 'SIGTERM' },
+    });
+    const status = await ship(options(exec));
+    expect(status.state).toBe('error');
+    expect(status.tail).toContain('SIGTERM');
+    expect(status.tail).toContain('Nothing was pushed');
+    expect(indexOf(calls, 'git push')).toBe(-1);
+  });
+
+  it('reports a gate that could not be started as an error', async () => {
+    const { exec, calls } = fakeExec({
+      ...HAPPY,
+      [GATE_LINE]: {
+        stdout: '',
+        stderr: 'spawn node ENOENT',
+        code: 1,
+        spawnFailed: true,
+      },
+    });
+    const status = await ship(options(exec));
+    expect(status.state).toBe('error');
+    expect(status.tail).toContain('could not be started');
+    expect(status.tail).toContain('spawn node ENOENT');
+    expect(indexOf(calls, 'git push')).toBe(-1);
+  });
+
+  it('reports any other gate exit as an error', async () => {
+    const { exec, calls } = fakeExec({
+      ...HAPPY,
+      [GATE_LINE]: failed('unknown flag', 2),
+    });
+    const status = await ship(options(exec));
+    expect(status.state).toBe('error');
+    expect(status.tail).toContain('exited 2');
+    expect(status.tail).toContain('unknown flag');
+    expect(indexOf(calls, 'git push')).toBe(-1);
+  });
+});
+
+describe('ship: no push connection open while the gate waits (#204)', () => {
+  const CACHED =
+    'guardrails: push gate skipped — this exact tree already passed it ' +
+    'against the same base (cached: true).\n';
+  const DROPPED =
+    'Connection to git.example.com closed by remote host.\n' +
+    'fatal: the remote end hung up unexpectedly\n' +
+    'error: failed to push some refs\n';
+  const HOOK_BLOCK =
+    'src/a.ts:3 [no-console] Unexpected console statement. (eslint)\n' +
+    "guardrails: push blocked — resolve violations or run 'guardrails verify'.\n";
+
+  it('gates, then pushes into the hook’s cached verdict, and ends green', async () => {
+    const { exec, calls } = fakeExec({
+      ...HAPPY,
+      'git push': { stdout: '', stderr: CACHED, code: 0 },
+    });
+    const status = await ship(options(exec));
+    expect(status.state).toBe('green');
+    expect(indexOf(calls, GATE_LINE)).toBeLessThan(indexOf(calls, 'git push'));
+    expect(pushesIn(calls)).toEqual(['git push -u origin HEAD']);
+  });
+
+  it('reports a blocked gate as gate-blocked, with no push to drop', async () => {
+    const { exec, calls } = fakeExec({
+      ...HAPPY,
+      [GATE_LINE]: failed(HOOK_BLOCK),
+      'git push': failed(DROPPED, 128),
+    });
+    const status = await ship(options(exec));
+    expect(status.state).toBe('gate-blocked');
+    expect(status.failing).toEqual(['src/a.ts:3 no-console']);
+    expect(pushesIn(calls)).toEqual([]);
+  });
+
+  it('reports gate-blocked when the hook re-gated, blocked and the connection dropped', async () => {
+    // ship's pass record missed (the tree changed mid-ship): the hook's own
+    // gate ran in full, blocked, and the remote closed the idle connection.
+    const { exec } = fakeExec({
+      ...HAPPY,
+      'git push': failed(`${HOOK_BLOCK}${DROPPED}`),
+    });
+    const status = await ship(options(exec));
+    expect(status.state).toBe('gate-blocked');
+    expect(status.failing).toEqual(['src/a.ts:3 no-console']);
+    expect(status.tail).not.toContain('the push gate passed');
+  });
+
+  it('reports a dropped connection after a green gate as an error that says so', async () => {
+    const { exec } = fakeExec({ ...HAPPY, 'git push': failed(DROPPED, 128) });
+    const status = await ship(options(exec));
+    expect(status.state).toBe('error');
+    expect(status.tail).toContain('closed by remote host');
+    expect(status.tail).toContain(
+      'guardrails ship: the push gate passed, but the connection to the ' +
+        'remote dropped during the push',
+    );
+    expect(status.tail).toContain('the pass is remembered');
+  });
+
+  it.each([
+    'Connection closed by 192.0.2.1 port 22',
+    'Connection to git.example.com closed by 192.0.2.1 port 22',
+    'Connection reset by peer',
+    'ssh: connect to host git.example.com port 22: Connection timed out',
+    'fatal: the remote end hung up unexpectedly',
+    'client_loop: send disconnect: Broken pipe',
+  ])('names the connection for %s', async (line) => {
+    const { exec } = fakeExec({ ...HAPPY, 'git push': failed(line, 128) });
+    const status = await ship(options(exec));
+    expect(status.tail).toContain('the push gate passed');
+  });
+
+  it('adds no connection hint to a push refused for another reason', async () => {
+    const { exec } = fakeExec({
+      ...HAPPY,
+      'git push': failed('remote: Permission to o/r.git denied.', 128),
+    });
+    const status = await ship(options(exec));
+    expect(status.state).toBe('error');
+    expect(status.tail).not.toContain('the push gate passed');
+  });
+});
+
+describe('ship: HEAD does not move while the gate runs (#204)', () => {
+  it('pushes nothing when HEAD moved under the gate', async () => {
+    const { exec, calls } = fakeExec({
+      ...HAPPY,
+      'git rev-parse HEAD': [ok('abc123\n'), ok('def456\n')],
+    });
+    const status = await ship(options(exec));
+    expect(status).toMatchObject({ state: 'error', pr: 42 });
+    expect(status.tail).toContain('HEAD moved from abc123 to def456');
+    expect(status.tail).toContain('Nothing was pushed');
+    expect(indexOf(calls, GATE_LINE)).toBeLessThan(
+      calls.findLastIndex((call) => call.line === 'git rev-parse HEAD'),
+    );
+    expect(pushesIn(calls)).toEqual([]);
+  });
+
+  it('pushes nothing when HEAD cannot be read after the gate', async () => {
+    const { exec, calls } = fakeExec({
+      ...HAPPY,
+      'git rev-parse HEAD': [ok('abc123\n'), failed('fatal: bad object', 128)],
+    });
+    const status = await ship(options(exec));
+    expect(status.state).toBe('error');
+    expect(status.tail).toContain('fatal: bad object');
+    expect(pushesIn(calls)).toEqual([]);
+  });
+});
+
+describe('ship: a working tree that is not HEAD (#204)', () => {
+  it('warns when the tree has changes HEAD does not, and still ships', async () => {
+    const { exec, calls } = fakeExec({
+      ...HAPPY,
+      'git status --porcelain': ok(' M src/a.ts\n?? notes.txt\n'),
+    });
+    const status = await ship(options(exec));
+    expect(status.state).toBe('green');
+    expect(status.warnings).toEqual([
+      'the working tree has 2 uncommitted or untracked path(s): the push ' +
+        'gate checked the working tree, but only HEAD was pushed',
+    ]);
+    expect(indexOf(calls, 'git status --porcelain')).toBeLessThan(
+      indexOf(calls, GATE_LINE),
+    );
+  });
+
+  it('warns when git cannot say whether the tree is clean', async () => {
+    const { exec } = fakeExec({
+      ...HAPPY,
+      'git status --porcelain': failed('fatal: index file corrupt', 128),
+    });
+    const status = await ship(options(exec));
+    expect(status.warnings).toEqual([
+      'could not tell whether the working tree matches HEAD, which is what ' +
+        'was pushed after the gate checked the working tree',
+    ]);
+  });
+
+  it('warns about a killed git status rather than calling the tree clean', async () => {
+    const { exec } = fakeExec({
+      ...HAPPY,
+      'git status --porcelain': {
+        stdout: '',
+        stderr: '',
+        code: 0,
+        signal: 'SIGTERM',
+      },
+    });
+    const status = await ship(options(exec));
+    expect(status.warnings).toHaveLength(1);
+    expect(status.warnings[0]).toContain('could not tell');
+  });
+
+  it('warns nothing about a clean tree', async () => {
+    const { exec } = fakeExec(HAPPY);
+    const status = await ship(options(exec));
+    expect(status.warnings).toEqual([]);
+  });
+});
+
+describe('gateFailures (#204)', () => {
+  it('names each violation by file, line and rule', () => {
+    expect(
+      gateFailures(
+        'src/a.ts:3 [no-console] Unexpected console. (eslint)\n' +
+          'src/b.ts:? [ts/2322] Type mismatch (tsc)\n',
+      ),
+    ).toEqual(['src/a.ts:3 no-console', 'src/b.ts:? ts/2322']);
+  });
+
+  it('names each added suppression by file, line and kind', () => {
+    expect(
+      gateFailures('test/a.test.ts:12 added skipped-test: it.skip(\n'),
+    ).toEqual(['test/a.test.ts:12 added skipped-test']);
+  });
+
+  it('reads a line number of several digits', () => {
+    expect(
+      gateFailures(
+        'src/a.ts:123 [no-console] Unexpected console. (eslint)\n' +
+          'test/a.test.ts:456 added skipped-test: it.skip(\n',
+      ),
+    ).toEqual([
+      'src/a.ts:123 no-console',
+      'test/a.test.ts:456 added skipped-test',
+    ]);
+  });
+
+  it('ignores an added-suppression line that does not start at the line start', () => {
+    expect(
+      gateFailures('note test/a.test.ts:12 added skipped-test: it.skip(\n'),
+    ).toEqual([]);
+  });
+
+  it('reads a violation whose message is cut off', () => {
+    expect(gateFailures('src/a.ts:1 [no-console]')).toEqual([
+      'src/a.ts:1 no-console',
+    ]);
+  });
+
+  it('ignores every other line', () => {
+    expect(
+      gateFailures(
+        'guardrails: 1 violation(s), 0 added suppression(s).\n' +
+          '  src/a.ts:3 [indented] not at the start\n' +
+          'error: failed to push some refs to origin\n' +
+          'see https://example.com:443 [docs]\n',
+      ),
+    ).toEqual([]);
+  });
+});
 
 describe('ship: the happy path', () => {
   it('pushes, finds the PR, watches its checks and reports green', async () => {
@@ -728,7 +1073,7 @@ describe('ship: a push that did not go through', () => {
       state: 'gate-blocked',
       pr: null,
       url: null,
-      failing: [],
+      failing: ['src/a.ts:1 no-console'],
     });
     expect(status.tail).toContain('src/a.ts:1 [no-console]');
     // A blocked push only looks the pull request up: it never opens one.
@@ -744,7 +1089,7 @@ describe('ship: a push that did not go through', () => {
       state: 'gate-blocked',
       pr: 42,
       url: 'https://github.com/o/r/pull/42',
-      failing: [],
+      failing: ['src/a.ts:1 no-console'],
     });
     expect(status.tail).toContain('src/a.ts:1 [no-console]');
     const view = calls.find((call) => call.line.startsWith('gh pr view'));
@@ -1369,9 +1714,10 @@ describe('ship: workflow runs and required checks (#172)', () => {
       'git rev-parse HEAD': ok('abc123\n'),
       'git ls-remote': ok('abc123\trefs/heads/feat/x\n'),
     });
+    // Once before the push gate and once after it, to see it did not move.
     expect(
       calls.filter((call) => call.line === 'git rev-parse HEAD'),
-    ).toHaveLength(1);
+    ).toHaveLength(2);
     expect(calls).toContainEqual({
       line:
         'gh run list --commit abc123 --limit 100 ' +
@@ -1842,7 +2188,12 @@ describe('ship: the details a reader acts on', () => {
   it('stamps the real time when none is injected', async () => {
     const { exec } = fakeExec(HAPPY);
     const before = Date.now();
-    const status = await ship({ exec, repoRoot: root, baseBranch: 'main' });
+    const status = await ship({
+      exec,
+      repoRoot: root,
+      baseBranch: 'main',
+      pushGate: PUSH_GATE,
+    });
     const stamped = Date.parse(status.finishedAt);
     expect(stamped).toBeGreaterThanOrEqual(before);
     expect(stamped).toBeLessThanOrEqual(Date.now());
@@ -1858,7 +2209,12 @@ describe('ship: the details a reader acts on', () => {
           ok(JSON.stringify([{ name: 'build', bucket: 'pass' }])),
         ],
       });
-      const shipped = ship({ exec, repoRoot: root, baseBranch: 'main' });
+      const shipped = ship({
+        exec,
+        repoRoot: root,
+        baseBranch: 'main',
+        pushGate: PUSH_GATE,
+      });
       await vi.advanceTimersByTimeAsync(14_999);
       expect(
         calls.filter(
@@ -2207,6 +2563,45 @@ describe('ship: its row in the run log (#176)', () => {
         end: { load1: 4, freeMb: 3000 },
       },
     });
+  });
+
+  it('times the push from the start of its gate to the end of the push (#204)', async () => {
+    const clock = steppingClock();
+    const now = clock.now;
+    let skipped = 0;
+    const steppedClock = {
+      ...clock,
+      now: () => new Date(now().getTime() + skipped),
+    };
+    const { exec: base } = fakeExec(HAPPY);
+    const exec: Exec = (command, args, execOptions) => {
+      if (command === PUSH_GATE.command) {
+        // The gate's wait for the lock and its run: thirty seconds.
+        skipped += 30_000;
+      }
+      return base(command, args, execOptions);
+    };
+    await ship(
+      options(exec, {
+        lockPath: path.join(root, 'gate.lock'),
+        runClock: steppedClock,
+      }),
+    );
+    const [row] = parseRuns(readFileSync(logFile(), 'utf8'));
+    expect(row).toMatchObject({ kind: 'ship', pushMs: 31_000 });
+  });
+
+  it('hands its id to its own gate, for that gate’s row to carry (#204)', async () => {
+    const gates: (string | undefined)[] = [];
+    const { exec: base } = fakeExec(HAPPY);
+    const exec: Exec = (command, args, execOptions) => {
+      if (command === PUSH_GATE.command) {
+        gates.push(execOptions?.env?.GUARDRAILS_SHIP_ID);
+      }
+      return base(command, args, execOptions);
+    };
+    await ship(options(exec, { shipId: 'ship-42' }));
+    expect(gates).toEqual(['ship-42']);
   });
 
   it('records a blocked push with no CI time and no gate it can find', async () => {

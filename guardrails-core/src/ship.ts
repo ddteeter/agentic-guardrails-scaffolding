@@ -5,11 +5,20 @@ import { randomUUID } from 'node:crypto';
  * with `run_in_background` and be woken by once.
  *
  * The three waits this replaces were the expensive part of shipping. The
- * pre-push gate queues behind a machine-wide lock and can take most of an hour;
+ * push gate queues behind a machine-wide lock and can take most of an hour;
  * CI takes as long again. An agent that watched either in the foreground woke
  * every ten minutes on the tool timeout and re-paid its whole context each time
  * (see `foreground-wait.ts`). Backgrounded as one command, it is woken once,
  * reads one status file, and acts on one of five states.
+ *
+ * ship runs the push gate itself, before `git push` (#204). Run from inside
+ * the pre-push hook, the gate's wait for the lock held the push's connection
+ * open, and a remote that closed it as idle turned a gate verdict into a
+ * transport error. Now the gate waits with no connection open, its exit
+ * decides the outcome, and the hook's own gate finds this tree's pass record
+ * and returns at once. No marker or variable tells the hook to skip: any
+ * miss -- the tree changed, the base moved -- runs the full gate in the hook,
+ * as before.
  *
  * Every git and gh call goes through the injected `Exec`, so the outcome
  * classification is tested without a network.
@@ -29,7 +38,7 @@ import type { Exec, ExecResult } from './exec.js';
 import { isRecord } from './is-record.js';
 import { parseJsonText } from './json-file.js';
 import { logShipRun, type RunClock, startRun } from './gate-run-log.js';
-import { LOCK_TIMEOUT_MARKER } from './mutation-lock.js';
+import { LOCK_TIMEOUT_EXIT, LOCK_TIMEOUT_MARKER } from './mutation-lock.js';
 import {
   splitTitleLine,
   titleTypeMismatch,
@@ -92,9 +101,23 @@ interface Diagnosis {
   next: string;
 }
 
+/**
+How to run the push gate: a command and its arguments.
+*/
+export interface PushGate {
+  command: string;
+  args: readonly string[];
+}
+
 export interface ShipOptions {
   exec: Exec;
   repoRoot: string;
+  /**
+  The push gate exactly as the pre-push hook runs it, which ship runs itself
+  before `git push` so the hook finds this tree's pass and returns at once
+  (#204).
+  */
+  pushGate: PushGate;
   /**
   The branch a new pull request targets.
   */
@@ -187,9 +210,12 @@ function tailOf(text: string): string {
 }
 
 /**
- * Why a push failed, from what the hook printed. A lock timeout is checked
- * first: the hook that timed out also says the push was blocked. An
- * uninstalled checkout says so too, but no gate ran, so it is an error.
+ * Why a push failed, from what the hook printed. ship's own gate has passed
+ * by the time it pushes, so this is reached only when the hook's gate missed
+ * that pass and ran in full (or when git failed for another reason). A lock
+ * timeout is checked first: the hook that timed out also says the push was
+ * blocked. An uninstalled checkout says so too, but no gate ran, so it is an
+ * error.
  *
  * Only the hook's own last `push blocked` line says whether the checkout was
  * uninstalled (#178). The gate's output runs the project's tests, and text
@@ -209,6 +235,48 @@ export function classifyPushFailure(
     return 'error';
   }
   return 'gate-blocked';
+}
+
+/**
+ * The lines a blocked gate prints for what blocked it (`printGateDetail`): a
+ * violation, `<file>:<line> [<rule>] <message> (<tool>)`, and an added
+ * suppression, `<file>:<line> added <kind>: <text>`. Anchored, with classes
+ * that cannot overlap the separators after them, so a match never
+ * backtracks.
+ */
+const VIOLATION_LINE = /^([^\s:]+):(\d+|\?) \[([^\]\s]+)\](?: |$)/;
+const SUPPRESSION_LINE = /^([^\s:]+):(\d+) added ([^\s:]+):/;
+
+/**
+One line of the gate's output as an entry of `failing`, when it is one.
+*/
+function gateFailure(line: string): string[] {
+  const violation = VIOLATION_LINE.exec(line);
+  if (violation !== null) {
+    const [, file = '', at = '', rule = ''] = violation;
+    return [`${file}:${at} ${rule}`];
+  }
+  const suppression = SUPPRESSION_LINE.exec(line);
+  if (suppression !== null) {
+    const [, file = '', at = '', kind = ''] = suppression;
+    return [`${file}:${at} added ${kind}`];
+  }
+  return [];
+}
+
+/**
+ * What a blocked gate printed as blocking it, each `<file>:<line> <rule>` or
+ * `<file>:<line> added <kind>`, in the order it printed them.
+ */
+export function gateFailures(text: string): string[] {
+  return text.split('\n').flatMap((line) => gateFailure(line));
+}
+
+/**
+A gate-blocked outcome, with what blocked it read out of `text`.
+*/
+function gateBlocked(text: string): Outcome {
+  return { ...failure('gate-blocked', text), failing: gateFailures(text) };
 }
 
 interface PullRequest {
@@ -427,30 +495,174 @@ const REWRITTEN_BRANCH_HINT =
   '(rebased?); re-run with --force-with-lease';
 
 /**
- * A failed push's output, with the fix appended when git refused it as a
- * rewrite: ship never forces on its own, so the agent has to be told how.
+ * How a connection to a remote reads when it drops, from ssh, git or the
+ * transport under them. No host is named: a remote can be anywhere.
  */
-function pushFailureText(pushed: ExecResult): string {
-  const text = output(pushed);
-  return REWRITTEN_BRANCH.test(text)
-    ? `${text}\n${REWRITTEN_BRANCH_HINT}`
-    : text;
+const TRANSPORT_FAILURE =
+  /Connection (?:to \S+ )?closed by|Connection reset by peer|Connection timed out|the remote end hung up unexpectedly|Broken pipe/;
+
+const TRANSPORT_HINT =
+  'guardrails ship: the push gate passed, but the connection to the remote ' +
+  'dropped during the push. Ship again: the pass is remembered, so the ' +
+  'gate returns at once.';
+
+/**
+ * What to tell the agent about a failed push, when there is something: git
+ * refused it as a rewrite (ship never forces on its own), or the connection
+ * dropped after the gate passed. A block is not a dropped connection, even
+ * when the remote closed it while the hook's gate ran.
+ */
+function pushHint(text: string, state: ShipState): string | undefined {
+  if (REWRITTEN_BRANCH.test(text)) {
+    return REWRITTEN_BRANCH_HINT;
+  }
+  return state === 'error' && TRANSPORT_FAILURE.test(text)
+    ? TRANSPORT_HINT
+    : undefined;
 }
 
 /**
- * A failed push, still naming the pull request the branch already has: the
- * push failing does not make an open PR disappear (deferred from #122).
+A failed push's output, with its hint appended when it has one.
+*/
+function pushFailureText(pushed: ExecResult, state: ShipState): string {
+  const text = output(pushed);
+  const hint = pushHint(text, state);
+  return hint === undefined ? text : `${text}\n${hint}`;
+}
+
+/**
+ * An outcome that stopped the ship before anything was pushed, still naming
+ * the pull request the branch already has: a blocked gate or a failed push
+ * does not make an open PR disappear (deferred from #122).
  */
-async function pushFailure(
+async function withExistingPullRequest(
   options: ShipOptions,
   branch: string,
-  pushed: ExecResult,
+  outcome: Outcome,
 ): Promise<Outcome> {
-  const outcome = failure(classifyPushFailure(pushed), pushFailureText(pushed));
   const { pr } = await viewPullRequest(options, branch);
   return pr === undefined
     ? outcome
     : { ...outcome, pr: pr.number, url: pr.url };
+}
+
+/**
+A failed push, with the pull request the branch already has.
+*/
+function pushFailure(
+  options: ShipOptions,
+  branch: string,
+  pushed: ExecResult,
+): Promise<Outcome> {
+  const state = classifyPushFailure(pushed);
+  const text = pushFailureText(pushed, state);
+  return withExistingPullRequest(
+    options,
+    branch,
+    state === 'gate-blocked' ? gateBlocked(text) : failure(state, text),
+  );
+}
+
+/**
+The environment a ship's gate runs in, push hook included.
+*/
+function gateEnvironment(options: ShipOptions): NodeJS.ProcessEnv {
+  // The gate stamps this id on its run-log row, which is how this ship finds
+  // its gate's time afterwards (#176). A label only: nothing reads it to
+  // decide whether to gate.
+  return { ...process.env, GUARDRAILS_SHIP_ID: shipIdOf(options) };
+}
+
+/**
+ * Run the push gate the way the pre-push hook does, from the repository
+ * root. It takes the machine-wide lock while no connection to the remote is
+ * open, which is the point (#204).
+ */
+function runPushGate(options: ShipOptions): Promise<ExecResult> {
+  return options.exec(options.pushGate.command, [...options.pushGate.args], {
+    cwd: options.repoRoot,
+    env: gateEnvironment(options),
+  });
+}
+
+const NOTHING_PUSHED = 'Nothing was pushed.';
+
+/**
+ * What the push gate's run says about pushing: `undefined` to push, or the
+ * outcome to stop on. The signal is read BEFORE the exit code: the exec seam
+ * reports a killed child as exit 0, and a gate that never reached a verdict
+ * must never read as a pass.
+ */
+function gateVerdict(gated: ExecResult): Outcome | undefined {
+  const text = output(gated);
+  if (gated.signal !== undefined) {
+    return failure(
+      'error',
+      `${text}\nguardrails ship: the push gate was ended by ${gated.signal} ` +
+        `before it reached a verdict. ${NOTHING_PUSHED}`,
+    );
+  }
+  if (gated.spawnFailed === true) {
+    return failure(
+      'error',
+      `${text}\nguardrails ship: the push gate could not be started. ` +
+        NOTHING_PUSHED,
+    );
+  }
+  if (gated.code === 0) {
+    return undefined;
+  }
+  if (gated.code === LOCK_TIMEOUT_EXIT) {
+    return failure('lock-timeout', text);
+  }
+  if (gated.code === 1) {
+    return gateBlocked(text);
+  }
+  return failure(
+    'error',
+    `${text}\nguardrails ship: the push gate exited ` +
+      `${String(gated.code)}, which is neither a pass nor a block. ` +
+      NOTHING_PUSHED,
+  );
+}
+
+/**
+ * The outcome to stop on when HEAD is no longer `sha` after the gate, or
+ * `undefined` when it still is. The gate checked one commit; pushing another
+ * would push what it never checked.
+ */
+async function headMoved(
+  options: ShipOptions,
+  sha: string,
+): Promise<Outcome | undefined> {
+  const now = await headCommit(options);
+  if (typeof now !== 'string') {
+    return now;
+  }
+  return now === sha
+    ? undefined
+    : failure(
+        'error',
+        `guardrails ship: HEAD moved from ${sha} to ${now} while the push ` +
+          `gate ran, so the gate did not check what would be pushed. Ship ` +
+          `again. ${NOTHING_PUSHED}`,
+      );
+}
+
+/**
+ * Run the push gate, then push only on its pass, and only the commit it
+ * gated: the warnings to carry on with, or the outcome to stop on.
+ */
+async function gateThenPush(
+  options: ShipOptions,
+  branch: string,
+  sha: string,
+): Promise<Outcome | string[]> {
+  const verdict =
+    gateVerdict(await runPushGate(options)) ?? (await headMoved(options, sha));
+  return verdict === undefined
+    ? pushHead(options, branch, sha)
+    : withExistingPullRequest(options, branch, verdict);
 }
 
 /**
@@ -501,12 +713,10 @@ async function pushHead(
   sha: string,
 ): Promise<Outcome | string[]> {
   const force = options.forceWithLease === true ? ['--force-with-lease'] : [];
-  // The gate the pre-push hook runs stamps this id on its run-log row, which
-  // is how this ship finds its gate's time afterwards (#176).
   const push = (): Promise<ExecResult> =>
     options.exec('git', ['push', ...force, '-u', 'origin', 'HEAD'], {
       cwd: options.repoRoot,
-      env: { ...process.env, GUARDRAILS_SHIP_ID: shipIdOf(options) },
+      env: gateEnvironment(options),
     });
   const first = await push();
   if (first.code !== 0) {
@@ -1288,7 +1498,36 @@ async function preflight(
     return sha;
   }
   const based = await baseCheck(options, branch);
-  return Array.isArray(based) ? { sha, warnings: based } : based;
+  return Array.isArray(based)
+    ? { sha, warnings: [...based, ...(await treeWarnings(options))] }
+    : based;
+}
+
+/**
+ * The warning for a working tree that is not HEAD. The push gate checks the
+ * working tree, untracked files included, but git pushes HEAD, so a gate
+ * that passed did not check exactly what was pushed. A warning only: CI
+ * checks what was pushed.
+ */
+async function treeWarnings(options: ShipOptions): Promise<string[]> {
+  const status = await options.exec('git', ['status', '--porcelain'], {
+    cwd: options.repoRoot,
+  });
+  // A kill reports exit 0 with nothing printed, which reads as clean.
+  if (status.signal !== undefined || status.code !== 0) {
+    return [
+      'could not tell whether the working tree matches HEAD, which is what ' +
+        'was pushed after the gate checked the working tree',
+    ];
+  }
+  const paths = status.stdout.split('\n').filter((line) => line !== '');
+  return paths.length === 0
+    ? []
+    : [
+        `the working tree has ${String(paths.length)} uncommitted or ` +
+          'untracked path(s): the push gate checked the working tree, but ' +
+          'only HEAD was pushed',
+      ];
 }
 
 /**
@@ -1321,7 +1560,7 @@ async function shipOutcome(
   const { sha } = ready;
   const now = clockOf(options);
   const pushStart = now();
-  const pushed = await pushHead(options, branch, sha);
+  const pushed = await gateThenPush(options, branch, sha);
   times.pushMs = now() - pushStart;
   if (!Array.isArray(pushed)) {
     return stopped(pushed);

@@ -20,6 +20,7 @@ import process from 'node:process';
 
 import { describe, expect, it } from 'vitest';
 
+import { PUSH_GATE_ARGS } from '../src/push-hook.js';
 import { LOCK_TIMEOUT_MARKER, NOT_INSTALLED_MARKER } from '../src/ship.js';
 
 const templates = path.join(import.meta.dirname, '..', 'templates');
@@ -202,6 +203,18 @@ describe('consumer templates', () => {
       'utf8',
     );
     expect(hook).toContain('gate --mode=push');
+  });
+
+  it('runs the push gate with exactly the arguments ship runs it with (#204)', () => {
+    // ship runs the gate itself before git push, and the hook's run must hit
+    // the pass ship's run left: the same arguments, no --base.
+    const hook = readFileSync(
+      path.join(templates, 'githooks', 'pre-push'),
+      'utf8',
+    );
+    expect(hook.split('\n')).toContain(
+      `node "$cli" ${PUSH_GATE_ARGS.join(' ')}`,
+    );
   });
 
   it('ships a pre-push hook with no prose about THIS repo in it', () => {

@@ -16,6 +16,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { type CliDependencies, runCommand } from '../src/cli-core.js';
 import { type Exec, type ExecResult, spawnExec } from '../src/exec.js';
+import { PUSH_GATE_ARGS } from '../src/push-hook.js';
+import { gateFailures } from '../src/ship.js';
 import {
   computeFingerprint,
   serializeFingerprint,
@@ -2521,6 +2523,41 @@ describe('cli-core final hardening', () => {
       await runCommand('gate', ['--mode=commit'], dependencies({ exec })),
     ).toBe(1);
     expect(errors.join('')).toContain('added eslint-disable');
+  });
+});
+
+describe('what ship reads out of a blocked gate (#204)', () => {
+  // ship's `failing` is parsed from what the gate prints, so these pin the
+  // parser to the printers rather than to a copy of their format.
+  it('reads each violation as file:line ruleId', async () => {
+    await runCommand(
+      'gate',
+      ['--mode=push'],
+      blockingCommitDependencies('block'),
+    );
+    const failing = gateFailures(errors.join(''));
+    expect(failing[0]).toBe('src/foo.ts:1 no-console');
+    // The analyzers this fixture does not answer fail with no line: `?`.
+    expect(failing).toContain('package.json:? guardrails/analyzer-failed');
+  });
+
+  it('reads each added suppression as file:line added kind', async () => {
+    writeFileSync(
+      path.join(root, 'guardrails.config.json'),
+      JSON.stringify({ enforcement: 'block' }),
+    );
+    const exec = gitExec({
+      'merge-base': 'BASESHA\n',
+      'diff BASESHA': [
+        '+++ b/src/a.ts',
+        '@@ -1,0 +1,1 @@',
+        '+// eslint-disable-next-line',
+      ].join('\n'),
+    });
+    await runCommand('gate', ['--mode=push'], dependencies({ exec }));
+    expect(gateFailures(errors.join(''))).toEqual([
+      'src/a.ts:1 added eslint-disable',
+    ]);
   });
 });
 
@@ -5584,6 +5621,35 @@ describe('runCommand — ship', () => {
     );
   });
 
+  it('runs the push gate as the hook does before it pushes (#204)', async () => {
+    const gates: { args: string[]; cwd: string | undefined }[] = [];
+    const calls: string[] = [];
+    const inner = shipExec('pass', calls);
+    const exec: Exec = (command, args, execOptions) => {
+      if (command === process.execPath) {
+        gates.push({ args, cwd: execOptions?.cwd });
+      }
+      return inner(command, args, execOptions);
+    };
+    await runCommand('ship', ['--base=release'], dependencies({ exec }));
+    // No --base, even when the ship has one: the hook passes none, and the
+    // pass record is keyed by the base the gate resolves for itself.
+    expect(gates).toEqual([
+      {
+        args: [
+          path.join(root, 'node_modules', 'guardrails-core', 'dist', 'cli.mjs'),
+          ...PUSH_GATE_ARGS,
+        ],
+        cwd: root,
+      },
+    ]);
+    expect(PUSH_GATE_ARGS).toEqual(['gate', '--mode=push']);
+    const gate = calls.findIndex((line) => line.startsWith(process.execPath));
+    const push = calls.findIndex((line) => line.startsWith('git push'));
+    expect(gate).toBeGreaterThan(-1);
+    expect(gate).toBeLessThan(push);
+  });
+
   it('passes --force-with-lease through to the push', async () => {
     const calls: string[] = [];
     await runCommand(
@@ -5607,6 +5673,17 @@ describe('runCommand — ship', () => {
         '--json workflowName,conclusion,event,databaseId,status,attempt',
     );
     expect(out.join('')).toContain('guardrails ship: error — feat/x');
+  });
+
+  it('says the gate runs before the push, and what gate-blocked carries (#204)', async () => {
+    await runCommand('ship', ['--help'], dependencies());
+    const printed = out.join('');
+    expect(printed).toContain(
+      'Runs the push gate first, with no connection to the remote open\n',
+    );
+    expect(printed).toContain(
+      'gate-blocked lists each finding in failing as <file>:<line> <rule>\n',
+    );
   });
 
   it('says what --rerun-failed does, and that behind can follow it', async () => {

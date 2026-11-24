@@ -279,7 +279,7 @@ function gateRow(ship: string, seconds: number): string {
 describe('logShipRun', () => {
   const STATUS = { state: 'green', branch: 'feat/x', pr: 9 };
 
-  it('takes the gate time from the last gate row with its id', () => {
+  it('sums the time of every gate row with its id: ship’s gate and the hook’s (#204)', () => {
     writeFileSync(
       `${lockPath}.runs.jsonl`,
       `${[gateRow('ship-1', 10), gateRow('ship-2', 99), gateRow('ship-1', 40)].join('\n')}\n`,
@@ -298,7 +298,7 @@ describe('logShipRun', () => {
     expect(rows().at(-1)).toMatchObject({
       kind: 'ship',
       repo: 'app',
-      gateMs: 40_000,
+      gateMs: 50_000,
       pushMs: 5000,
     });
   });
@@ -371,5 +371,11 @@ describe('logShipRun, further', () => {
     );
     ship();
     expect(rows().at(-1)).toMatchObject({ kind: 'ship', gateMs: 40_000 });
+  });
+
+  it('records no gate time, not zero, when no gate row carries its id', () => {
+    writeFileSync(`${lockPath}.runs.jsonl`, `${gateRow('ship-2', 99)}\n`);
+    ship();
+    expect(rows().at(-1)).not.toHaveProperty('gateMs');
   });
 });

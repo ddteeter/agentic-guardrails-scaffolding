@@ -929,8 +929,9 @@ ship.log 2>&1 &`), finish the task, and let whoever started the agent read
   `.guardrails/state/ship-status.json`. If your host gains wake-on-exit, the
   Claude pattern applies.
 
-- **`guardrails ship`** is the one command to background. It runs
-  `git push -u origin HEAD` (and with it the pre-push gate), finds the branch's
+- **`guardrails ship`** is the one command to background. It runs the push
+  gate (`gate --mode=push`, through the repo's own guardrails-core, exactly as
+  the pre-push hook does), then `git push -u origin HEAD`, finds the branch's
   pull request or opens one (`--body-file=<f>`, else `gh pr create --fill`),
   waits with `gh pr checks --watch --fail-fast`, and writes
   `.guardrails/state/ship-status.json` (`--status-file=<f>` to move it):
@@ -943,7 +944,24 @@ ship.log 2>&1 &`), finish the task, and let whoever started the agent read
   refuses a branch that does not contain `origin/<base>`: `conflicting` when
   it would not merge cleanly, `behind` when it would. Rebase and ship again.
   If the base cannot be fetched, ship pushes anyway and says so in
-  `warnings`. Checks are
+  `warnings`.
+  The gate runs before the push so that its wait for the lock holds no
+  connection to the remote open: a remote that drops an idle connection
+  cannot turn a gate verdict into a transport error. The gate's exit decides:
+  a block is `gate-blocked`, with each finding in `failing` as
+  `<file>:<line> <rule>` or `<file>:<line> added <kind>`; a lock timeout is
+  `lock-timeout`; a gate that was killed, could not start or exited oddly is
+  `error`. Nothing is pushed on any of them, and HEAD must not move while the
+  gate runs. On a pass the pre-push hook's gate finds that pass recorded
+  (`cached: true`) and returns at once. There is no flag or variable that
+  tells the hook to skip: if the record misses, the hook gates in full during
+  the push, as before. A connection that drops during the push after a green
+  gate is `error`, and its tail says to ship again. The gate checks the
+  working tree, untracked files included, but git pushes HEAD, so
+  uncommitted or untracked paths at ship time are named in `warnings`.
+  Known limit: with `enforcement: "warn"`, or when an analyzer was skipped,
+  the gate records no pass, and the hook gates the push again in full.
+  Checks are
   not the only thing it reads: a workflow run on the pushed commit that ended
   `startup_failure`, `failure`, `timed_out` or `cancelled` is `ci-red` and is
   named in `failing` as `<workflow> (<conclusion>)`, because a workflow that
@@ -1048,7 +1066,8 @@ gate lock`, which `guardrails ship` reports as `lock-timeout` rather than as
   or a used seed) and, if not, why, the dry-run and mutating times, the
   mutant, timeout, survivor and no-coverage counts, and the load average and
   free memory at the start and the end. A ship's row has its push time (gate
-  included), its gate's time, its CI time, the PR and the final state.
+  included), its gates' time (ship's own gate and the hook's, summed), its CI
+  time, the PR and the final state.
   Counts come from stryker's JSON report, which the gate always asks for;
   `report: "missing"` means the run left none. The times come from
   guardrails' progress plugin, so a run without the built plugin has counts
