@@ -934,7 +934,7 @@ ship.log 2>&1 &`), finish the task, and let whoever started the agent read
   pull request or opens one (`--body-file=<f>`, else `gh pr create --fill`),
   waits with `gh pr checks --watch --fail-fast`, and writes
   `.guardrails/state/ship-status.json` (`--status-file=<f>` to move it):
-  `{state, branch, pr, url, failing, tail, finishedAt, warnings}`. `state` is
+  `{state, branch, pr, url, failing, tail, finishedAt, warnings, diagnosis}`. `state` is
   `green`, `gate-blocked`, `lock-timeout`, `ci-red` (with the failing check
   names), `behind`, `conflicting` (with the conflicted files) or `error`. It
   prints one line and exits 0 only on green. The watch ends at the first
@@ -951,6 +951,23 @@ ship.log 2>&1 &`), finish the task, and let whoever started the agent read
   another run of the same workflow on that commit was not cancelled. A check the base branch requires
   (by ruleset or branch protection) that never reported is `ci-red` too, as
   `<check> (required, not reported)`, after about two minutes of waiting.
+  On `ci-red`, `diagnosis` says what to do next, from evidence only
+  (`null` in every other state): `base` is whether `origin/<base>` still is
+  in the pushed commit, asked again after CI (`contains`, `moved`, or
+  `unknown` with a warning); `rerunnable` is the `gh run list` ids of the red
+  runs with failed jobs to re-run (never a check-run id from a link); and
+  `advice` is `rebase` when the base moved, else `rerun-failed` when there is
+  a run to re-run, else `fix`. The summary line prints it as `next: …`. Ship
+  never calls a failure flaky.
+- **`guardrails ship --rerun-failed`** pushes nothing. It re-derives the runs
+  from a fresh `gh run list` for HEAD, runs `gh run rerun <id> --failed` on
+  each (after `gh run watch <id>` for a run still going, which GitHub cannot
+  re-run), waits for each run's attempt to advance, then watches and
+  diagnoses the checks as a ship does: one background command, one status.
+  It refuses, re-running nothing, when HEAD is not the commit `origin` has
+  for the branch, when there is no pull request, when no red run has jobs to
+  re-run (`error`), and when the base moved since the commit was tested
+  (`behind`). Ship never re-runs on its own.
   After the push, ship asks `origin` whether the branch is at the commit it
   pushed. If it is not, ship pushes once more and says so in `warnings`; if it
   still is not, the state is `error` and no checks are read. It needs
@@ -1092,7 +1109,11 @@ makes pushes take turns, so each lane ships itself:
   the status file's `tail` and `failing`. On `lock-timeout` it runs
   `guardrails ship` again, which re-queues. On `behind` or `conflicting` it
   rebases onto the base and ships again with `--force-with-lease` if the
-  branch was already pushed.
+  branch was already pushed. On `ci-red` it reads `diagnosis.advice`: on
+  `rebase` it rebases and ships again; on `rerun-failed`, when it judges the
+  failure not to be in its change, it backgrounds
+  `guardrails ship --rerun-failed` instead of hand-rolling `gh run rerun` and
+  its wait.
 - The coordinator merges and cleans up. For a lane whose work is finished, it
   hands a failure to a **fresh** fixer agent with the failure output and the
   diff, rather than reviving the lane's large context.

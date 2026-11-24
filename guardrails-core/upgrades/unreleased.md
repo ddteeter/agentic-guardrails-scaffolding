@@ -1,6 +1,10 @@
 ---
 version: unreleased
 supersedes:
+  - search: 'gh run rerun'
+    because: 'if it tells agents to re-run failed CI jobs by hand, `guardrails ship --rerun-failed` now re-runs the failed jobs of the pushed commit and waits for them as one background command, refusing when the base moved'
+  - search: 'gh run watch'
+    because: 'if it tells agents to wait on a re-run or a workflow run with `gh run watch`, `guardrails ship --rerun-failed` now does that wait, and waits for the new attempt to start so an old failure does not report at once'
   - search: 'test-support'
     because: 'if it tells agents to avoid editing test helpers, fixtures or `test-utils` so the mutation cache survives, a changed helper module now costs only the cached kills of the tests that import it; setup files, configs, mocks, snapshots and data fixtures still discard the whole cache'
 ---
@@ -26,7 +30,27 @@ supersedes:
   is no longer refused as "it holds no per-test coverage" when the real cause
   was a test-support change.
 
+- **`ci-red` says what to do next (#198).** The ship status gains
+  `diagnosis` (always present, `null` unless `ci-red`): whether
+  `origin/<base>` moved since the pushed commit was tested, the `gh run list`
+  ids of the red runs with failed jobs to re-run, and `advice` — `rebase`,
+  `rerun-failed` or `fix`. The summary line ends with `next: …`. `state` is
+  still `ci-red`.
+- **`guardrails ship --rerun-failed` (#198)** re-runs the failed jobs of the
+  pushed commit's red runs, waits for each new attempt, then watches and
+  diagnoses the checks. It pushes nothing, and refuses when HEAD is not the
+  pushed commit, there is no pull request or nothing to re-run (`error`), or
+  the base moved (`behind`, which is no longer only decided before a push).
+- **`gh pr checks` is listed with `workflow`**, and `gh run list` with
+  `status,attempt`. A gh too old to know `workflow` is asked without it.
+
 ## Instructions this supersedes
+
+- **Re-running failed CI jobs by hand** (`gh run rerun --failed` and a
+  `gh run watch` or polling loop after it): use
+  `guardrails ship --rerun-failed` under `run_in_background` when the
+  diagnosis says `rerun-failed`, and rebase and ship again when it says
+  `rebase`.
 
 - **"Avoid touching test helpers, fixtures or `test-utils` so the push gate
   stays warm"**, or any rule that routes a fix around a shared helper for the
