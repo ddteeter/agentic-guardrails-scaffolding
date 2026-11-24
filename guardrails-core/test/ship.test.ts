@@ -309,6 +309,89 @@ describe('ship: the push gate decides before anything is pushed (#204)', () => {
   });
 });
 
+describe('ship: no push connection open while the gate waits (#204)', () => {
+  const CACHED =
+    'guardrails: push gate skipped — this exact tree already passed it ' +
+    'against the same base (cached: true).\n';
+  const DROPPED =
+    'Connection to git.example.com closed by remote host.\n' +
+    'fatal: the remote end hung up unexpectedly\n' +
+    'error: failed to push some refs\n';
+  const HOOK_BLOCK =
+    'src/a.ts:3 [no-console] Unexpected console statement. (eslint)\n' +
+    "guardrails: push blocked — resolve violations or run 'guardrails verify'.\n";
+
+  it('gates, then pushes into the hook’s cached verdict, and ends green', async () => {
+    const { exec, calls } = fakeExec({
+      ...HAPPY,
+      'git push': { stdout: '', stderr: CACHED, code: 0 },
+    });
+    const status = await ship(options(exec));
+    expect(status.state).toBe('green');
+    expect(indexOf(calls, GATE_LINE)).toBeLessThan(indexOf(calls, 'git push'));
+    expect(pushesIn(calls)).toEqual(['git push -u origin HEAD']);
+  });
+
+  it('reports a blocked gate as gate-blocked, with no push to drop', async () => {
+    const { exec, calls } = fakeExec({
+      ...HAPPY,
+      [GATE_LINE]: failed(HOOK_BLOCK),
+      'git push': failed(DROPPED, 128),
+    });
+    const status = await ship(options(exec));
+    expect(status.state).toBe('gate-blocked');
+    expect(status.failing).toEqual(['src/a.ts:3 no-console']);
+    expect(pushesIn(calls)).toEqual([]);
+  });
+
+  it('reports gate-blocked when the hook re-gated, blocked and the connection dropped', async () => {
+    // ship's pass record missed (the tree changed mid-ship): the hook's own
+    // gate ran in full, blocked, and the remote closed the idle connection.
+    const { exec } = fakeExec({
+      ...HAPPY,
+      'git push': failed(`${HOOK_BLOCK}${DROPPED}`),
+    });
+    const status = await ship(options(exec));
+    expect(status.state).toBe('gate-blocked');
+    expect(status.failing).toEqual(['src/a.ts:3 no-console']);
+    expect(status.tail).not.toContain('the push gate passed');
+  });
+
+  it('reports a dropped connection after a green gate as an error that says so', async () => {
+    const { exec } = fakeExec({ ...HAPPY, 'git push': failed(DROPPED, 128) });
+    const status = await ship(options(exec));
+    expect(status.state).toBe('error');
+    expect(status.tail).toContain('closed by remote host');
+    expect(status.tail).toContain(
+      'guardrails ship: the push gate passed, but the connection to the ' +
+        'remote dropped during the push',
+    );
+    expect(status.tail).toContain('the pass is remembered');
+  });
+
+  it.each([
+    'Connection closed by 192.0.2.1 port 22',
+    'Connection reset by peer',
+    'ssh: connect to host git.example.com port 22: Connection timed out',
+    'fatal: the remote end hung up unexpectedly',
+    'client_loop: send disconnect: Broken pipe',
+  ])('names the connection for %s', async (line) => {
+    const { exec } = fakeExec({ ...HAPPY, 'git push': failed(line, 128) });
+    const status = await ship(options(exec));
+    expect(status.tail).toContain('the push gate passed');
+  });
+
+  it('adds no connection hint to a push refused for another reason', async () => {
+    const { exec } = fakeExec({
+      ...HAPPY,
+      'git push': failed('remote: Permission to o/r.git denied.', 128),
+    });
+    const status = await ship(options(exec));
+    expect(status.state).toBe('error');
+    expect(status.tail).not.toContain('the push gate passed');
+  });
+});
+
 describe('gateFailures (#204)', () => {
   it('names each violation by file, line and rule', () => {
     expect(

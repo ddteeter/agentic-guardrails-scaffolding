@@ -483,14 +483,39 @@ const REWRITTEN_BRANCH_HINT =
   '(rebased?); re-run with --force-with-lease';
 
 /**
- * A failed push's output, with the fix appended when git refused it as a
- * rewrite: ship never forces on its own, so the agent has to be told how.
+ * How a connection to a remote reads when it drops, from ssh, git or the
+ * transport under them. No host is named: a remote can be anywhere.
  */
-function pushFailureText(pushed: ExecResult): string {
+const TRANSPORT_FAILURE =
+  /Connection (?:to \S+ )?closed by|Connection reset by peer|Connection timed out|the remote end hung up unexpectedly|Broken pipe/;
+
+const TRANSPORT_HINT =
+  'guardrails ship: the push gate passed, but the connection to the remote ' +
+  'dropped during the push. Ship again: the pass is remembered, so the ' +
+  'gate returns at once.';
+
+/**
+ * What to tell the agent about a failed push, when there is something: git
+ * refused it as a rewrite (ship never forces on its own), or the connection
+ * dropped after the gate passed. A block is not a dropped connection, even
+ * when the remote closed it while the hook's gate ran.
+ */
+function pushHint(text: string, state: ShipState): string | undefined {
+  if (REWRITTEN_BRANCH.test(text)) {
+    return REWRITTEN_BRANCH_HINT;
+  }
+  return state === 'error' && TRANSPORT_FAILURE.test(text)
+    ? TRANSPORT_HINT
+    : undefined;
+}
+
+/**
+A failed push's output, with its hint appended when it has one.
+*/
+function pushFailureText(pushed: ExecResult, state: ShipState): string {
   const text = output(pushed);
-  return REWRITTEN_BRANCH.test(text)
-    ? `${text}\n${REWRITTEN_BRANCH_HINT}`
-    : text;
+  const hint = pushHint(text, state);
+  return hint === undefined ? text : `${text}\n${hint}`;
 }
 
 /**
@@ -517,8 +542,8 @@ function pushFailure(
   branch: string,
   pushed: ExecResult,
 ): Promise<Outcome> {
-  const text = pushFailureText(pushed);
   const state = classifyPushFailure(pushed);
+  const text = pushFailureText(pushed, state);
   return withExistingPullRequest(
     options,
     branch,
