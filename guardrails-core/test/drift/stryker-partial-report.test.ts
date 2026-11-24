@@ -30,12 +30,12 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { describe, expect, it } from 'vitest';
+import { expect, it } from 'vitest';
 
 import { spawnExec, terminateChildren } from '../../src/exec.js';
 import { PROGRESS_REPORTER } from '../../src/lock-holder.js';
 import { type LockedRun, runUnderLock } from '../../src/mutation-lock.js';
-import { isUnderMutationRun } from './under-mutation.js';
+import { describeUnlessMutating } from './under-mutation.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '../../..');
@@ -247,7 +247,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-describe.skipIf(isUnderMutationRun(here))(
+describeUnlessMutating(here)(
   'drift-guard: a stopped stryker run leaves a partial incremental report',
   () => {
     it('saves one when the gate stops it, and the next run reuses it', async () => {

@@ -34,7 +34,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { describe, expect, it } from 'vitest';
+import { expect, it } from 'vitest';
 
 import { spawnExec } from '../../src/exec.js';
 import { isRecord } from '../../src/is-record.js';
@@ -44,7 +44,7 @@ import {
   serializeIncrementalCache,
 } from '../../src/verify/incremental-cache.js';
 import { parseStrykerJson } from '../../src/verify/stryker-adapter.js';
-import { isUnderMutationRun } from './under-mutation.js';
+import { describeUnlessMutating } from './under-mutation.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '../../..');
@@ -239,7 +239,7 @@ const survivorsIn = (report: ObservedReport, file: string): ObservedMutant[] =>
     (mutant) => mutant.file === file && mutant.status === 'Survived',
   );
 
-describe.skipIf(isUnderMutationRun(here))(
+describeUnlessMutating(here)(
   'drift-guard: the facts the incremental-cache rewriter rests on',
   () => {
     it('resolves every killing test id to exactly one test file', async () => {

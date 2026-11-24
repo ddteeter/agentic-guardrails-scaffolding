@@ -31,11 +31,11 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { describe, expect, it } from 'vitest';
+import { expect, it } from 'vitest';
 
 import { type Exec, spawnExec } from '../../src/exec.js';
 import { runVerify, writeMutationFingerprint } from '../../src/verify/index.js';
-import { isUnderMutationRun } from './under-mutation.js';
+import { describeUnlessMutating } from './under-mutation.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '../../..');
@@ -256,7 +256,7 @@ async function seededPushGate(
   return { violations: result.violations, progress: lines.join('\n') };
 }
 
-describe.skipIf(isUnderMutationRun(here))(
+describeUnlessMutating(here)(
   'drift-guard: a stryker Timeout at the push gate',
   () => {
     it('blocks nothing, cold or seeded', async () => {
@@ -288,35 +288,32 @@ describe.skipIf(isUnderMutationRun(here))(
  * every seed away when the fingerprint hashed the whole config and lockfile.
  * A change to an option that judges mutants still does.
  */
-describe.skipIf(isUnderMutationRun(here))(
-  'drift-guard: the seed fingerprint (#177)',
-  () => {
-    it('keeps the seed across changes that cannot change a verdict', async () => {
-      const directory = await buildFixture();
-      const seedDirectory = await seedFromMain(directory);
-      await branch(directory, {
-        'stryker.conf.json': strykerConfigWith({
-          mutate: ['src/count.ts', 'src/other.ts'],
-          reporters: ['json', 'clear-text'],
-        }),
-        'package.json': `${JSON.stringify({ ...FIXTURE_MANIFEST, devDependencies: { prettier: '*' } })}\n`,
-        'package-lock.json': '{"lockfileVersion":3,"packages":{}}\n',
-      });
-      const seeded = await seededPushGate(directory, seedDirectory);
-      expect(seeded.progress).toContain('seeded the mutation cache from 1');
-      expect(seeded.violations).toEqual([]);
-    }, 600_000);
+describeUnlessMutating(here)('drift-guard: the seed fingerprint (#177)', () => {
+  it('keeps the seed across changes that cannot change a verdict', async () => {
+    const directory = await buildFixture();
+    const seedDirectory = await seedFromMain(directory);
+    await branch(directory, {
+      'stryker.conf.json': strykerConfigWith({
+        mutate: ['src/count.ts', 'src/other.ts'],
+        reporters: ['json', 'clear-text'],
+      }),
+      'package.json': `${JSON.stringify({ ...FIXTURE_MANIFEST, devDependencies: { prettier: '*' } })}\n`,
+      'package-lock.json': '{"lockfileVersion":3,"packages":{}}\n',
+    });
+    const seeded = await seededPushGate(directory, seedDirectory);
+    expect(seeded.progress).toContain('seeded the mutation cache from 1');
+    expect(seeded.violations).toEqual([]);
+  }, 600_000);
 
-    it('rejects the seed when an option that judges mutants changed', async () => {
-      const directory = await buildFixture();
-      const seedDirectory = await seedFromMain(directory);
-      await branch(directory, {
-        'stryker.conf.json': strykerConfigWith({ timeoutMS: 2000 }),
-      });
-      const seeded = await seededPushGate(directory, seedDirectory);
-      expect(seeded.progress).toContain(
-        'was measured under different stryker options from this checkout',
-      );
-    }, 600_000);
-  },
-);
+  it('rejects the seed when an option that judges mutants changed', async () => {
+    const directory = await buildFixture();
+    const seedDirectory = await seedFromMain(directory);
+    await branch(directory, {
+      'stryker.conf.json': strykerConfigWith({ timeoutMS: 2000 }),
+    });
+    const seeded = await seededPushGate(directory, seedDirectory);
+    expect(seeded.progress).toContain(
+      'was measured under different stryker options from this checkout',
+    );
+  }, 600_000);
+});

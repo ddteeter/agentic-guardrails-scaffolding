@@ -3,12 +3,12 @@ import { createRequire } from 'node:module';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import { describe, expect, it } from 'vitest';
+import { expect, it } from 'vitest';
 import eslintJs from '@eslint/js';
 
 import { checkDrift, type DriftEntry } from '../../src/drift-guard.js';
 import { spawnExec } from '../../src/exec.js';
-import { isUnderMutationRun } from './under-mutation.js';
+import { describeUnlessMutating } from './under-mutation.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const knipFixture = path.join(here, 'knip-fixture');
@@ -312,7 +312,7 @@ const entries: DriftEntry[] = [
   },
 ];
 
-describe.skipIf(isUnderMutationRun(here))('drift-guard registry', () => {
+describeUnlessMutating(here)('drift-guard registry', () => {
   for (const entry of entries) {
     it(`${entry.tool}: every known id still exists upstream`, async () => {
       const { missing, hint } = await checkDrift(entry);
