@@ -1776,7 +1776,7 @@ async function installHooksCommand(
 
 const SHIP_USAGE =
   'ship [--body-file=<f>] [--title=<t>] [--status-file=<f>] [--base=<ref>]\n' +
-  '       [--force-with-lease] [--attach=<file>[#alt]]...';
+  '       [--force-with-lease] [--rerun-failed] [--attach=<file>[#alt]]...';
 
 /**
  * What `ship --help` prints: every flag, the five outcomes, and where the
@@ -1794,6 +1794,9 @@ const SHIP_HELP =
   '                     (default: .guardrails/state/ship-status.json)\n' +
   '  --base=<ref>       the branch a new PR targets (default: baseBranch)\n' +
   '  --force-with-lease push a branch rebased since its last push\n' +
+  '  --rerun-failed     push nothing: re-run the failed jobs of the\n' +
+  "                     pushed commit's red runs, then wait for its\n" +
+  '                     checks as a ship does\n' +
   '  --attach=<f>[#alt] attach an image or video (repeatable): on a new PR\n' +
   '                     with it, on an open one as a comment -- each run\n' +
   '                     posts again. A failed upload is a warning only.\n\n' +
@@ -1801,7 +1804,11 @@ const SHIP_HELP =
   '        conflicting | error\n' +
   'ci-red also covers a workflow run that failed to start, and a required\n' +
   'check that never reported, and is reported at the first failed check.\n' +
-  'behind and conflicting are decided before the push: rebase, then ship.\n';
+  'On ci-red, "diagnosis" says whether to rebase, re-run the failed jobs\n' +
+  '(--rerun-failed), or fix them, and the summary line prints it as next:.\n' +
+  'behind: the base moved -- before a push, or since the commit was\n' +
+  'tested, for --rerun-failed. conflicting is decided before the push.\n' +
+  'Either way: rebase, then ship.\n';
 
 /**
  * `ship`: push, find or open the pull request, wait for its checks, and write
@@ -1837,6 +1844,7 @@ async function shipCommand(
         : path.resolve(dependencies.cwd, bodyFile),
     title: flag(rest, 'title'),
     forceWithLease: rest.includes('--force-with-lease'),
+    rerunFailed: rest.includes('--rerun-failed'),
     attach: flags(rest, 'attach').map((file) =>
       resolveAttachment(dependencies.cwd, file),
     ),
