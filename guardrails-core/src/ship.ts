@@ -113,6 +113,11 @@ export interface ShipOptions {
   */
   forceWithLease?: boolean | undefined;
   /**
+  Push nothing: re-run the failed jobs of the pushed commit's red runs, then
+  wait for them as a ship waits for CI.
+  */
+  rerunFailed?: boolean | undefined;
+  /**
   Media to attach to the pull request, each `<file>[#<alt text>]` as gh takes
   it: on a new PR through `gh pr create`, on an open one as a comment.
   */
@@ -355,6 +360,11 @@ interface Evidence {
   */
   required: readonly string[];
 }
+
+/**
+What the checks and runs of the pushed commit say, without the required list.
+*/
+type Listing = Omit<Evidence, 'required'>;
 
 type Outcome = Omit<
   ShipStatus,
@@ -891,8 +901,7 @@ async function readEvidence(
   options: ShipOptions,
   number: string,
   sha: string,
-  required: readonly string[],
-): Promise<Evidence | string> {
+): Promise<Listing | string> {
   const { checks, listing } = await readChecks(options, number);
   if (checks === undefined) {
     return listing;
@@ -900,7 +909,7 @@ async function readEvidence(
   const listed = await readRuns(options, sha);
   return listed.runs === undefined
     ? listed.listing
-    : { checks, runs: listed.runs, required };
+    : { checks, runs: listed.runs };
 }
 
 /**
@@ -922,7 +931,9 @@ async function watchChecks(
   const required = await requiredChecks(options);
   for (let attempt = 0; ; attempt += 1) {
     const watch = await watchUntilFirstFailure(options, number);
-    const evidence = await readEvidence(options, number, sha, required);
+    const listing = await readEvidence(options, number, sha);
+    const evidence =
+      typeof listing === 'string' ? listing : { ...listing, required };
     if (typeof evidence === 'string') {
       return {
         outcome: {
@@ -956,7 +967,7 @@ async function watchChecks(
  * first failed check, before its run has concluded. Ids come only from
  * `gh run list`, never from a check's link, whose ids are not run ids.
  */
-function rerunnableOf(evidence: Evidence): Run[] {
+function rerunnableOf(evidence: Listing): Run[] {
   const failedIn = new Set(
     evidence.checks
       .filter((check) => RED_BUCKETS.has(check.outcome))
@@ -1250,6 +1261,20 @@ async function headCommit(options: ShipOptions): Promise<string | Outcome> {
 }
 
 /**
+ * The commit HEAD names, when gh can be used and nothing else is `unusable`;
+ * otherwise the outcome to stop on, gh's first.
+ */
+async function usableHead(
+  options: ShipOptions,
+  unusable?: string,
+): Promise<string | Outcome> {
+  const unavailable = (await ghUnavailable(options)) ?? unusable;
+  return unavailable === undefined
+    ? headCommit(options)
+    : failure('error', unavailable);
+}
+
+/**
  * Everything asked before the push: whether gh and the body file can be
  * used, the commit to push, and the base. The commit and the warnings to
  * carry on with, or the outcome to stop on.
@@ -1258,17 +1283,30 @@ async function preflight(
   options: ShipOptions,
   branch: string,
 ): Promise<Outcome | { sha: string; warnings: string[] }> {
-  const unavailable =
-    (await ghUnavailable(options)) ?? bodyFileUnreadable(options);
-  if (unavailable !== undefined) {
-    return failure('error', unavailable);
-  }
-  const sha = await headCommit(options);
+  const sha = await usableHead(options, bodyFileUnreadable(options));
   if (typeof sha !== 'string') {
     return sha;
   }
   const based = await baseCheck(options, branch);
   return Array.isArray(based) ? { sha, warnings: based } : based;
+}
+
+/**
+ * `settle`, with how long it took kept for the run log, and the warnings
+ * gathered before the watch put ahead of the watch's own.
+ */
+async function settleWithWarnings(
+  options: ShipOptions,
+  pr: PullRequest,
+  sha: string,
+  times: ShipTimes,
+  earlier: readonly string[],
+): Promise<Finished> {
+  const now = clockOf(options);
+  const watchStart = now();
+  const settled = await settle(options, pr, sha);
+  times.ciMs = now() - watchStart;
+  return { ...settled, warnings: [...earlier, ...settled.warnings] };
 }
 
 async function shipOutcome(
@@ -1292,18 +1330,200 @@ async function shipOutcome(
   if (typeof found === 'string') {
     return stopped(failure('error', found));
   }
-  const watchStart = now();
-  const settled = await settle(options, found.pr, sha);
-  times.ciMs = now() - watchStart;
-  return {
-    ...settled,
-    warnings: [
-      ...ready.warnings,
-      ...pushed,
-      ...found.warnings,
-      ...settled.warnings,
-    ],
-  };
+  return settleWithWarnings(options, found.pr, sha, times, [
+    ...ready.warnings,
+    ...pushed,
+    ...found.warnings,
+  ]);
+}
+
+/**
+How many times, and how far apart, ship looks for a re-run's new attempt
+before it watches the checks: watched too early, the old attempt's failure
+reports red at once.
+*/
+const RERUN_START_LOOKS = 8;
+const RERUN_START_DELAY_MS = 15_000;
+
+const RERUN = 'guardrails ship --rerun-failed';
+
+/**
+What a re-run is of: the pushed commit, its pull request, and the runs to
+re-run, with the warnings asking raised.
+*/
+interface RerunPlan {
+  sha: string;
+  pr: PullRequest;
+  targets: Run[];
+  warnings: string[];
+}
+
+/**
+ * The commit origin has for the branch and its pull request, when HEAD is
+ * that commit; otherwise the outcome to stop on. A re-run is only of what
+ * was pushed: the runs on any other commit did not test this one.
+ */
+async function pushedPullRequest(
+  options: ShipOptions,
+  branch: string,
+): Promise<Outcome | { sha: string; pr: PullRequest }> {
+  const sha = await usableHead(options);
+  if (typeof sha !== 'string') {
+    return sha;
+  }
+  const remote = await remoteHead(options, branch);
+  if (remote !== sha) {
+    return failure(
+      'error',
+      `${RERUN}: HEAD (${sha}) is not the commit origin/${branch} has ` +
+        `(${remote || 'nothing'}), so the runs there did not test it. Ship ` +
+        'it instead. Nothing was re-run.',
+    );
+  }
+  const { pr } = await viewPullRequest(options, branch);
+  return pr === undefined
+    ? failure(
+        'error',
+        `${RERUN}: ${branch} has no pull request. Ship it instead. Nothing ` +
+          'was re-run.',
+      )
+    : { sha, pr };
+}
+
+/**
+ * What to re-run, derived afresh from gh -- never from the status file, which
+ * may be another ship's -- or the outcome to stop on. A base that moved since
+ * the commit was tested is `behind`: re-running would test it against the
+ * old base, and only a rebase answers that.
+ */
+async function rerunPlan(
+  options: ShipOptions,
+  branch: string,
+): Promise<Outcome | RerunPlan> {
+  const pushed = await pushedPullRequest(options, branch);
+  if (!('sha' in pushed)) {
+    return pushed;
+  }
+  const { sha, pr } = pushed;
+  const found = { pr: pr.number, url: pr.url };
+  const { base, warnings } = await baseSinceTested(options, sha);
+  const origin = `origin/${options.baseBranch}`;
+  if (base === 'moved') {
+    return {
+      ...failure(
+        'behind',
+        `${RERUN}: ${origin} moved after ${sha} was tested, and a re-run ` +
+          `would test it against the old base. Rebase onto ${origin} and ` +
+          'ship again. Nothing was re-run.',
+      ),
+      ...found,
+    };
+  }
+  const evidence = await readEvidence(options, String(pr.number), sha);
+  if (typeof evidence === 'string') {
+    return { ...failure('error', evidence), ...found };
+  }
+  const targets = rerunnableOf(evidence);
+  if (targets.length === 0) {
+    return {
+      ...failure(
+        'error',
+        `${RERUN}: no failed workflow run on ${sha} has jobs to re-run. Fix ` +
+          'the failing checks and ship again. Nothing was re-run.',
+      ),
+      ...found,
+    };
+  }
+  return { sha, pr, targets, warnings };
+}
+
+/**
+ * Re-run the failed jobs of each target, or say what gh refused. A run still
+ * going is waited for first: GitHub re-runs only a run that has concluded,
+ * and `--fail-fast` reports a failed check before its run has.
+ */
+async function rerunTargets(
+  options: ShipOptions,
+  targets: readonly Run[],
+): Promise<string | undefined> {
+  for (const run of targets) {
+    const id = String(run.id);
+    if (run.status !== 'completed') {
+      await gh(options, ['run', 'watch', id]);
+    }
+    const asked = await gh(options, ['run', 'rerun', id, '--failed']);
+    if (asked.code !== 0) {
+      return output(asked);
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Whether every target has started a new attempt, looked for a bounded
+ * number of times. A re-run keeps its run's id and bumps its attempt.
+ */
+async function haveNewAttemptsStarted(
+  options: ShipOptions,
+  sha: string,
+  targets: readonly Run[],
+): Promise<boolean> {
+  const delay = options.delay ?? defaultDelay;
+  for (let look = 0; look < RERUN_START_LOOKS; look += 1) {
+    const { runs } = await readRuns(options, sha);
+    const haveStarted =
+      runs !== undefined &&
+      targets.every((target) =>
+        runs.some(
+          (run) => run.id === target.id && run.attempt > target.attempt,
+        ),
+      );
+    if (haveStarted) {
+      return true;
+    }
+    await delay(RERUN_START_DELAY_MS);
+  }
+  return false;
+}
+
+/**
+ * `ship --rerun-failed`: re-run the failed jobs of the pushed commit, wait for
+ * the new attempts, then watch and diagnose the checks as a ship does. It
+ * pushes nothing and is only ever asked for: ship never re-runs on its own.
+ */
+async function rerunOutcome(
+  options: ShipOptions,
+  branch: string,
+  times: ShipTimes,
+): Promise<Finished> {
+  const plan = await rerunPlan(options, branch);
+  return 'targets' in plan
+    ? rerunAndWatch(options, plan, times)
+    : stopped(plan);
+}
+
+async function rerunAndWatch(
+  options: ShipOptions,
+  plan: RerunPlan,
+  times: ShipTimes,
+): Promise<Finished> {
+  const found = { pr: plan.pr.number, url: plan.pr.url };
+  const refused = await rerunTargets(options, plan.targets);
+  if (refused !== undefined) {
+    return stopped({ ...failure('error', refused), ...found });
+  }
+  if (!(await haveNewAttemptsStarted(options, plan.sha, plan.targets))) {
+    const ids = plan.targets.map((run) => String(run.id)).join(', ');
+    return stopped({
+      ...failure(
+        'error',
+        `${RERUN}: gh accepted the re-run, but run(s) ${ids} did not start ` +
+          'a new attempt in time, so the checks were not watched.',
+      ),
+      ...found,
+    });
+  }
+  return settleWithWarnings(options, plan.pr, plan.sha, times, plan.warnings);
 }
 
 /**
@@ -1346,8 +1566,9 @@ async function shipStatus(
   // the base branch would push straight to it.
   const isShippable =
     branch !== 'HEAD' && branch !== options.baseBranch && head.code === 0;
+  const settle = options.rerunFailed === true ? rerunOutcome : shipOutcome;
   const outcome = isShippable
-    ? await shipOutcome(options, branch, times)
+    ? await settle(options, branch, times)
     : stopped(
         failure(
           'error',

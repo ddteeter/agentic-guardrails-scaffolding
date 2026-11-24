@@ -2563,3 +2563,339 @@ describe('ship: what to do about ci-red (#198)', () => {
     expect(status.diagnosis).toBeNull();
   });
 });
+
+/**
+ * A branch pushed as `abc123`, PR 42, whose CI run 7 failed and passes on its
+ * second attempt: the listing before the re-run, the one that sees the new
+ * attempt, and the one the watch reads.
+ */
+function rerunAnswers(
+  over: Record<string, ExecResult | ExecResult[]> = {},
+): Record<string, ExecResult | ExecResult[]> {
+  return {
+    ...HAPPY,
+    'gh pr checks 42 --json': [FAILED_BUILD, ok(HAPPY_CHECKS)],
+    'gh run list': [
+      runs({ workflowName: 'CI', conclusion: 'failure', databaseId: 7 }),
+      runs({ workflowName: 'CI', conclusion: '', databaseId: 7, attempt: 2 }),
+      runs({
+        workflowName: 'CI',
+        conclusion: 'success',
+        databaseId: 7,
+        attempt: 2,
+      }),
+    ],
+    ...over,
+  };
+}
+
+async function rerun(
+  answers: Record<string, ExecResult | ExecResult[]>,
+  over: Partial<ShipOptions> = {},
+): Promise<{ status: ShipStatus; delays: number[]; lines: string[] }> {
+  const delays: number[] = [];
+  const { exec, calls } = fakeExec(answers);
+  const status = await ship(
+    options(exec, {
+      rerunFailed: true,
+      delay: (ms) => {
+        delays.push(ms);
+        return Promise.resolve();
+      },
+      ...over,
+    }),
+  );
+  return { status, delays, lines: calls.map((call) => call.line) };
+}
+
+function wasRerun(lines: readonly string[]): boolean {
+  return lines.some((line) => line.startsWith('gh run rerun'));
+}
+
+describe('ship --rerun-failed (#198)', () => {
+  it('re-runs the failed jobs of the failed run, waits for the new attempt, and watches it', async () => {
+    const { status, lines } = await rerun(rerunAnswers());
+    expect(status).toMatchObject({
+      state: 'green',
+      pr: 42,
+      failing: [],
+      diagnosis: null,
+      warnings: [],
+    });
+    const index = (prefix: string) =>
+      lines.findIndex((line) => line.startsWith(prefix));
+    expect(lines).toContain('gh run rerun 7 --failed');
+    expect(index('gh run rerun 7 --failed')).toBeLessThan(
+      index('gh pr checks 42 --watch'),
+    );
+    expect(
+      lines.filter((line) => line.startsWith('gh run list --commit abc123')),
+    ).toHaveLength(3);
+    expect(lines.some((line) => line.startsWith('git push'))).toBe(false);
+    expect(lines.some((line) => line.startsWith('gh run watch'))).toBe(false);
+  });
+
+  it('waits for a run still going to finish before re-running it', async () => {
+    const { lines } = await rerun(
+      rerunAnswers({
+        'gh pr checks 42 --json': [
+          ok(
+            JSON.stringify([{ name: 'test', bucket: 'fail', workflow: 'CI' }]),
+          ),
+          ok(HAPPY_CHECKS),
+        ],
+        'gh run list': [
+          runs({ workflowName: 'CI', conclusion: '', databaseId: 11 }),
+          runs({
+            workflowName: 'CI',
+            conclusion: '',
+            databaseId: 11,
+            attempt: 2,
+          }),
+          runs({ workflowName: 'CI', conclusion: 'success', databaseId: 11 }),
+        ],
+      }),
+    );
+    const watched = lines.indexOf('gh run watch 11');
+    expect(watched).toBeGreaterThan(-1);
+    expect(watched).toBeLessThan(lines.indexOf('gh run rerun 11 --failed'));
+  });
+
+  it('waits until every re-run has a new attempt', async () => {
+    const both = (second: number) =>
+      runs(
+        { workflowName: 'CI', conclusion: '', databaseId: 7, attempt: 2 },
+        { workflowName: 'E2E', conclusion: '', databaseId: 8, attempt: second },
+      );
+    const { status, delays, lines } = await rerun(
+      rerunAnswers({
+        'gh run list': [
+          runs(
+            { workflowName: 'CI', conclusion: 'failure', databaseId: 7 },
+            { workflowName: 'E2E', conclusion: 'failure', databaseId: 8 },
+          ),
+          both(1),
+          both(2),
+          ok('[]'),
+        ],
+      }),
+    );
+    expect(lines).toContain('gh run rerun 7 --failed');
+    expect(lines).toContain('gh run rerun 8 --failed');
+    expect(delays).toEqual([15_000]);
+    expect(status.state).toBe('green');
+  });
+
+  it('looks again when the runs cannot be read while it waits', async () => {
+    const { status, delays } = await rerun(
+      rerunAnswers({
+        'gh run list': [
+          runs({ workflowName: 'CI', conclusion: 'failure', databaseId: 7 }),
+          failed('HTTP 502: Bad Gateway'),
+          runs({
+            workflowName: 'CI',
+            conclusion: '',
+            databaseId: 7,
+            attempt: 2,
+          }),
+          runs({ workflowName: 'CI', conclusion: 'success', databaseId: 7 }),
+        ],
+      }),
+    );
+    expect(status.state).toBe('green');
+    expect(delays).toEqual([15_000]);
+  });
+
+  it('is an error, and watches nothing, when the new attempt never starts', async () => {
+    const stuck = runs({
+      workflowName: 'CI',
+      conclusion: 'failure',
+      databaseId: 7,
+    });
+    const { status, delays, lines } = await rerun(
+      rerunAnswers({ 'gh run list': stuck }),
+    );
+    expect(status).toMatchObject({ state: 'error', pr: 42, diagnosis: null });
+    expect(status.tail).toBe(
+      'guardrails ship --rerun-failed: gh accepted the re-run, but run(s) 7 ' +
+        'did not start a new attempt in time, so the checks were not watched.',
+    );
+    expect(delays).toHaveLength(8);
+    expect(
+      lines.some((line) => line.startsWith('gh pr checks 42 --watch')),
+    ).toBe(false);
+  });
+
+  it('diagnoses again when the re-run is red too', async () => {
+    const { status } = await rerun(
+      rerunAnswers({
+        'gh pr checks 42 --json': [FAILED_BUILD, FAILED_BUILD],
+        'gh run list': [
+          runs({ workflowName: 'CI', conclusion: 'failure', databaseId: 7 }),
+          runs({
+            workflowName: 'CI',
+            conclusion: '',
+            databaseId: 7,
+            attempt: 2,
+          }),
+          runs({
+            workflowName: 'CI',
+            conclusion: 'failure',
+            databaseId: 7,
+            attempt: 2,
+          }),
+        ],
+      }),
+    );
+    expect(status).toMatchObject({
+      state: 'ci-red',
+      failing: ['build', 'CI (failure)'],
+      diagnosis: { base: 'contains', rerunnable: [7], advice: 'rerun-failed' },
+    });
+  });
+
+  it('refuses when HEAD is not the commit origin has', async () => {
+    const { status, lines } = await rerun(
+      rerunAnswers({ 'git ls-remote': ok('def456\trefs/heads/feat/x\n') }),
+    );
+    expect(status).toMatchObject({ state: 'error', diagnosis: null });
+    expect(status.tail).toBe(
+      'guardrails ship --rerun-failed: HEAD (abc123) is not the commit ' +
+        'origin/feat/x has (def456), so the runs there did not test it. ' +
+        'Ship it instead. Nothing was re-run.',
+    );
+    expect(wasRerun(lines)).toBe(false);
+  });
+
+  it('refuses without a pull request', async () => {
+    const { status, lines } = await rerun(
+      rerunAnswers({ 'gh pr view': failed('no pull requests found') }),
+    );
+    expect(status).toMatchObject({ state: 'error', pr: null });
+    expect(status.tail).toBe(
+      'guardrails ship --rerun-failed: feat/x has no pull request. Ship it ' +
+        'instead. Nothing was re-run.',
+    );
+    expect(wasRerun(lines)).toBe(false);
+  });
+
+  it('refuses as behind when the base moved since the commit was tested', async () => {
+    const { status, lines } = await rerun(
+      rerunAnswers({ 'git merge-base --is-ancestor': failed('', 1) }),
+    );
+    expect(status).toMatchObject({
+      state: 'behind',
+      pr: 42,
+      url: 'https://github.com/o/r/pull/42',
+      diagnosis: null,
+    });
+    expect(status.tail).toBe(
+      'guardrails ship --rerun-failed: origin/main moved after abc123 was ' +
+        'tested, and a re-run would test it against the old base. Rebase ' +
+        'onto origin/main and ship again. Nothing was re-run.',
+    );
+    expect(lines).toContain('git merge-base --is-ancestor origin/main abc123');
+    expect(wasRerun(lines)).toBe(false);
+  });
+
+  it('re-runs with a warning when the base cannot be fetched', async () => {
+    const { status, lines } = await rerun(
+      rerunAnswers({ 'git fetch': failed('offline', 128) }),
+    );
+    expect(status.state).toBe('green');
+    expect(status.warnings).toEqual([
+      'could not fetch origin/main after CI, so whether it moved since this ' +
+        'commit was tested was not checked',
+    ]);
+    expect(wasRerun(lines)).toBe(true);
+  });
+
+  it('refuses when no failed run can be re-run', async () => {
+    const { status, lines } = await rerun(
+      rerunAnswers({
+        'gh run list': runs({
+          workflowName: 'CI',
+          conclusion: 'startup_failure',
+        }),
+        'gh pr checks 42 --json': ok('[]'),
+      }),
+    );
+    expect(status).toMatchObject({ state: 'error', pr: 42 });
+    expect(status.tail).toBe(
+      'guardrails ship --rerun-failed: no failed workflow run on abc123 has ' +
+        'jobs to re-run. Fix the failing checks and ship again. Nothing was ' +
+        're-run.',
+    );
+    expect(wasRerun(lines)).toBe(false);
+  });
+
+  it('is an error when the runs cannot be read', async () => {
+    const { status, lines } = await rerun(
+      rerunAnswers({ 'gh run list': failed('HTTP 502: Bad Gateway') }),
+    );
+    expect(status).toMatchObject({
+      state: 'error',
+      pr: 42,
+      tail: 'HTTP 502: Bad Gateway',
+    });
+    expect(wasRerun(lines)).toBe(false);
+  });
+
+  it('is an error, with what gh said, when gh refuses the re-run', async () => {
+    const { status, lines } = await rerun(
+      rerunAnswers({
+        'gh run rerun': failed(
+          'run 7 cannot be rerun; its workflow file may be broken',
+        ),
+      }),
+    );
+    expect(status).toMatchObject({ state: 'error', pr: 42 });
+    expect(status.tail).toBe(
+      'run 7 cannot be rerun; its workflow file may be broken',
+    );
+    expect(
+      lines.some((line) => line.startsWith('gh pr checks 42 --watch')),
+    ).toBe(false);
+  });
+
+  it('stops before anything when gh cannot be used', async () => {
+    const { status, lines } = await rerun(
+      rerunAnswers({
+        'gh auth status': failed('You are not logged into any GitHub hosts.'),
+      }),
+    );
+    expect(status.state).toBe('error');
+    expect(lines).toEqual([
+      'git rev-parse --abbrev-ref HEAD',
+      'gh auth status',
+    ]);
+  });
+
+  it('is an error when HEAD names no commit', async () => {
+    const { status, lines } = await rerun(
+      rerunAnswers({ 'git rev-parse HEAD': ok('') }),
+    );
+    expect(status.state).toBe('error');
+    expect(status.tail).toMatch(
+      /^guardrails ship: git rev-parse HEAD named no commit/,
+    );
+    expect(wasRerun(lines)).toBe(false);
+  });
+
+  it('appends its row to the run log, with its CI time and no push', async () => {
+    await rerun(rerunAnswers(), {
+      shipId: 'rerun-1',
+      lockPath: path.join(root, 'gate.lock'),
+      runClock: steppingClock(),
+    });
+    const [row] = parseRuns(readFileSync(logFile(), 'utf8'));
+    expect(row).toMatchObject({
+      kind: 'ship',
+      ship: 'rerun-1',
+      state: 'green',
+      pr: 42,
+      pushMs: 0,
+      ciMs: 1000,
+    });
+  });
+});
