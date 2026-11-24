@@ -130,7 +130,9 @@ async function run(
   expect(result.code, `${result.stdout}\n${result.stderr}`).toBe(0);
 }
 
-async function buildFixture(): Promise<string> {
+async function buildFixture(
+  extra: Record<string, string> = {},
+): Promise<string> {
   const directory = mkdtempSync(
     path.join(tmpdir(), 'guardrails-stryker-timeout-'),
   );
@@ -141,6 +143,7 @@ async function buildFixture(): Promise<string> {
     'package.json': `${JSON.stringify(FIXTURE_MANIFEST)}\n`,
     'vitest.config.ts': `import { defineConfig } from 'vitest/config';\n\nexport default defineConfig({ test: { include: ['*.test.ts'] } });\n`,
     'stryker.conf.json': strykerConfigWith({}),
+    ...extra,
   };
   for (const [file, contents] of Object.entries(files)) {
     const target = path.join(directory, file);
@@ -160,11 +163,22 @@ async function buildFixture(): Promise<string> {
   return directory;
 }
 
-function statusesOf(reportJson: string, file: string): string[] {
+interface ReportedMutant {
+  status: string;
+  mutatorName: string;
+  statusReason?: string;
+  killedBy?: string[];
+}
+
+function mutantsOf(reportJson: string, file: string): ReportedMutant[] {
   const report = JSON.parse(reportJson) as {
-    files: Record<string, { mutants: { status: string }[] }>;
+    files: Record<string, { mutants: ReportedMutant[] }>;
   };
-  return (report.files[file]?.mutants ?? []).map((mutant) => mutant.status);
+  return report.files[file]?.mutants ?? [];
+}
+
+function statusesOf(reportJson: string, file: string): string[] {
+  return mutantsOf(reportJson, file).map((mutant) => mutant.status);
 }
 
 function readReport(directory: string): Promise<string> {
@@ -264,11 +278,27 @@ describeUnlessMutating(here)(
       const seedDirectory = await seedFromMain(directory);
       await branch(directory);
 
-      const cold = await pushGate(directory);
+      const coldLines: string[] = [];
+      const cold = await pushGate(directory, {
+        progress: (line) => {
+          coldLines.push(line);
+        },
+      });
       expect(cold.violations).toEqual([]);
-      expect(statusesOf(await readReport(directory), 'src/count.ts')).toContain(
-        'Timeout',
-      );
+      const timeouts = mutantsOf(
+        await readReport(directory),
+        'src/count.ts',
+      ).filter((mutant) => mutant.status === 'Timeout');
+      expect(timeouts).not.toEqual([]);
+      // #202 re-tests no hit-limit Timeout, and knows one by this reason:
+      // stryker counted the mutant's own executions past its limit, which a
+      // loaded machine cannot cause. A changed wording would re-test them.
+      for (const timeout of timeouts) {
+        expect(timeout.statusReason).toMatch(
+          /^Hit limit reached \(\d+\/\d+\)$/,
+        );
+      }
+      expect(coldLines.join('\n')).not.toContain('re-testing');
 
       rmSync(path.join(directory, 'reports'), { recursive: true });
       const seeded = await seededPushGate(directory, seedDirectory);
@@ -317,3 +347,99 @@ describeUnlessMutating(here)('drift-guard: the seed fingerprint (#177)', () => {
     );
   }, 600_000);
 });
+
+/**
+ * A module only `settle.ts` calls, kept out of `mutate`: its loop spins on
+ * the clock and runs no mutant, so nothing but stryker's timer can stop it.
+ */
+const SPIN_SOURCE = `export function spinFor(milliseconds: number): number {
+  const until = Date.now() + milliseconds;
+  while (Date.now() < until) {
+    // Spin.
+  }
+  return milliseconds;
+}
+`;
+
+/**
+ * Its one hanging mutant is `Math.min` → `Math.max`: a 60-second spin that
+ * evaluates no mutant while it spins, so stryker's hit counter never trips
+ * and only the wall clock times it out -- the kind of Timeout #202 re-tests.
+ */
+const SETTLE_SOURCE = `import { spinFor } from './spin.js';
+
+export function settle(budget: number): number {
+  return spinFor(Math.min(budget, 5));
+}
+`;
+
+const SETTLE_TEST = `import { describe, expect, it } from 'vitest';
+
+import { settle } from './src/settle.js';
+
+describe('settle', () => {
+  it('spins for at most five milliseconds', () => {
+    expect(settle(60_000)).toBe(5);
+  });
+});
+`;
+
+/**
+The branch: settle.ts changes, its code does not.
+*/
+async function settleBranch(directory: string): Promise<void> {
+  await run(directory, 'git', 'checkout', '-q', '-b', 'feature');
+  writeFileSync(
+    path.join(directory, 'src', 'settle.ts'),
+    `${SETTLE_SOURCE}// Unchanged on this branch.\n`,
+  );
+  await run(directory, 'git', 'add', '-A');
+  await run(directory, 'git', 'commit', '-q', '-m', 'feature');
+}
+
+/**
+ * #202 against real stryker: a wall-clock Timeout that really hangs is
+ * re-tested once, alone, times out again, and stays a kill.
+ */
+describeUnlessMutating(here)(
+  'drift-guard: a wall-clock Timeout is re-tested (#202)',
+  () => {
+    it('re-tests a mutant that really hangs, and keeps it killed', async () => {
+      const directory = await buildFixture({
+        'src/spin.ts': SPIN_SOURCE,
+        'src/settle.ts': SETTLE_SOURCE,
+        'settle.test.ts': SETTLE_TEST,
+        'stryker.conf.json': strykerConfigWith({ mutate: ['src/settle.ts'] }),
+      });
+      await settleBranch(directory);
+
+      const lines: string[] = [];
+      const result = await pushGate(directory, {
+        progress: (line) => {
+          lines.push(line);
+        },
+      });
+
+      expect(result.violations).toEqual([]);
+      expect(lines).toContain(
+        'guardrails: re-testing 1 timed-out mutant alone, in one more ' +
+          'stryker run, before counting it killed.',
+      );
+      expect(lines).toContain(
+        'guardrails: re-test: 1 timed out again (killed), 0 re-scored.',
+      );
+      // The premise the selection rests on: a wall-clock Timeout carries no
+      // reason and names no killing test.
+      const hang = mutantsOf(await readReport(directory), 'src/settle.ts').find(
+        (mutant) => mutant.status === 'Timeout',
+      );
+      expect(hang).toMatchObject({ mutatorName: 'MethodExpression' });
+      expect(hang?.statusReason).toBeUndefined();
+      expect(hang?.killedBy ?? []).toEqual([]);
+      expect(result.mutationRun?.stryker).toMatchObject({
+        retested: 1,
+        rescored: 0,
+      });
+    }, 600_000);
+  },
+);
