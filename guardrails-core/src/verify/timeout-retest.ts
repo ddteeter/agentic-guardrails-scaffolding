@@ -45,9 +45,14 @@ export const RETESTED_REASON =
 const HIT_LIMIT_PREFIX = 'Hit limit reached';
 
 /**
-A position as stryker's report writes it.
-*/
-function positionOf(value: unknown): string | undefined {
+ * One end of a mutant's location as stryker's report writes it, or
+ * `undefined` when it is not all there.
+ */
+function positionOf(
+  location: unknown,
+  side: 'start' | 'end',
+): { line: number; text: string } | undefined {
+  const value = isRecord(location) ? location[side] : undefined;
   if (
     !isRecord(value) ||
     typeof value.line !== 'number' ||
@@ -55,46 +60,49 @@ function positionOf(value: unknown): string | undefined {
   ) {
     return undefined;
   }
-  return `${String(value.line)}:${String(value.column)}`;
+  return {
+    line: value.line,
+    text: `${String(value.line)}:${String(value.column)}`,
+  };
 }
 
 /**
- * Stryker's identifying key for a mutant of `file`, or `undefined` for one
- * whose location or replacement is not all there.
+A parsed mutant: its mutator, validated, and the rest as stryker wrote it.
+*/
+interface ParsedMutant {
+  readonly mutatorName: string;
+  readonly raw: Readonly<Record<string, unknown>>;
+}
+
+/**
+ * Stryker's identifying key for a mutant of `file`, with the lines it spans,
+ * or `undefined` for one whose location or replacement is not all there.
  */
-function mutantKey(
+function identify(
   file: string,
-  raw: Readonly<Record<string, unknown>>,
-): string | undefined {
-  const { location, mutatorName, replacement } = raw;
+  mutant: ParsedMutant,
+): { key: string; span: LineRange } | undefined {
+  const { location, replacement } = mutant.raw;
+  const start = positionOf(location, 'start');
+  const end = positionOf(location, 'end');
   if (
-    typeof mutatorName !== 'string' ||
     typeof replacement !== 'string' ||
-    !isRecord(location)
+    start === undefined ||
+    end === undefined
   ) {
     return undefined;
   }
-  const start = positionOf(location.start);
-  const end = positionOf(location.end);
-  if (start === undefined || end === undefined) {
-    return undefined;
-  }
-  return `${file}@${start}-${end}\n${mutatorName}: ${replacement}`;
+  return {
+    key: `${file}@${start.text}-${end.text}\n${mutant.mutatorName}: ${replacement}`,
+    span: { start: start.line, end: end.line },
+  };
 }
 
 /**
-The line span a keyed mutant covers.
+`identify`'s key alone.
 */
-function spanOf(raw: Readonly<Record<string, unknown>>): LineRange {
-  // Only called for a mutant `mutantKey` keyed, whose location has both.
-  const { location } = raw;
-  const lineOf = (end: 'start' | 'end'): number => {
-    const position = isRecord(location) ? location[end] : undefined;
-    return isRecord(position) && typeof position.line === 'number'
-      ? position.line
-      : 0;
-  };
-  return { start: lineOf('start'), end: lineOf('end') };
+function mutantKey(file: string, mutant: ParsedMutant): string | undefined {
+  return identify(file, mutant)?.key;
 }
 
 /**
@@ -103,20 +111,20 @@ One mutant of a parsed report, with its file and key.
 interface KeyedMutant {
   readonly file: string;
   readonly key: string;
+  readonly span: LineRange;
   readonly status: string;
   readonly killedBy: readonly string[];
   readonly raw: Readonly<Record<string, unknown>>;
 }
 
 function keyedMutants(cache: IncrementalCache | undefined): KeyedMutant[] {
-  if (cache === undefined) {
-    return [];
-  }
-  return [...cache.files].flatMap(([file, entry]) =>
-    entry.mutants.flatMap((each) => {
-      const key = mutantKey(file, each.raw);
-      return key === undefined ? [] : [{ ...each, file, key }];
-    }),
+  return [...(cache?.files ?? [])].flatMap(([file, entry]) =>
+    entry.mutants
+      .map((each) => {
+        const identity = identify(file, each);
+        return identity && { ...each, ...identity, file };
+      })
+      .filter((each) => each !== undefined),
   );
 }
 
@@ -181,13 +189,12 @@ function isCandidate(each: KeyedMutant, scope: RetestScope): boolean {
     return false;
   }
   const planned = scope.lineRanges.get(each.file);
-  return planned === undefined || isLocationInRanges(spanOf(each.raw), planned);
+  return planned === undefined || isLocationInRanges(each.span, planned);
 }
 
 function byFileThenLine(left: KeyedMutant, right: KeyedMutant): number {
   return (
-    left.file.localeCompare(right.file) ||
-    spanOf(left.raw).start - spanOf(right.raw).start
+    left.file.localeCompare(right.file) || left.span.start - right.span.start
   );
 }
 
@@ -202,7 +209,7 @@ export function planRetest(reportJson: string, scope: RetestScope): RetestPlan {
     .toSorted(byFileThenLine);
   const picked = candidates.slice(0, scope.limit);
   const mutate = picked.map((each) => {
-    const { start, end } = spanOf(each.raw);
+    const { start, end } = each.span;
     return `${each.file}:${String(start)}-${String(end)}`;
   });
   return {
@@ -217,7 +224,7 @@ export function planRetest(reportJson: string, scope: RetestScope): RetestPlan {
 */
 function filterMutants(
   cache: IncrementalCache,
-  isKept: (file: string, raw: Readonly<Record<string, unknown>>) => boolean,
+  isKept: (file: string, mutant: ParsedMutant) => boolean,
 ): IncrementalCache {
   return {
     ...cache,
@@ -226,7 +233,7 @@ function filterMutants(
         file,
         {
           ...entry,
-          mutants: entry.mutants.filter((each) => isKept(file, each.raw)),
+          mutants: entry.mutants.filter((each) => isKept(file, each)),
         },
       ]),
     ),
@@ -240,17 +247,14 @@ function filterMutants(
  */
 export function dropMutants(
   cacheJson: string,
-  keys: ReadonlySet<string>,
+  keys: ReadonlySet<string | undefined>,
 ): string | undefined {
   const cache = parseIncrementalCache(cacheJson);
   if (cache === undefined) {
     return undefined;
   }
   return serializeIncrementalCache(
-    filterMutants(cache, (file, raw) => {
-      const key = mutantKey(file, raw);
-      return key === undefined || !keys.has(key);
-    }),
+    filterMutants(cache, (file, each) => !keys.has(mutantKey(file, each))),
   );
 }
 
@@ -340,7 +344,7 @@ export function rescore(
 
 function replaceVerdicts(
   first: IncrementalCache,
-  verdicts: ReadonlyMap<string, Readonly<Record<string, unknown>>>,
+  verdicts: ReadonlyMap<string | undefined, Readonly<Record<string, unknown>>>,
 ): string {
   const files = new Map(
     [...first.files].map(([file, entry]) => [
@@ -348,8 +352,7 @@ function replaceVerdicts(
       {
         ...entry,
         mutants: entry.mutants.map((each) => {
-          const key = mutantKey(file, each.raw);
-          const verdict = key === undefined ? undefined : verdicts.get(key);
+          const verdict = verdicts.get(mutantKey(file, each));
           return verdict === undefined
             ? each
             : { ...each, raw: rescoredMutant(each.raw, verdict) };

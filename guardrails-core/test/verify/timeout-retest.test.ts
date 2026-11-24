@@ -17,12 +17,13 @@ interface MutantSpec {
   line?: number;
   endLine?: number;
   replacement?: string;
+  id?: string;
 }
 
 function mutant(spec: MutantSpec = {}): Record<string, unknown> {
   const line = spec.line ?? 1;
   return {
-    id: String(line),
+    id: spec.id ?? String(line),
     mutatorName: 'UpdateOperator',
     replacement: spec.replacement ?? 'index--',
     status: spec.status ?? 'Timeout',
@@ -170,6 +171,67 @@ describe('planRetest: which timed-out mutants are re-tested', () => {
     };
     expect(plan(report({ 'src/a.ts': [bare] })).candidates).toBe(0);
   });
+
+  const START = { line: 3, column: 3 };
+  const END = { line: 3, column: 10 };
+  const malformed = (
+    overrides: Record<string, unknown>,
+  ): Record<string, unknown> => ({
+    mutatorName: 'UpdateOperator',
+    replacement: 'index--',
+    status: 'Timeout',
+    location: { start: START, end: END },
+    ...overrides,
+  });
+
+  it('picks the whole, well-formed mutant the cases below each break once', () => {
+    expect(plan(report({ 'src/a.ts': [malformed({})] })).candidates).toBe(1);
+  });
+
+  it.each<[string, Record<string, unknown>]>([
+    ['a mutatorName that is not a string', { mutatorName: 7 }],
+    ['no mutatorName', { mutatorName: undefined }],
+    ['a replacement that is not a string', { replacement: 7 }],
+    ['no replacement', { replacement: undefined }],
+    ['a location that is not an object', { location: 'src/a.ts:3' }],
+    ['no location', { location: undefined }],
+    ['a null location', { location: null }],
+    ['no start', { location: { end: END } }],
+    ['no end', { location: { start: START } }],
+    ['a start that is not an object', { location: { start: 3, end: END } }],
+    ['a null start', { location: { start: null, end: END } }],
+    ['an end that is not an object', { location: { start: START, end: 3 } }],
+    ['a null end', { location: { start: START, end: null } }],
+    [
+      'a start line that is not a number',
+      { location: { start: { line: '3', column: 3 }, end: END } },
+    ],
+    [
+      'a start column that is not a number',
+      { location: { start: { line: 3, column: '3' }, end: END } },
+    ],
+    ['a start with no column', { location: { start: { line: 3 }, end: END } }],
+    [
+      'an end line that is not a number',
+      { location: { start: START, end: { line: '3', column: 10 } } },
+    ],
+    [
+      'an end column that is not a number',
+      { location: { start: START, end: { line: 3, column: '10' } } },
+    ],
+    ['an end with no column', { location: { start: START, end: { line: 3 } } }],
+    [
+      'an end with no line',
+      { location: { start: START, end: { column: 10 } } },
+    ],
+  ])(
+    'leaves out a mutant with %s, and keys no timeout for it',
+    (_label, overrides) => {
+      const text = report({ 'src/a.ts': [malformed(overrides)] });
+      expect(plan(text).candidates).toBe(0);
+      expect(timeoutKeys(text).size).toBe(0);
+    },
+  );
 });
 
 describe('timeoutKeys', () => {
@@ -206,6 +268,23 @@ describe('dropMutants', () => {
 
   it('is undefined for a cache it cannot read', () => {
     expect(dropMutants('', new Set([KEY_LINE_3]))).toBeUndefined();
+  });
+
+  it('keeps a mutant it cannot key, whatever keys it is given', () => {
+    const bare = {
+      id: 'bare',
+      mutatorName: 'UpdateOperator',
+      status: 'Timeout',
+      location: { start: { line: 3 } },
+    };
+    const dropped = dropMutants(
+      report({ 'src/a.ts': [bare, mutant({ line: 3 })] }),
+      new Set([KEY_LINE_3]),
+    );
+    const kept = parseIncrementalCache(dropped ?? '')
+      ?.files.get('src/a.ts')
+      ?.mutants.map((each) => each.raw.id);
+    expect(kept).toEqual(['bare']);
   });
 });
 
@@ -271,6 +350,56 @@ describe('rescore', () => {
       ['Timeout', undefined, undefined],
     ]);
     expect(result).toMatchObject({ rescored: 0, timedOutAgain: 0, missing: 1 });
+  });
+
+  it('keeps the first mutant’s own fields and drops its stale verdict', () => {
+    const stale = report({
+      'src/a.ts': [mutant({ line: 3, killedBy: [], testsCompleted: 9 })],
+    });
+    const second = report({
+      'src/a.ts': [
+        mutant({
+          line: 3,
+          id: 'from-the-re-run',
+          status: 'Survived',
+          testsCompleted: 2,
+        }),
+      ],
+    });
+    const result = rescore(stale, second, keys);
+    const raw = parseIncrementalCache(result.report)?.files.get('src/a.ts')
+      ?.mutants[0]?.raw;
+    expect(raw?.id).toBe('3');
+    expect(raw?.status).toBe('Survived');
+    expect(raw?.testsCompleted).toBe(2);
+    expect(raw).not.toHaveProperty('killedBy');
+  });
+
+  it('takes the re-run’s coveredBy over the first run’s', () => {
+    const second = report({
+      'src/a.ts': [
+        { ...mutant({ line: 3, status: 'Survived' }), coveredBy: ['1', '2'] },
+      ],
+    });
+    const raw = parseIncrementalCache(
+      rescore(first, second, keys).report,
+    )?.files.get('src/a.ts')?.mutants[0]?.raw;
+    expect(raw?.coveredBy).toEqual(['1', '2']);
+  });
+
+  it('returns the first report’s text untouched when nothing was re-scored', () => {
+    const spaced = JSON.stringify(JSON.parse(first), undefined, 4);
+    const second = report({ 'src/a.ts': [mutant({ line: 3 })] });
+    expect(rescore(spaced, second, keys).report).toBe(spaced);
+  });
+
+  it('returns an unreadable first report untouched, still counting the re-scores', () => {
+    const second = report({
+      'src/a.ts': [mutant({ line: 3, status: 'Survived' })],
+    });
+    const result = rescore('not a report', second, keys);
+    expect(result.report).toBe('not a report');
+    expect(result.rescored).toBe(1);
   });
 
   it('keeps the first report whole when the re-run’s is not a report', () => {

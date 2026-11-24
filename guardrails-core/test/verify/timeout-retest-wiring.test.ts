@@ -104,11 +104,27 @@ interface StrykerCall {
   */
   cache?: string;
   code?: number;
+  /**
+  The process could not be started.
+  */
+  spawnFailed?: true;
+  /**
+  The process was killed by this signal.
+  */
+  signal?: NodeJS.Signals;
 }
 
 function gate(
   calls: StrykerCall[],
-  options: { retestLimit?: number; cache?: string; lockPath?: string } = {},
+  options: {
+    retestLimit?: number;
+    cache?: string;
+    lockPath?: string;
+    /**
+    The 1-based lock probe from which another gate holds the lock.
+    */
+    busyFromProbe?: number;
+  } = {},
 ) {
   const files = new Map<string, string>([
     [path.join(ROOT, 'stryker.conf.json'), STRYKER_CONFIG],
@@ -138,7 +154,13 @@ function gate(
       files.set(REPORT, call.report);
       files.set(CACHE, call.cache ?? call.report);
     }
-    return Promise.resolve({ stdout: '', stderr: '', code: call.code ?? 0 });
+    return Promise.resolve({
+      stdout: '',
+      stderr: '',
+      code: call.code ?? 0,
+      ...(call.spawnFailed !== undefined && { spawnFailed: call.spawnFailed }),
+      ...(call.signal !== undefined && { signal: call.signal }),
+    });
   };
   let probes = 0;
   const exec: Exec = (command, args) => {
@@ -151,7 +173,7 @@ function gate(
       return Promise.resolve({
         stdout: '',
         stderr: '',
-        code: probes > 1 ? 75 : 0,
+        code: probes >= (options.busyFromProbe ?? 2) ? 75 : 0,
       });
     }
     if (command === 'lockf') {
@@ -402,6 +424,122 @@ describe('a timed-out mutant is re-tested once, alone (#202)', () => {
         expect.stringMatching(
           /^guardrails: the re-test of 1 timed-out mutant did not finish \(the mutation lock was busy: .+\), so it stays counted as killed\.$/,
         ),
+      );
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  const TWO_TIMED_OUT = [{ status: 'Timeout', line: 2 }, TIMED_OUT] as const;
+
+  it('says "them" when it re-tests two and none are left out', async () => {
+    const run = gate([
+      { report: report(KILLED, ...TWO_TIMED_OUT) },
+      { report: report(KILLED, ...TWO_TIMED_OUT) },
+    ]);
+    await run.result;
+    expect(run.progress).toContain(
+      'guardrails: re-testing 2 timed-out mutants alone, in one more ' +
+        'stryker run, before counting them killed.',
+    );
+  });
+
+  it('says "stay" when the cap leaves two out', async () => {
+    const run = gate(
+      [
+        {
+          report: report({ status: 'Timeout', line: 2 }, TIMED_OUT, {
+            status: 'Timeout',
+            line: 4,
+          }),
+        },
+        { report: report({ status: 'Timeout', line: 2 }) },
+      ],
+      { retestLimit: 1 },
+    );
+    await run.result;
+    expect(run.progress).toContain(
+      'guardrails: re-testing 1 of 3 timed-out mutants alone, in one more ' +
+        'stryker run (at most 1: mutationTimeouts.retestLimit); 2 stay ' +
+        'counted as killed.',
+    );
+  });
+
+  it('says "stay" when two are missing from the re-test’s report', async () => {
+    const run = gate([
+      { report: report(KILLED, ...TWO_TIMED_OUT) },
+      { report: report(KILLED) },
+    ]);
+    await run.result;
+    expect(run.progress).toContain(
+      'guardrails: re-test: 0 timed out again (killed), 0 re-scored. 2 ' +
+        'missing from its report stay counted as killed.',
+    );
+  });
+
+  it('says "they stay" when a re-test of two leaves no report', async () => {
+    const run = gate([
+      { report: report(KILLED, ...TWO_TIMED_OUT) },
+      { code: 1 },
+    ]);
+    await run.result;
+    expect(run.progress).toContain(
+      'guardrails: the re-test of 2 timed-out mutants did not finish ' +
+        '(stryker exited 1 with no report), so they stay counted as killed.',
+    );
+    expect(run.records[0]?.stryker).toMatchObject({
+      retested: 2,
+      rescored: 0,
+    });
+  });
+
+  it('says stryker could not be started when the re-test cannot spawn it', async () => {
+    const run = gate([
+      { report: report(KILLED, TIMED_OUT) },
+      { spawnFailed: true, code: 1 },
+    ]);
+    await run.result;
+    expect(run.progress).toContain(
+      'guardrails: the re-test of 1 timed-out mutant did not finish ' +
+        '(stryker could not be started), so it stays counted as killed.',
+    );
+  });
+
+  it('names the signal that stopped the re-test', async () => {
+    const run = gate([
+      { report: report(KILLED, TIMED_OUT) },
+      { signal: 'SIGTERM', code: 0 },
+    ]);
+    await run.result;
+    expect(run.progress).toContain(
+      'guardrails: the re-test of 1 timed-out mutant did not finish ' +
+        '(stryker was stopped by SIGTERM), so it stays counted as killed.',
+    );
+  });
+
+  it('does not re-test when the first run could not start stryker', async () => {
+    const run = gate([
+      { report: report(KILLED, TIMED_OUT), spawnFailed: true, code: 1 },
+      { report: report(KILLED, TIMED_OUT) },
+    ]);
+    await run.result;
+    expect(run.strykerArgs).toHaveLength(1);
+    expect(run.progress).not.toContainEqual(
+      expect.stringContaining('re-testing'),
+    );
+  });
+
+  it('does not re-test when another gate holds the lock for the first run', async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), 'guardrails-retest-'));
+    try {
+      const run = gate([{ report: report(KILLED, TIMED_OUT) }], {
+        lockPath: path.join(directory, 'gate.lock'),
+        busyFromProbe: 1,
+      });
+      await run.result;
+      expect(run.strykerArgs).toHaveLength(0);
+      expect(run.progress).not.toContainEqual(
+        expect.stringContaining('re-test'),
       );
     } finally {
       rmSync(directory, { recursive: true, force: true });

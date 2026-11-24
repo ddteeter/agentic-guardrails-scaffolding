@@ -44,6 +44,10 @@ export const CACHE_INVALIDATIONS: readonly CacheInvalidation[] = [
 interface CachedMutant {
   readonly status: string;
   /**
+  Which mutator made it, as stryker named it.
+  */
+  readonly mutatorName: string;
+  /**
   Test ids stryker recorded as failing on this mutant; `[]` when absent.
   */
   readonly killedBy: readonly string[];
@@ -137,7 +141,13 @@ function parseMutant(value: unknown): CachedMutant | undefined {
   if (killedBy === undefined || coveredBy === undefined) {
     return undefined;
   }
-  return { status: value.status, killedBy, coveredBy, raw: value };
+  return {
+    status: value.status,
+    mutatorName: value.mutatorName,
+    killedBy,
+    coveredBy,
+    raw: value,
+  };
 }
 
 /**
