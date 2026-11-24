@@ -90,11 +90,18 @@ const HAPPY: Record<string, ExecResult | ExecResult[]> = {
   'git ls-remote': ok('abc123\trefs/heads/feat/x\n'),
 };
 
+/**
+The push gate every test ship runs, and the command line it shows up as.
+*/
+const PUSH_GATE = { command: 'node', args: ['cli.mjs', 'gate', '--mode=push'] };
+const GATE_LINE = 'node cli.mjs gate --mode=push';
+
 function options(exec: Exec, over: Partial<ShipOptions> = {}): ShipOptions {
   return {
     exec,
     repoRoot: root,
     baseBranch: 'main',
+    pushGate: PUSH_GATE,
     now: () => new Date('2026-10-12T12:00:00.000Z'),
     delay: () => Promise.resolve(),
     ...over,
@@ -178,6 +185,127 @@ async function stateOf(exec: Exec): Promise<string> {
   const status = await ship(options(exec));
   return status.state;
 }
+
+/**
+Where the first call starting with `prefix` falls among `calls`; -1 if none.
+*/
+function indexOf(calls: readonly Call[], prefix: string): number {
+  return calls.findIndex((call) => call.line.startsWith(prefix));
+}
+
+describe('ship: the push gate runs before git push (#204)', () => {
+  it('runs the gate after everything asked before the push, and before it', async () => {
+    const { exec, calls } = fakeExec(HAPPY);
+    await ship(options(exec));
+    const gate = indexOf(calls, GATE_LINE);
+    expect(gate).toBeGreaterThan(indexOf(calls, 'gh auth status'));
+    expect(gate).toBeGreaterThan(indexOf(calls, 'git rev-parse HEAD'));
+    expect(gate).toBeGreaterThan(
+      indexOf(calls, 'git merge-base --is-ancestor'),
+    );
+    expect(gate).toBeLessThan(indexOf(calls, 'git push'));
+  });
+
+  it('runs the gate once, in the repository it ships', async () => {
+    const { exec, calls } = fakeExec(HAPPY);
+    await ship(options(exec));
+    const gates = calls.filter((call) => call.line === GATE_LINE);
+    expect(gates).toEqual([{ line: GATE_LINE, cwd: root }]);
+  });
+
+  it('runs no gate when the preflight stops the ship', async () => {
+    const { exec, calls } = fakeExec({
+      ...HAPPY,
+      'gh auth status': failed('You are not logged into any GitHub hosts.'),
+    });
+    await ship(options(exec));
+    expect(indexOf(calls, GATE_LINE)).toBe(-1);
+  });
+});
+
+describe('ship: the push gate decides before anything is pushed (#204)', () => {
+  const BLOCK_TEXT =
+    'src/a.ts:3 [no-console] Unexpected console statement. (eslint)\n';
+
+  it('reports a blocked gate as gate-blocked and pushes nothing', async () => {
+    const { exec, calls } = fakeExec({
+      ...HAPPY,
+      'gh pr view': failed('no pull requests found'),
+      [GATE_LINE]: failed(BLOCK_TEXT),
+    });
+    const status = await ship(options(exec));
+    expect(status).toMatchObject({
+      state: 'gate-blocked',
+      pr: null,
+      url: null,
+    });
+    expect(status.tail).toContain('src/a.ts:3 [no-console]');
+    expect(indexOf(calls, 'git push')).toBe(-1);
+    expect(indexOf(calls, 'gh pr create')).toBe(-1);
+  });
+
+  it('still names the PR the blocked branch already has', async () => {
+    const { exec } = fakeExec({ ...HAPPY, [GATE_LINE]: failed(BLOCK_TEXT) });
+    const status = await ship(options(exec));
+    expect(status).toMatchObject({
+      state: 'gate-blocked',
+      pr: 42,
+      url: 'https://github.com/o/r/pull/42',
+    });
+  });
+
+  it('reports a gate that gave up on the lock as lock-timeout', async () => {
+    const { exec, calls } = fakeExec({
+      ...HAPPY,
+      [GATE_LINE]: failed(`${LOCK_TIMEOUT_MARKER} after 10800s`, 75),
+    });
+    const status = await ship(options(exec));
+    expect(status.state).toBe('lock-timeout');
+    expect(status.tail).toContain(LOCK_TIMEOUT_MARKER);
+    expect(indexOf(calls, 'git push')).toBe(-1);
+  });
+
+  it('never reads a killed gate as a pass, though it reports exit 0', async () => {
+    const { exec, calls } = fakeExec({
+      ...HAPPY,
+      [GATE_LINE]: { stdout: '', stderr: '', code: 0, signal: 'SIGTERM' },
+    });
+    const status = await ship(options(exec));
+    expect(status.state).toBe('error');
+    expect(status.tail).toContain('SIGTERM');
+    expect(status.tail).toContain('Nothing was pushed');
+    expect(indexOf(calls, 'git push')).toBe(-1);
+  });
+
+  it('reports a gate that could not be started as an error', async () => {
+    const { exec, calls } = fakeExec({
+      ...HAPPY,
+      [GATE_LINE]: {
+        stdout: '',
+        stderr: 'spawn node ENOENT',
+        code: 1,
+        spawnFailed: true,
+      },
+    });
+    const status = await ship(options(exec));
+    expect(status.state).toBe('error');
+    expect(status.tail).toContain('could not be started');
+    expect(status.tail).toContain('spawn node ENOENT');
+    expect(indexOf(calls, 'git push')).toBe(-1);
+  });
+
+  it('reports any other gate exit as an error', async () => {
+    const { exec, calls } = fakeExec({
+      ...HAPPY,
+      [GATE_LINE]: failed('unknown flag', 2),
+    });
+    const status = await ship(options(exec));
+    expect(status.state).toBe('error');
+    expect(status.tail).toContain('exited 2');
+    expect(status.tail).toContain('unknown flag');
+    expect(indexOf(calls, 'git push')).toBe(-1);
+  });
+});
 
 describe('ship: the happy path', () => {
   it('pushes, finds the PR, watches its checks and reports green', async () => {
@@ -1842,7 +1970,12 @@ describe('ship: the details a reader acts on', () => {
   it('stamps the real time when none is injected', async () => {
     const { exec } = fakeExec(HAPPY);
     const before = Date.now();
-    const status = await ship({ exec, repoRoot: root, baseBranch: 'main' });
+    const status = await ship({
+      exec,
+      repoRoot: root,
+      baseBranch: 'main',
+      pushGate: PUSH_GATE,
+    });
     const stamped = Date.parse(status.finishedAt);
     expect(stamped).toBeGreaterThanOrEqual(before);
     expect(stamped).toBeLessThanOrEqual(Date.now());
@@ -1858,7 +1991,12 @@ describe('ship: the details a reader acts on', () => {
           ok(JSON.stringify([{ name: 'build', bucket: 'pass' }])),
         ],
       });
-      const shipped = ship({ exec, repoRoot: root, baseBranch: 'main' });
+      const shipped = ship({
+        exec,
+        repoRoot: root,
+        baseBranch: 'main',
+        pushGate: PUSH_GATE,
+      });
       await vi.advanceTimersByTimeAsync(14_999);
       expect(
         calls.filter(

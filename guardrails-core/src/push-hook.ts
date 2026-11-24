@@ -20,6 +20,13 @@ import path from 'node:path';
 import type { Exec } from './exec.js';
 
 /**
+ * The arguments that run the push rung, as the scaffolded pre-push hook
+ * passes them and as `ship` runs the gate before it pushes (#204). One list,
+ * so the run ship makes is the run the hook then finds already passed.
+ */
+export const PUSH_GATE_ARGS: readonly string[] = ['gate', '--mode=push'];
+
+/**
 A command line (not a comment) that runs the push rung.
 */
 const PUSH_GATE = /\bgate[ \t]+--mode=push\b/;

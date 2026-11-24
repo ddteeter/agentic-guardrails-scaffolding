@@ -16,6 +16,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { type CliDependencies, runCommand } from '../src/cli-core.js';
 import { type Exec, type ExecResult, spawnExec } from '../src/exec.js';
+import { PUSH_GATE_ARGS } from '../src/push-hook.js';
 import {
   computeFingerprint,
   serializeFingerprint,
@@ -5582,6 +5583,35 @@ describe('runCommand — ship', () => {
       `gh pr comment 42 --attach ${path.join(root, 'a')} ` +
         `--attach ${path.join(root, 'after.png')}#left//right/`,
     );
+  });
+
+  it('runs the push gate as the hook does before it pushes (#204)', async () => {
+    const gates: { args: string[]; cwd: string | undefined }[] = [];
+    const calls: string[] = [];
+    const inner = shipExec('pass', calls);
+    const exec: Exec = (command, args, execOptions) => {
+      if (command === process.execPath) {
+        gates.push({ args, cwd: execOptions?.cwd });
+      }
+      return inner(command, args, execOptions);
+    };
+    await runCommand('ship', ['--base=release'], dependencies({ exec }));
+    // No --base, even when the ship has one: the hook passes none, and the
+    // pass record is keyed by the base the gate resolves for itself.
+    expect(gates).toEqual([
+      {
+        args: [
+          path.join(root, 'node_modules', 'guardrails-core', 'dist', 'cli.mjs'),
+          ...PUSH_GATE_ARGS,
+        ],
+        cwd: root,
+      },
+    ]);
+    expect(PUSH_GATE_ARGS).toEqual(['gate', '--mode=push']);
+    const gate = calls.findIndex((line) => line.startsWith(process.execPath));
+    const push = calls.findIndex((line) => line.startsWith('git push'));
+    expect(gate).toBeGreaterThan(-1);
+    expect(gate).toBeLessThan(push);
   });
 
   it('passes --force-with-lease through to the push', async () => {

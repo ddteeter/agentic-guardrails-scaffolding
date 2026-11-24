@@ -87,7 +87,7 @@ import {
 } from './mutation-lock.js';
 import { foregroundWait, foregroundWaitDenial } from './foreground-wait.js';
 import { commandTarget } from './command-target.js';
-import { isPushGatedByHook } from './push-hook.js';
+import { isPushGatedByHook, PUSH_GATE_ARGS } from './push-hook.js';
 import { COMMAND_START, withoutQuotedHeredocBodies } from './shell-command.js';
 import { collectSessionScope, isWithinRepo } from './scope.js';
 import {
@@ -104,7 +104,7 @@ import {
   stateDirectory,
   sweepStale,
 } from './state-store.js';
-import { ship, shipSummary, writeShipStatus } from './ship.js';
+import { type PushGate, ship, shipSummary, writeShipStatus } from './ship.js';
 import { withHeartbeat } from './state.js';
 import { hasErrors, isViolation, type Violation } from './violation.js';
 import type { Rung } from './verify/analyzer-policy.js';
@@ -1811,6 +1811,18 @@ const SHIP_HELP =
   'Either way: rebase, then ship.\n';
 
 /**
+ * The push gate as the pre-push hook runs it: the repository's own
+ * guardrails-core under this Node, from the repository root, with no
+ * `--base` -- so the pass it records is the one the hook's gate looks up
+ * (#204). A repository with no install of its own falls back to this CLI;
+ * a mismatch costs only a miss, and the hook then gates in full.
+ */
+function pushGateOf(dependencies: CliDependencies, repoRoot: string): PushGate {
+  const cli = resolveCliFrom(repoRoot).cli ?? selfLocation(dependencies);
+  return { command: process.execPath, args: [cli, ...PUSH_GATE_ARGS] };
+}
+
+/**
  * `ship`: push, find or open the pull request, wait for its checks, and write
  * the outcome to a status file -- one command for an agent to background and
  * be woken by once (see `ship.ts`). Exit 0 only on green.
@@ -1837,6 +1849,7 @@ async function shipCommand(
   const status = await ship({
     exec: dependencies.exec,
     repoRoot,
+    pushGate: pushGateOf(dependencies, repoRoot),
     baseBranch: base.base,
     bodyFile:
       bodyFile === undefined
