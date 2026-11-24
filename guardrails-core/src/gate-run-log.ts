@@ -140,9 +140,11 @@ export interface ShipRunInput {
 }
 
 /**
- * How long the gate this ship's push ran took: the last gate row stamped
- * with its id, or `undefined` when the gate wrote none (no stryker lock, an
- * older hook, a push that never reached the gate).
+ * How long this ship's gates took, together: every gate row stamped with its
+ * id -- the gate ship runs before the push, and the hook's, which is quick
+ * when it finds that gate's pass and runs in full when it does not (#204).
+ * `undefined` when no gate wrote a row (no stryker lock, an older hook, a
+ * ship that never reached a gate).
  */
 function gateMsOf(file: string, shipId: string): number | undefined {
   let text: string;
@@ -151,12 +153,12 @@ function gateMsOf(file: string, shipId: string): number | undefined {
   } catch {
     return undefined;
   }
-  const gate = parseRuns(text).findLast(
-    (row) => row.kind === 'gate' && row.ship === shipId,
-  );
-  return gate === undefined
+  const times = parseRuns(text)
+    .filter((row) => row.kind === 'gate' && row.ship === shipId)
+    .map((gate) => Date.parse(gate.finishedAt) - Date.parse(gate.startedAt));
+  return times.length === 0
     ? undefined
-    : Date.parse(gate.finishedAt) - Date.parse(gate.startedAt);
+    : times.reduce((total, ms) => total + ms, 0);
 }
 
 /**

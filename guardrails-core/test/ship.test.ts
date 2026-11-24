@@ -2466,6 +2466,45 @@ describe('ship: its row in the run log (#176)', () => {
     });
   });
 
+  it('times the push from the start of its gate to the end of the push (#204)', async () => {
+    const clock = steppingClock();
+    const now = clock.now;
+    let skipped = 0;
+    const steppedClock = {
+      ...clock,
+      now: () => new Date(now().getTime() + skipped),
+    };
+    const { exec: base } = fakeExec(HAPPY);
+    const exec: Exec = (command, args, execOptions) => {
+      if (command === PUSH_GATE.command) {
+        // The gate's wait for the lock and its run: thirty seconds.
+        skipped += 30_000;
+      }
+      return base(command, args, execOptions);
+    };
+    await ship(
+      options(exec, {
+        lockPath: path.join(root, 'gate.lock'),
+        runClock: steppedClock,
+      }),
+    );
+    const [row] = parseRuns(readFileSync(logFile(), 'utf8'));
+    expect(row).toMatchObject({ kind: 'ship', pushMs: 31_000 });
+  });
+
+  it('hands its id to its own gate, for that gate’s row to carry (#204)', async () => {
+    const gates: (string | undefined)[] = [];
+    const { exec: base } = fakeExec(HAPPY);
+    const exec: Exec = (command, args, execOptions) => {
+      if (command === PUSH_GATE.command) {
+        gates.push(execOptions?.env?.GUARDRAILS_SHIP_ID);
+      }
+      return base(command, args, execOptions);
+    };
+    await ship(options(exec, { shipId: 'ship-42' }));
+    expect(gates).toEqual(['ship-42']);
+  });
+
   it('records a blocked push with no CI time and no gate it can find', async () => {
     const { exec } = fakeExec({
       ...HAPPY,
