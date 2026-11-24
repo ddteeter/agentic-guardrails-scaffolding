@@ -34,12 +34,12 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { describe, expect, it } from 'vitest';
+import { expect, it } from 'vitest';
 
 import { spawnExec } from '../../src/exec.js';
 import { FALLOW_SEED } from '../../src/scaffold/seeds.js';
 import { parseFallowDupesJson } from '../../src/verify/fallow-adapter.js';
-import { isUnderMutationRun } from './under-mutation.js';
+import { describeUnlessMutating } from './under-mutation.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '../../..');
@@ -90,7 +90,7 @@ async function buildFixture(): Promise<string> {
   return root;
 }
 
-describe.skipIf(isUnderMutationRun(here))('fallow dupes runner', () => {
+describeUnlessMutating(here)('fallow dupes runner', () => {
   it('still finds a renamed cross-file clone through the seeded config', async () => {
     const root = await buildFixture();
     const result = await spawnExec(

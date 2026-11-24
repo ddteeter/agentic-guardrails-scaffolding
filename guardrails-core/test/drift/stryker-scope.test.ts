@@ -37,7 +37,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { describe, expect, it } from 'vitest';
+import { expect, it } from 'vitest';
 
 import { spawnExec } from '../../src/exec.js';
 import {
@@ -46,7 +46,7 @@ import {
   strykerMutateNegations,
   strykerMutatePositives,
 } from '../../src/verify/index.js';
-import { isUnderMutationRun } from './under-mutation.js';
+import { describeUnlessMutating } from './under-mutation.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '../../..');
@@ -182,7 +182,7 @@ function parseFilesToMutate(output: string, directory: string): string[] {
     .toSorted((left, right) => left.localeCompare(right));
 }
 
-describe.skipIf(isUnderMutationRun(here))(
+describeUnlessMutating(here)(
   'drift-guard: stryker mutate-scope resolution',
   () => {
     it('resolves the same scope stryker does', async () => {

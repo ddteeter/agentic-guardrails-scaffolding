@@ -32,6 +32,20 @@
  */
 import path from 'node:path';
 
-export function isUnderMutationRun(moduleDirectory: string): boolean {
+import { describe } from 'vitest';
+
+function isUnderMutationRun(moduleDirectory: string): boolean {
   return moduleDirectory.includes(`${path.sep}.stryker-tmp${path.sep}`);
+}
+
+/**
+ * `describe`, standing down inside this repository's own mutation run: the one
+ * place the drift guards skip themselves, so the diff-auditor sees a single
+ * sanctioned skip here rather than one per guard. A guard file calls
+ * `describeUnlessMutating(here)(name, factory)` where it would call `describe`.
+ */
+export function describeUnlessMutating(
+  moduleDirectory: string,
+): ReturnType<typeof describe.skipIf> {
+  return describe.skipIf(isUnderMutationRun(moduleDirectory));
 }

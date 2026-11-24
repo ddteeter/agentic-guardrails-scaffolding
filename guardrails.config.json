@@ -115,6 +115,10 @@
     {
       "key": "guardrails-core/src/verify/index.ts|mutation-suppress|// Stryker disable next-line ConditionalExpression,BlockStatement",
       "reason": "Proven-equivalent nonzero-tsc early-return mutants. withExitCodeCheck has already converted every non-spawn nonzero exit into either parsed TypeScript diagnostics or guardrails/analyzer-failed, and the immediately following violations-length guard returns that identical array. The spawn-failure branch remains independently mutated and tested."
+    },
+    {
+      "key": "guardrails-core/test/drift/under-mutation.ts|skipped-test|return describe.skipIf(isUnderMutationRun(moduleDirectory));",
+      "reason": "The one place the drift guards stand down: describeUnlessMutating(here) skips a guard only inside this repo's own Stryker sandbox, where nested stryker, ESLint and knip cannot start and would fail Stryker's dry run as analyzer-failed. The guards assert facts about upstream tools, not about mutants, so nothing is lost under mutation; they still run in npm test, CI and every gate rung. Any new guard that calls the helper is skipped the same way without a finding of its own, so a reviewer should check that a new caller is a live probe of third-party tooling."
     }
   ],
   "distribution": "solo",

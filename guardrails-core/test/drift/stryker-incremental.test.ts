@@ -36,7 +36,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { describe, expect, it } from 'vitest';
+import { expect, it } from 'vitest';
 
 import { spawnExec } from '../../src/exec.js';
 import { canReportPerTestCoverage } from '../../src/verify/index.js';
@@ -46,7 +46,7 @@ import {
   parseIncrementalCache,
 } from '../../src/verify/incremental-cache.js';
 import { parseStrykerJson } from '../../src/verify/stryker-adapter.js';
-import { isUnderMutationRun } from './under-mutation.js';
+import { describeUnlessMutating } from './under-mutation.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '../../..');
@@ -236,142 +236,137 @@ async function readMutationReport(directory: string): Promise<string> {
   );
 }
 
-describe.skipIf(isUnderMutationRun(here))(
-  'drift-guard: stryker incremental reuse',
-  () => {
-    it('re-runs a cached survivor once its covering test is strengthened', async () => {
-      const directory = await buildFixture();
-      const readReport = () => readMutationReport(directory);
+describeUnlessMutating(here)('drift-guard: stryker incremental reuse', () => {
+  it('re-runs a cached survivor once its covering test is strengthened', async () => {
+    const directory = await buildFixture();
+    const readReport = () => readMutationReport(directory);
 
-      const first = await spawnExec(strykerBin, ['run'], { cwd: directory });
-      const firstDiagnostic = `stryker exit ${first.code}\n${first.stdout}\n${first.stderr}`;
-      expect(first.code, firstDiagnostic).toBe(0);
-      // The fixture's premise: one survivor, at the boundary the weak test
-      // never asserts. A different count means the fixture stopped exercising
-      // what the rest of this test claims to prove.
-      const firstViolations = parseStrykerJson(await readReport(), MUTATED);
-      expect(firstViolations, firstDiagnostic).toEqual([
-        expect.objectContaining({
-          ruleId: 'stryker/survived',
-          file: 'src/tier.ts',
-        }),
-      ]);
+    const first = await spawnExec(strykerBin, ['run'], { cwd: directory });
+    const firstDiagnostic = `stryker exit ${first.code}\n${first.stdout}\n${first.stderr}`;
+    expect(first.code, firstDiagnostic).toBe(0);
+    // The fixture's premise: one survivor, at the boundary the weak test
+    // never asserts. A different count means the fixture stopped exercising
+    // what the rest of this test claims to prove.
+    const firstViolations = parseStrykerJson(await readReport(), MUTATED);
+    expect(firstViolations, firstDiagnostic).toEqual([
+      expect.objectContaining({
+        ruleId: 'stryker/survived',
+        file: 'src/tier.ts',
+      }),
+    ]);
 
-      // Half one: a real vitest-runner cache satisfies the gate's own predicate.
-      // If this fails, `runStryker` deletes the cache on every run and
-      // `--incremental` is the no-op #59 reported.
-      const cache = await readFile(
-        path.join(directory, 'reports', 'stryker-incremental.json'),
-        'utf8',
-      );
-      const parsed = parseIncrementalCache(cache);
-      expect(
-        parsed !== undefined &&
-          hasPerTestCoverage(filterToScope(parsed, MUTATED)),
-        'a real stryker cache no longer records the per-test coverage that ' +
-          'makes reuse safe, so guardrails will now take a cold mutation run ' +
-          'on every gate. Check the runner plugin against the installed ' +
-          'stryker before releasing.',
-      ).toBe(true);
+    // Half one: a real vitest-runner cache satisfies the gate's own predicate.
+    // If this fails, `runStryker` deletes the cache on every run and
+    // `--incremental` is the no-op #59 reported.
+    const cache = await readFile(
+      path.join(directory, 'reports', 'stryker-incremental.json'),
+      'utf8',
+    );
+    const parsed = parseIncrementalCache(cache);
+    expect(
+      parsed !== undefined &&
+        hasPerTestCoverage(filterToScope(parsed, MUTATED)),
+      'a real stryker cache no longer records the per-test coverage that ' +
+        'makes reuse safe, so guardrails will now take a cold mutation run ' +
+        'on every gate. Check the runner plugin against the installed ' +
+        'stryker before releasing.',
+    ).toBe(true);
 
-      // Strengthen the covering test, exactly as a fixer would. The cache is
-      // left in place UNREWRITTEN — which is NOT what the gate does: since #156
-      // it drops every cached survivor and every kill whose test changed
-      // (`dropUntrusted`). That rule exists precisely because this upstream
-      // behaviour is not observable from the gate (and fails for static
-      // mutants, `stryker-cache-semantics.test.ts`), so it must not stand in
-      // for it here: leaving the cache is the only way to keep asking stryker
-      // the question.
-      await writeFile(path.join(directory, 'tier.test.ts'), STRONG_TIER_TEST);
-      const second = await spawnExec(strykerBin, ['run'], { cwd: directory });
-      const secondDiagnostic = `stryker exit ${second.code}\n${second.stdout}\n${second.stderr}`;
-      expect(second.code, secondDiagnostic).toBe(0);
+    // Strengthen the covering test, exactly as a fixer would. The cache is
+    // left in place UNREWRITTEN — which is NOT what the gate does: since #156
+    // it drops every cached survivor and every kill whose test changed
+    // (`dropUntrusted`). That rule exists precisely because this upstream
+    // behaviour is not observable from the gate (and fails for static
+    // mutants, `stryker-cache-semantics.test.ts`), so it must not stand in
+    // for it here: leaving the cache is the only way to keep asking stryker
+    // the question.
+    await writeFile(path.join(directory, 'tier.test.ts'), STRONG_TIER_TEST);
+    const second = await spawnExec(strykerBin, ['run'], { cwd: directory });
+    const secondDiagnostic = `stryker exit ${second.code}\n${second.stdout}\n${second.stderr}`;
+    expect(second.code, secondDiagnostic).toBe(0);
 
-      // Half two, the load-bearing one: the cached `Survived` verdict did not
-      // outlive the test written to kill it.
-      expect(
-        parseStrykerJson(await readReport(), MUTATED),
-        'stryker reused a cached survivor whose covering test changed. A ' +
-          'fixer could no longer clear that mutant, so the guardrail loop ' +
-          'would never go green — reuse must be switched off (delete the ' +
-          'incremental cache unconditionally) until this is understood.',
-      ).toEqual([]);
+    // Half two, the load-bearing one: the cached `Survived` verdict did not
+    // outlive the test written to kill it.
+    expect(
+      parseStrykerJson(await readReport(), MUTATED),
+      'stryker reused a cached survivor whose covering test changed. A ' +
+        'fixer could no longer clear that mutant, so the guardrail loop ' +
+        'would never go green — reuse must be switched off (delete the ' +
+        'incremental cache unconditionally) until this is understood.',
+    ).toEqual([]);
 
-      // And the run genuinely reused something, so the first half is not
-      // passing on a cache stryker quietly ignored.
-      const reused = Number(
-        REUSE_SUMMARY.exec(`${second.stdout}\n${second.stderr}`)?.[1] ?? '0',
-      );
-      expect(reused, secondDiagnostic).toBeGreaterThan(0);
-    }, 600_000);
+    // And the run genuinely reused something, so the first half is not
+    // passing on a cache stryker quietly ignored.
+    const reused = Number(
+      REUSE_SUMMARY.exec(`${second.stdout}\n${second.stderr}`)?.[1] ?? '0',
+    );
+    expect(reused, secondDiagnostic).toBeGreaterThan(0);
+  }, 600_000);
 
-    it('blanket-reuses under the command runner — the case the config gate refuses', async () => {
-      // The hazard, reproduced rather than argued from stryker's source. The
-      // `command` runner reports no per-test data, so `hasCoverage` is false
-      // and `mutantCanBeReused` returns true before examining anything: the
-      // cached `Survived` verdict outlives the test written to kill it, and
-      // the fixer loop can never go green.
-      //
-      // `hasPerTestCoverage` cannot catch this on its own — on the very
-      // first run under a real runner the cache is coverage-rich — which is
-      // why `canReportPerTestCoverage` decides from the config instead.
-      const directory = await buildFixture('command');
-      const readReport = () => readMutationReport(directory);
+  it('blanket-reuses under the command runner — the case the config gate refuses', async () => {
+    // The hazard, reproduced rather than argued from stryker's source. The
+    // `command` runner reports no per-test data, so `hasCoverage` is false
+    // and `mutantCanBeReused` returns true before examining anything: the
+    // cached `Survived` verdict outlives the test written to kill it, and
+    // the fixer loop can never go green.
+    //
+    // `hasPerTestCoverage` cannot catch this on its own — on the very
+    // first run under a real runner the cache is coverage-rich — which is
+    // why `canReportPerTestCoverage` decides from the config instead.
+    const directory = await buildFixture('command');
+    const readReport = () => readMutationReport(directory);
 
-      const first = await spawnExec(strykerBin, ['run'], { cwd: directory });
-      expect(
-        first.code,
-        `stryker exit ${first.code}\n${first.stdout}\n${first.stderr}`,
-      ).toBe(0);
-      expect(parseStrykerJson(await readReport(), MUTATED)).toEqual([
-        expect.objectContaining({
-          ruleId: 'stryker/survived',
-          file: 'src/tier.ts',
-        }),
-      ]);
+    const first = await spawnExec(strykerBin, ['run'], { cwd: directory });
+    expect(
+      first.code,
+      `stryker exit ${first.code}\n${first.stdout}\n${first.stderr}`,
+    ).toBe(0);
+    expect(parseStrykerJson(await readReport(), MUTATED)).toEqual([
+      expect.objectContaining({
+        ruleId: 'stryker/survived',
+        file: 'src/tier.ts',
+      }),
+    ]);
 
-      await writeFile(path.join(directory, 'tier.test.ts'), STRONG_TIER_TEST);
-      const second = await spawnExec(strykerBin, ['run'], { cwd: directory });
-      const diagnostic =
-        'stryker no longer blanket-reuses cached verdicts under the command ' +
-        'runner. That is a WELCOME change upstream, but ' +
-        '`canReportPerTestCoverage` still refuses reuse for a hazard that no ' +
-        'longer exists — re-derive the rule against this version rather than ' +
-        'leaving a cold run nobody can justify.\n' +
-        `stryker exit ${second.code}\n${second.stdout}\n${second.stderr}`;
-      expect(second.code, diagnostic).toBe(0);
-      // The strengthened test genuinely kills this mutant — the first test in
-      // this file proves exactly that on the same fixture under vitest — and
-      // it is STILL reported, because nothing re-ran it.
-      expect(parseStrykerJson(await readReport(), MUTATED), diagnostic).toEqual(
-        [
-          expect.objectContaining({
-            ruleId: 'stryker/survived',
-            file: 'src/tier.ts',
-          }),
-        ],
-      );
-      // Which is a run guardrails never takes: the gate reads this config and
-      // deletes the cache first.
-      expect(
-        canReportPerTestCoverage(
-          await readFile(path.join(directory, 'stryker.conf.json'), 'utf8'),
-        ),
-        diagnostic,
-      ).toBe(false);
-    }, 600_000);
+    await writeFile(path.join(directory, 'tier.test.ts'), STRONG_TIER_TEST);
+    const second = await spawnExec(strykerBin, ['run'], { cwd: directory });
+    const diagnostic =
+      'stryker no longer blanket-reuses cached verdicts under the command ' +
+      'runner. That is a WELCOME change upstream, but ' +
+      '`canReportPerTestCoverage` still refuses reuse for a hazard that no ' +
+      'longer exists — re-derive the rule against this version rather than ' +
+      'leaving a cold run nobody can justify.\n' +
+      `stryker exit ${second.code}\n${second.stdout}\n${second.stderr}`;
+    expect(second.code, diagnostic).toBe(0);
+    // The strengthened test genuinely kills this mutant — the first test in
+    // this file proves exactly that on the same fixture under vitest — and
+    // it is STILL reported, because nothing re-ran it.
+    expect(parseStrykerJson(await readReport(), MUTATED), diagnostic).toEqual([
+      expect.objectContaining({
+        ruleId: 'stryker/survived',
+        file: 'src/tier.ts',
+      }),
+    ]);
+    // Which is a run guardrails never takes: the gate reads this config and
+    // deletes the cache first.
+    expect(
+      canReportPerTestCoverage(
+        await readFile(path.join(directory, 'stryker.conf.json'), 'utf8'),
+      ),
+      diagnostic,
+    ).toBe(false);
+  }, 600_000);
 
-    it('still defaults testRunner to command', () => {
-      // `canReportPerTestCoverage` refuses a config that names no runner, and
-      // that is only correct while stryker's own default is the coverage-blind
-      // `command` runner. If this flips upstream, the gate starts refusing
-      // reuse for repos that would in fact be safe.
-      expect(
-        schemaDefault('testRunner'),
-        'stryker changed its default testRunner; canReportPerTestCoverage ' +
-          'refuses a config that names none precisely because the default is ' +
-          'the coverage-blind `command` runner.',
-      ).toBe('command');
-    });
-  },
-);
+  it('still defaults testRunner to command', () => {
+    // `canReportPerTestCoverage` refuses a config that names no runner, and
+    // that is only correct while stryker's own default is the coverage-blind
+    // `command` runner. If this flips upstream, the gate starts refusing
+    // reuse for repos that would in fact be safe.
+    expect(
+      schemaDefault('testRunner'),
+      'stryker changed its default testRunner; canReportPerTestCoverage ' +
+        'refuses a config that names none precisely because the default is ' +
+        'the coverage-blind `command` runner.',
+    ).toBe('command');
+  });
+});

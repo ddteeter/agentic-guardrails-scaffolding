@@ -36,7 +36,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { describe, expect, it } from 'vitest';
+import { expect, it } from 'vitest';
 
 import { spawnExec } from '../../src/exec.js';
 import { readJsonFile } from '../../src/json-file.js';
@@ -51,7 +51,7 @@ import {
   parseStrykerJson,
   unrunSurvivedMutants,
 } from '../../src/verify/stryker-adapter.js';
-import { isUnderMutationRun } from './under-mutation.js';
+import { describeUnlessMutating } from './under-mutation.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '../../..');
@@ -137,85 +137,82 @@ async function buildFixture(): Promise<string> {
   return directory;
 }
 
-describe.skipIf(isUnderMutationRun(here))(
-  'drift-guard: stryker vitest runner',
-  () => {
-    it('still kills the mutants the fixture tests genuinely catch', async () => {
-      const directory = await buildFixture();
-      const result = await spawnExec(strykerBin, ['run'], { cwd: directory });
-      const report = await readFile(
-        path.join(directory, 'reports', 'mutation', 'mutation.json'),
-        'utf8',
-      );
+describeUnlessMutating(here)('drift-guard: stryker vitest runner', () => {
+  it('still kills the mutants the fixture tests genuinely catch', async () => {
+    const directory = await buildFixture();
+    const result = await spawnExec(strykerBin, ['run'], { cwd: directory });
+    const report = await readFile(
+      path.join(directory, 'reports', 'mutation', 'mutation.json'),
+      'utf8',
+    );
 
-      const diagnostic =
-        'stryker’s vitest runner stopped killing mutants that its own ' +
-        'tests catch. This is the stryker-js#6210 shape: the mutation gate ' +
-        'now MANUFACTURES violations, so every covered mutant in a consumer ' +
-        'repo is reported as survived. Check the installed vitest major ' +
-        'against @stryker-mutator/vitest-runner before releasing.\n' +
-        `stryker exit ${result.code}\n${result.stdout}\n${result.stderr}`;
+    const diagnostic =
+      'stryker’s vitest runner stopped killing mutants that its own ' +
+      'tests catch. This is the stryker-js#6210 shape: the mutation gate ' +
+      'now MANUFACTURES violations, so every covered mutant in a consumer ' +
+      'repo is reported as survived. Check the installed vitest major ' +
+      'against @stryker-mutator/vitest-runner before releasing.\n' +
+      `stryker exit ${result.code}\n${result.stdout}\n${result.stderr}`;
 
-      expect(result.code, diagnostic).toBe(0);
-      // The invariant `unrunSurvivedMutants` encodes, asserted against a real
-      // runner rather than a hand-written report: non-zero here means the runner
-      // executed no tests, whatever its verdicts claim.
-      expect(unrunSurvivedMutants(report, MUTATED), diagnostic).toBe(0);
-      // The positive half: these tests kill every mutant, so a working runner
-      // leaves nothing for us to raise. Without this, a runner that reported no
-      // mutants at all would satisfy the check above vacuously.
-      expect(parseStrykerJson(report, MUTATED), diagnostic).toEqual([]);
-    }, 300_000);
+    expect(result.code, diagnostic).toBe(0);
+    // The invariant `unrunSurvivedMutants` encodes, asserted against a real
+    // runner rather than a hand-written report: non-zero here means the runner
+    // executed no tests, whatever its verdicts claim.
+    expect(unrunSurvivedMutants(report, MUTATED), diagnostic).toBe(0);
+    // The positive half: these tests kill every mutant, so a working runner
+    // leaves nothing for us to raise. Without this, a runner that reported no
+    // mutants at all would satisfy the check above vacuously.
+    expect(parseStrykerJson(report, MUTATED), diagnostic).toEqual([]);
+  }, 300_000);
 
-    it('writes the holder file while the built progress plugin runs, and removes it after', async () => {
-      expect(
-        existsSync(builtPlugin),
-        `no built plugin at ${builtPlugin} -- run npm run build`,
-      ).toBe(true);
-      const directory = await buildFixture();
-      const lockPath = path.join(directory, 'gate.lock');
-      const holderFile = holderPath(lockPath);
-      const seen: unknown[] = [];
-      const watch = setInterval(() => {
-        const { parsed } = readJsonFile(holderFile);
-        if (parsed !== undefined) {
-          seen.push(parsed);
-        }
-      }, 25);
-      try {
-        const result = await spawnExec(
-          strykerBin,
-          [
-            'run',
-            '--reporters',
-            `json,${PROGRESS_REPORTER}`,
-            '--appendPlugins',
-            builtPlugin,
-          ],
-          {
-            cwd: directory,
-            env: {
-              ...process.env,
-              ...holderEnvironment(lockPath, 'push', directory),
-            },
-          },
-        );
-        expect(result.code, `${result.stdout}\n${result.stderr}`).toBe(0);
-      } finally {
-        clearInterval(watch);
+  it('writes the holder file while the built progress plugin runs, and removes it after', async () => {
+    expect(
+      existsSync(builtPlugin),
+      `no built plugin at ${builtPlugin} -- run npm run build`,
+    ).toBe(true);
+    const directory = await buildFixture();
+    const lockPath = path.join(directory, 'gate.lock');
+    const holderFile = holderPath(lockPath);
+    const seen: unknown[] = [];
+    const watch = setInterval(() => {
+      const { parsed } = readJsonFile(holderFile);
+      if (parsed !== undefined) {
+        seen.push(parsed);
       }
-      expect(seen.length).toBeGreaterThan(0);
-      expect(seen[0]).toMatchObject({ repo: directory, rung: 'push' });
-      expect(existsSync(holderFile)).toBe(false);
-      // The run summary the gate reads back (#176): every point reached.
-      const summary = parseRunSummary(
-        await readFile(runSummaryPath(directory), 'utf8'),
+    }, 25);
+    try {
+      const result = await spawnExec(
+        strykerBin,
+        [
+          'run',
+          '--reporters',
+          `json,${PROGRESS_REPORTER}`,
+          '--appendPlugins',
+          builtPlugin,
+        ],
+        {
+          cwd: directory,
+          env: {
+            ...process.env,
+            ...holderEnvironment(lockPath, 'push', directory),
+          },
+        },
       );
-      expect(summary).toMatchObject({
-        planReadyAt: expect.any(Number),
-        reportReadyAt: expect.any(Number),
-      });
-      expect(summary?.total).toBeGreaterThan(0);
-    }, 300_000);
-  },
-);
+      expect(result.code, `${result.stdout}\n${result.stderr}`).toBe(0);
+    } finally {
+      clearInterval(watch);
+    }
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen[0]).toMatchObject({ repo: directory, rung: 'push' });
+    expect(existsSync(holderFile)).toBe(false);
+    // The run summary the gate reads back (#176): every point reached.
+    const summary = parseRunSummary(
+      await readFile(runSummaryPath(directory), 'utf8'),
+    );
+    expect(summary).toMatchObject({
+      planReadyAt: expect.any(Number),
+      reportReadyAt: expect.any(Number),
+    });
+    expect(summary?.total).toBeGreaterThan(0);
+  }, 300_000);
+});
