@@ -1376,11 +1376,13 @@ export function shipSummary(status: ShipStatus, statusPath: string): string {
     status.pr === null ? 'no PR' : `PR #${status.pr} ${status.url ?? ''}`;
   const failing =
     status.failing.length > 0 ? `; failing: ${status.failing.join(', ')}` : '';
+  const next =
+    status.diagnosis === null ? '' : `; next: ${status.diagnosis.next}`;
   const warnings = status.warnings
     .map((warning) => `; warning: ${warning}`)
     .join('');
   return (
-    `guardrails ship: ${status.state} — ${status.branch}, ${pr}${failing}${warnings} ` +
+    `guardrails ship: ${status.state} — ${status.branch}, ${pr}${failing}${next}${warnings} ` +
     `(status: ${statusPath})`
   );
 }

@@ -1733,6 +1733,33 @@ describe('writeShipStatus and shipSummary', () => {
     expect(line).not.toContain('\n');
   });
 
+  it('says the next step after the failing checks, before the warnings', () => {
+    const line = shipSummary(
+      {
+        state: 'ci-red',
+        branch: 'feat/x',
+        pr: 42,
+        url: 'u',
+        failing: ['build'],
+        tail: '',
+        finishedAt: '',
+        warnings: ['w'],
+        diagnosis: {
+          base: 'moved',
+          rerunnable: [7],
+          advice: 'rebase',
+          next: 'rebase onto origin/main, which moved after this commit was tested, and ship again',
+        },
+      },
+      's.json',
+    );
+    expect(line).toBe(
+      'guardrails ship: ci-red — feat/x, PR #42 u; failing: build; ' +
+        'next: rebase onto origin/main, which moved after this commit was ' +
+        'tested, and ship again; warning: w (status: s.json)',
+    );
+  });
+
   it('says plainly when there is no PR yet', () => {
     expect(
       shipSummary(
