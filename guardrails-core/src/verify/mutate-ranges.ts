@@ -34,15 +34,12 @@
 import path from 'node:path';
 
 import type { Exec, ExecResult } from '../exec.js';
+import { type Typescript, loadTypescriptParser } from '../typescript-loader.js';
+import { enclosingSpans, orphanedExportSpans } from './enclosing-spans.js';
 import { resolveDiffBase } from './git.js';
+import type { LineRange } from './line-range.js';
 
-/**
-Lines `start` to `end` of one file, 1-based and inclusive.
-*/
-export interface LineRange {
-  start: number;
-  end: number;
-}
+export type { LineRange } from './line-range.js';
 
 /**
 `RepoConfig.mutationScope`: how far line-range mutation narrows a run.
@@ -324,6 +321,7 @@ export function planMutateRanges(
   hunks: ReadonlyMap<string, readonly LineRange[]>,
   lineCount: (file: string) => number,
   settings: MutationScopeSettings,
+  spansOf: (file: string) => readonly LineRange[] = () => [],
 ): Map<string, LineRange[]> {
   const plan = new Map<string, LineRange[]>();
   for (const file of files) {
@@ -331,6 +329,7 @@ export function planMutateRanges(
       hunks.get(file) ?? [],
       lineCount(file),
       settings,
+      spansOf(file),
     );
     if (planned !== undefined) {
       plan.set(file, planned);
@@ -374,6 +373,14 @@ export function isLocationInRanges(
 }
 
 /**
+Which diff a run's ranges come from: the branch against its base, or the index.
+*/
+interface DiffScope {
+  baseBranch: string;
+  changedScope?: 'branch' | 'staged' | undefined;
+}
+
+/**
 `git diff` flags that keep its output parseable whatever the user's config.
 */
 const PARSEABLE_DIFF = [
@@ -397,86 +404,146 @@ function didDiffFail(result: ExecResult): boolean {
 }
 
 /**
- * The changed line ranges of every tracked file, read from the same diff the
+ * The `git diff --unified=0` of every tracked file, the same diff the
  * changed-file list comes from: the working tree against the base branch (or
- * its `origin/` form), or the index alone for a staged run.
- *
- * Untracked files are not in a diff, so they have no entry and are mutated
- * whole, as new files should be. A diff that fails, or a base that does not
- * resolve, answers no ranges at all: every file whole. The changed-file list
- * reports those failures already, and this must not report them twice.
+ * its `origin/` form), or the index alone for a staged run. Empty when the
+ * diff fails or the base does not resolve: the changed-file list reports
+ * those failures already, and this must not report them twice.
  */
-export async function changedLineRanges(
+async function changedDiff(
   exec: Exec,
   repoRoot: string,
-  scope: { baseBranch: string; changedScope?: 'branch' | 'staged' | undefined },
-): Promise<Map<string, LineRange[]>> {
+  scope: DiffScope,
+): Promise<string> {
   let target: string[] = ['--cached'];
   if (scope.changedScope !== 'staged') {
     const base = await resolveDiffBase(exec, repoRoot, scope.baseBranch);
     if (base.ref === undefined) {
-      return new Map();
+      return '';
     }
     target = [base.ref];
   }
   const result = await exec('git', ['diff', ...PARSEABLE_DIFF, ...target], {
     cwd: repoRoot,
   });
-  return didDiffFail(result) ? new Map() : parseDiffHunks(result.stdout);
+  return didDiffFail(result) ? '' : result.stdout;
 }
 
 /**
-The length of the file at `filePath`, or 0 when it cannot be read.
+ * The changed line ranges of every tracked file, from `changedDiff`.
+ *
+ * Untracked files are not in a diff, so they have no entry and are mutated
+ * whole, as new files should be. A diff that fails, or a base that does not
+ * resolve, answers no ranges at all: every file whole.
+ */
+export async function changedLineRanges(
+  exec: Exec,
+  repoRoot: string,
+  scope: DiffScope,
+): Promise<Map<string, LineRange[]>> {
+  return parseDiffHunks(await changedDiff(exec, repoRoot, scope));
+}
+
+/**
+The text of the file at `filePath`, or `undefined` when it cannot be read.
 */
-async function lineCountOf(
+async function textOf(
   readFile: (filePath: string) => Promise<string>,
   filePath: string,
-): Promise<number> {
-  let text = '';
+): Promise<string | undefined> {
   try {
-    text = await readFile(filePath);
+    return await readFile(filePath);
   } catch {
     // Unread, it has no length, and `planFileRanges` mutates it whole.
+    return undefined;
   }
-  return countLines(text);
 }
 
 /**
- * The line ranges one stryker run mutates: `changedLineRanges`, planned file
- * by file with `planFileRanges`. Off when `settings.lines` is, without asking
+ * Where `planRunRanges` reads from. `loadTypescript` defaults to the repo's
+ * own `typescript`; `warn` defaults to saying nothing.
+ */
+interface RunRangeSources {
+  exec: Exec;
+  repoRoot: string;
+  readFile: (filePath: string) => Promise<string>;
+  loadTypescript?: (() => Typescript | undefined) | undefined;
+  warn?: ((line: string) => void) | undefined;
+}
+
+/**
+ * The parser `settings.enclosing` asks for, or `undefined` when it is off or
+ * the repo has no `typescript`. Only the second is worth a warning, and only
+ * when some file has ranges it would have widened.
+ */
+function enclosingParser(
+  sources: RunRangeSources,
+  settings: MutationScopeSettings,
+  hasRanges: boolean,
+): Typescript | undefined {
+  if (!hasRanges || !settings.enclosing) {
+    return undefined;
+  }
+  const load =
+    sources.loadTypescript ?? (() => loadTypescriptParser(sources.repoRoot));
+  const ts = load();
+  if (ts === undefined) {
+    sources.warn?.(
+      'guardrails: typescript could not be loaded from this repo, so changed-line mutation ranges are padded hunks only (mutationScope.enclosing); install typescript to widen them to whole functions.',
+    );
+  }
+  return ts;
+}
+
+/**
+ * The line ranges one stryker run mutates: the diff's hunks, planned file by
+ * file with `planFileRanges`. Off when `settings.lines` is, without asking
  * git. A file that cannot be read has no length and is mutated whole.
+ *
+ * With `settings.enclosing`, each hunk is widened to the code around it
+ * (`enclosingSpans`) and each ranged file takes in the declarations of the
+ * exports the diff's removed lines named (`orphanedExportSpans`). Neither
+ * ever adds a file: an export in a file outside `files`, or in one with no
+ * hunks, is not followed.
  */
 export async function planRunRanges(
-  sources: {
-    exec: Exec;
-    repoRoot: string;
-    readFile: (filePath: string) => Promise<string>;
-  },
-  scope: { baseBranch: string; changedScope?: 'branch' | 'staged' | undefined },
+  sources: RunRangeSources,
+  scope: DiffScope,
   files: readonly string[],
   settings: MutationScopeSettings,
 ): Promise<Map<string, LineRange[]>> {
   if (!settings.lines) {
     return new Map();
   }
-  const hunks = await changedLineRanges(sources.exec, sources.repoRoot, scope);
-  const lengths = new Map(
+  const diff = await changedDiff(sources.exec, sources.repoRoot, scope);
+  const hunks = parseDiffHunks(diff);
+  const ranged = files.filter((file) => hunks.has(file));
+  const texts = new Map(
     await Promise.all(
-      files
-        .filter((file) => hunks.has(file))
-        .map(async (file): Promise<[string, number]> => [
-          file,
-          await lineCountOf(
-            sources.readFile,
-            path.join(sources.repoRoot, file),
-          ),
-        ]),
+      ranged.map(async (file): Promise<[string, string | undefined]> => [
+        file,
+        await textOf(sources.readFile, path.join(sources.repoRoot, file)),
+      ]),
     ),
   );
+  const ts = enclosingParser(sources, settings, ranged.length > 0);
+  const removed =
+    ts === undefined ? new Set<string>() : removedIdentifiers(diff);
+  const spansOf = (file: string): LineRange[] => {
+    const text = texts.get(file);
+    if (ts === undefined || text === undefined) {
+      return [];
+    }
+    return [
+      ...(enclosingSpans(ts, file, text, hunks.get(file) ?? []) ?? []),
+      ...orphanedExportSpans(ts, file, text, removed),
+    ];
+  };
   return planMutateRanges(
     files,
     hunks,
-    (file) => lengths.get(file) ?? 0,
+    (file) => countLines(texts.get(file) ?? ''),
     settings,
+    spansOf,
   );
 }

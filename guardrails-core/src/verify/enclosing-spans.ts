@@ -18,7 +18,7 @@ import path from 'node:path';
 import type * as Ts from 'typescript';
 
 import type { Typescript } from '../typescript-loader.js';
-import type { LineRange } from './mutate-ranges.js';
+import type { LineRange } from './line-range.js';
 
 /**
 The extensions typescript parses. Any other (`.vue`, `.svelte`, …) is not.

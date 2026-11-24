@@ -3,8 +3,17 @@
  * file mutates only the lines around it (#155's done-criterion), whatever the
  * user's git config does to diff output.
  */
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { readFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
@@ -106,5 +115,94 @@ describe('planRunRanges over a real repository', () => {
       readFileSync(file, 'utf8').replace('v10 = 9', 'v10 = 0'),
     );
     expect(await planned('staged')).toEqual(['big.ts:145-155', 'new.ts']);
+  });
+});
+
+/**
+ * `lib.ts`: 300 constants, a `widened` function at lines 100–110 and the
+ * `callee` export at lines 200–202, which only `caller.ts` calls.
+ */
+function writeLibrary(): void {
+  const lines = Array.from(
+    { length: 300 },
+    (_, index) => `export const w${index + 1} = ${index};`,
+  );
+  lines.splice(
+    99,
+    11,
+    'export function widened(value: number): number {',
+    ...Array.from({ length: 9 }, (_, index) => `  value += ${index};`),
+    '}',
+  );
+  lines.splice(
+    199,
+    3,
+    'export function callee(): number {',
+    '  return 1;',
+    '}',
+  );
+  writeFileSync(path.join(root, 'lib.ts'), `${lines.join('\n')}\n`);
+  writeFileSync(
+    path.join(root, 'caller.ts'),
+    "import { callee } from './lib.js';\n\nexport const called = callee();\n",
+  );
+}
+
+async function plannedLibrary(): Promise<string[]> {
+  const plan = await planRunRanges(
+    {
+      exec,
+      repoRoot: root,
+      readFile: (filePath) => readFile(filePath, 'utf8'),
+    },
+    { baseBranch: 'main' },
+    ['lib.ts'],
+    DEFAULT_MUTATION_SCOPE,
+  );
+  return mutateEntries(['lib.ts'], plan);
+}
+
+function editLibrary(from: string, to: string): void {
+  const file = path.join(root, 'lib.ts');
+  writeFileSync(
+    file,
+    readFileSync(file, 'utf8').replace(from, () => to),
+  );
+}
+
+describe('planRunRanges over a real repository, with typescript installed', () => {
+  beforeEach(async () => {
+    // On the base, so the branch changes it rather than adds it.
+    await git('checkout', '-q', 'main');
+    writeLibrary();
+    await git('add', '-A');
+    await git('commit', '-q', '-m', 'library');
+    await git('checkout', '-q', '-B', 'feature');
+    // This repo's own install, found the way the gate finds a consumer's:
+    // through `node_modules` beside the repo's package.json. Ignored, so in
+    // no diff.
+    writeFileSync(path.join(root, '.gitignore'), 'node_modules\n');
+    mkdirSync(path.join(root, 'node_modules'));
+    symlinkSync(
+      path.dirname(
+        createRequire(import.meta.url).resolve('typescript/package.json'),
+      ),
+      path.join(root, 'node_modules', 'typescript'),
+      'dir',
+    );
+  });
+
+  it('widens a one-line edit to the whole function around it', async () => {
+    editLibrary('value += 4;', 'value -= 4;');
+    expect(await plannedLibrary()).toEqual(['lib.ts:100-110']);
+  });
+
+  it('pulls in the declaration of an export whose last caller was deleted', async () => {
+    editLibrary('w150 = 149', 'w150 = 0');
+    unlinkSync(path.join(root, 'caller.ts'));
+    expect(await plannedLibrary()).toEqual([
+      'lib.ts:145-155',
+      'lib.ts:200-202',
+    ]);
   });
 });

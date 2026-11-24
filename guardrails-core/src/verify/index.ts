@@ -1961,7 +1961,7 @@ async function runStryker(
   // the pre-push lock probe, which asks only `strykerScope`, still agrees with
   // the run about whether anything is mutated (#155).
   const lineRanges = await planRunRanges(
-    { exec, repoRoot, readFile },
+    { exec, repoRoot, readFile, warn },
     options,
     inScope,
     options.mutationScope ?? DEFAULT_MUTATION_SCOPE,
