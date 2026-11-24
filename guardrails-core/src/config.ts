@@ -128,6 +128,13 @@ interface MutationCacheConfig {
    * followed transitively, like the rest.
    */
   verdictDependencies: string[];
+  /**
+   * How many modules the import graph may trace to find the tests a changed
+   * test-support file reaches (#197, `verify/importing-tests.ts`). Past it,
+   * the change discards the whole cache, as an untraceable one does. A
+   * positive integer; anything else keeps the default, 5000.
+   */
+  maxTracedModules: number;
 }
 
 export interface RepoConfig {
@@ -254,9 +261,14 @@ export interface RepoConfig {
   /**
    * How stryker's incremental cache survives a change to the tests (#156).
    * `targeted`, the default, keeps a cached kill whose killing tests all sit
-   * in unchanged test files and re-tests everything else;
-   * `any-test-change` discards the whole cache once any test changed, which
-   * is the behaviour before #156. An unknown value keeps the default. See
+   * in unchanged test files and re-tests everything else. Under it a changed
+   * test-support file (#197) costs only the kills of the tests that import
+   * it, traced through at most `maxTracedModules` modules (default 5000); a
+   * setup file, config, mock, snapshot or data fixture, a helper no test
+   * imports, or a graph that cannot be traced still discards everything.
+   * `any-test-change` discards the whole cache once any test or test-support
+   * file changed, which is the behaviour before #156. An unknown value keeps
+   * the default. See
    * `verify/prepare-cache.ts`, and docs/adoption.md ("The mutation cache
    * between runs").
    *
@@ -329,6 +341,7 @@ export function defaultConfig(): RepoConfig {
       seedFrom: undefined,
       seedTimeoutSeconds: 120,
       verdictDependencies: [],
+      maxTracedModules: 5000,
     },
     mutationScope: { ...DEFAULT_MUTATION_SCOPE },
     denyForegroundWaits: true,
@@ -656,6 +669,14 @@ function pickPositive(value: unknown, fallback: number): number {
 }
 
 /**
+`pickPositive`, for a count: a fraction keeps the default too.
+*/
+function pickPositiveInteger(value: unknown, fallback: number): number {
+  const number = pickPositive(value, fallback);
+  return Number.isSafeInteger(number) ? number : fallback;
+}
+
+/**
  * `mutationLock`, key by key. `GUARDRAILS_GATE_LOCK_TIMEOUT` was the push
  * wait's only knob while the lock lived in the shell hook, so it is still
  * read -- below the config key, above the default -- and a setup that relied
@@ -704,6 +725,10 @@ function pickMutationCache(
       defaults.seedTimeoutSeconds,
     ),
     verdictDependencies: pickNames(section.verdictDependencies),
+    maxTracedModules: pickPositiveInteger(
+      section.maxTracedModules,
+      defaults.maxTracedModules,
+    ),
   };
 }
 

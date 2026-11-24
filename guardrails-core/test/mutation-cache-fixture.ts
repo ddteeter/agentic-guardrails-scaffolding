@@ -14,9 +14,11 @@ import {
   mkdirSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   utimesSync,
   writeFileSync,
 } from 'node:fs';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 
 import type { Exec } from '../src/exec.js';
@@ -176,3 +178,77 @@ export const seedFixtureExec: Exec = (command, args, options) => {
     code: 0,
   });
 };
+
+/**
+ * The support-change fixture's change set (#197): both mutated files and a
+ * helper only `test/foo.test.ts` imports. No test file changed.
+ */
+export const SUPPORT_CHANGED_FILES =
+  'src/foo.ts\nsrc/bar.ts\ntest/helpers.ts\n';
+
+function killedBy(test: string): unknown {
+  return {
+    source: '',
+    mutants: [
+      {
+        mutatorName: 'BlockStatement',
+        status: 'Killed',
+        killedBy: [test],
+        coveredBy: [test],
+        location: { start: { line: 1, column: 1 } },
+      },
+    ],
+  };
+}
+
+/**
+ * The cache fixture with a second mutated file and a second test (#197):
+ * `src/foo.ts` killed by `test/foo.test.ts`, which imports `test/helpers.ts`,
+ * and `src/bar.ts` killed by `test/bar.test.ts`, which imports nothing. The
+ * repo's TypeScript is this one's, linked in, so the gate traces the graph
+ * with a real resolver. A gate that traces it drops foo's kill and keeps
+ * bar's; one that cannot discards both.
+ */
+export function writeSupportFixture(root: string): void {
+  writeCacheFixture(root);
+  const at = (...parts: string[]) => path.join(root, ...parts);
+  writeFileSync(
+    at('reports', 'stryker-incremental.json'),
+    JSON.stringify({
+      files: { 'src/foo.ts': killedBy('t'), 'src/bar.ts': killedBy('u') },
+      testFiles: {
+        'test/foo.test.ts': { tests: [{ id: 't', name: 'foo' }] },
+        'test/bar.test.ts': { tests: [{ id: 'u', name: 'bar' }] },
+      },
+    }),
+  );
+  writeFileSync(at('test', 'helpers.ts'), 'export const h = 1;\n');
+  writeFileSync(
+    at('test', 'foo.test.ts'),
+    "import { h } from './helpers.js';\n",
+  );
+  writeFileSync(at('test', 'bar.test.ts'), 'export const b = 1;\n');
+  for (const test of ['foo.test.ts', 'bar.test.ts']) {
+    utimesSync(at('test', test), new Date(1_000_000), new Date(1_000_000));
+  }
+  utimesSync(
+    at('reports', 'stryker-incremental.json'),
+    new Date(2_000_000),
+    new Date(2_000_000),
+  );
+  const typescript = path.dirname(
+    createRequire(import.meta.url).resolve('typescript/package.json'),
+  );
+  symlinkSync(typescript, at('node_modules', 'typescript'), 'dir');
+}
+
+/**
+How many kills the gate left for `file`; -1 for no cache or no entry.
+*/
+export function keptKillsOf(root: string, file: string): number {
+  const cachePath = path.join(root, 'reports', 'stryker-incremental.json');
+  const cache = existsSync(cachePath)
+    ? parseIncrementalCache(readFileSync(cachePath, 'utf8'))
+    : undefined;
+  return cache?.files.get(file)?.mutants.length ?? -1;
+}

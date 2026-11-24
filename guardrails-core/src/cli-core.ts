@@ -191,6 +191,7 @@ function commitGateOptionsFromConfig(
   | 'analyzerRungs'
   | 'mutationCacheInvalidation'
   | 'mutationVerdictDependencies'
+  | 'mutationCacheMaxTracedModules'
   | 'mutationScope'
   | 'mutationCacheSeed'
   | 'config'
@@ -207,6 +208,7 @@ function commitGateOptionsFromConfig(
     analyzerRungs: config.analyzerRungs,
     mutationCacheInvalidation: config.mutationCache.invalidation,
     mutationVerdictDependencies: config.mutationCache.verdictDependencies,
+    mutationCacheMaxTracedModules: config.mutationCache.maxTracedModules,
     mutationScope: config.mutationScope,
     mutationCacheSeed: seedSettingsOf(config),
     config: toGateConfig(config),
@@ -385,6 +387,7 @@ async function verifyCommand(
     analyzerRungs: config.analyzerRungs,
     mutationCacheInvalidation: config.mutationCache.invalidation,
     mutationVerdictDependencies: config.mutationCache.verdictDependencies,
+    mutationCacheMaxTracedModules: config.mutationCache.maxTracedModules,
     mutationScope: config.mutationScope,
     mutationCacheSeed: seedSettingsOf(config),
   });
@@ -506,6 +509,7 @@ async function gateStopCommand(
     analyzerRungs: config.analyzerRungs,
     mutationCacheInvalidation: config.mutationCache.invalidation,
     mutationVerdictDependencies: config.mutationCache.verdictDependencies,
+    mutationCacheMaxTracedModules: config.mutationCache.maxTracedModules,
     mutationScope: config.mutationScope,
     mutationCacheSeed: seedSettingsOf(config),
     isRetry: input.stopHookActive,

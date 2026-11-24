@@ -752,8 +752,28 @@ describe('mutationCache', () => {
       seedFrom: undefined,
       seedTimeoutSeconds: 120,
       verdictDependencies: [],
+      maxTracedModules: 5000,
     });
   });
+
+  it('reads a cap on the modules traced for a test-support change (#197)', () => {
+    writeFileSync(
+      path.join(root, 'guardrails.config.json'),
+      JSON.stringify({ mutationCache: { maxTracedModules: 20_000 } }),
+    );
+    expect(loadConfig(root).mutationCache.maxTracedModules).toBe(20_000);
+  });
+
+  it.each([[0], [-5], ['600'], [2.5]])(
+    'keeps the default for a maxTracedModules of %j',
+    (maxTracedModules) => {
+      writeFileSync(
+        path.join(root, 'guardrails.config.json'),
+        JSON.stringify({ mutationCache: { maxTracedModules } }),
+      );
+      expect(loadConfig(root).mutationCache.maxTracedModules).toBe(5000);
+    },
+  );
 
   it('reads extra fingerprint packages, keeping only non-blank names (#177)', () => {
     writeFileSync(

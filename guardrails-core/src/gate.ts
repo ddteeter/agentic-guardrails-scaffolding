@@ -118,6 +118,11 @@ export interface StopGateOptions {
    */
   mutationVerdictDependencies?: readonly string[] | undefined;
   /**
+   * The module cap on tracing a test-support change — see
+   * `VerifyOptions.mutationCacheMaxTracedModules`.
+   */
+  mutationCacheMaxTracedModules?: number | undefined;
+  /**
    * Line-range mutation — see `VerifyOptions.mutationScope`.
    */
   mutationScope?: MutationScopeSettings | undefined;
@@ -194,6 +199,11 @@ export interface CommitGateOptions {
    * Extra fingerprint packages — see `VerifyOptions.mutationVerdictDependencies`.
    */
   mutationVerdictDependencies?: readonly string[] | undefined;
+  /**
+   * The module cap on tracing a test-support change — see
+   * `VerifyOptions.mutationCacheMaxTracedModules`.
+   */
+  mutationCacheMaxTracedModules?: number | undefined;
   /**
    * Line-range mutation — see `VerifyOptions.mutationScope`.
    */
@@ -767,6 +777,7 @@ async function stopGate(
     analyzerRungs: options.analyzerRungs,
     mutationCacheInvalidation: options.mutationCacheInvalidation,
     mutationVerdictDependencies: options.mutationVerdictDependencies,
+    mutationCacheMaxTracedModules: options.mutationCacheMaxTracedModules,
     mutationScope: options.mutationScope,
     mutationCacheSeed: options.mutationCacheSeed,
     mutationLock: options.mutationLock,
@@ -1026,6 +1037,7 @@ async function commitGate(
     analyzerRungs: options.analyzerRungs,
     mutationCacheInvalidation: options.mutationCacheInvalidation,
     mutationVerdictDependencies: options.mutationVerdictDependencies,
+    mutationCacheMaxTracedModules: options.mutationCacheMaxTracedModules,
     mutationScope: options.mutationScope,
     mutationCacheSeed: options.mutationCacheSeed,
     ...(options.changedScope && { changedScope: options.changedScope }),
