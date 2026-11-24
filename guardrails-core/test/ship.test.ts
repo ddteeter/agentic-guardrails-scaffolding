@@ -1319,14 +1319,21 @@ describe('ship: CI', () => {
 describe('ship: workflow runs and required checks (#172)', () => {
   const RULES = 'gh api repos/{owner}/{repo}/rules/branches/main';
   const PROTECTION = 'gh api repos/{owner}/{repo}/branches/main';
-  // Each run is newer than the one before it and comes from a pull request,
+  // Each run is newer than the one before it, comes from a pull request, is on
+  // its first attempt, and is still running only while it has no conclusion,
   // unless the row says otherwise.
   const runs = (...rows: unknown[]): ExecResult =>
     ok(
       JSON.stringify(
         rows.map((row, index) =>
           isRecord(row)
-            ? { databaseId: index + 1, event: 'pull_request', ...row }
+            ? {
+                databaseId: index + 1,
+                event: 'pull_request',
+                status: row.conclusion === '' ? 'in_progress' : 'completed',
+                attempt: 1,
+                ...row,
+              }
             : row,
         ),
       ),
@@ -1366,7 +1373,7 @@ describe('ship: workflow runs and required checks (#172)', () => {
     expect(calls).toContainEqual({
       line:
         'gh run list --commit abc123 --limit 100 ' +
-        '--json workflowName,conclusion,event,databaseId',
+        '--json workflowName,conclusion,event,databaseId,status,attempt',
       cwd: root,
     });
   });
@@ -1527,6 +1534,22 @@ describe('ship: workflow runs and required checks (#172)', () => {
     });
     expect(status.failing).toEqual(['CI (failure)']);
   });
+
+  it.each<[string, Record<string, unknown>]>([
+    ['whose status is not a string', { status: 3 }],
+    ['whose attempt is not a number', { attempt: '2' }],
+  ])(
+    'drops a run row %s, rather than letting it hide a failure',
+    async (_label, bad) => {
+      const { status } = await shipped({
+        'gh run list': runs(
+          { workflowName: 'CI', conclusion: '', databaseId: 9, ...bad },
+          { workflowName: 'CI', conclusion: 'failure', databaseId: 7 },
+        ),
+      });
+      expect(status.failing).toEqual(['CI (failure)']);
+    },
+  );
 
   it('drops a run row whose event is not a string', async () => {
     const { status } = await shipped({

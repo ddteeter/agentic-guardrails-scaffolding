@@ -228,12 +228,15 @@ function parseRows(
 }
 
 /**
-One row of `gh run list`: a workflow run, the event that started it, and its
-id, which grows with each run.
-*/
+ * One row of `gh run list`: a workflow run, the event that started it, its
+ * id, which grows with each run, whether it is still going, and which attempt
+ * it is on. A re-run keeps the id and bumps the attempt.
+ */
 interface Run extends Listed {
   event: string;
   id: number;
+  status: string;
+  attempt: number;
 }
 
 /**
@@ -244,13 +247,17 @@ function isRunRow(row: unknown): row is {
   conclusion: string;
   event: string;
   databaseId: number;
+  status: string;
+  attempt: number;
 } {
   return (
     isRecord(row) &&
     typeof row.workflowName === 'string' &&
     typeof row.conclusion === 'string' &&
     typeof row.event === 'string' &&
-    typeof row.databaseId === 'number'
+    typeof row.databaseId === 'number' &&
+    typeof row.status === 'string' &&
+    typeof row.attempt === 'number'
   );
 }
 
@@ -264,7 +271,7 @@ function runKey(run: Run): string {
  * is the one that says how the workflow went: an older failure under a newer
  * pending run is not red. A malformed row is dropped, not trusted.
  */
-function parseRuns(text: string): Listed[] | undefined {
+function parseRuns(text: string): Run[] | undefined {
   const { parsed } = parseJsonText(text);
   if (!Array.isArray(parsed)) {
     return undefined;
@@ -274,15 +281,15 @@ function parseRuns(text: string): Listed[] | undefined {
     outcome: row.conclusion,
     event: row.event,
     id: row.databaseId,
+    status: row.status,
+    attempt: row.attempt,
   }));
   const latest = new Map<string, number>();
   for (const run of rows) {
     const key = runKey(run);
     latest.set(key, Math.max(latest.get(key) ?? 0, run.id));
   }
-  return rows
-    .filter((run) => latest.get(runKey(run)) === run.id)
-    .map(({ name, outcome }) => ({ name, outcome }));
+  return rows.filter((run) => latest.get(runKey(run)) === run.id);
 }
 
 /**
@@ -307,7 +314,7 @@ What CI says about the pushed commit, from every place ship reads it.
 */
 interface Evidence {
   checks: readonly Listed[];
-  runs: readonly Listed[];
+  runs: readonly Run[];
   /**
   The names of the checks the base branch requires.
   */
@@ -659,7 +666,7 @@ async function readChecks(
 async function readRuns(
   options: ShipOptions,
   sha: string,
-): Promise<{ runs: Listed[] | undefined; listing: string }> {
+): Promise<{ runs: Run[] | undefined; listing: string }> {
   const listed = await gh(options, [
     'run',
     'list',
@@ -670,7 +677,7 @@ async function readRuns(
     '--limit',
     '100',
     '--json',
-    'workflowName,conclusion,event,databaseId',
+    'workflowName,conclusion,event,databaseId,status,attempt',
   ]);
   return {
     runs: parseRuns(listed.stdout),
