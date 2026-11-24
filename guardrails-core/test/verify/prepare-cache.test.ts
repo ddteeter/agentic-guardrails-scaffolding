@@ -542,11 +542,16 @@ describe('prepareIncrementalCache', () => {
       const { files, seams } = healthyRepo({
         [path.join(ROOT, 'a.test.ts')]: { contents: '', mtime: 6000 },
       });
-      await prepareIncrementalCache(seams, {
+      const outcome = await prepareIncrementalCache(seams, {
         ...anyChange,
         changedFiles: [...run.changedFiles, 'a.test.ts'],
       });
       expect(files.has(CACHE)).toBe(false);
+      expect(outcome).toEqual({
+        local: 'discarded',
+        seed: 'off',
+        why: 'this change set invalidates it',
+      });
     });
 
     it('keeps the whole cache, survivors included, while no test changed', async () => {
@@ -907,7 +912,22 @@ describe('prepareIncrementalCache says what it did (#176)', () => {
     expect(
       await prepareIncrementalCache(seams, {
         ...run,
+        invalidation: 'any-test-change',
         changedFiles: [...run.changedFiles, 'test/helpers.ts'],
+      }),
+    ).toEqual({
+      local: 'discarded',
+      seed: 'off',
+      why: 'this change set invalidates it',
+    });
+  });
+
+  it('discarded a local cache a run that cannot report coverage cannot use', async () => {
+    const { seams } = healthyRepo();
+    expect(
+      await prepareIncrementalCache(seams, {
+        ...run,
+        canThisRunReportCoverage: false,
       }),
     ).toEqual({
       local: 'discarded',
@@ -951,5 +971,275 @@ describe('prepareIncrementalCache says what it did (#176)', () => {
       }),
     ).toEqual({ local: 'none', seed: 'skipped' });
     expect(seedCalls()).toBe(0);
+  });
+});
+
+/**
+ * An `importersOf` seam answering `answer`, recording what it was asked.
+ */
+function importersSeam(answer: Record<string, string[]> | undefined | Error): {
+  importersOf: (
+    supportFiles: readonly string[],
+    testFiles: readonly string[],
+  ) => Promise<ReadonlyMap<string, ReadonlySet<string>> | undefined>;
+  asked: { supportFiles: string[]; testFiles: string[] }[];
+} {
+  const asked: { supportFiles: string[]; testFiles: string[] }[] = [];
+  return {
+    asked,
+    importersOf: (supportFiles, testFiles) => {
+      asked.push({
+        supportFiles: [...supportFiles],
+        testFiles: [...testFiles].toSorted((a, b) => a.localeCompare(b)),
+      });
+      if (answer instanceof Error) {
+        return Promise.reject(answer);
+      }
+      return Promise.resolve(
+        answer &&
+          new Map(
+            Object.entries(answer).map(([file, tests]) => [
+              file,
+              new Set(tests),
+            ]),
+          ),
+      );
+    },
+  };
+}
+
+describe('a changed test-support file under targeted invalidation (#197)', () => {
+  const helperChanged: CacheRun = {
+    ...run,
+    changedFiles: [...run.changedFiles, 'test/helpers.ts'],
+  };
+
+  it('drops only the kills of the tests that import it', async () => {
+    const { files, seams } = healthyRepo();
+    const graph = importersSeam({ 'test/helpers.ts': ['a.test.ts'] });
+    const outcome = await prepareIncrementalCache(
+      { ...seams, importersOf: graph.importersOf },
+      helperChanged,
+    );
+    expect(kept(files)).toEqual({ 'src/a.ts': [], 'src/b.ts': ['Killed'] });
+    expect(outcome).toEqual({ local: 'kept', seed: 'off' });
+  });
+
+  it('asks about the changed support files against the cached tests', async () => {
+    const { seams } = healthyRepo();
+    const graph = importersSeam({ 'test/helpers.ts': ['a.test.ts'] });
+    await prepareIncrementalCache(
+      { ...seams, importersOf: graph.importersOf },
+      {
+        ...helperChanged,
+        changedFiles: [...helperChanged.changedFiles, 'src/c.ts'],
+      },
+    );
+    expect(graph.asked).toEqual([
+      {
+        supportFiles: ['test/helpers.ts'],
+        testFiles: ['a.test.ts', 'b.test.ts'],
+      },
+    ]);
+  });
+
+  it('counts a spec file this branch changed among the tests asked about', async () => {
+    // A helper only a new test imports is not "imported by nothing".
+    const { files, seams } = healthyRepo();
+    const graph = importersSeam({ 'test/helpers.ts': ['new.test.ts'] });
+    await prepareIncrementalCache(
+      { ...seams, importersOf: graph.importersOf },
+      {
+        ...helperChanged,
+        changedFiles: [...helperChanged.changedFiles, 'new.test.ts'],
+      },
+    );
+    expect(graph.asked[0]?.testFiles).toEqual([
+      'a.test.ts',
+      'b.test.ts',
+      'new.test.ts',
+    ]);
+    expect(kept(files)).toEqual({
+      'src/a.ts': ['Killed'],
+      'src/b.ts': ['Killed'],
+    });
+  });
+
+  it('drops every kill, and keeps the cache, when every test imports it', async () => {
+    const { files, seams } = healthyRepo();
+    const graph = importersSeam({
+      'test/helpers.ts': ['a.test.ts', 'b.test.ts'],
+    });
+    const outcome = await prepareIncrementalCache(
+      { ...seams, importersOf: graph.importersOf },
+      helperChanged,
+    );
+    expect(kept(files)).toEqual({ 'src/a.ts': [], 'src/b.ts': [] });
+    expect(outcome.local).toBe('kept');
+  });
+
+  it.each([
+    ['a setup file', 'test/setup.ts'],
+    ['a vitest setup file', 'vitest.setup.ts'],
+    ['a runner config', 'vitest.config.ts'],
+    ['a snapshot', 'src/__snapshots__/a.test.ts.snap'],
+    ['a manual mock', 'src/__mocks__/fs.ts'],
+    ['a data fixture', 'test/fixtures/user.json'],
+  ])(
+    'discards the whole cache for %s, without tracing it',
+    async (_label, file) => {
+      const { files, seams } = healthyRepo();
+      const graph = importersSeam({ [file]: ['a.test.ts', 'b.test.ts'] });
+      const outcome = await prepareIncrementalCache(
+        { ...seams, importersOf: graph.importersOf },
+        { ...run, changedFiles: [...run.changedFiles, file] },
+      );
+      expect(files.has(CACHE)).toBe(false);
+      expect(graph.asked).toEqual([]);
+      expect(outcome).toEqual({
+        local: 'discarded',
+        seed: 'off',
+        why: `${file} changed, and it reaches tests without an import`,
+      });
+    },
+  );
+
+  it('discards the whole cache for a support file no test imports', async () => {
+    // It reaches tests some way the graph cannot see.
+    const { files, seams } = healthyRepo();
+    const graph = importersSeam({ 'test/helpers.ts': [] });
+    const outcome = await prepareIncrementalCache(
+      { ...seams, importersOf: graph.importersOf },
+      helperChanged,
+    );
+    expect(files.has(CACHE)).toBe(false);
+    expect(outcome).toEqual({
+      local: 'discarded',
+      seed: 'off',
+      why: 'test/helpers.ts changed, and no test imports it',
+    });
+  });
+
+  it.each<[string, Record<string, string[]> | undefined | Error]>([
+    ['cannot be traced', undefined],
+    ['fails', new Error('boom')],
+  ])(
+    'discards the whole cache when the import graph %s',
+    async (_label, answer) => {
+      const { files, seams } = healthyRepo();
+      const graph = importersSeam(answer);
+      const outcome = await prepareIncrementalCache(
+        { ...seams, importersOf: graph.importersOf },
+        helperChanged,
+      );
+      expect(files.has(CACHE)).toBe(false);
+      expect(outcome).toEqual({
+        local: 'discarded',
+        seed: 'off',
+        why: 'the tests that import test/helpers.ts could not be traced',
+      });
+    },
+  );
+
+  it('discards the whole cache when there is no import graph to ask', async () => {
+    const { files, seams } = healthyRepo();
+    const outcome = await prepareIncrementalCache(seams, helperChanged);
+    expect(files.has(CACHE)).toBe(false);
+    expect(outcome).toEqual({
+      local: 'discarded',
+      seed: 'off',
+      why: 'test/helpers.ts changed, and there is no import graph to trace what imports it',
+    });
+  });
+
+  it('discards the whole cache when the graph omits a changed support file', async () => {
+    const { files, seams } = healthyRepo();
+    const graph = importersSeam({ 'test/helpers.ts': ['a.test.ts'] });
+    const outcome = await prepareIncrementalCache(
+      { ...seams, importersOf: graph.importersOf },
+      {
+        ...run,
+        changedFiles: [...run.changedFiles, 'test/helpers.ts', 'test/other.ts'],
+      },
+    );
+    expect(files.has(CACHE)).toBe(false);
+    expect(outcome).toEqual({
+      local: 'discarded',
+      seed: 'off',
+      why: 'test/other.ts changed, and no test imports it',
+    });
+  });
+
+  it('under any-test-change, still discards the cache without asking', async () => {
+    const { files, seams } = healthyRepo();
+    const graph = importersSeam({ 'test/helpers.ts': ['a.test.ts'] });
+    await prepareIncrementalCache(
+      { ...seams, importersOf: graph.importersOf },
+      { ...helperChanged, invalidation: 'any-test-change' },
+    );
+    expect(files.has(CACHE)).toBe(false);
+    expect(graph.asked).toEqual([]);
+  });
+
+  describe('seeding', () => {
+    it('fetches a seed and drops only the seeded kills of importing tests', async () => {
+      const { files, seams, seedCalls } = freshWorktree(cacheJson());
+      const graph = importersSeam({ 'test/helpers.ts': ['b.test.ts'] });
+      const outcome = await prepareIncrementalCache(
+        { ...seams, importersOf: graph.importersOf },
+        helperChanged,
+      );
+      expect(seedCalls()).toBe(1);
+      expect(kept(files)).toEqual({ 'src/a.ts': ['Killed'], 'src/b.ts': [] });
+      expect(outcome).toEqual({ local: 'none', seed: 'used' });
+    });
+
+    it('asks about the seed’s own tests', async () => {
+      const { seams } = freshWorktree(ciSeed([1]));
+      const graph = importersSeam({ 'test/helpers.ts': ['c.test.ts'] });
+      await prepareIncrementalCache(
+        { ...seams, importersOf: graph.importersOf },
+        helperChanged,
+      );
+      expect(graph.asked).toEqual([
+        { supportFiles: ['test/helpers.ts'], testFiles: ['c.test.ts'] },
+      ]);
+    });
+
+    it('refuses a seed when the support file cannot be traced, and says why', async () => {
+      const { files, seams } = freshWorktree(cacheJson());
+      const graph = importersSeam(undefined);
+      const outcome = await prepareIncrementalCache(
+        { ...seams, importersOf: graph.importersOf },
+        helperChanged,
+      );
+      expect(files.has(CACHE)).toBe(false);
+      expect(outcome).toEqual({
+        local: 'none',
+        seed: 'refused',
+        why: 'the tests that import test/helpers.ts could not be traced',
+      });
+    });
+
+    it('skips the seed for a support file wired to every test', async () => {
+      const { seams, seedCalls } = freshWorktree(cacheJson());
+      const graph = importersSeam({});
+      const outcome = await prepareIncrementalCache(
+        { ...seams, importersOf: graph.importersOf },
+        { ...run, changedFiles: [...run.changedFiles, 'vitest.setup.ts'] },
+      );
+      expect(seedCalls()).toBe(0);
+      expect(outcome).toEqual({ local: 'none', seed: 'skipped' });
+    });
+
+    it('skips the seed under any-test-change', async () => {
+      const { seams, seedCalls } = freshWorktree(cacheJson());
+      const graph = importersSeam({ 'test/helpers.ts': ['a.test.ts'] });
+      await prepareIncrementalCache(
+        { ...seams, importersOf: graph.importersOf },
+        { ...helperChanged, invalidation: 'any-test-change' },
+      );
+      expect(seedCalls()).toBe(0);
+    });
   });
 });

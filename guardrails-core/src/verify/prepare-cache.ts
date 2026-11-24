@@ -33,7 +33,13 @@ import {
   type Lockfile,
 } from './cache-fingerprint.js';
 import type { SeedFetch } from './seed-cache.js';
-import { isTestFile, isTestSupportFile } from './git.js';
+import {
+  isTestFile,
+  isTestSpecFile,
+  isTestSupportFile,
+  isWiredToEveryTest,
+} from './git.js';
+import type { ImportersOf } from './importing-tests.js';
 import {
   cacheTestFiles,
   dropUnresolvedKills,
@@ -87,6 +93,13 @@ export interface CacheSeams {
    * Absent, or `undefined`, fingerprints the lockfiles instead.
    */
   dependencyPins?: (() => Promise<readonly string[] | undefined>) | undefined;
+  /**
+   * The tests, of those asked about, that import each changed test-support
+   * file (#197, `importing-tests.ts`), or `undefined` when that cannot be
+   * told. Absent, a changed support file discards everything, as it did
+   * before targeted support invalidation.
+   */
+  importersOf?: ImportersOf | undefined;
 }
 
 export interface CacheRun {
@@ -225,8 +238,8 @@ type NewerThanCache = (files: readonly string[]) => Promise<string[]>;
  * `json` as a cache this run may weigh, cut to its files, or `undefined`.
  *
  * In order: the run must be able to tell a stale verdict (coverage); the
- * cache must parse; cut to this run's files it must still show per-test
- * coverage; and a changed test-support file discards it.
+ * cache must parse; and cut to this run's files it must still show per-test
+ * coverage. A changed test-support file is the invalidation rule's to judge.
  */
 function admissible(json: string, run: CacheRun): IncrementalCache | undefined {
   if (!run.canThisRunReportCoverage) {
@@ -237,25 +250,112 @@ function admissible(json: string, run: CacheRun): IncrementalCache | undefined {
     return undefined;
   }
   const scoped = filterToScope(cache, run.mutateFiles);
-  return !hasPerTestCoverage(scoped) ||
-    run.changedFiles.some((file) => isTestSupportFile(file))
-    ? undefined
-    : scoped;
+  return hasPerTestCoverage(scoped) ? scoped : undefined;
 }
+
+/**
+ * What a run's changed test-support files cost a cache whose tests are
+ * `testFiles`: the tests whose kills they make untrusted, or why they make
+ * every kill untrusted.
+ */
+type SupportImpact = { tests: ReadonlySet<string> } | { why: string };
+
+/**
+ * Under `targeted` (#197): a changed support file costs the kills of the
+ * tests that import it, directly or through other modules. Everything the
+ * graph cannot vouch for discards the whole cache instead — a file wired to
+ * every test without an import, a support file no test imports (it reaches
+ * them some way the graph cannot see), and a graph that cannot be traced.
+ *
+ * The tests asked about are the cache's own, plus the spec files this run
+ * changed: a helper only a new test imports is not imported by nothing.
+ */
+async function supportImpact(
+  seams: Pick<CacheSeams, 'importersOf'>,
+  run: CacheRun,
+  testFiles: readonly string[],
+): Promise<SupportImpact> {
+  const support = run.changedFiles.filter((file) => isTestSupportFile(file));
+  if (support.length === 0) {
+    return { tests: new Set() };
+  }
+  const wired = support.find((file) => isWiredToEveryTest(file));
+  if (wired !== undefined) {
+    return { why: `${wired} changed, and it reaches tests without an import` };
+  }
+  const { importersOf } = seams;
+  if (importersOf === undefined) {
+    return {
+      why: `${support.join(', ')} changed, and there is no import graph to trace what imports it`,
+    };
+  }
+  const asked = [
+    ...new Set([
+      ...testFiles,
+      ...run.changedFiles.filter((file) => isTestSpecFile(file)),
+    ]),
+  ];
+  const importers = await askImporters(importersOf, support, asked);
+  if (importers === undefined) {
+    return {
+      why: `the tests that import ${support.join(', ')} could not be traced`,
+    };
+  }
+  const unimported = support.find(
+    (file) => (importers.get(file)?.size ?? 0) === 0,
+  );
+  return unimported === undefined
+    ? {
+        tests: new Set(
+          Array.from(importers.values(), (tests) => [...tests]).flat(),
+        ),
+      }
+    : { why: `${unimported} changed, and no test imports it` };
+}
+
+/**
+The seam's answer, with a seam that throws as no answer.
+*/
+async function askImporters(
+  importersOf: ImportersOf,
+  supportFiles: readonly string[],
+  testFiles: readonly string[],
+): Promise<Awaited<ReturnType<ImportersOf>>> {
+  try {
+    return await importersOf(supportFiles, testFiles);
+  } catch {
+    // A graph that fails is a graph that cannot vouch: no answer.
+  }
+}
+
+/**
+A cache the invalidation rule kept, or why it kept none.
+*/
+type Trust = { cache: IncrementalCache } | { why: string };
+
+const INVALIDATED = 'this change set invalidates it';
 
 /**
 The invalidation rule applied to an admissible cache.
 */
 async function trusted(
+  seams: CacheSeams,
   cache: IncrementalCache,
   run: CacheRun,
   newerThanCache: NewerThanCache,
-): Promise<IncrementalCache | undefined> {
+): Promise<Trust> {
   if (run.invalidation === 'any-test-change') {
+    if (run.changedFiles.some((file) => isTestSupportFile(file))) {
+      return { why: INVALIDATED };
+    }
     const stale = await newerThanCache(
       run.changedFiles.filter((file) => isTestFile(file)),
     );
-    return stale.length === 0 ? cache : undefined;
+    return stale.length === 0 ? { cache } : { why: INVALIDATED };
+  }
+  const impact = await supportImpact(seams, run, cacheTestFiles(cache));
+  if ('why' in impact) {
+    return impact;
   }
   // The WHOLE change set, not only its `*.test.*` files: `dropUntrusted`
   // looks a changed file up among the files the cache itself names as tests,
@@ -263,9 +363,10 @@ async function trusted(
   // (`*.check.ts`) is still caught.
   const changedTests = new Set([
     ...run.changedFiles,
+    ...impact.tests,
     ...(await newerThanCache(cacheTestFiles(cache))),
   ]);
-  return dropUntrusted(cache, changedTests);
+  return { cache: dropUntrusted(cache, changedTests) };
 }
 
 /**
@@ -324,30 +425,61 @@ async function reusableCache(
     return { local: 'discarded', why: staleWhy(previous, fingerprint) };
   }
   const admitted = admissible(text, run);
-  const cache =
-    admitted &&
-    (await trusted(admitted, run, (files) =>
-      testsNewerThanCache(seams, files),
-    ));
-  return cache === undefined
-    ? { local: 'discarded', why: 'this change set invalidates it' }
-    : { cache, local: 'kept' };
+  if (admitted === undefined) {
+    return { local: 'discarded', why: INVALIDATED };
+  }
+  const verdict = await trusted(seams, admitted, run, (files) =>
+    testsNewerThanCache(seams, files),
+  );
+  return 'why' in verdict
+    ? { local: 'discarded', why: verdict.why }
+    : { cache: verdict.cache, local: 'kept' };
 }
 
 /**
- * Could a seed be used at all? A run that cannot report per-test coverage,
- * changed a test-support file, or (under `any-test-change`) changed any test
- * would discard one unread, so waiting on a download for it buys nothing.
+ * Could a seed be used at all? A run that cannot report per-test coverage
+ * would discard one unread, and so would one that changed a test-support
+ * file it cannot trace: one wired to every test, one with no import graph to
+ * ask, or any under `any-test-change` — which also discards a seed for any
+ * changed test. Waiting on a download for it buys nothing.
  */
-function canUseSeed(run: CacheRun): boolean {
+function canUseSeed(seams: CacheSeams, run: CacheRun): boolean {
   return (
     run.canThisRunReportCoverage &&
-    run.changedFiles.every(
-      (file) =>
-        !isTestSupportFile(file) &&
-        !(run.invalidation === 'any-test-change' && isTestFile(file)),
+    run.changedFiles.every((file) =>
+      run.invalidation === 'any-test-change'
+        ? !isTestFile(file) && !isTestSupportFile(file)
+        : !isTestSupportFile(file) ||
+          (!isWiredToEveryTest(file) && seams.importersOf !== undefined),
     )
   );
+}
+
+/**
+ * The invalidation rule applied to a seed cut to `missing`, judged by this
+ * branch's changed files alone. Under `any-test-change` a changed test never
+ * gets here (`canUseSeed`), so the seed is kept whole, as a local cache with
+ * no newer test is.
+ */
+async function trustedSeed(
+  seams: CacheSeams,
+  run: CacheRun,
+  admitted: IncrementalCache,
+  missing: readonly string[],
+): Promise<Trust> {
+  const scoped = filterToScope(admitted, missing);
+  if (run.invalidation === 'any-test-change') {
+    return { cache: scoped };
+  }
+  const impact = await supportImpact(seams, run, cacheTestFiles(scoped));
+  return 'why' in impact
+    ? impact
+    : {
+        cache: dropUntrusted(
+          scoped,
+          new Set([...run.changedFiles, ...impact.tests]),
+        ),
+      };
 }
 
 /**
@@ -382,7 +514,7 @@ async function withSeed(
   if (missing.length === 0) {
     return { seed: 'not-needed' };
   }
-  if (!canUseSeed(run)) {
+  if (!canUseSeed(seams, run)) {
     return { seed: 'skipped' };
   }
   const fetched = await fetchSeed(fingerprint);
@@ -393,15 +525,11 @@ async function withSeed(
   if (admitted === undefined) {
     return { seed: 'refused', why: 'it holds no per-test coverage' };
   }
-  // The invalidation rule, judged by this branch's changed files alone.
-  // Under `any-test-change` a changed test never gets here (`canUseSeed`),
-  // so the seed is kept whole, as a local cache with no newer test is.
-  const scoped = filterToScope(admitted, missing);
-  const seed =
-    run.invalidation === 'any-test-change'
-      ? scoped
-      : dropUntrusted(scoped, new Set(run.changedFiles));
-  const seedJson = serializeIncrementalCache(seed);
+  const seed = await trustedSeed(seams, run, admitted, missing);
+  if ('why' in seed) {
+    return { seed: 'refused', why: seed.why };
+  }
+  const seedJson = serializeIncrementalCache(seed.cache);
   if (local === undefined) {
     return { json: seedJson, seed: 'used' };
   }
