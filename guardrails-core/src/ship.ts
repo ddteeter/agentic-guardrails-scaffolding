@@ -236,6 +236,24 @@ interface Run extends Listed {
   id: number;
 }
 
+/**
+A `gh run list` row with every field ship reads, each of the right type.
+*/
+function isRunRow(row: unknown): row is {
+  workflowName: string;
+  conclusion: string;
+  event: string;
+  databaseId: number;
+} {
+  return (
+    isRecord(row) &&
+    typeof row.workflowName === 'string' &&
+    typeof row.conclusion === 'string' &&
+    typeof row.event === 'string' &&
+    typeof row.databaseId === 'number'
+  );
+}
+
 function runKey(run: Run): string {
   return `${run.name}\n${run.event}`;
 }
@@ -251,16 +269,12 @@ function parseRuns(text: string): Listed[] | undefined {
   if (!Array.isArray(parsed)) {
     return undefined;
   }
-  const rows = parsed.flatMap((row: unknown): Run[] => {
-    const fields = isRecord(row) ? row : {};
-    const { workflowName, conclusion, event, databaseId } = fields;
-    return typeof workflowName === 'string' &&
-      typeof conclusion === 'string' &&
-      typeof event === 'string' &&
-      typeof databaseId === 'number'
-      ? [{ name: workflowName, outcome: conclusion, event, id: databaseId }]
-      : [];
-  });
+  const rows: Run[] = parsed.filter(isRunRow).map((row) => ({
+    name: row.workflowName,
+    outcome: row.conclusion,
+    event: row.event,
+    id: row.databaseId,
+  }));
   const latest = new Map<string, number>();
   for (const run of rows) {
     const key = runKey(run);

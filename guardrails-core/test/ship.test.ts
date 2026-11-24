@@ -1508,6 +1508,37 @@ describe('ship: workflow runs and required checks (#172)', () => {
     expect(delays).toEqual([]);
   });
 
+  it('drops a run row whose conclusion is not a string, rather than letting it hide a failure', async () => {
+    const { status } = await shipped({
+      'gh run list': runs(
+        { workflowName: 'CI', conclusion: 5, databaseId: 9 },
+        { workflowName: 'CI', conclusion: 'failure', databaseId: 7 },
+      ),
+    });
+    expect(status.failing).toEqual(['CI (failure)']);
+  });
+
+  it('drops a run row with a string id, rather than letting it hide a failure', async () => {
+    const { status } = await shipped({
+      'gh run list': runs(
+        { workflowName: 'CI', conclusion: '', databaseId: '9' },
+        { workflowName: 'CI', conclusion: 'failure', databaseId: 7 },
+      ),
+    });
+    expect(status.failing).toEqual(['CI (failure)']);
+  });
+
+  it('drops a run row whose event is not a string', async () => {
+    const { status } = await shipped({
+      'gh run list': runs({
+        workflowName: 'CI',
+        conclusion: 'failure',
+        event: 5,
+      }),
+    });
+    expect(status).toMatchObject({ state: 'green', failing: [] });
+  });
+
   it('drops a malformed run row', async () => {
     const { status } = await shipped({
       'gh run list': runs(
