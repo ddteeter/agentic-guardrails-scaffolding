@@ -187,9 +187,14 @@ describe('fetchSeed', () => {
         `left ${path.join('shard-2', 'b.json')} with no fingerprint beside it`,
       ],
       [
-        'a fingerprint cannot be read',
+        'a fingerprint is not JSON',
+        { 'a.json': shard('src/a.ts'), 'a.fingerprint.json': 'nope' },
+        'left a fingerprint (a.fingerprint.json) that is not valid JSON',
+      ],
+      [
+        'a fingerprint another guardrails-core version wrote (#203)',
         { 'a.json': shard('src/a.ts'), 'a.fingerprint.json': '{"stryker":1}' },
-        'left a fingerprint that cannot be read (a.fingerprint.json)',
+        "left a fingerprint (a.fingerprint.json) that was written by another guardrails-core version; it clears once main's mutation workflow completes a run on this version",
       ],
       [
         'the shards’ fingerprints disagree',

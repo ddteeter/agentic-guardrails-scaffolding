@@ -38,6 +38,14 @@ version: unreleased
   run with the highest id per workflow name and event. Runs of one workflow
   from different events, such as `push` and `pull_request`, are still judged
   apart. A row missing either field is dropped as malformed.
+- **A mutation cache or seed refused for its fingerprint says which way the
+  fingerprint failed.** Both used to say the fingerprint was "missing or
+  unreadable" (a seed: "cannot be read"), including for a sidecar that
+  parses but was written by another guardrails-core version, as every 0.14
+  sidecar is under 0.15. The reason now says the fingerprint is missing, is
+  not valid JSON, or was written by another guardrails-core version and
+  clears once main's mutation workflow completes a run on this version.
+  Only the words changed: which sidecars match is the same as before.
 
 ## Instructions this supersedes
 
