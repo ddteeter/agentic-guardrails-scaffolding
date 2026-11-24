@@ -113,6 +113,7 @@ import {
   writeFingerprintSidecar,
   type CacheOutcome,
 } from './prepare-cache.js';
+import { createImportersOf } from './importing-tests.js';
 import {
   fetchSeedOutcome,
   nodeSeedSeams,
@@ -206,6 +207,12 @@ export interface VerifyOptions {
    * (`RepoConfig.mutationCache.verdictDependencies`, #177).
    */
   mutationVerdictDependencies?: readonly string[] | undefined;
+  /**
+   * How many modules the mutation cache may trace to find the tests a
+   * changed test-support file reaches
+   * (`RepoConfig.mutationCache.maxTracedModules`, #197). Defaults to 5000.
+   */
+  mutationCacheMaxTracedModules?: number | undefined;
   /**
    * How far `--mutate` narrows to the changed lines
    * (`RepoConfig.mutationScope`, #155). Defaults to `DEFAULT_MUTATION_SCOPE`.
@@ -1868,6 +1875,39 @@ function writeStderrLine(line: string): void {
   process.stderr.write(`${line}\n`);
 }
 
+/**
+ * The file-system seams of a stryker run: the caller's, or the real ones.
+ * Split out of `runStryker` to keep its complexity down.
+ */
+function fileSeamsOf(options: AnalyzerOptions): {
+  removeFile: (filePath: string) => Promise<void>;
+  fileModifiedTime: (filePath: string) => Promise<number>;
+  writeFile: (filePath: string, contents: string) => Promise<void>;
+} {
+  const removeFile =
+    options.removeFile ?? ((filePath) => fsRm(filePath, { force: true }));
+  const fileModifiedTime =
+    options.fileModifiedTime ??
+    (async (filePath: string): Promise<number> => {
+      // A block body rather than the one-expression shape the other default
+      // seams use: `(await fsStat(f)).mtimeMs` is banned
+      // (`unicorn/no-await-expression-member`) and so is the `.then()` chain
+      // (`unicorn/prefer-await`). Covered by a real-filesystem test, since an
+      // uncovered block is a mutant nothing can kill.
+      const stats = await fsStat(filePath);
+      return stats.mtimeMs;
+    });
+  const writeFile =
+    options.writeFile ??
+    (async (filePath: string, contents: string): Promise<void> => {
+      // A block body for the same reason as `fileModifiedTime`: the cache
+      // sidecar may be the first thing ever written under `reports/`.
+      await fsMkdir(path.dirname(filePath), { recursive: true });
+      await fsWriteFile(filePath, contents);
+    });
+  return { removeFile, fileModifiedTime, writeFile };
+}
+
 async function runStryker(
   options: AnalyzerOptions,
   resolveBin: (tool: string) => string,
@@ -1890,29 +1930,8 @@ async function runStryker(
   if (firstInScope === undefined) {
     return outOfScope;
   }
-  const removeFile =
-    options.removeFile ?? ((filePath) => fsRm(filePath, { force: true }));
-  const fileModifiedTime =
-    options.fileModifiedTime ??
-    (async (filePath: string): Promise<number> => {
-      // A block body rather than the one-expression shape the other default
-      // seams use: `(await fsStat(f)).mtimeMs` is banned
-      // (`unicorn/no-await-expression-member`) and so is the `.then()` chain
-      // (`unicorn/prefer-await`). Covered by a real-filesystem test, since an
-      // uncovered block is a mutant nothing can kill.
-      const stats = await fsStat(filePath);
-      return stats.mtimeMs;
-    });
+  const { removeFile, fileModifiedTime, writeFile } = fileSeamsOf(options);
   const reportPath = STRYKER_REPORT_PATH;
-
-  const writeFile =
-    options.writeFile ??
-    (async (filePath: string, contents: string): Promise<void> => {
-      // A block body for the same reason as `fileModifiedTime`: the cache
-      // sidecar may be the first thing ever written under `reports/`.
-      await fsMkdir(path.dirname(filePath), { recursive: true });
-      await fsWriteFile(filePath, contents);
-    });
 
   await removeFile(path.join(repoRoot, reportPath));
   const seed = options.mutationCacheSeed;
@@ -1931,6 +1950,10 @@ async function runStryker(
         exec,
         repoRoot,
         options.mutationVerdictDependencies ?? [],
+      ),
+      importersOf: createImportersOf(
+        repoRoot,
+        options.mutationCacheMaxTracedModules ?? 5000,
       ),
       seed:
         seed &&

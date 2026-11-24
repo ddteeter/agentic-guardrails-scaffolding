@@ -16,13 +16,17 @@ import {
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import ts from 'typescript';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { createImportResolver } from '../src/import-graph.js';
+import {
+  createImportResolver,
+  createImportTracer,
+} from '../src/import-graph.js';
 
 let root: string;
 
@@ -642,5 +646,112 @@ describe('createImportResolver — without typescript', () => {
         `import { a } from '../src/a.js';`,
       ),
     ).toEqual([]);
+  });
+});
+
+/**
+ * The tracer the mutation cache asks which tests a changed helper reaches
+ * (#197). The resolver above may lose an import and only miss a hint; a lost
+ * import there would keep a verdict nothing re-checked, so the tracer answers
+ * `undefined` wherever the resolver answers less.
+ */
+function traced(text: string): readonly string[] | undefined {
+  return createImportTracer(root, () => ts)?.('test/x.test.ts', text);
+}
+
+describe('createImportTracer — fails closed', () => {
+  it('answers the in-repo files an import names, as the resolver does', () => {
+    expect(
+      traced(
+        [
+          `import { a } from '../src/a.js';`,
+          `import { readFile } from 'node:fs';`,
+          `import path from 'path';`,
+        ].join('\n'),
+      ),
+    ).toEqual(['src/a.ts']);
+  });
+
+  it('answers an import the resolver takes by its literal name', () => {
+    write('src/view.vue', '<template></template>\n');
+    expect(traced(`import view from '../src/view.vue';`)).toEqual([
+      'src/view.vue',
+    ]);
+  });
+
+  it('drops an installed package, which is not the repo’s own code', () => {
+    write('node_modules/pkg/package.json', '{"name":"pkg","main":"i.js"}');
+    write('node_modules/pkg/i.js', 'module.exports = 1;\n');
+    write('node_modules/pkg/i.d.ts', 'export {};\n');
+    expect(
+      traced(`import pkg from 'pkg';\nimport { a } from '../src/a.js';`),
+    ).toEqual(['src/a.ts']);
+  });
+
+  it('is undefined for a relative import that resolves to nothing', () => {
+    expect(
+      traced(
+        `import { a } from '../src/a.js';\nimport { gone } from './gone.js';`,
+      ),
+    ).toBeUndefined();
+  });
+
+  it('is undefined for a package import that resolves to nothing', () => {
+    expect(traced(`import { thing } from 'not-installed';`)).toBeUndefined();
+  });
+
+  it('is undefined when typescript throws mid-call', () => {
+    const throwing = {
+      ...ts,
+      preProcessFile: () => {
+        throw new Error('boom');
+      },
+    };
+    expect(
+      createImportTracer(root, () => throwing)?.(
+        'test/x.test.ts',
+        `import { a } from '../src/a.js';`,
+      ),
+    ).toBeUndefined();
+  });
+
+  it('is itself undefined when typescript cannot be loaded', () => {
+    expect(
+      createImportTracer(root, () => {
+        throw new Error('Cannot find module typescript');
+      }),
+    ).toBeUndefined();
+  });
+
+  it('loads typescript from the repo by default, and has none to find', () => {
+    expect(createImportTracer(root)).toBeUndefined();
+  });
+
+  it('uses the typescript installed in the repo when none is injected', () => {
+    const installed = path.dirname(
+      path.dirname(createRequire(import.meta.url).resolve('typescript')),
+    );
+    mkdirSync(path.join(root, 'node_modules'), { recursive: true });
+    symlinkSync(installed, path.join(root, 'node_modules', 'typescript'));
+    expect(
+      createImportTracer(root)?.(
+        'test/x.test.ts',
+        `import { a } from '../src/a.js';`,
+      ),
+    ).toEqual(['src/a.ts']);
+  });
+
+  it('follows a tsconfig paths alias', () => {
+    write(
+      'tsconfig.json',
+      JSON.stringify({
+        compilerOptions: {
+          module: 'esnext',
+          moduleResolution: 'bundler',
+          paths: { '@/*': ['./src/*'] },
+        },
+      }),
+    );
+    expect(traced(`import { a } from '@/a';`)).toEqual(['src/a.ts']);
   });
 });

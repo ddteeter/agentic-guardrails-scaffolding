@@ -335,13 +335,31 @@ What survives the rewrite under the default, `"invalidation": "targeted"`:
   status is dropped too.
 - **A cached file this run does not mutate is dropped.** The rest of the cache
   is kept.
+- **A changed test-support module costs only the kills of the tests that
+  import it.** A helper or fixture module under a test directory, or a
+  `test-utils`/`test-helpers` module, is traced through the import graph, with
+  the repo's own TypeScript and tsconfig (aliases included). A Killed result is
+  dropped when a test that killed it imports the changed module, directly or
+  through other modules, and kept otherwise. The tests asked about are the
+  cache's own, plus the spec files this change set touches.
 
 The whole cache is discarded when:
 
-- a changed file is **test-support code**: a helper or fixture under a test
-  directory, `__mocks__`, a snapshot, a setup file (`vitest.setup.ts`,
-  `setupTests.ts`), a `test-utils`/`test-helpers` module, or a tool config such
-  as `vitest.config.ts`;
+- a changed test-support file **cannot be traced** to the tests it reaches:
+  - it reaches tests without an import: a setup file (`vitest.setup.ts`,
+    `setupTests.ts`, `test/setup.ts`), a tool config such as
+    `vitest.config.ts`, a file under `__mocks__` or `__snapshots__`, a
+    snapshot, or a file that is not JavaScript or TypeScript (a
+    `fixtures/*.json` a test reads as data);
+  - no test imports it, so it reaches them some way the graph cannot see (a
+    `setupFiles` entry under another name, an automock, a file read with
+    `fs`);
+  - the graph cannot be built: TypeScript is not installed, an import on the
+    way resolves to nothing, a module cannot be read, or the trace passes
+    `mutationCache.maxTracedModules` modules (default 5000);
+
+  Under `any-test-change`, any changed test-support file discards the cache;
+
 - the **fingerprint** in `reports/stryker-incremental.fingerprint.json` does not
   match. It has three parts, each holding only what can change a verdict:
   - the installed stryker version;
@@ -377,6 +395,17 @@ The whole cache is discarded when:
 any changed test is newer than the cache, the whole cache goes. Otherwise the
 cache is reused as stryker wrote it, survivors included. A value the gate does
 not recognise keeps `targeted`.
+
+**Known gap: imports the graph cannot see.** The trace reads static
+`import`/`export ... from`, `require('...')` and `import('...')` with a literal
+specifier. A test that reaches a helper through a computed `import()` or
+`require()`, or by reading a `.ts` file as text, is not counted as its
+importer. If no test imports the helper at all, the cache is discarded, which
+is safe; if some other test does import it, the hidden one's kills are kept.
+The same goes for a setup file the runner loads under a name the gate does not
+read as a setup file (`setupFiles: ['test/bootstrap.ts']`) when some test also
+imports it: the gate sees only the tests that import it. Name such a file
+with `setup` in it, or switch to `any-test-change`, if this matters to you.
 
 **Known gap.** An edit in file A can change whether a mutant in an untouched
 file B is killed, and the gate only mutates the files the change set touches,
@@ -416,7 +445,11 @@ plugin outside the list above.
   Stryker writes no entry for a file with no mutants, so such a file in scope
   counts as missing on every run. It does not run when the run could not use a
   seed anyway: the `command` runner, no installed stryker to fingerprint, a
-  changed test-support file, or (under `any-test-change`) any changed test.
+  changed test-support file that cannot be traced without reading the seed (a
+  setup file, config, mock, snapshot or data fixture), or (under
+  `any-test-change`) any changed test or test-support file. A traceable
+  test-support change is judged against the seed's own tests, as it is
+  against the local cache's.
 - **How it runs:** `sh -c "<seedFrom>"` from the repo root, with
   `GUARDRAILS_SEED_DIR` set to an empty temporary directory. Put one or more
   stryker reports there, each with its fingerprint sidecar beside it:

@@ -37,10 +37,13 @@ import { checksum as scaffoldChecksum } from '../src/scaffold/manifest.js';
 import {
   CHANGED_FILES,
   SEED_COMMAND,
+  SUPPORT_CHANGED_FILES,
   keptKills,
+  keptKillsOf,
   seedFixtureExec,
   writeCacheFixture,
   writeSeedFixture,
+  writeSupportFixture,
 } from './mutation-cache-fixture.js';
 import {
   WHOLE,
@@ -6044,6 +6047,57 @@ describe('mutationCache.invalidation reaches stryker from the config', () => {
       }),
     );
     expect(keptKills(root)).toBe(1);
+  });
+});
+
+const supportFixtureExec: Exec = (_command, args) =>
+  Promise.resolve(
+    ok(args.includes('--name-only') ? SUPPORT_CHANGED_FILES : ''),
+  );
+
+function configureSupportFixture(analyzers: Record<string, unknown>): void {
+  writeSupportFixture(root);
+  writeFileSync(
+    path.join(root, 'guardrails.config.json'),
+    JSON.stringify({ analyzers, mutationCache: { maxTracedModules: 1 } }),
+  );
+}
+
+/**
+ * `mutationCache.maxTracedModules` from `guardrails.config.json` reaches
+ * every command that runs stryker (#197). Under the default cap the fixture's
+ * helper change costs one kill and keeps the other; a cap of one module
+ * cannot trace it, so the cache goes.
+ */
+describe('mutationCache.maxTracedModules reaches stryker from the config', () => {
+  it.each([['commit'], ['push']])('through gate --mode=%s', async (mode) => {
+    configureSupportFixture({ stryker: 'required' });
+    await runCommand(
+      'gate',
+      [`--mode=${mode}`],
+      dependencies({ exec: supportFixtureExec }),
+    );
+    expect(keptKillsOf(root, 'src/bar.ts')).toBe(-1);
+  });
+
+  it('through verify', async () => {
+    configureSupportFixture({ stryker: 'required' });
+    await runCommand('verify', [], dependencies({ exec: supportFixtureExec }));
+    expect(keptKillsOf(root, 'src/bar.ts')).toBe(-1);
+  });
+
+  it('through gate --mode=stop', async () => {
+    configureSupportFixture({ stryker: { mode: 'required', rung: 'stop' } });
+    await runCommand(
+      'gate',
+      ['--mode=stop'],
+      dependencies({
+        exec: supportFixtureExec,
+        readStdin: () =>
+          Promise.resolve(JSON.stringify({ cwd: root, sessionId: 'sid' })),
+      }),
+    );
+    expect(keptKillsOf(root, 'src/bar.ts')).toBe(-1);
   });
 });
 

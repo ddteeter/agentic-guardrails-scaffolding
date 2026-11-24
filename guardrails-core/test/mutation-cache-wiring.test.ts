@@ -33,10 +33,13 @@ import {
   CHANGED_FILES,
   SEED_COMMAND,
   STRYKER_CONFIG,
+  SUPPORT_CHANGED_FILES,
   keptKills,
+  keptKillsOf,
   seedFixtureExec,
   writeCacheFixture,
   writeSeedFixture,
+  writeSupportFixture,
 } from './mutation-cache-fixture.js';
 
 let root: string;
@@ -217,6 +220,60 @@ describe.each<[string, readonly string[] | undefined, string[]]>([
       mutationVerdictDependencies: extra,
     });
     expect(writtenSidecar()).toBe(expectedSidecar());
+  });
+});
+
+const supportExec: Exec = (command, args) =>
+  Promise.resolve({
+    stdout: args.includes('--name-only') ? SUPPORT_CHANGED_FILES : '',
+    stderr: '',
+    code: 0,
+  });
+
+function supportKills(): [number, number] {
+  return [keptKillsOf(root, 'src/foo.ts'), keptKillsOf(root, 'src/bar.ts')];
+}
+
+/**
+ * A changed test-support file reaches the import graph through both gates
+ * (#197): traced by the repo's own TypeScript, it costs only the kill of the
+ * test that imports it, unless `mutationCache.maxTracedModules` is too small
+ * to trace that far, which discards both.
+ */
+describe.each<[string, number | undefined, [number, number]]>([
+  ['traced, by default', undefined, [0, 1]],
+  ['refused, past the module cap', 1, [-1, -1]],
+])('a test-support change: %s', (_label, cap, expected) => {
+  beforeEach(() => {
+    writeSupportFixture(root);
+  });
+
+  it('is the stop gate’s', async () => {
+    await runStopGate({
+      repoRoot: root,
+      sessionId: 'sid',
+      baseBranch: 'main',
+      exec: supportExec,
+      config,
+      resolveBin: (tool) => tool,
+      analyzers: { stryker: 'required' },
+      analyzerRungs: { stryker: 'stop' },
+      mutationCacheMaxTracedModules: cap,
+    });
+    expect(supportKills()).toEqual(expected);
+  });
+
+  it('is the commit gate’s', async () => {
+    await runCommitGate({
+      repoRoot: root,
+      baseBranch: 'main',
+      exec: supportExec,
+      config,
+      resolveBin: (tool) => tool,
+      analyzers: { stryker: 'required' },
+      mutationCacheMaxTracedModules: cap,
+    });
+    expect(supportKills()).toEqual(expected);
   });
 });
 
