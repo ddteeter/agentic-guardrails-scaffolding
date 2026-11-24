@@ -20,6 +20,7 @@
  */
 
 import { existsSync, realpathSync, statSync } from 'node:fs';
+import { isBuiltin } from 'node:module';
 import path from 'node:path';
 
 import type * as Ts from 'typescript';
@@ -76,8 +77,19 @@ export function createImportResolver(
   repoRoot: string,
   load: () => unknown = () => loadFromRepo(repoRoot),
 ): ImportResolver | undefined {
+  return withTypescript(repoRoot, load, resolverFor);
+}
+
+/**
+`build` over the repo's TypeScript and real root; `undefined` without one.
+*/
+function withTypescript<T>(
+  repoRoot: string,
+  load: () => unknown,
+  build: (ts: Typescript, root: string) => T,
+): T | undefined {
   const ts = loaded(load);
-  return isTypescript(ts) ? resolverFor(ts, realRootOf(repoRoot)) : undefined;
+  return isTypescript(ts) ? build(ts, realRootOf(repoRoot)) : undefined;
 }
 
 /**
@@ -87,42 +99,115 @@ export function createImportResolver(
  * path new contents gets a fresh answer, not a stale one.
  */
 function resolverFor(ts: Typescript, root: string): ImportResolver {
-  const options = projectOptions(ts, root);
+  const imports = importsOf(ts, root);
   const answered = new Map<
     string,
     { readonly text: string; readonly imports: readonly string[] }
   >();
-  const resolve = (fromFile: string, text: string): readonly string[] => {
-    try {
-      const containing = path.join(root, fromFile);
-      const compilerOptions = options(containing);
-      return ts
-        .preProcessFile(text, true, true)
-        .importedFiles.flatMap(({ fileName }) =>
-          resolvedInRepo(ts, root, fileName, containing, compilerOptions),
-        );
-    } catch {
-      return [];
-    }
-  };
+  const resolve = (fromFile: string, text: string): readonly string[] =>
+    guarded(() => inRepo(imports(fromFile, text)), []);
   return (fromFile, text) => {
     const cached = answered.get(fromFile);
     if (cached?.text === text) {
       return cached.imports;
     }
-    const imports = resolve(fromFile, text);
-    answered.set(fromFile, { text, imports });
-    return imports;
+    const resolved = resolve(fromFile, text);
+    answered.set(fromFile, { text, imports: resolved });
+    return resolved;
   };
 }
 
+/**
+ * The repo-relative POSIX paths of the in-repo files `text` imports, or
+ * `undefined` when any one of its imports cannot be accounted for (#197).
+ *
+ * The resolver's answer with its losses turned into a refusal: where it drops
+ * an import nothing resolves and answers "imports nothing" when TypeScript
+ * throws, this answers `undefined`. A built-in module and an installed package
+ * are accounted for — neither is the repo's own code.
+ */
+export type ImportTracer = (
+  fromFile: string,
+  text: string,
+) => readonly string[] | undefined;
+
+/**
+ * Like `createImportResolver`, but failing closed: for the mutation cache,
+ * which keeps a verdict only when it can name every test a changed helper
+ * reaches, a lost import would keep one nothing re-checked.
+ */
+export function createImportTracer(
+  repoRoot: string,
+  load: () => unknown = () => loadFromRepo(repoRoot),
+): ImportTracer | undefined {
+  return withTypescript(repoRoot, load, tracerFor);
+}
+
+function tracerFor(ts: Typescript, root: string): ImportTracer {
+  const imports = importsOf(ts, root);
+  return (fromFile, text) =>
+    guarded(() => {
+      const each = imports(fromFile, text);
+      return each.includes(undefined) ? undefined : inRepo(each);
+    }, undefined);
+}
+
+/**
+`attempt`'s answer, or `fallback` when TypeScript throws.
+*/
+function guarded<T>(attempt: () => T, fallback: T): T {
+  try {
+    return attempt();
+  } catch {
+    return fallback;
+  }
+}
+
+/**
+The files of the imports that resolved; an unresolved one names none.
+*/
+function inRepo(
+  each: readonly (readonly string[] | undefined)[],
+): readonly string[] {
+  return each.flatMap((files) => files ?? []);
+}
+
+/**
+ * Each import of `text`, as `resolvedInRepo` answers it.
+ */
+type ImportsOf = (
+  fromFile: string,
+  text: string,
+) => readonly (readonly string[] | undefined)[];
+
+function importsOf(ts: Typescript, root: string): ImportsOf {
+  const options = projectOptions(ts, root);
+  return (fromFile, text) => {
+    const containing = path.join(root, fromFile);
+    const compilerOptions = options(containing);
+    return ts
+      .preProcessFile(text, true, true)
+      .importedFiles.map(({ fileName }) =>
+        resolvedInRepo(ts, root, fileName, containing, compilerOptions),
+      );
+  };
+}
+
+/**
+ * The in-repo file `specifier` names, as a one-element list; `[]` for a
+ * built-in module, or a file outside the repo or under `node_modules`; and
+ * `undefined` when nothing resolves.
+ */
 function resolvedInRepo(
   ts: Typescript,
   root: string,
   specifier: string,
   containing: string,
   options: Ts.CompilerOptions,
-): string[] {
+): string[] | undefined {
+  if (isBuiltin(specifier)) {
+    return [];
+  }
   const resolve = (
     compilerOptions: Ts.CompilerOptions,
   ): Ts.ResolvedModuleFull | undefined =>
@@ -134,7 +219,7 @@ function resolvedInRepo(
       ? literalFile(specifier, containing)
       : implementationOf(resolved.resolvedFileName);
   if (file === undefined) {
-    return [];
+    return undefined;
   }
   const relative = path.relative(root, file);
   // Not `isExternalLibraryImport`: a workspace package is linked through
