@@ -24,6 +24,7 @@
 
 import type { Violation } from '../violation.js';
 import { type LineRange, isLocationInRanges } from './mutate-ranges.js';
+import { RETESTED_REASON } from './timeout-retest.js';
 
 interface StrykerMutant {
   status: string;
@@ -40,6 +41,9 @@ interface StrykerMutant {
   /** What the mutant substituted for the original code. Optional in the
    *  schema — a runner may omit it. See `mutationDetail`. */
   replacement?: unknown;
+  /** Why the mutant has its status. Read only to spot the gate's own
+   *  re-scored timeout (`RETESTED_REASON`, #202). */
+  statusReason?: unknown;
 }
 
 /** How much of a mutant's replacement reaches the message. A BlockStatement
@@ -159,6 +163,7 @@ function failureViolation(
     line: mutant.location.start.line,
     message:
       `${mutant.mutatorName} mutant ${failure.reason}` +
+      (mutant.statusReason === RETESTED_REASON ? ` (${RETESTED_REASON})` : '') +
       mutationDetail(mutant.replacement),
     severity: 'error',
     fixable: false,

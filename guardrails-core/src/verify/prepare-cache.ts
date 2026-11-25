@@ -58,7 +58,7 @@ import {
   haveTestsChangedSinceCache,
 } from './stryker-adapter.js';
 
-const STRYKER_INCREMENTAL_PATH = path.join(
+export const STRYKER_INCREMENTAL_PATH = path.join(
   'reports',
   'stryker-incremental.json',
 );

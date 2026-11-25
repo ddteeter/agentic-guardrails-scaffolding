@@ -47,15 +47,24 @@ fix: do not retry the commit to force a run, and do not wait for the lock. Only
 the push rung waits, and it blocks with `gave up waiting for the gate lock` if
 the wait runs out; re-run the push to re-queue, and never use `--no-verify`.
 
-**A `Timeout` is a kill, at every rung.** Stryker counts a mutant that hangs as
-detected, and the gate reports only `Survived` and `NoCoverage`. That holds for
-a cold run and for one seeded through `mutationCache.seedFrom`
-(`test/drift/stryker-timeout.test.ts` runs both through real stryker). Do not
-harden a loop because it timed out. If the gate reports a survivor on a line
-your own run showed as `Timeout`, the two runs measured different mutants or
-different outcomes, not the same one scored differently: a mutant that only
-slows the code down can time out on a loaded machine and finish, unasserted, on
-another. Treat that survivor like any other.
+**A `Timeout` that is still in the report is a kill, at every rung.** Stryker
+counts a mutant that hangs as detected, and the gate reports only `Survived`
+and `NoCoverage`. Before it counts one, though, the gate re-tests it: each
+`Timeout` the run just measured that no test is named as killing is run once
+more, alone, in one extra stryker run. One that times out again stays killed.
+One that finishes is scored as it finished, so a mutant that only timed out
+because the machine was busy can come back as `stryker/survived`. Its message
+then says it timed out in the full run but not alone: that is a real survivor,
+and the fix is the usual one, a test that asserts what it changed. Do not
+harden a loop because it timed out.
+
+Three kinds of `Timeout` are not re-tested and stay kills: one a test is named
+as killing, one stryker cut off at its hit limit (`statusReason: "Hit limit
+reached …"` — load cannot cause that), and one reused from the cache or a
+seed. At most `mutationTimeouts.retestLimit` (default 10) are re-tested per
+run, and the gate's progress lines say how many and how many it left counted
+as killed. If a re-test cannot run (the lock was busy, stryker crashed), the
+timeouts stay kills and the progress line says so.
 
 ## When stryker will not start at all
 

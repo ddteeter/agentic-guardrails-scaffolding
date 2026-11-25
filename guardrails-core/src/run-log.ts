@@ -65,6 +65,14 @@ interface StrykerPart {
   survivors?: number | undefined;
   noCoverage?: number | undefined;
   /**
+  Timed-out mutants re-tested alone after the run (#202).
+  */
+  retested?: number | undefined;
+  /**
+  Of those, the ones that did not time out again.
+  */
+  rescored?: number | undefined;
+  /**
   Whether stryker's JSON report could be read for the counts.
   */
   report: 'read' | 'missing';
@@ -264,6 +272,8 @@ const STRYKER_COUNTS = [
   'timeouts',
   'survivors',
   'noCoverage',
+  'retested',
+  'rescored',
 ] as const;
 
 function strykerOf(value: unknown): StrykerPart | undefined {

@@ -52,6 +52,10 @@ import {
   rangeFixtureExec,
   writeRangeFixture,
 } from './mutation-scope-fixture.js';
+import {
+  timeoutFixtureExec,
+  writeTimeoutFixture,
+} from './timeout-retest-fixture.js';
 
 /**
  * Close the inheritance channel for CLAUDE_PROJECT_DIR, at module scope,
@@ -6204,6 +6208,57 @@ describe('mutationCache.maxTracedModules reaches stryker from the config', () =>
     expect(keptKillsOf(root, 'src/bar.ts')).toBe(-1);
   });
 });
+
+/**
+ * `mutationTimeouts.retestLimit` from `guardrails.config.json` reaches every
+ * command that runs stryker (#202). The fixture's run leaves one timeout no
+ * test is named as killing: re-tested by default, a second stryker run; left
+ * alone at a limit of 0.
+ */
+describe.each<[string, Record<string, unknown>, number]>([
+  ['re-tests by default', {}, 2],
+  ['re-tests nothing at a limit of 0', { retestLimit: 0 }, 1],
+])(
+  'mutationTimeouts reaches stryker from the config: %s',
+  (_label, section, runs) => {
+    function configure(analyzers: Record<string, unknown>): void {
+      writeTimeoutFixture(root);
+      writeFileSync(
+        path.join(root, 'guardrails.config.json'),
+        JSON.stringify({ analyzers, mutationTimeouts: section }),
+      );
+    }
+
+    it.each([['commit'], ['push']])('through gate --mode=%s', async (mode) => {
+      configure({ stryker: 'required' });
+      const { exec, strykerRuns } = timeoutFixtureExec(root);
+      await runCommand('gate', [`--mode=${mode}`], dependencies({ exec }));
+      expect(strykerRuns()).toBe(runs);
+    });
+
+    it('through verify', async () => {
+      configure({ stryker: 'required' });
+      const { exec, strykerRuns } = timeoutFixtureExec(root);
+      await runCommand('verify', [], dependencies({ exec }));
+      expect(strykerRuns()).toBe(runs);
+    });
+
+    it('through gate --mode=stop', async () => {
+      configure({ stryker: { mode: 'required', rung: 'stop' } });
+      const { exec, strykerRuns } = timeoutFixtureExec(root);
+      await runCommand(
+        'gate',
+        ['--mode=stop'],
+        dependencies({
+          exec,
+          readStdin: () =>
+            Promise.resolve(JSON.stringify({ cwd: root, sessionId: 'sid' })),
+        }),
+      );
+      expect(strykerRuns()).toBe(runs);
+    });
+  },
+);
 
 function configureRangeFixture(analyzers: Record<string, unknown>): void {
   writeRangeFixture(root);

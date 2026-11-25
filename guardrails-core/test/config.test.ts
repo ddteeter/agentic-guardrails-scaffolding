@@ -745,6 +745,39 @@ describe('mutationLock', () => {
   });
 });
 
+describe('mutationTimeouts (#202)', () => {
+  it('re-tests at most 10 timed-out mutants by default', () => {
+    expect(defaultConfig().mutationTimeouts).toStrictEqual({ retestLimit: 10 });
+  });
+
+  it.each([[3], [0]])('reads a retestLimit of %j', (retestLimit) => {
+    writeFileSync(
+      path.join(root, 'guardrails.config.json'),
+      JSON.stringify({ mutationTimeouts: { retestLimit } }),
+    );
+    expect(loadConfig(root).mutationTimeouts.retestLimit).toBe(retestLimit);
+  });
+
+  it.each([[-1], ['5'], [2.5], [null], [Number.MAX_VALUE]])(
+    'keeps the default for a retestLimit of %j',
+    (retestLimit) => {
+      writeFileSync(
+        path.join(root, 'guardrails.config.json'),
+        JSON.stringify({ mutationTimeouts: { retestLimit } }),
+      );
+      expect(loadConfig(root).mutationTimeouts.retestLimit).toBe(10);
+    },
+  );
+
+  it('keeps the default for a section that is not an object', () => {
+    writeFileSync(
+      path.join(root, 'guardrails.config.json'),
+      JSON.stringify({ mutationTimeouts: 4 }),
+    );
+    expect(loadConfig(root).mutationTimeouts.retestLimit).toBe(10);
+  });
+});
+
 describe('mutationCache', () => {
   it('rewrites the cache by the targeted rule, and seeds nothing, by default', () => {
     expect(defaultConfig().mutationCache).toStrictEqual({

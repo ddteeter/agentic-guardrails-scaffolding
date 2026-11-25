@@ -90,17 +90,12 @@ import { logGateRun, startRun } from './gate-run-log.js';
 import type { MutationRunRecord } from './verify/mutation-run.js';
 import { resolveBaseReference } from './verify/git.js';
 
-export interface StopGateOptions {
-  /**
-  The machine-wide mutation lock, forwarded to `runVerify`.
-  */
-  mutationLock?: MutationLock | undefined;
-  repoRoot: string;
-  sessionId: string;
-  baseBranch: string;
-  exec: Exec;
-  config: GateConfig;
-  resolveBin?: (tool: string) => string;
+/**
+ * The settings both gates forward to `runVerify` unchanged. One declaration
+ * rather than a copy per gate: a new analyzer setting has to reach both, and
+ * two copies is how one of them gets forgotten.
+ */
+interface ForwardedVerifyOptions {
   /**
   Per-analyzer opt-in (`RepoConfig.analyzers`), forwarded to `runVerify`.
   */
@@ -123,6 +118,11 @@ export interface StopGateOptions {
    */
   mutationCacheMaxTracedModules?: number | undefined;
   /**
+   * The cap on timed-out mutants re-tested alone — see
+   * `VerifyOptions.mutationTimeoutRetestLimit`.
+   */
+  mutationTimeoutRetestLimit?: number | undefined;
+  /**
    * Line-range mutation — see `VerifyOptions.mutationScope`.
    */
   mutationScope?: MutationScopeSettings | undefined;
@@ -130,6 +130,39 @@ export interface StopGateOptions {
    * The incremental-cache seed — see `VerifyOptions.mutationCacheSeed`.
    */
   mutationCacheSeed?: SeedSettings | undefined;
+}
+
+/**
+ * The mutation settings, passed straight through rather than conditionally
+ * spread (each is typed `| undefined` to allow it). A conditional spread is a
+ * provably equivalent mutant: forcing the guard true still evaluates the
+ * literal, so an absent setting yields `{ key: undefined }` rather than no key,
+ * and `runVerify` cannot tell the two apart. A mutant avoided costs nothing,
+ * where a mutant suppressed costs a sanction that has to be justified forever.
+ */
+function forwardedMutationSettings(options: ForwardedVerifyOptions) {
+  return {
+    analyzerRungs: options.analyzerRungs,
+    mutationCacheInvalidation: options.mutationCacheInvalidation,
+    mutationVerdictDependencies: options.mutationVerdictDependencies,
+    mutationCacheMaxTracedModules: options.mutationCacheMaxTracedModules,
+    mutationTimeoutRetestLimit: options.mutationTimeoutRetestLimit,
+    mutationScope: options.mutationScope,
+    mutationCacheSeed: options.mutationCacheSeed,
+  };
+}
+
+export interface StopGateOptions extends ForwardedVerifyOptions {
+  /**
+  The machine-wide mutation lock, forwarded to `runVerify`.
+  */
+  mutationLock?: MutationLock | undefined;
+  repoRoot: string;
+  sessionId: string;
+  baseBranch: string;
+  exec: Exec;
+  config: GateConfig;
+  resolveBin?: (tool: string) => string;
 
   /**
   Claude/Copilot says this Stop is a retry caused by an earlier block.
@@ -142,7 +175,7 @@ export interface StopGateResult {
   auditFindings: AuditFinding[];
 }
 
-export interface CommitGateOptions {
+export interface CommitGateOptions extends ForwardedVerifyOptions {
   /**
   The machine-wide mutation lock, forwarded to `runVerify`.
   */
@@ -183,35 +216,6 @@ export interface CommitGateOptions {
    * occurrence count changes on every regeneration. See `SanctionedFile`.
    */
   sanctionedFiles?: readonly SanctionedFile[];
-  /**
-  Per-analyzer opt-in (`RepoConfig.analyzers`), forwarded to `runVerify`.
-  */
-  analyzers?: Readonly<Record<string, AnalyzerMode>>;
-  /**
-   * Per-analyzer cadence overrides — see `VerifyOptions.analyzerRungs`.
-   */
-  analyzerRungs?: Readonly<Record<string, Rung>> | undefined;
-  /**
-   * The incremental-cache rule — see `VerifyOptions.mutationCacheInvalidation`.
-   */
-  mutationCacheInvalidation?: CacheInvalidation | undefined;
-  /**
-   * Extra fingerprint packages — see `VerifyOptions.mutationVerdictDependencies`.
-   */
-  mutationVerdictDependencies?: readonly string[] | undefined;
-  /**
-   * The module cap on tracing a test-support change — see
-   * `VerifyOptions.mutationCacheMaxTracedModules`.
-   */
-  mutationCacheMaxTracedModules?: number | undefined;
-  /**
-   * Line-range mutation — see `VerifyOptions.mutationScope`.
-   */
-  mutationScope?: MutationScopeSettings | undefined;
-  /**
-   * The incremental-cache seed — see `VerifyOptions.mutationCacheSeed`.
-   */
-  mutationCacheSeed?: SeedSettings | undefined;
   /**
    * Which rung this gate is. `commit` by default; `gate --mode=push` and
    * `--mode=ci` pass their own.
@@ -765,21 +769,7 @@ async function stopGate(
     ...(options.analyzers && { analyzers: options.analyzers }),
     // Forwarded here too: an override can LOWER an analyzer onto this rung,
     // not only raise one off the commit rung.
-    //
-    // Passed straight through rather than conditionally spread, and typed
-    // `| undefined` to allow it. A conditional spread here is a provably
-    // equivalent mutant: forcing the guard true still evaluates the literal, so
-    // an absent override yields `{ analyzerRungs: undefined }` rather than no
-    // key, and `runVerify` reads this only via `options.analyzerRungs ?? {}`,
-    // which cannot tell the two apart. Same reasoning, and the same fix, as
-    // `CommitGateOptions.sessionId` — a mutant avoided costs nothing, where a
-    // mutant suppressed costs a sanction that has to be justified forever.
-    analyzerRungs: options.analyzerRungs,
-    mutationCacheInvalidation: options.mutationCacheInvalidation,
-    mutationVerdictDependencies: options.mutationVerdictDependencies,
-    mutationCacheMaxTracedModules: options.mutationCacheMaxTracedModules,
-    mutationScope: options.mutationScope,
-    mutationCacheSeed: options.mutationCacheSeed,
+    ...forwardedMutationSettings(options),
     mutationLock: options.mutationLock,
     onMutationRun,
   };
@@ -1033,13 +1023,7 @@ async function commitGate(
     profile: options.profile ?? 'commit',
     ...(options.resolveBin && { resolveBin: options.resolveBin }),
     ...(options.analyzers && { analyzers: options.analyzers }),
-    // Straight through, not conditionally spread — see the stop gate's note.
-    analyzerRungs: options.analyzerRungs,
-    mutationCacheInvalidation: options.mutationCacheInvalidation,
-    mutationVerdictDependencies: options.mutationVerdictDependencies,
-    mutationCacheMaxTracedModules: options.mutationCacheMaxTracedModules,
-    mutationScope: options.mutationScope,
-    mutationCacheSeed: options.mutationCacheSeed,
+    ...forwardedMutationSettings(options),
     ...(options.changedScope && { changedScope: options.changedScope }),
     mutationLock: options.mutationLock,
     onMutationRun,

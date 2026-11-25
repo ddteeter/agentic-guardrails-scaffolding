@@ -9,6 +9,7 @@ import {
   reportedFiles,
   unrunSurvivedMutants,
 } from '../../src/verify/stryker-adapter.js';
+import { RETESTED_REASON } from '../../src/verify/timeout-retest.js';
 import {
   isStrykerDryRunFailure,
   strykerFailingTests,
@@ -83,6 +84,34 @@ describe('parseStrykerJson', () => {
       tool: 'stryker',
     });
   });
+
+  it.each([
+    [RETESTED_REASON, ` (${RETESTED_REASON})`],
+    ['some other reason', ''],
+  ])(
+    'says a survivor first timed out only when re-scored (%s)',
+    (statusReason, tail) => {
+      const retested = JSON.stringify({
+        files: {
+          'src/changed.ts': {
+            mutants: [
+              {
+                mutatorName: 'UpdateOperator',
+                status: 'Survived',
+                statusReason,
+                location: { start: { line: 3, column: 1 } },
+              },
+            ],
+          },
+        },
+      });
+      const [violation] = parseStrykerJson(retested, ['src/changed.ts']);
+      expect(violation?.message).toBe(
+        'UpdateOperator mutant survived — a test executes this line but ' +
+          `does not assert its behavior${tail}`,
+      );
+    },
+  );
 
   it('emits one violation per NoCoverage mutant in a changed file', () => {
     // NoCoverage is a STRICTER failure than Survived: Survived means a test ran

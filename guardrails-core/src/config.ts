@@ -137,6 +137,18 @@ interface MutationCacheConfig {
   maxTracedModules: number;
 }
 
+/**
+See `RepoConfig.mutationTimeouts`.
+*/
+interface MutationTimeoutsConfig {
+  /**
+   * How many timed-out mutants one stryker run re-tests alone before counting
+   * them killed. A whole number; `0` re-tests none. Anything else keeps the
+   * default, 10.
+   */
+  retestLimit: number;
+}
+
 export interface RepoConfig {
   baseBranch: string;
   maxAttempts: number;
@@ -278,6 +290,16 @@ export interface RepoConfig {
    */
   mutationCache: MutationCacheConfig;
   /**
+   * What the gate does with a stryker `Timeout` (#202). After the run, each
+   * timeout this run measured that no test is named as killing -- a
+   * hit-limit timeout excepted -- is re-tested once more, alone, in one extra
+   * stryker run, and only one that times out again stays killed; the rest
+   * are scored as the re-run found them. At most `retestLimit` (default 10)
+   * are re-tested per run, and `0` turns the re-test off. See
+   * `verify/timeout-retest.ts`, and docs/adoption.md ("Timed-out mutants").
+   */
+  mutationTimeouts: MutationTimeoutsConfig;
+  /**
    * How far stryker's `--mutate` narrows to the lines a change touched (#155).
    * `lines` (default `true`) mutates each changed file's diff hunks, padded by
    * `padding` lines (default 5) on each side, and mutates the file whole once
@@ -343,6 +365,7 @@ export function defaultConfig(): RepoConfig {
       verdictDependencies: [],
       maxTracedModules: 5000,
     },
+    mutationTimeouts: { retestLimit: 10 },
     mutationScope: { ...DEFAULT_MUTATION_SCOPE },
     denyForegroundWaits: true,
     foregroundSleepLimitSeconds: 120,
@@ -677,6 +700,27 @@ function pickPositiveInteger(value: unknown, fallback: number): number {
 }
 
 /**
+A whole number -- `0` included -- else the fallback.
+*/
+function pickWholeNumber(value: unknown, fallback: number): number {
+  const number = pickNumber(value, fallback);
+  return Number.isSafeInteger(number) && number >= 0 ? number : fallback;
+}
+
+/**
+`mutationTimeouts`, key by key; anything unrecognised keeps the default.
+*/
+function pickMutationTimeouts(
+  value: unknown,
+  defaults: MutationTimeoutsConfig,
+): MutationTimeoutsConfig {
+  const section = isRecord(value) ? value : {};
+  return {
+    retestLimit: pickWholeNumber(section.retestLimit, defaults.retestLimit),
+  };
+}
+
+/**
  * `mutationLock`, key by key. `GUARDRAILS_GATE_LOCK_TIMEOUT` was the push
  * wait's only knob while the lock lived in the shell hook, so it is still
  * read -- below the config key, above the default -- and a setup that relied
@@ -872,6 +916,10 @@ export function loadConfig(
       environment,
     ),
     mutationCache: pickMutationCache(raw.mutationCache, base.mutationCache),
+    mutationTimeouts: pickMutationTimeouts(
+      raw.mutationTimeouts,
+      base.mutationTimeouts,
+    ),
     mutationScope: pickMutationScope(raw.mutationScope, base.mutationScope),
     denyForegroundWaits: raw.denyForegroundWaits !== false,
     foregroundSleepLimitSeconds: pickPositive(

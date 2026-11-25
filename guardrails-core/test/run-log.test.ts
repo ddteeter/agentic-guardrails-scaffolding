@@ -64,6 +64,8 @@ const GATE: GateRow = {
     timeouts: 6,
     survivors: 0,
     noCoverage: 0,
+    retested: 4,
+    rescored: 1,
     report: 'read',
   },
   machine: MACHINE,

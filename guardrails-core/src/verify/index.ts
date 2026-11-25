@@ -108,11 +108,20 @@ import {
   planRunRanges,
 } from './mutate-ranges.js';
 import {
+  STRYKER_INCREMENTAL_PATH,
   prepareIncrementalCache,
   readOrEmpty,
   writeFingerprintSidecar,
   type CacheOutcome,
 } from './prepare-cache.js';
+import {
+  type RetestPlan,
+  type Rescored,
+  dropMutants,
+  planRetest,
+  rescore,
+  timeoutKeys,
+} from './timeout-retest.js';
 import { createImportersOf } from './importing-tests.js';
 import {
   fetchSeedOutcome,
@@ -120,7 +129,11 @@ import {
   type SeedSettings,
 } from './seed-cache.js';
 import { concurrencyOf } from '../run-log.js';
-import { type MutationRunRecord, mutationRunRecord } from './mutation-run.js';
+import {
+  type MutationRunRecord,
+  type RetestCounts,
+  mutationRunRecord,
+} from './mutation-run.js';
 import {
   gitManifestLister,
   nodeDependencySeams,
@@ -213,6 +226,12 @@ export interface VerifyOptions {
    * (`RepoConfig.mutationCache.maxTracedModules`, #197). Defaults to 5000.
    */
   mutationCacheMaxTracedModules?: number | undefined;
+  /**
+   * How many timed-out mutants a stryker run re-tests alone before counting
+   * them killed (`RepoConfig.mutationTimeouts.retestLimit`, #202); `0`
+   * re-tests none. Defaults to 10. See `timeout-retest.ts`.
+   */
+  mutationTimeoutRetestLimit?: number | undefined;
   /**
    * How far `--mutate` narrows to the changed lines
    * (`RepoConfig.mutationScope`, #155). Defaults to `DEFAULT_MUTATION_SCOPE`.
@@ -1785,39 +1804,52 @@ function pinsReader(
  * makes of the lock's timing, the cache outcome, and -- when stryker ran --
  * the plugin's summary and stryker's report.
  */
-async function recordOf(
+function recordOf(
   locked: LockedRun,
   context: {
     files: number;
     cache: CacheOutcome;
-    readFile: (filePath: string) => Promise<string>;
-    repoRoot: string;
     concurrency: string;
+    texts: RunTexts;
+    retest: RetestCounts | undefined;
   },
-): Promise<MutationRunRecord> {
-  const { readFile, repoRoot } = context;
-  const didRun = locked.kind === 'ran';
-  // Read whether or not stryker ran: `mutationRunRecord` ignores both texts
-  // of a run that did not.
-  // `prepare-cache.ts`'s reader, whose `''` for a missing file is pinned by
-  // the cache outcome there; here no caller could tell `''` from nothing.
-  const read = (filePath: string): Promise<string> =>
-    readOrEmpty({ readFile, repoRoot }, filePath);
-  const [summaryText, reportText] = await Promise.all([
-    read(runSummaryPath(repoRoot)),
-    read(path.join(repoRoot, STRYKER_REPORT_PATH)),
-  ]);
+): MutationRunRecord {
   return {
     ...mutationRunRecord({
       files: context.files,
       cache: context.cache,
       timing: locked.timing,
-      didRun,
-      summaryText,
-      reportText,
+      didRun: locked.kind === 'ran',
+      ...context.texts,
+      retest: context.retest,
     }),
     concurrency: context.concurrency,
   };
+}
+
+/**
+The plugin's summary and stryker's report, as the first run left them.
+*/
+interface RunTexts {
+  summaryText: string;
+  reportText: string;
+}
+
+/**
+ * Read whether or not stryker ran: `mutationRunRecord` ignores both texts of
+ * a run that did not. Read before any timeout re-test, which overwrites both.
+ * `prepare-cache.ts`'s reader, whose `''` for a missing file is pinned by the
+ * cache outcome there; here no caller could tell `''` from nothing.
+ */
+async function readRunTexts(seams: {
+  readFile: (filePath: string) => Promise<string>;
+  repoRoot: string;
+}): Promise<RunTexts> {
+  const [summaryText, reportText] = await Promise.all([
+    readOrEmpty(seams, runSummaryPath(seams.repoRoot)),
+    readOrEmpty(seams, path.join(seams.repoRoot, STRYKER_REPORT_PATH)),
+  ]);
+  return { summaryText, reportText };
 }
 
 function readUtf8(filePath: string): Promise<string> {
@@ -1908,6 +1940,199 @@ function fileSeamsOf(options: AnalyzerOptions): {
   return { removeFile, fileModifiedTime, writeFile };
 }
 
+/**
+ * One stryker run under the mutation lock, over the `--mutate` entries given
+ * with any `extra` arguments, as `runStryker` starts it: the first run, and
+ * the timeout re-test after it (#202).
+ */
+type StrykerLaunch = (
+  mutate: string,
+  extra: readonly string[],
+) => Promise<LockedRun>;
+
+function strykerLauncher(
+  options: AnalyzerOptions,
+  resolveBin: (tool: string) => string,
+  { rung, warn }: { rung: Rung; warn: (line: string) => void },
+): StrykerLaunch {
+  const { exec, repoRoot } = options;
+  const lock = options.mutationLock;
+  const plugin =
+    options.strykerProgressPlugin ?? progressPluginBeside(import.meta.url);
+  return (mutate, extra) => {
+    const strykerArguments = (reporters: string): string[] => [
+      'run',
+      '--incremental',
+      '--reporters',
+      reporters,
+      '--mutate',
+      mutate,
+      ...extra,
+    ];
+    return runUnderLock({
+      exec,
+      rung,
+      lock,
+      command: resolveBin('stryker'),
+      args: strykerArguments('json'),
+      ...(plugin !== undefined &&
+        lock !== undefined && {
+          locked: {
+            args: [
+              ...strykerArguments(`json,${PROGRESS_REPORTER}`),
+              '--appendPlugins',
+              plugin,
+            ],
+            env: {
+              ...process.env,
+              ...holderEnvironment(lock.path, rung, repoRoot),
+            },
+          },
+        }),
+      cwd: repoRoot,
+      progress: warn,
+    });
+  };
+}
+
+/**
+What `retestTimeouts` works with.
+*/
+interface RetestContext {
+  plan: RetestPlan;
+  /**
+  `mutationTimeouts.retestLimit`, named when it leaves some out.
+  */
+  limit: number;
+  /**
+  The first run's report text.
+  */
+  firstReport: string;
+  readFile: (filePath: string) => Promise<string>;
+  writeFile: (filePath: string, contents: string) => Promise<void>;
+  removeFile: (filePath: string) => Promise<void>;
+  repoRoot: string;
+  warn: (line: string) => void;
+  launch: StrykerLaunch;
+}
+
+/**
+`1 timed-out mutant` / `3 timed-out mutants`.
+*/
+function timedOutMutants(count: number): string {
+  return `${String(count)} timed-out mutant${count === 1 ? '' : 's'}`;
+}
+
+/**
+What the first progress line of a re-test says it is about to do.
+*/
+function retestAnnouncement(plan: RetestPlan, limit: number): string {
+  const count = plan.keys.size;
+  const left = plan.candidates - count;
+  if (left === 0) {
+    return (
+      `guardrails: re-testing ${timedOutMutants(count)} alone, in one more ` +
+      `stryker run, before counting ${count === 1 ? 'it' : 'them'} killed.`
+    );
+  }
+  return (
+    `guardrails: re-testing ${String(count)} of ${timedOutMutants(plan.candidates)} ` +
+    `alone, in one more stryker run (at most ${String(limit)}: ` +
+    `mutationTimeouts.retestLimit); ${String(left)} ` +
+    `${left === 1 ? 'stays' : 'stay'} counted as killed.`
+  );
+}
+
+/**
+Why a re-test left no report, for the line that says so.
+*/
+function unfinishedWhy(second: LockedRun): string {
+  if (second.kind !== 'ran') {
+    return `the mutation lock was busy: ${second.holding}`;
+  }
+  const { result } = second;
+  if (result.spawnFailed === true) {
+    return 'stryker could not be started';
+  }
+  if (result.signal !== undefined) {
+    return `stryker was stopped by ${result.signal}`;
+  }
+  return `stryker exited ${String(result.code)} with no report`;
+}
+
+/**
+ * Re-test the planned timeouts once, alone, and leave at the report path the
+ * report the gate should judge: the first run's, with each re-tested mutant
+ * scored as the re-run scored it (#202). `undefined` when nothing was planned.
+ *
+ * One extra stryker run for all of them rather than one each: every run pays
+ * stryker's startup and a full dry run, which is minutes on a large suite
+ * (#61). The planned mutants are dropped from the incremental cache, so the
+ * re-run tests exactly them and reuses every other verdict in their lines;
+ * `--concurrency 1` keeps sibling workers off the machine, and the lock keeps
+ * other gates off it. The re-run's own dry run sets its timeout from the
+ * project's settings, unchanged.
+ *
+ * A re-test that leaves no report -- the lock busy, stryker crashed -- keeps
+ * every planned Timeout as the kill it was, and says so: a re-test that did
+ * not happen is no evidence against the first verdict.
+ */
+async function retestTimeouts(
+  context: RetestContext,
+): Promise<RetestCounts | undefined> {
+  const { plan, firstReport, repoRoot, warn } = context;
+  const count = plan.keys.size;
+  if (count === 0) {
+    return undefined;
+  }
+  warn(retestAnnouncement(plan, context.limit));
+  const cachePath = path.join(repoRoot, STRYKER_INCREMENTAL_PATH);
+  const reportPath = path.join(repoRoot, STRYKER_REPORT_PATH);
+  const dropped = dropMutants(await readOrEmpty(context, cachePath), plan.keys);
+  // A cache that cannot be read holds no verdict to reuse: without it the
+  // re-run tests every mutant on the planned lines, which costs more and
+  // judges the same.
+  await (dropped === undefined
+    ? context.removeFile(cachePath)
+    : context.writeFile(cachePath, dropped));
+  await context.removeFile(reportPath);
+  const second = await context.launch(plan.mutate.join(','), [
+    '--concurrency',
+    '1',
+  ]);
+  const secondReport = await readOrEmpty(context, reportPath);
+  if (!isStrykerReportJson(secondReport)) {
+    warn(
+      `guardrails: the re-test of ${timedOutMutants(count)} did not finish ` +
+        `(${unfinishedWhy(second)}), so ${count === 1 ? 'it stays' : 'they stay'} ` +
+        `counted as killed.`,
+    );
+    await context.writeFile(reportPath, firstReport);
+    return { retested: count, rescored: 0 };
+  }
+  const merged = rescore(firstReport, secondReport, plan.keys);
+  await context.writeFile(reportPath, merged.report);
+  warn(retestOutcome(merged));
+  return { retested: count, rescored: merged.rescored };
+}
+
+/**
+What the last progress line of a finished re-test says.
+*/
+function retestOutcome(merged: Rescored): string {
+  const outcome =
+    `guardrails: re-test: ${String(merged.timedOutAgain)} timed out again ` +
+    `(killed), ${String(merged.rescored)} re-scored.`;
+  if (merged.missing === 0) {
+    return outcome;
+  }
+  const verb = merged.missing === 1 ? 'stays' : 'stay';
+  return (
+    `${outcome} ${String(merged.missing)} missing from its report ${verb} ` +
+    `counted as killed.`
+  );
+}
+
 async function runStryker(
   options: AnalyzerOptions,
   resolveBin: (tool: string) => string,
@@ -1992,50 +2217,47 @@ async function runStryker(
   const mutate = [...mutateEntries(inScope, lineRanges), ...negations].join(
     ',',
   );
-  const strykerArguments = (reporters: string): string[] => [
-    'run',
-    '--incremental',
-    '--reporters',
-    reporters,
-    '--mutate',
-    mutate,
-  ];
+  // What the cache holds as stryker starts: a Timeout in it is reused, not
+  // measured, and is not re-tested (#202).
+  const cachedTimeouts = timeoutKeys(
+    await readOrEmpty(
+      { readFile, repoRoot },
+      path.join(repoRoot, STRYKER_INCREMENTAL_PATH),
+    ),
+  );
   // The plugin's summary is this run's or nothing: a stale one would time the
   // run before it.
   await removeFile(runSummaryPath(repoRoot));
-  const lock = options.mutationLock;
-  const plugin =
-    options.strykerProgressPlugin ?? progressPluginBeside(import.meta.url);
-  const locked = await runUnderLock({
-    exec,
-    rung,
-    lock,
-    command: resolveBin('stryker'),
-    args: strykerArguments('json'),
-    ...(plugin !== undefined &&
-      lock !== undefined && {
-        locked: {
-          args: [
-            ...strykerArguments(`json,${PROGRESS_REPORTER}`),
-            '--appendPlugins',
-            plugin,
-          ],
-          env: {
-            ...process.env,
-            ...holderEnvironment(lock.path, rung, repoRoot),
-          },
-        },
-      }),
-    cwd: repoRoot,
-    progress: warn,
-  });
+  const launch = strykerLauncher(options, resolveBin, { rung, warn });
+  const locked = await launch(mutate, []);
+  const texts = await readRunTexts({ readFile, repoRoot });
+  const limit = options.mutationTimeoutRetestLimit ?? 10;
+  const retest =
+    locked.kind === 'ran' && locked.result.spawnFailed !== true
+      ? await retestTimeouts({
+          plan: planRetest(texts.reportText, {
+            inScope,
+            lineRanges,
+            cachedTimeouts,
+            limit,
+          }),
+          limit,
+          firstReport: texts.reportText,
+          readFile,
+          writeFile,
+          removeFile,
+          repoRoot,
+          warn,
+          launch,
+        })
+      : undefined;
   options.onMutationRun(
-    await recordOf(locked, {
+    recordOf(locked, {
       files: inScope.length,
       cache,
-      readFile,
-      repoRoot,
       concurrency: concurrencyOf(strykerConfig),
+      texts,
+      retest,
     }),
   );
   if (locked.kind === 'deferred') {

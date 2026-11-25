@@ -553,6 +553,39 @@ stryker) refuse it too. Every shard writes the same fingerprint because the
 `mutate` array is not part of it: a shard that passes its own `--mutate`, or
 a config whose `mutate` lists every shard's scope, fingerprints alike.
 
+## Timed-out mutants
+
+Stryker scores a `Timeout` as detected, and the gate counts it as a kill. A
+mutant can time out because the machine was busy rather than because it
+hangs, though, and that would be a kill no test earned. So after each stryker
+run, the gate re-tests the timeouts that run measured and no test is named as
+killing:
+
+- It drops them from the incremental cache and runs stryker once more, with
+  `--concurrency 1` and `--mutate` narrowed to their lines. Every other verdict
+  on those lines is reused from the cache, so only they are re-tested.
+- One that times out again stays a kill. One that finishes is scored as it
+  finished: a survivor is reported as `stryker/survived`, and its message says
+  it first timed out.
+- A hit-limit timeout (`statusReason: "Hit limit reached (n/limit)"`) is not
+  re-tested: stryker counted the mutant's own executions past its limit, which
+  load cannot cause. Nor is a timeout reused from the cache or a seed, so a
+  mutant that really hangs costs a re-test once, not on every run.
+- If the re-test leaves no report (the lock was taken by another gate in
+  between, or stryker crashed), the timeouts stay kills and the progress line
+  says so.
+
+The re-test is one extra stryker run, dry run included, whatever the number of
+timeouts. `mutationTimeouts.retestLimit` caps how many it re-tests (default
+10); the rest stay kills, and the progress line names how many were re-tested
+and how many were left. `0` turns the re-test off:
+
+```json
+{ "mutationTimeouts": { "retestLimit": 0 } }
+```
+
+The run log records `retested` and `rescored` for each run that re-tested.
+
 ## The clean-baseline prerequisite
 
 **Run `guardrails verify` clean before turning the gate on.** tsc, knip, and

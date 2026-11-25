@@ -36,6 +36,14 @@ interface StrykerRecord {
   timeouts?: number;
   survivors?: number;
   noCoverage?: number;
+  /**
+  Timed-out mutants re-tested alone after the run (#202).
+  */
+  retested?: number;
+  /**
+  Of those, the ones that did not time out again.
+  */
+  rescored?: number;
   report: 'read' | 'missing';
 }
 
@@ -71,6 +79,18 @@ export interface MutationRunInputs {
   Stryker's JSON report, or `''` when there is none.
   */
   reportText: string;
+  /**
+  What the timeout re-test did, when one ran (#202).
+  */
+  retest?: RetestCounts | undefined;
+}
+
+/**
+What a timeout re-test amounted to (#202).
+*/
+export interface RetestCounts {
+  retested: number;
+  rescored: number;
 }
 
 /**
@@ -134,6 +154,7 @@ export function mutationRunRecord(
       survivors: counts.Survived ?? 0,
       noCoverage: counts.NoCoverage ?? 0,
     }),
+    ...inputs.retest,
     report: counts === undefined ? 'missing' : 'read',
   };
   return {
