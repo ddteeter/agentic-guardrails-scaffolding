@@ -13,6 +13,12 @@ import { freemem, loadavg } from 'node:os';
 
 import { isRecord } from './is-record.js';
 import { parseJsonText } from './json-file.js';
+import {
+  type TimeoutCosts,
+  timeoutCostsOf,
+  type TimeoutSettings,
+  timeoutSettingsOf,
+} from './lock-holder.js';
 
 export interface MachineSample {
   load1: number;
@@ -72,6 +78,26 @@ interface StrykerPart {
   Of those, the ones that did not time out again.
   */
   rescored?: number | undefined;
+  /**
+  The re-test's mutating time, alone, at concurrency 1 (#236).
+  */
+  retestMutatingMs?: number | undefined;
+  /**
+  The timeout budget of the re-test's wall-clock timeouts, added up.
+  */
+  retestBudgetMs?: number | undefined;
+  /**
+  The re-test's wall-clock timeouts.
+  */
+  retestTimedOut?: number | undefined;
+  /**
+  What the run's timeouts cost, from the progress plugin (#236).
+  */
+  timeoutCost?: TimeoutCosts | undefined;
+  /**
+  The settings its timeout budgets were made of (#236).
+  */
+  timeoutSettings?: TimeoutSettings | undefined;
   /**
   Whether stryker's JSON report could be read for the counts.
   */
@@ -296,6 +322,9 @@ const STRYKER_COUNTS = [
   'noCoverage',
   'retested',
   'rescored',
+  'retestMutatingMs',
+  'retestBudgetMs',
+  'retestTimedOut',
 ] as const;
 
 function strykerOf(value: unknown): StrykerPart | undefined {
@@ -313,6 +342,8 @@ function strykerOf(value: unknown): StrykerPart | undefined {
     ...Object.fromEntries(
       STRYKER_COUNTS.map((key) => [key, numberOf(value, key)]),
     ),
+    timeoutCost: timeoutCostsOf(value.timeoutCost),
+    timeoutSettings: timeoutSettingsOf(value.timeoutSettings),
     report,
   };
 }

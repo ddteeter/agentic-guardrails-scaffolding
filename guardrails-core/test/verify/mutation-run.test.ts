@@ -195,6 +195,69 @@ describe('mutationRunRecord', () => {
     expect(record.stryker).toMatchObject({ retested: 3, rescored: 1 });
   });
 
+  it('copies what the timeouts cost, and the settings, from the summary (#236)', () => {
+    const timeoutCost = {
+      wallClock: 2,
+      hitLimit: 1,
+      budgetMs: 13_000,
+      wallClockGapMs: 22_000,
+      otherGapMs: 3000,
+      byFile: [{ file: 'src/a.ts', count: 2, firstLine: 3, lastLine: 9 }],
+    };
+    const timeoutSettings = { timeoutMS: 5000, dryRunOverheadMs: 90_000 };
+    const record = mutationRunRecord({
+      files: 1,
+      cache: CACHE,
+      didRun: true,
+      summaryText: JSON.stringify({
+        ...JSON.parse(SUMMARY),
+        timeouts: timeoutCost,
+        settings: timeoutSettings,
+      }),
+      reportText: REPORT,
+    });
+    expect(record.stryker).toMatchObject({
+      timeouts: 1,
+      timeoutCost,
+      timeoutSettings,
+    });
+  });
+
+  it('says nothing of timeout costs a summary does not hold', () => {
+    const record = mutationRunRecord({
+      files: 1,
+      cache: CACHE,
+      didRun: true,
+      summaryText: SUMMARY,
+      reportText: REPORT,
+    });
+    expect(record.stryker).not.toHaveProperty('timeoutCost');
+    expect(record.stryker).not.toHaveProperty('timeoutSettings');
+  });
+
+  it('copies what the re-test measured (#236)', () => {
+    const record = mutationRunRecord({
+      files: 1,
+      cache: CACHE,
+      didRun: true,
+      summaryText: '',
+      reportText: REPORT,
+      retest: {
+        retested: 2,
+        rescored: 0,
+        retestMutatingMs: 30_000,
+        retestBudgetMs: 12_000,
+        retestTimedOut: 2,
+      },
+    });
+    expect(record.stryker).toMatchObject({
+      retested: 2,
+      retestMutatingMs: 30_000,
+      retestBudgetMs: 12_000,
+      retestTimedOut: 2,
+    });
+  });
+
   it('says nothing of a re-test that did not happen', () => {
     const record = mutationRunRecord({
       files: 1,

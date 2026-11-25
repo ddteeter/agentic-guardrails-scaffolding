@@ -133,6 +133,7 @@ import {
   type MutationRunRecord,
   type RetestCounts,
   mutationRunRecord,
+  retestMeasurement,
 } from './mutation-run.js';
 import {
   gitManifestLister,
@@ -2096,10 +2097,15 @@ async function retestTimeouts(
     ? context.removeFile(cachePath)
     : context.writeFile(cachePath, dropped));
   await context.removeFile(reportPath);
+  // The re-test's summary is its own or nothing: the first run's would time
+  // the wrong run (#236).
+  const summaryPath = runSummaryPath(repoRoot);
+  await context.removeFile(summaryPath);
   const second = await context.launch(plan.mutate.join(','), [
     '--concurrency',
     '1',
   ]);
+  const measured = retestMeasurement(await readOrEmpty(context, summaryPath));
   const secondReport = await readOrEmpty(context, reportPath);
   if (!isStrykerReportJson(secondReport)) {
     warn(
@@ -2108,12 +2114,12 @@ async function retestTimeouts(
         `counted as killed.`,
     );
     await context.writeFile(reportPath, firstReport);
-    return { retested: count, rescored: 0 };
+    return { retested: count, rescored: 0, ...measured };
   }
   const merged = rescore(firstReport, secondReport, plan.keys);
   await context.writeFile(reportPath, merged.report);
   warn(retestOutcome(merged));
-  return { retested: count, rescored: merged.rescored };
+  return { retested: count, rescored: merged.rescored, ...measured };
 }
 
 /**

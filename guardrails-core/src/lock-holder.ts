@@ -197,9 +197,10 @@ function timeoutFileOf(value: unknown): TimeoutFile[] {
 }
 
 /**
-Timeout costs with every count there, or `undefined`. Bad file entries go.
-*/
-function timeoutCostsOf(value: unknown): TimeoutCosts | undefined {
+ * Timeout costs with every count there, or `undefined`. Bad file entries go.
+ * The run log reads its copy of them with this too.
+ */
+export function timeoutCostsOf(value: unknown): TimeoutCosts | undefined {
   if (!isRecord(value)) {
     return undefined;
   }
