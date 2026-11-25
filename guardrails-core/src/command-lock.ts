@@ -184,7 +184,7 @@ function lockPartOf(
 ): LockPart {
   const queuedAt = tracker.queuedAt ?? releasedAt;
   const acquired = Math.min(
-    Math.max(acquiredAt ?? releasedAt, queuedAt),
+    Math.max(Math.round(acquiredAt ?? releasedAt), queuedAt),
     releasedAt,
   );
   return {

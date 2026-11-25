@@ -473,6 +473,18 @@ describe('runCommandUnderLock', () => {
       lock: { queuedMs: 3000, heldMs: 5000 },
     });
   });
+
+  it('logs whole milliseconds, though a start mark’s mtime has fractions', async () => {
+    const times = [1000, 9000];
+    const { exec } = machine({});
+    const { options: given } = options(exec, {
+      clock: () => times.shift() ?? 0,
+      startedAt: () => 4000.6,
+    });
+    expect(await runCommandUnderLock(given)).toMatchObject({
+      lock: { queuedMs: 3001, heldMs: 4999 },
+    });
+  });
 });
 
 describe('runCommandUnderLock with a real locker', () => {
