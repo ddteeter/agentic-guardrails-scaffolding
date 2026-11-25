@@ -6,6 +6,7 @@ import { type JsonFileResult, parseJsonText } from '../src/json-file.js';
 import {
   describeHolder,
   type Holder,
+  type LockCommandHolder,
   holderEnvironment,
   parseRunSummary,
   holderPath,
@@ -246,6 +247,82 @@ describe('describeHolder', () => {
     const empty: Holder = { ...mutating, tested: 0, total: 0 };
     expect(describeHolder(empty, 1_000_000 + MINUTE)).toBe(
       'dialed-163 (push) is mutating',
+    );
+  });
+});
+
+const running: LockCommandHolder = {
+  kind: 'lock',
+  repo: '/Users/someone/dev/app',
+  pid: 777,
+  startedAt: 1_000_000,
+  command: 'npm',
+};
+
+describe('a guardrails lock holder (#201)', () => {
+  it('reads one whose pid is alive, dropping the token and unknown fields', () => {
+    const file = { ...running, token: 'abc', extra: 1 };
+    expect(
+      readHolder('/h.json', reading(JSON.stringify(file)), isAlive),
+    ).toEqual(running);
+  });
+
+  it('asks whether its pid is alive', () => {
+    expect(
+      readHolder('/h.json', reading(JSON.stringify(running)), () => false),
+    ).toBeUndefined();
+  });
+
+  it.each([
+    ['command', undefined],
+    ['command', 3],
+    ['repo', 1],
+    ['pid', 'x'],
+    ['startedAt', undefined],
+    ['kind', 'build'],
+  ])('gives undefined when %s is %j', (field, value) => {
+    const broken = { ...running, [field]: value };
+    expect(
+      readHolder('/h.json', reading(JSON.stringify(broken)), isAlive),
+    ).toBeUndefined();
+  });
+
+  it('still reads a stryker holder, which has no kind', () => {
+    expect(
+      readHolder('/h.json', reading(JSON.stringify(mutating)), isAlive),
+    ).toEqual(mutating);
+  });
+
+  it('names the checkout, the command and how long it has held the lock', () => {
+    expect(describeHolder(running, 1_000_000 + 12 * MINUTE + 59_000)).toBe(
+      'app is running npm under guardrails lock, 12m so far',
+    );
+  });
+
+  it('says under a minute for a fresh hold, and hours for a long one', () => {
+    expect(describeHolder(running, 1_000_000 + 59_000)).toBe(
+      'app is running npm under guardrails lock, <1m so far',
+    );
+    expect(describeHolder(running, 1_000_000 + 125 * MINUTE)).toBe(
+      'app is running npm under guardrails lock, 2h 5m so far',
+    );
+  });
+
+  it('says one minute at exactly a minute, and hours from sixty', () => {
+    expect(describeHolder(running, 1_000_000 + MINUTE)).toBe(
+      'app is running npm under guardrails lock, 1m so far',
+    );
+    expect(describeHolder(running, 1_000_000 + 60 * MINUTE - 1)).toBe(
+      'app is running npm under guardrails lock, 59m so far',
+    );
+    expect(describeHolder(running, 1_000_000 + 60 * MINUTE)).toBe(
+      'app is running npm under guardrails lock, 1h 0m so far',
+    );
+  });
+
+  it('reads a clock behind the start as no time so far', () => {
+    expect(describeHolder(running, 0)).toBe(
+      'app is running npm under guardrails lock, <1m so far',
     );
   });
 });

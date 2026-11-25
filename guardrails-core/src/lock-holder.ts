@@ -48,6 +48,20 @@ export type Holder = HolderCounts & {
 };
 
 /**
+ * The holder file as a `guardrails lock -- <cmd>` run writes it (#201): from
+ * the process that holds the lock, which then becomes the command, so `pid`
+ * is the command's. `command` is its program's basename only. The file also
+ * carries the run's token, which only the run that wrote it reads.
+ */
+export interface LockCommandHolder {
+  kind: 'lock';
+  repo: string;
+  pid: number;
+  startedAt: number;
+  command: string;
+}
+
+/**
 Where the holder file for `lockPath` lives: beside the lock.
 */
 export function holderPath(lockPath: string): string {
@@ -147,8 +161,8 @@ export function readHolder(
   filePath: string,
   readJson: (filePath: string) => JsonFileResult,
   isAlive: (pid: number) => boolean,
-): Holder | undefined {
-  const holder = toHolder(readJson(filePath).parsed);
+): Holder | LockCommandHolder | undefined {
+  const holder = toAnyHolder(readJson(filePath).parsed);
   if (holder === undefined || !isAlive(holder.pid)) {
     return undefined;
   }
@@ -168,6 +182,35 @@ function isPhase(value: unknown): value is HolderPhase {
 function isCount(value: unknown): value is number {
   // `Number.isFinite` does not coerce, so it is false for every non-number.
   return Number.isFinite(value);
+}
+
+/**
+ * A holder of either kind: `kind: 'lock'` for a `guardrails lock` run, and no
+ * `kind` for the stryker progress plugin's, which predates the field.
+ */
+function toAnyHolder(value: unknown): Holder | LockCommandHolder | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  if (value.kind === 'lock') {
+    return toLockCommandHolder(value);
+  }
+  return value.kind === undefined ? toHolder(value) : undefined;
+}
+
+function toLockCommandHolder(
+  value: Record<string, unknown>,
+): LockCommandHolder | undefined {
+  const { repo, pid, startedAt, command } = value;
+  if (
+    typeof repo !== 'string' ||
+    typeof command !== 'string' ||
+    !isCount(pid) ||
+    !isCount(startedAt)
+  ) {
+    return undefined;
+  }
+  return { kind: 'lock', repo, pid, startedAt, command };
 }
 
 /**
@@ -214,7 +257,16 @@ function toHolder(value: unknown): Holder | undefined {
  * `dialed-163 (push) is mutating, 62% (160/258), ~4m left`. The time-left
  * clause appears only once there is a rate to estimate from.
  */
-export function describeHolder(holder: Holder, now: number): string {
+export function describeHolder(
+  holder: Holder | LockCommandHolder,
+  now: number,
+): string {
+  if ('kind' in holder) {
+    return (
+      `${path.basename(holder.repo)} is running ${holder.command} under ` +
+      `guardrails lock, ${minutesText(now - holder.startedAt)} so far`
+    );
+  }
   const who = `${path.basename(holder.repo)} (${holder.rung})`;
   if (holder.phase === 'starting') {
     return `${who} is starting mutation testing`;
@@ -252,11 +304,26 @@ function timeLeft(holder: Holder, now: number): string | undefined {
   if (minutes < 1) {
     return '<1m left';
   }
+  return `~${hoursAndMinutes(minutes)} left`;
+}
+
+/**
+`12m`, `2h 5m`: whole minutes, with hours from sixty.
+*/
+function hoursAndMinutes(minutes: number): string {
   if (minutes < MINUTES_PER_HOUR) {
-    return `~${String(minutes)}m left`;
+    return `${String(minutes)}m`;
   }
   const hours = Math.floor(minutes / MINUTES_PER_HOUR);
-  return `~${String(hours)}h ${String(minutes % MINUTES_PER_HOUR)}m left`;
+  return `${String(hours)}h ${String(minutes % MINUTES_PER_HOUR)}m`;
+}
+
+/**
+`ms` as whole minutes so far: `<1m` under one, a clock behind included.
+*/
+function minutesText(ms: number): string {
+  const minutes = Math.floor(ms / MS_PER_MINUTE);
+  return minutes < 1 ? '<1m' : hoursAndMinutes(minutes);
 }
 
 interface PsLine {
