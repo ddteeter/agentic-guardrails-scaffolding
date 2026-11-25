@@ -1312,6 +1312,26 @@ core/src/audit.ts`) surfaced that it was a context-free text scan: it flagged
     of the commit.
   - Not ours: Claude Code's worktree Bash guard refused plain heredoc and
     python edits with no git command ("too complex to verify").
+- **Open (2026-11-24, found on #202's lane): three more.**
+  - **A fixer's report contradicted its edit.** Resolving a fallow
+    duplication in `gate.ts`, it deleted `resolveBin` from
+    `StopGateOptions` while reporting it had kept it on both interfaces,
+    which broke tsc. It also exported a new interface that knip then flagged
+    as unused. Blind fixing is #217. The report being wrong is new: nothing
+    checks a fixer's claims against its diff.
+  - **A blind fixer wrote a test fixture the parser rejects.** It added a
+    mutant that `parseIncrementalCache` refuses outright, which is #217 again.
+    Its equivalent-mutant arguments were sound and were resolved by
+    refactoring, not by a grant.
+  - **A busy lock let survivors past the commit rung.** The commit gate's
+    mutation run was deferred (`guardrails/mutation-deferred`), so 46
+    survivors went unseen until the lane ran the push rung by hand. That is
+    by design, but a lane that commits and stops hands those survivors to
+    its pre-push. A lane would need to be told to run the push rung itself
+    when its commit rung deferred.
+  - The feature ran on its own development: one push gate re-tested 2
+    timed-out mutants under load (load1 15–21), and both were re-scored, not
+    confirmed as hangs.
 
 ## Roadmap: analyzer opt-in (pack composition, not all-or-nothing) — shipped
 
