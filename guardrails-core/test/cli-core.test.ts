@@ -6455,6 +6455,41 @@ describe('mutation-fingerprint: the sidecar a CI seed needs', () => {
   });
 });
 
+describe('lock (#201)', () => {
+  it('runs a command under the gate lock, with its exit code', async () => {
+    const lock = path.join(root, 'gate.lock');
+    const seen: string[] = [];
+    const exec: Exec = (command, args) => {
+      seen.push([command, ...args].join(' '));
+      return Promise.resolve({
+        stdout: '',
+        stderr: '',
+        // No locker on this machine, so it runs unserialized.
+        code: command === 'make' ? 4 : 1,
+      });
+    };
+    const code = await runCommand(
+      'lock',
+      ['--', 'make', 'all'],
+      dependencies({ exec, env: { GUARDRAILS_GATE_LOCK: lock } }),
+    );
+    expect(code).toBe(4);
+    expect(seen.at(-1)).toBe('make all');
+  });
+
+  it('answers a command line it cannot read with its usage, exit 2', async () => {
+    expect(await runCommand('lock', ['make'], dependencies())).toBe(2);
+    expect(errors.join('')).toContain('usage: guardrails lock');
+  });
+
+  it('is listed in the usage', async () => {
+    await runCommand('no-such-command', [], dependencies());
+    expect(errors.join('')).toContain(
+      '  lock [--timeout=<seconds>] -- <cmd> [args…]\n',
+    );
+  });
+});
+
 describe('command dispatch', () => {
   it('treats an inherited object key as an unknown command', async () => {
     const code = await runCommand('toString', [], dependencies());

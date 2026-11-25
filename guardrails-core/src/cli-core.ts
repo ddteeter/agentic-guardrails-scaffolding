@@ -86,6 +86,7 @@ import {
   machineLock,
 } from './mutation-lock.js';
 import { foregroundWait, foregroundWaitDenial } from './foreground-wait.js';
+import { lockCommand } from './command-lock.js';
 import { commandTarget } from './command-target.js';
 import { isPushGatedByHook, PUSH_GATE_ARGS } from './push-hook.js';
 import { COMMAND_START, withoutQuotedHeredocBodies } from './shell-command.js';
@@ -2372,9 +2373,12 @@ function statsCommand(dependencies: CliDependencies, rest: string[]): number {
 }
 
 /**
-The commands that take nothing but the dependencies.
+The commands that take nothing but the dependencies and their own arguments.
 */
-type PlainCommand = (dependencies: CliDependencies) => number | Promise<number>;
+type PlainCommand = (
+  dependencies: CliDependencies,
+  rest: string[],
+) => number | Promise<number>;
 
 const PLAIN_COMMANDS: ReadonlyMap<string, PlainCommand> = new Map<
   string,
@@ -2388,6 +2392,7 @@ const PLAIN_COMMANDS: ReadonlyMap<string, PlainCommand> = new Map<
   ['install-hooks', installHooksCommand],
   ['lock-status', lockStatusCommand],
   ['mutation-fingerprint', mutationFingerprintCommand],
+  ['lock', lockCommand],
 ]);
 
 export async function runCommand(
@@ -2404,7 +2409,7 @@ export async function runCommand(
   // A Map, not an object: `toString` and its kin must not resolve to a command.
   const plain = PLAIN_COMMANDS.get(command ?? '');
   if (plain !== undefined) {
-    return plain(dependencies);
+    return plain(dependencies, rest);
   }
   switch (command) {
     case 'verify': {
@@ -2448,6 +2453,7 @@ export async function runCommand(
           '  verify [--base=<ref>]\n' +
           '  sanction [--from=<violations manifest>]\n' +
           `  ${SHIP_USAGE}\n` +
+          '  lock [--timeout=<seconds>] -- <cmd> [args…]\n' +
           '  lock-status | mutation-fingerprint\n' +
           '  stats [--since=7d|24h|90m] [--repo=<name>] [--json]\n' +
           '  autofix | audit | sanctions-check | install-hooks\n' +

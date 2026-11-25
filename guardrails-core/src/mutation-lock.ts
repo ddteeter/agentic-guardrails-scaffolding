@@ -56,6 +56,14 @@ The exit code both lockers give for a wait that ran out.
 export const LOCK_TIMEOUT_EXIT = 75;
 
 /**
+ * Set, to the lock's path, in the environment of a command `guardrails lock`
+ * runs while holding the lock (#201). A gate or a nested `guardrails lock`
+ * that finds its own lock path here already holds it, through its parent,
+ * and must not queue behind itself.
+ */
+export const LOCK_HELD_VARIABLE = 'GUARDRAILS_GATE_LOCK_HELD';
+
+/**
 How one rung waits for the lock, and what a wait that runs out means.
 */
 export interface LockWait {
@@ -215,9 +223,13 @@ export interface LockedRunOptions {
   The clock `timing` is read from. Defaults to `Date.now`.
   */
   clock?: () => number;
+  /**
+  Where `LOCK_HELD_VARIABLE` is read from. Defaults to `process.env`.
+  */
+  environment?: Readonly<Record<string, string | undefined>>;
 }
 
-interface LockWatchSeams {
+export interface LockWatchSeams {
   /**
   Reads the holder file. Defaults to `readJsonFile`.
   */
@@ -236,7 +248,7 @@ interface LockWatchSeams {
 /**
 What a look at the lock found.
 */
-interface LockSighting {
+export interface LockSighting {
   /**
   A clause naming the holder and its progress, or `another checkout holds it`.
   */
@@ -273,7 +285,7 @@ export function lockWaitInProgress(): string | undefined {
  * `ps` no longer lists is stale -- a killed holder leaves its file behind --
  * and reads as `another checkout`, as does a gate too old to write one.
  */
-async function lookAtLock(
+export async function lookAtLock(
   exec: Exec,
   lockPath: string,
   seams: LockWatchSeams = {},
@@ -348,6 +360,9 @@ export async function runUnderLock(
     return runBare();
   }
   const lockPath = lock.path;
+  if (isHeldByParent(options, lockPath)) {
+    return runAsHolder(options, lock);
+  }
   const locker = await detectLocker(exec);
   if (locker === undefined) {
     progress(NO_LOCKER_NOTE);
@@ -362,9 +377,7 @@ export async function runUnderLock(
   const queuedAt = clock();
   // Both lockers are silent while they wait, and a quiet half hour looks like
   // a hang -- so ask once without waiting, and say so before the real wait.
-  const probe = lockerArgv(locker, lockPath, 0, 'true', []);
-  const probed = await exec(probe.command, probe.args, { cwd });
-  const isBusy = probed.code === LOCK_TIMEOUT_EXIT;
+  const isBusy = await isLockBusy(exec, locker, lockPath, cwd);
   const look = (): Promise<LockSighting> =>
     lookAtLock(exec, lockPath, options.watch);
   const arrival = (sighting: LockSighting | undefined) =>
@@ -423,21 +436,74 @@ export async function runUnderLock(
 }
 
 /**
+ * Is the lock busy? Asked by taking it for as long as `true` runs, so the ask
+ * never queues.
+ */
+export async function isLockBusy(
+  exec: Exec,
+  locker: Locker,
+  lockPath: string,
+  cwd: string,
+): Promise<boolean> {
+  const probe = lockerArgv(locker, lockPath, 0, 'true', []);
+  const probed = await exec(probe.command, probe.args, { cwd });
+  return probed.code === LOCK_TIMEOUT_EXIT;
+}
+
+/**
+Does the `guardrails lock` this runs under already hold `lockPath`?
+*/
+function isHeldByParent(options: LockedRunOptions, lockPath: string): boolean {
+  const environment = options.environment ?? process.env;
+  return environment[LOCK_HELD_VARIABLE] === lockPath;
+}
+
+/**
+ * Run the command as the lock's holder, without asking the locker: the
+ * `guardrails lock` this runs under holds the lock already, and a wait for it
+ * would queue behind its own parent until it timed out.
+ */
+async function runAsHolder(
+  options: LockedRunOptions,
+  lock: MutationLock,
+): Promise<LockedRun> {
+  const holding = options.locked;
+  options.progress(
+    `guardrails: this run already holds the mutation lock (${lock.path}), ` +
+      'through the guardrails lock it runs under — mutation testing runs ' +
+      'without queueing for it.',
+  );
+  return {
+    kind: 'ran',
+    result: await options.exec(options.command, holding?.args ?? options.args, {
+      cwd: options.cwd,
+      processGroup: true,
+      stopGraceSeconds: lock.config.stopGraceSeconds,
+      ...(holding !== undefined && { env: holding.env }),
+    }),
+  };
+}
+
+/**
  * Say who holds the lock before a real wait, then again each minute until our
  * own run holds it or the wait settles: both lockers are silent while they
  * wait, and a quiet half hour reads as a hang. Returns the first look and the
  * stop function.
  */
-async function watchTheWait(
+export async function watchTheWait(
   look: () => Promise<LockSighting>,
   waitSeconds: number,
   progress: (line: string) => void,
   seams: LockWatchSeams = {},
+  /**
+  What the lines call the lock: the gate's wait is for its mutation run.
+  */
+  label = 'mutation lock',
 ): Promise<{ first: LockSighting; stop: () => void }> {
   const first = await look();
   pendingWait.set('holding', first.holding);
   progress(
-    `guardrails: waiting for the mutation lock (up to ${String(waitSeconds)}s): ` +
+    `guardrails: waiting for the ${label} (up to ${String(waitSeconds)}s): ` +
       `${first.holding}${queueClause(first.waiting)}.`,
   );
   let isWatching = true;
@@ -454,7 +520,7 @@ async function watchTheWait(
       }
       pendingWait.set('holding', sighting.holding);
       progress(
-        `guardrails: still waiting for the mutation lock: ` +
+        `guardrails: still waiting for the ${label}: ` +
           `${sighting.holding}${queueClause(sighting.waiting)}.`,
       );
     });
@@ -480,7 +546,7 @@ function unusableLockNote(lockPath: string): string {
   );
 }
 
-function canOpenForAppend(lockPath: string): boolean {
+export function canOpenForAppend(lockPath: string): boolean {
   try {
     closeSync(openSync(lockPath, 'a'));
   } catch {
@@ -539,9 +605,7 @@ export async function lockStatus(
   if (locker === undefined) {
     return [NO_LOCKER_NOTE];
   }
-  const probe = lockerArgv(locker, lockPath, 0, 'true', []);
-  const probed = await exec(probe.command, probe.args);
-  if (probed.code !== LOCK_TIMEOUT_EXIT) {
+  if (!(await isLockBusy(exec, locker, lockPath, process.cwd()))) {
     return [`guardrails: the mutation lock is free (${lockPath}).`];
   }
   const sighting = await lookAtLock(exec, lockPath);

@@ -9,6 +9,7 @@ import { parseJsonText } from '../src/json-file.js';
 import {
   detectLocker,
   everyInterval,
+  LOCK_HELD_VARIABLE,
   lockerArgv,
   lockWaitInProgress,
   machineLock,
@@ -588,6 +589,80 @@ function holdingOptions(exec: Exec, canOpen: boolean) {
     locked: HOLDING,
   };
 }
+
+/**
+`holdingOptions` run under a `guardrails lock` that holds the lock `held`.
+*/
+function heldOptions(exec: Exec, held: string, lines: string[]) {
+  return {
+    ...holdingOptions(exec, true),
+    progress: (line: string) => {
+      lines.push(line);
+    },
+    environment: { [LOCK_HELD_VARIABLE]: held },
+  };
+}
+
+describe('runUnderLock under a guardrails lock that holds it (#201)', () => {
+  it('runs stryker as the holder at once, without asking the locker', async () => {
+    const { exec, calls } = lockfMachine({ busy: true });
+    const { wrapped, seen } = noteEnvironment(exec);
+    const lines: string[] = [];
+    const run = await runUnderLock(
+      heldOptions(wrapped, '/locks/gate.lock', lines),
+    );
+    expect(run).toEqual({
+      kind: 'ran',
+      result: { stdout: 'ran bare', stderr: '', code: 0 },
+    });
+    expect(seen).toEqual([
+      {
+        line: 'stryker run --appendPlugins /dist/plugin.mjs',
+        env: HOLDING.env,
+      },
+    ]);
+    expect(calls).toEqual([
+      {
+        line: 'stryker run --appendPlugins /dist/plugin.mjs',
+        processGroup: true,
+      },
+    ]);
+    expect(lines).toEqual([
+      'guardrails: this run already holds the mutation lock (/locks/gate.lock), through the guardrails lock it runs under — mutation testing runs without queueing for it.',
+    ]);
+  });
+
+  it('runs the plain args as the holder when there are no locked ones', async () => {
+    const { exec } = lockfMachine({ busy: true });
+    const { wrapped, seen } = noteEnvironment(exec);
+    const { locked: _locked, ...plain } = heldOptions(
+      wrapped,
+      '/locks/gate.lock',
+      [],
+    );
+    await runUnderLock(plain);
+    expect(seen).toEqual([{ line: 'stryker run', env: undefined }]);
+  });
+
+  it('queues as usual when the lock held is another one', async () => {
+    const { exec, calls } = lockfMachine({ busy: false });
+    await runUnderLock(heldOptions(exec, '/locks/other.lock', []));
+    expect(calls.at(-1)?.line).toContain(
+      'lockf -k -s -t 10800 /locks/gate.lock',
+    );
+  });
+
+  it('takes no lock on ci, held or not', async () => {
+    const { exec, calls } = lockfMachine({ busy: false });
+    const lines: string[] = [];
+    await runUnderLock({
+      ...heldOptions(exec, '/locks/gate.lock', lines),
+      rung: 'ci',
+    });
+    expect(calls.map((call) => call.line)).toEqual(['stryker run']);
+    expect(lines).toEqual([]);
+  });
+});
 
 describe('runUnderLock runs the holder-only args only while holding the lock', () => {
   it('runs the locked args with the locked env once it holds the lock', async () => {
