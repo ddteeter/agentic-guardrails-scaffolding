@@ -1,3 +1,27 @@
 ---
 version: unreleased
 ---
+
+# Unreleased — what changed for an agent
+
+## Behaviour that changed
+
+- **The run log and `guardrails stats` say what a mutation `Timeout` costs
+  (#236).** On a locked stryker run the progress plugin now records, in the
+  gate row's stryker part, `timeoutCost` (wall-clock and hit-limit timeout
+  counts, the budget stryker gave the wall-clock ones, the time each kind of
+  result took, and the files with the most wall-clock timeouts, with their
+  line span) and `timeoutSettings` (the `timeoutMS`, `timeoutFactor` and
+  `concurrency` stryker resolved, and the dry run's net time and overhead).
+  A timeout re-test also records what it measured alone: `retestMutatingMs`,
+  `retestBudgetMs` and `retestTimedOut`. `guardrails stats` prints these per
+  rung: the budget per wall-clock timeout and how much of it is the dry run's
+  overhead, the share of mutating time spent in timeouts, the re-test's cost
+  against its budget, the settings, and the files where timeouts cluster.
+  File paths are repo-relative and stay in the local run log. Nothing in the
+  gate's verdict changes.
+
+## What to wire
+
+Nothing. The fields appear in new run-log rows once this version runs a
+locked gate; older rows simply lack them.
