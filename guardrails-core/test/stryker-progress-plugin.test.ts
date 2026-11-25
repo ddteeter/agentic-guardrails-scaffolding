@@ -90,7 +90,11 @@ to be what `readHolder` accepts.
 function parseHolder(content: string): Holder {
   const holder = readHolder(HOLDER_FILE, () => parseJsonText(content), isAlive);
   expect(holder).toBeDefined();
-  return holder ?? expect.unreachable();
+  // The plugin writes a stryker holder, which has no `kind`.
+  expect(holder).not.toHaveProperty('kind');
+  return holder === undefined || 'kind' in holder
+    ? expect.unreachable()
+    : holder;
 }
 
 function isAlive(): boolean {

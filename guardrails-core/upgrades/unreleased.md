@@ -1,5 +1,12 @@
 ---
 version: unreleased
+supersedes:
+  - search: '.guardrails-gate.lock'
+    because: 'if it tells agents to take the gate lock by hand around a stryker run, a build or a benchmark, `guardrails lock -- <cmd>` now takes the same lock, names the command to every gate queued behind it, and logs the run'
+  - search: 'lockf -'
+    because: 'if it wraps a command in `lockf` on the gate lock, use `guardrails lock -- <cmd>`: a hand-rolled holder reads to every waiting gate as "another checkout holds it"'
+  - search: 'flock -'
+    because: 'if it wraps a command in `flock` on the gate lock, use `guardrails lock -- <cmd>`: a hand-rolled holder reads to every waiting gate as "another checkout holds it"'
 ---
 
 # Unreleased — what changed for an agent
@@ -37,6 +44,33 @@ version: unreleased
   `mutationTimeouts.retestLimit` (default 10) are re-tested per run; `0`
   turns it off. If the re-test cannot run, the timeouts stay kills and the
   gate says so.
+- **`guardrails lock [--timeout=<seconds>] -- <cmd> [args…]` (#201)** runs
+  any command under the machine-wide gate lock: it waits for the lock
+  (`mutationLock.pushWaitSeconds` by default; `--timeout=0` tries once), runs
+  the command with its output streamed, and exits with its code — or 75, with
+  the gate's `gave up waiting for the gate lock` line, when the wait runs out.
+  While it holds the lock, a gate queued behind it names it
+  (`app is running npm under guardrails lock, 12m so far`) rather than
+  `another checkout holds it`. With no `lockf`/`flock`, or a lock file it
+  cannot open, it runs the command unserialized and says so.
+- **A command under `guardrails lock` runs with `GUARDRAILS_GATE_LOCK_HELD`**
+  set to the lock's path. A gate inside it (`guardrails lock -- git push`
+  runs the pre-push gate) or a nested `guardrails lock` runs at once and says
+  so, instead of queueing behind its own parent until it times out.
+- **The run log has `kind: "lock"` rows**: the command's basename and a hash
+  of its whole command line (not the argument values), exit code, signal,
+  outcome (`ran`, `lock-timeout`, `unserialized`, `already-held`, `killed`)
+  and the lock's queue and hold times. `guardrails stats` prints a `lock:`
+  section for them. A tool that reads the log itself must skip kinds it does
+  not know.
+
+## Instructions this supersedes
+
+- **Taking the gate lock by hand** — `lockf -k -t … ~/.guardrails-gate.lock
+<cmd>`, `flock -w … ~/.guardrails-gate.lock <cmd>`, or a script or template
+  (a pr-ready script, a mutation-baseline script) that does so: replace the
+  wrapper with `guardrails lock -- <cmd>`, run in the background when the
+  wait can be long.
 
 ## What to wire
 
@@ -49,3 +83,8 @@ open, even when ship's own gate has passed. Refresh it with
 Nothing for the timeout re-test either: it is on by default. Set
 `mutationTimeouts.retestLimit` in `guardrails.config.json` only to change the
 cap or, with `0`, to turn it off.
+
+For `guardrails lock`: replace raw `lockf`/`flock` wrappers on the gate lock
+in your own scripts and templates with
+`node ./node_modules/guardrails-core/dist/cli.mjs lock -- <cmd>` (the
+`supersedes` searches above find them). Nothing else to wire.

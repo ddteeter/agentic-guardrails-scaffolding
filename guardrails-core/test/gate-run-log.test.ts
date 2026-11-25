@@ -15,6 +15,7 @@ import type { Exec } from '../src/exec.js';
 import {
   type GateRunInput,
   logGateRun,
+  logLockRun,
   logShipRun,
   type RunClock,
   startRun,
@@ -377,5 +378,108 @@ describe('logShipRun, further', () => {
     writeFileSync(`${lockPath}.runs.jsonl`, `${gateRow('ship-2', 99)}\n`);
     ship();
     expect(rows().at(-1)).not.toHaveProperty('gateMs');
+  });
+});
+
+function logged(): unknown[] {
+  return parseRuns(readFileSync(`${lockPath}.runs.jsonl`, 'utf8'));
+}
+
+describe('logLockRun (#201)', () => {
+  const RUN = {
+    command: 'npm',
+    commandHash: '0123456789abcdef',
+    exitCode: 0,
+    outcome: 'ran',
+  };
+
+  it('appends one lock row beside the lock, with every part', () => {
+    const { warnings, warn } = collecting();
+    logLockRun({
+      lockPath,
+      repoRoot: '/dev/app',
+      branch: 'feat/x',
+      start: START,
+      run: {
+        ...RUN,
+        lock: { queuedMs: 5, heldMs: 7, depthOnArrival: 1 },
+      },
+      environment: { GUARDRAILS_SHIP_ID: 'ship-9' },
+      warn,
+      clock: CLOCK,
+    });
+    expect(logged()).toEqual([
+      {
+        v: 1,
+        kind: 'lock',
+        repo: 'app',
+        branch: 'feat/x',
+        ship: 'ship-9',
+        startedAt: '2026-11-19T10:00:00.000Z',
+        finishedAt: '2026-11-19T10:05:00.000Z',
+        ...RUN,
+        lock: { queuedMs: 5, heldMs: 7, depthOnArrival: 1 },
+        machine: {
+          cores: 10,
+          concurrency: 'default',
+          start: { load1: 6, freeMb: 2100 },
+          end: { load1: 7, freeMb: 1800 },
+        },
+      },
+    ]);
+    expect(warnings).toEqual([]);
+  });
+
+  it('leaves out an empty ship id, an unknown branch and a missing signal', () => {
+    logLockRun({
+      lockPath,
+      repoRoot: '/dev/app',
+      branch: undefined,
+      start: START,
+      run: RUN,
+      environment: { GUARDRAILS_SHIP_ID: '' },
+      warn: collecting().warn,
+      clock: CLOCK,
+    });
+    const [row] = logged();
+    expect(row).not.toHaveProperty('ship');
+    expect(row).not.toHaveProperty('branch');
+    expect(row).not.toHaveProperty('signal');
+    expect(row).not.toHaveProperty('lock');
+  });
+
+  it('records the signal of a run that was killed', () => {
+    logLockRun({
+      lockPath,
+      repoRoot: '/dev/app',
+      branch: undefined,
+      start: START,
+      run: { ...RUN, exitCode: 143, signal: 'SIGTERM', outcome: 'killed' },
+      environment: {},
+      warn: collecting().warn,
+      clock: CLOCK,
+    });
+    expect(logged()).toMatchObject([
+      { exitCode: 143, signal: 'SIGTERM', outcome: 'killed' },
+    ]);
+  });
+
+  it('warns, and does not throw, when the log cannot be written', () => {
+    chmodSync(directory, 0o500);
+    const { warnings, warn } = collecting();
+    logLockRun({
+      lockPath,
+      repoRoot: '/dev/app',
+      branch: undefined,
+      start: START,
+      run: RUN,
+      environment: {},
+      warn,
+      clock: CLOCK,
+    });
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(
+      /^guardrails: could not write the run log \(.*(EACCES|permission).*\)\.$/i,
+    );
   });
 });

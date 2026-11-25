@@ -17,6 +17,7 @@ import { readFileSync } from 'node:fs';
 import {
   appendRun,
   type GateRow,
+  type LockRow,
   parseRuns,
   type ShipRow,
   type MachineSample,
@@ -79,7 +80,7 @@ function outcomeOf(
   return isBlocked ? 'block' : 'pass';
 }
 
-async function branchOf(
+export async function branchOf(
   exec: Exec,
   repoRoot: string,
 ): Promise<string | undefined> {
@@ -122,6 +123,59 @@ export async function logGateRun(input: GateRunInput): Promise<void> {
     },
   };
   const error = appendRun(runLogPath(lockPath), row);
+  if (error !== undefined) {
+    input.warn(`guardrails: could not write the run log (${error}).`);
+  }
+}
+
+/**
+ * What a `guardrails lock` run (#201) amounted to: the `LockRow` fields that
+ * are its own, with the base and machine parts left to `logLockRun`.
+ */
+export type LockRunResult = Pick<
+  LockRow,
+  'command' | 'commandHash' | 'exitCode' | 'signal' | 'outcome' | 'lock'
+>;
+
+export interface LockRunInput {
+  lockPath: string;
+  repoRoot: string;
+  /**
+  Read before the run, so a run killed by a signal can still be logged
+  synchronously on its way out.
+  */
+  branch: string | undefined;
+  start: RunStart;
+  run: LockRunResult;
+  environment: Readonly<Record<string, string | undefined>>;
+  warn: (line: string) => void;
+  clock?: RunClock | undefined;
+}
+
+/**
+ * Append a `guardrails lock` run's row. Synchronous, so the signal handler of
+ * a run being killed can write it before the process exits.
+ */
+export function logLockRun(input: LockRunInput): void {
+  const clock = input.clock ?? SYSTEM_CLOCK;
+  const ship = input.environment.GUARDRAILS_SHIP_ID;
+  const row: LockRow = {
+    v: 1,
+    kind: 'lock',
+    repo: path.basename(input.repoRoot),
+    branch: input.branch,
+    ship: ship === '' ? undefined : ship,
+    startedAt: input.start.startedAt,
+    finishedAt: clock.now().toISOString(),
+    ...input.run,
+    machine: {
+      cores: clock.cores(),
+      concurrency: 'default',
+      start: input.start.machine,
+      end: clock.sample(),
+    },
+  };
+  const error = appendRun(runLogPath(input.lockPath), row);
   if (error !== undefined) {
     input.warn(`guardrails: could not write the run log (${error}).`);
   }

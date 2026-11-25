@@ -114,7 +114,29 @@ export interface ShipRow extends RowBase {
   ciMs?: number | undefined;
 }
 
-export type RunRow = GateRow | ShipRow;
+/**
+ * A `guardrails lock -- <cmd>` run (#201). `command` is the program's
+ * basename and `commandHash` the sha256 of the whole argv, so the log names
+ * what held the lock without recording an argument's value.
+ */
+export interface LockRow extends RowBase {
+  kind: 'lock';
+  command: string;
+  commandHash: string;
+  exitCode: number;
+  signal?: string | undefined;
+  /**
+  `ran`, `lock-timeout`, `no-start-mark`, `unserialized`, `already-held` or
+  `killed`.
+  */
+  outcome: string;
+  /**
+  Absent when no lock was taken.
+  */
+  lock?: LockPart | undefined;
+}
+
+export type RunRow = GateRow | ShipRow | LockRow;
 
 /**
 The slice of `node:os` a machine sample reads.
@@ -354,19 +376,46 @@ function shipOf(fields: Fields, base: RowBase): ShipRow | undefined {
       };
 }
 
+function lockRowOf(fields: Fields, base: RowBase): LockRow | undefined {
+  const read = required(fields, {
+    command: 'string',
+    commandHash: 'string',
+    exitCode: 'number',
+    outcome: 'string',
+  });
+  return (
+    read && {
+      ...base,
+      kind: 'lock',
+      ...read,
+      signal: stringOf(fields, 'signal'),
+      lock: lockOf(fields.lock),
+    }
+  );
+}
+
+/**
+How each kind of row is read. A kind not here is skipped.
+*/
+const READERS: ReadonlyMap<
+  unknown,
+  (fields: Fields, base: RowBase) => RunRow | undefined
+> = new Map<unknown, (fields: Fields, base: RowBase) => RunRow | undefined>([
+  ['gate', gateOf],
+  ['ship', shipOf],
+  ['lock', lockRowOf],
+]);
+
 function rowOf(line: string): RunRow | undefined {
   const { parsed } = parseJsonText(line);
   if (!isRecord(parsed)) {
     return undefined;
   }
   const base = baseOf(parsed);
-  if (base === undefined) {
-    return undefined;
-  }
-  if (parsed.kind === 'gate') {
-    return gateOf(parsed, base);
-  }
-  return parsed.kind === 'ship' ? shipOf(parsed, base) : undefined;
+  const read = READERS.get(parsed.kind);
+  return base === undefined || read === undefined
+    ? undefined
+    : read(parsed, base);
 }
 
 /**

@@ -34,6 +34,51 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
+describe('spawnExec with stream (#201)', () => {
+  it('forwards output as it arrives, keeps none, and closes stdin', async () => {
+    const seen: string[] = [];
+    // The child writes, then waits on stdin: it ends only once stdin is
+    // closed, so the output seen before then arrived while it still ran.
+    const result = await spawnExec(
+      node,
+      [
+        '-e',
+        'process.stdout.write("out");process.stderr.write("err");' +
+          'process.stdin.resume();process.stdin.on("end",()=>process.exit(4))',
+      ],
+      {
+        stream: {
+          stdout: (text) => {
+            seen.push(`stdout:${text}`);
+          },
+          stderr: (text) => {
+            seen.push(`stderr:${text}`);
+          },
+        },
+      },
+    );
+    expect(result).toEqual({ stdout: '', stderr: '', code: 4 });
+    expect(seen).toHaveLength(2);
+    expect(seen).toEqual(expect.arrayContaining(['stdout:out', 'stderr:err']));
+  });
+
+  it('streams the output of a child it cannot start into nothing', async () => {
+    const seen: string[] = [];
+    const result = await spawnExec('/no/such/guardrails-binary', [], {
+      stream: {
+        stdout: (text) => {
+          seen.push(text);
+        },
+        stderr: (text) => {
+          seen.push(text);
+        },
+      },
+    });
+    expect(result).toMatchObject({ code: 1, spawnFailed: true });
+    expect(seen).toEqual([]);
+  });
+});
+
 describe('spawnExec', () => {
   it('captures stdout and a zero exit code', async () => {
     const result = await spawnExec(node, ['-e', 'process.stdout.write("hi")']);

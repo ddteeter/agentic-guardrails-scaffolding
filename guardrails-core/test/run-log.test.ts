@@ -14,6 +14,7 @@ import {
   appendRun,
   concurrencyOf,
   type GateRow,
+  type LockRow,
   parseRuns,
   runLogPath,
   sampleMachine,
@@ -206,6 +207,71 @@ describe('appendRun and parseRuns', () => {
     expect(parsed).toEqual(row);
     expect(parsed).not.toHaveProperty('gateMs');
     expect(parsed).not.toHaveProperty('ciMs');
+  });
+});
+
+const LOCK: LockRow = {
+  v: 1,
+  kind: 'lock',
+  repo: 'app',
+  branch: 'main',
+  startedAt: '2026-11-19T10:00:00.000Z',
+  finishedAt: '2026-11-19T10:30:00.000Z',
+  command: 'npm',
+  commandHash: '0123456789abcdef',
+  exitCode: 0,
+  outcome: 'ran',
+  lock: {
+    queuedMs: 60_000,
+    heldMs: 1_740_000,
+    holderOnArrival: 'app (push) is mutating',
+    depthOnArrival: 1,
+  },
+  machine: MACHINE,
+};
+
+describe('lock rows (#201)', () => {
+  it('round-trips a lock row', () => {
+    const file = path.join(directory, 'runs.jsonl');
+    expect(appendRun(file, LOCK)).toBeUndefined();
+    expect(parseRuns(readFileSync(file, 'utf8'))).toEqual([LOCK]);
+  });
+
+  it('keeps the signal of a run that was killed', () => {
+    const killed: LockRow = {
+      ...LOCK,
+      exitCode: 130,
+      signal: 'SIGINT',
+      outcome: 'killed',
+    };
+    expect(parseRuns(JSON.stringify(killed))).toEqual([killed]);
+  });
+
+  it('reads a row that took no lock, with no lock part', () => {
+    const unserialized: LockRow = {
+      ...LOCK,
+      outcome: 'unserialized',
+      lock: undefined,
+    };
+    const [parsed] = parseRuns(JSON.stringify(unserialized));
+    expect(parsed).toEqual(unserialized);
+    expect(parsed).not.toHaveProperty('lock');
+    expect(parsed).not.toHaveProperty('signal');
+  });
+
+  it.each<[string, Record<string, unknown>]>([
+    ['without a command', { ...LOCK, command: undefined }],
+    ['without a command hash', { ...LOCK, commandHash: 5 }],
+    ['without an exit code', { ...LOCK, exitCode: '0' }],
+    ['without an outcome', { ...LOCK, outcome: undefined }],
+  ])('skips a lock row %s', (_label, row) => {
+    const text = [JSON.stringify(row), JSON.stringify(SHIP)].join('\n');
+    expect(parseRuns(text)).toEqual([SHIP]);
+  });
+
+  it('drops a signal that is not a string', () => {
+    const [parsed] = parseRuns(JSON.stringify({ ...LOCK, signal: 2 }));
+    expect(parsed).toEqual(LOCK);
   });
 });
 

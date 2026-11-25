@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { GateRow, RunRow, ShipRow } from '../src/run-log.js';
+import type { GateRow, LockRow, RunRow, ShipRow } from '../src/run-log.js';
 import {
   duration,
   formatStats,
@@ -307,7 +307,7 @@ describe('summarizeRuns', () => {
 describe('formatStats', () => {
   it('says so when the window holds nothing', () => {
     expect(formatStats(summarizeRuns([], { now: NOW, sinceMs: WEEK }))).toBe(
-      'guardrails stats: no gate or ship runs logged from 2026-11-12T12:00:00.000Z to 2026-11-19T12:00:00.000Z.\n',
+      'guardrails stats: no gate, ship or lock runs logged from 2026-11-12T12:00:00.000Z to 2026-11-19T12:00:00.000Z.\n',
     );
   });
 
@@ -368,6 +368,78 @@ describe('formatStats', () => {
         '',
       ].join('\n'),
     );
+  });
+});
+
+function lockRun(over: Partial<LockRow> = {}): LockRow {
+  return {
+    v: 1,
+    kind: 'lock',
+    repo: 'app',
+    startedAt: '2026-11-19T10:00:00.000Z',
+    finishedAt: '2026-11-19T10:30:00.000Z',
+    command: 'npm',
+    commandHash: '0123456789abcdef',
+    exitCode: 0,
+    outcome: 'ran',
+    lock: { queuedMs: 120_000, heldMs: 1_200_000, depthOnArrival: 0 },
+    ...over,
+  };
+}
+
+describe('lock runs in the stats (#201)', () => {
+  const rows: RunRow[] = [
+    gate(),
+    lockRun(),
+    lockRun({ command: 'make', lock: undefined, outcome: 'unserialized' }),
+    lockRun({
+      outcome: 'lock-timeout',
+      exitCode: 75,
+      lock: { queuedMs: 600_000, heldMs: 0, depthOnArrival: 2 },
+    }),
+  ];
+
+  it('counts lock runs apart from the rungs, by outcome and command', () => {
+    const stats = summarizeRuns(rows, { now: NOW, sinceMs: WEEK });
+    expect(stats.rows).toBe(4);
+    expect(Object.keys(stats.rungs)).toEqual(['push']);
+    expect(stats.rungs.push?.runs).toBe(1);
+    expect(stats.locks).toEqual({
+      runs: 3,
+      outcomes: { ran: 1, unserialized: 1, 'lock-timeout': 1 },
+      queuedMs: { median: 120_000, p90: 600_000 },
+      heldMs: { median: 0, p90: 1_200_000 },
+      commands: [
+        ['npm', 2],
+        ['make', 1],
+      ],
+    });
+  });
+
+  it('leaves lock runs out of the dry-run buckets', () => {
+    const stats = summarizeRuns(rows, { now: NOW, sinceMs: WEEK });
+    expect(stats.byDepth.map((bucket) => bucket.runs)).toEqual([1, 0, 0, 0]);
+  });
+
+  it('prints a lock section', () => {
+    expect(
+      formatStats(summarizeRuns(rows.slice(1), { now: NOW, sinceMs: WEEK })),
+    ).toBe(
+      [
+        'guardrails stats: 3 run(s) from 2026-11-12T12:00:00.000Z to 2026-11-19T12:00:00.000Z',
+        'lock: 3 run(s) (ran 1, unserialized 1, lock-timeout 1)',
+        '  queued for the lock: median 2m00s, p90 10m00s',
+        '  held the lock: median 0s, p90 20m00s',
+        '  commands: npm 2, make 1',
+        '',
+      ].join('\n'),
+    );
+  });
+
+  it('prints no lock section with no lock runs', () => {
+    expect(
+      formatStats(summarizeRuns([gate()], { now: NOW, sinceMs: WEEK })),
+    ).not.toMatch(/^(lock:| {2}commands:)/m);
   });
 });
 

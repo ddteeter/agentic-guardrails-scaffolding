@@ -127,6 +127,17 @@ export type Exec = (
      * must not wait on indefinitely.
      */
     timeoutMs?: number;
+    /**
+     * Hand the child's output on as it arrives, rather than collect it: the
+     * result's `stdout` and `stderr` are then empty. The child's stdin is
+     * closed at once. For a command a person or agent watches run, such as
+     * one `guardrails lock` runs (#201), whose output can be long and whose
+     * progress is the point.
+     */
+    stream?: {
+      stdout: (text: string) => void;
+      stderr: (text: string) => void;
+    };
   },
 ) => Promise<ExecResult>;
 
@@ -299,8 +310,10 @@ export const spawnExec: Exec = (command, args, options) =>
     if (options?.processGroup === true) {
       trackGroup(child, options.stopGraceSeconds ?? DEFAULT_STOP_GRACE_SECONDS);
     }
-    if (options?.input !== undefined) {
-      child.stdin.end(options.input);
+    const stream = options?.stream;
+    const input = options?.input;
+    if (stream !== undefined || input !== undefined) {
+      child.stdin.end(input);
     }
     let isTimedOut = false;
     const timer =
@@ -313,10 +326,18 @@ export const spawnExec: Exec = (command, args, options) =>
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', (chunk: Buffer) => {
-      stdout += chunk.toString();
+      if (stream === undefined) {
+        stdout += chunk.toString();
+      } else {
+        stream.stdout(chunk.toString());
+      }
     });
     child.stderr.on('data', (chunk: Buffer) => {
-      stderr += chunk.toString();
+      if (stream === undefined) {
+        stderr += chunk.toString();
+      } else {
+        stream.stderr(chunk.toString());
+      }
     });
     child.on('error', (error: Error) => {
       clearTimeout(timer);
