@@ -287,6 +287,13 @@ describe('a guardrails lock holder (#201)', () => {
     ).toBeUndefined();
   });
 
+  it('reads no holder of a kind it does not know, stryker-shaped or not', () => {
+    const other = { ...mutating, kind: 'build' };
+    expect(
+      readHolder('/h.json', reading(JSON.stringify(other)), isAlive),
+    ).toBeUndefined();
+  });
+
   it('still reads a stryker holder, which has no kind', () => {
     expect(
       readHolder('/h.json', reading(JSON.stringify(mutating)), isAlive),

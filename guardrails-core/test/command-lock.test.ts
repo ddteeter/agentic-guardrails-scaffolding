@@ -3,13 +3,14 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  utimesSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   type CommandLockOptions,
@@ -337,6 +338,7 @@ describe('runCommandUnderLock', () => {
     expect(locked?.args.slice(-3)).toEqual(['npm', 'run', 'build']);
     expect(locked).toMatchObject({ processGroup: true, isStreamed: true });
     expect(output).toEqual(['out']);
+    expect(run).not.toHaveProperty('lock.holderOnArrival');
   });
 
   it('tells the command it holds the lock, through its environment', async () => {
@@ -365,16 +367,39 @@ describe('runCommandUnderLock', () => {
       holding: 'another checkout holds it',
     });
     expect(run).not.toHaveProperty('result');
+    expect(run).toMatchObject({
+      lock: { holderOnArrival: 'another checkout holds it', depthOnArrival: 0 },
+    });
     expect(lines[0]).toBe(
       'guardrails: waiting for the gate lock (up to 600s): another checkout holds it.',
     );
   });
 
+  it('stops watching the wait once the locked run settles', async () => {
+    const { exec } = machine({ busy: true });
+    let stops = 0;
+    const stop = (): void => {
+      stops += 1;
+    };
+    const { options: given } = options(exec, {
+      watch: { every: () => stop },
+    });
+    await runCommandUnderLock(given);
+    expect(stops).toBe(1);
+  });
+
   it('tries once without waiting at --timeout=0, and never runs the command', async () => {
     const { exec, calls } = machine({ busy: true });
     const { options: given } = options(exec, { waitSeconds: 0 });
-    expect(await runCommandUnderLock(given)).toMatchObject({
+    expect(await runCommandUnderLock(given)).toEqual({
       outcome: 'lock-timeout',
+      holding: 'another checkout holds it',
+      lock: {
+        queuedMs: 0,
+        heldMs: 0,
+        holderOnArrival: 'another checkout holds it',
+        depthOnArrival: 0,
+      },
     });
     expect(calls.some((call) => call.args.includes('npm'))).toBe(false);
   });
@@ -531,7 +556,9 @@ describe('parseLockArguments', () => {
   });
 
   it('leaves the timeout to the default when none is given', () => {
-    expect(parseLockArguments(['--', 'make'])).toEqual({ argv: ['make'] });
+    const parsed = parseLockArguments(['--', 'make']);
+    expect(parsed).toEqual({ argv: ['make'] });
+    expect(parsed).not.toHaveProperty('timeoutSeconds');
   });
 
   it('takes --timeout=0 as try once', () => {
@@ -806,6 +833,125 @@ describe('lockCommand', () => {
     expect(released).toBe(1);
   });
 
+  it('logs nothing while still asking for a locker, and keeps another holder file', async () => {
+    const stryker = JSON.stringify({ repo: '/r', rung: 'push', pid: 1 });
+    writeFileSync(`${lockPath}.holder.json`, stryker);
+    const { exec, isReached } = pendingAt(
+      (command, args) => command === 'sh' && args.at(-1) === 'command -v lockf',
+    );
+    const { dependencies, rows, stop } = stoppable(exec);
+    void lockCommand(dependencies, ['--', 'make']);
+    await waitFor(isReached);
+    stop('SIGINT');
+    expect(rows()).toHaveLength(1);
+    expect(rows()[0]).toMatchObject({ exitCode: 130, outcome: 'killed' });
+    expect(rows()[0]).not.toHaveProperty('lock');
+    expect(readFileSync(`${lockPath}.holder.json`, 'utf8')).toBe(stryker);
+  });
+
+  it('logs the queue so far for a run stopped while it asks if the lock is busy', async () => {
+    const { exec, isReached } = pendingAt(
+      (command, args) => command === 'lockf' && args.at(-1) === 'true',
+    );
+    const { dependencies, rows, stop } = stoppable(exec);
+    void lockCommand(dependencies, ['--', 'make']);
+    await waitFor(isReached);
+    stop('SIGINT');
+    expect(rows()).toMatchObject([
+      { outcome: 'killed', lock: { heldMs: 0, depthOnArrival: 0 } },
+    ]);
+  });
+
+  it('logs the hold from the start mark, and removes it, for a run stopped mid-way', async () => {
+    let mark = '';
+    const { exec, isReached } = pendingAt(
+      (command, args) => command === 'lockf' && args.includes('make'),
+      (args) => {
+        mark = args[9] ?? '';
+        writeFileSync(mark, '');
+        utimesSync(mark, 0, 0);
+      },
+    );
+    const { dependencies, rows, stop } = stoppable(exec);
+    void lockCommand(dependencies, ['--', 'make']);
+    await waitFor(isReached);
+    await new Promise((resolve) => {
+      setTimeout(resolve, 30);
+    });
+    stop('SIGTERM');
+    const [row] = rows();
+    expect(row).toMatchObject({ outcome: 'killed', lock: { queuedMs: 0 } });
+    expect(row?.kind === 'lock' && row.lock?.heldMs).toBeGreaterThanOrEqual(25);
+    expect(mark).not.toBe('');
+    expect(existsSync(mark)).toBe(false);
+  });
+
+  it('exits through process.exit by default when it is stopped', async () => {
+    const exit = vi.spyOn(process, 'exit').mockImplementation((code) => {
+      throw new Error(`exit ${String(code)}`);
+    });
+    try {
+      const { exec, isReached } = pendingAt(
+        (command, args) => command === 'lockf' && args.includes('make'),
+      );
+      const { dependencies, stop } = stoppable(exec);
+      const { exit: _exit, ...withoutExit } = dependencies;
+      void lockCommand(withoutExit, ['--', 'make']);
+      await waitFor(isReached);
+      expect(() => {
+        stop('SIGTERM');
+      }).toThrow('exit 143');
+      expect(exit).toHaveBeenCalledWith(143);
+    } finally {
+      exit.mockRestore();
+    }
+  });
+
+  it('listens for SIGINT and SIGTERM on this process while the command runs', async () => {
+    const before = [
+      process.listenerCount('SIGINT'),
+      process.listenerCount('SIGTERM'),
+    ];
+    let finish: () => void = ignore;
+    let isRunning = false;
+    const exec: Exec = (command, args, given) => {
+      if (command === 'lockf' && args.includes('make')) {
+        isRunning = true;
+        return new Promise((resolve) => {
+          finish = () => {
+            resolve({ stdout: '', stderr: '', code: 0 });
+          };
+        });
+      }
+      return machine({}).exec(command, args, given);
+    };
+    const { onTermination: _default, ...dependencies } = cli(exec).dependencies;
+    const run = lockCommand(dependencies, ['--', 'make']);
+    await waitFor(() => isRunning);
+    expect([
+      process.listenerCount('SIGINT'),
+      process.listenerCount('SIGTERM'),
+    ]).toEqual(before.map((count) => count + 1));
+    finish();
+    await run;
+    expect([
+      process.listenerCount('SIGINT'),
+      process.listenerCount('SIGTERM'),
+    ]).toEqual(before);
+  });
+
+  it('says so on stderr when the run log cannot be written', async () => {
+    const { exec } = machine({});
+    const unwritable = path.join(directory, 'missing', 'gate.lock');
+    const { dependencies, errors } = cli(exec, {
+      env: { GUARDRAILS_GATE_LOCK: unwritable, PATH: '/bin' },
+    });
+    expect(await lockCommand(dependencies, ['--', 'make'])).toBe(0);
+    expect(errors.at(-1)).toMatch(
+      /^guardrails: could not write the run log \(.*ENOENT.*\)\.\n$/,
+    );
+  });
+
   it('exits 2 with the usage for a command line it cannot read', async () => {
     const { exec, calls } = machine({});
     const { dependencies, errors, rows } = cli(exec);
@@ -818,6 +964,52 @@ describe('lockCommand', () => {
     expect(rows()).toEqual([]);
   });
 });
+
+/**
+ * A free-lock machine where the first call `isPending` matches never settles,
+ * so a test can stop the run there. `onReach` sees that call's args.
+ */
+function pendingAt(
+  isPending: (command: string, args: string[]) => boolean,
+  onReach: (args: string[]) => void = ignore,
+) {
+  let isReachedYet = false;
+  const exec: Exec = (command, args, given) => {
+    if (isPending(command, args)) {
+      isReachedYet = true;
+      onReach(args);
+      return new Promise(() => {
+        // Never settles: the run is stopped here.
+      });
+    }
+    return machine({}).exec(command, args, given);
+  };
+  return { exec, isReached: () => isReachedYet };
+}
+
+/**
+`cli`, with the termination handler captured so a test can stop the run.
+*/
+function stoppable(exec: Exec) {
+  let handler: (signal: 'SIGINT' | 'SIGTERM') => void = ignore;
+  const exits: number[] = [];
+  const harness = cli(exec, {
+    exit: (code) => {
+      exits.push(code);
+    },
+    onTermination: (registered) => {
+      handler = registered;
+      return ignore;
+    },
+  });
+  return {
+    ...harness,
+    exits,
+    stop: (signal: 'SIGINT' | 'SIGTERM') => {
+      handler(signal);
+    },
+  };
+}
 
 async function flushTurns(): Promise<void> {
   for (let turn = 0; turn < 20; turn += 1) {

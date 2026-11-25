@@ -311,8 +311,9 @@ export const spawnExec: Exec = (command, args, options) =>
       trackGroup(child, options.stopGraceSeconds ?? DEFAULT_STOP_GRACE_SECONDS);
     }
     const stream = options?.stream;
-    if (stream !== undefined || options?.input !== undefined) {
-      child.stdin.end(options?.input);
+    const input = options?.input;
+    if (stream !== undefined || input !== undefined) {
+      child.stdin.end(input);
     }
     let isTimedOut = false;
     const timer =

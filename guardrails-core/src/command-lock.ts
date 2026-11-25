@@ -214,7 +214,7 @@ function cleanUpHolder(
   readJson: (filePath: string) => JsonFileResult = readJsonFile,
 ): void {
   if (tracker.startedFile !== undefined) {
-    rmSync(tracker.startedFile, { force: true });
+    removeIfPresent(tracker.startedFile);
   }
   const file = holderPath(lockPath);
   const { parsed } = readJson(file);
@@ -223,8 +223,16 @@ function cleanUpHolder(
     isRecord(parsed) &&
     parsed.token === tracker.token
   ) {
-    rmSync(file, { force: true });
+    removeIfPresent(file);
   }
+}
+
+/**
+ * Remove `file`, which may be gone already: a start mark that was never made,
+ * or a holder file another run has replaced since it was read.
+ */
+function removeIfPresent(file: string): void {
+  rmSync(file, { force: true });
 }
 
 /**
