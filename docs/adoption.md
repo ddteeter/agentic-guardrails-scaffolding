@@ -1080,6 +1080,19 @@ gate lock`, which `guardrails ship` reports as `lock-timeout` rather than as
   `dialed-163 (push) is mutating, 62% (160/258), ~4m left` -- and how many
   others queue, once a minute. `guardrails lock-status` shows the same once,
   from anywhere on the machine.
+- **Anything else that loads the machine takes the same lock with
+  `guardrails lock`.** `guardrails lock [--timeout=<seconds>] -- <cmd> [args…]`
+  waits for the gate lock (`mutationLock.pushWaitSeconds` by default;
+  `--timeout=0` tries once), runs the command, streams its output, and exits
+  with its code -- or 75, with the same `gave up waiting for the gate lock`
+  line, when the wait runs out. Use it for a whole-repo stryker run, a build
+  or a benchmark instead of wrapping one in `lockf`/`flock` by hand: a gate
+  queued behind it reads `app is running npm under guardrails lock, 12m so
+far` rather than `another checkout holds it`. The command runs with
+  `GUARDRAILS_GATE_LOCK_HELD` set to the lock's path, so a gate or a nested
+  `guardrails lock` inside it (`guardrails lock -- git push`) runs at once
+  instead of queueing behind its own parent. With no `lockf` or `flock`, or a
+  lock file it cannot open, it runs the command unserialized and says so.
 - **A stopped mutation run keeps what it tested.** When the gate is stopped
   mid-run (by a signal, or at its hook deadline) it sends the locked stryker
   run exactly one SIGINT, and stryker writes a partial
@@ -1100,7 +1113,11 @@ gate lock`, which `guardrails ship` reports as `lock-timeout` rather than as
   mutant, timeout, survivor and no-coverage counts, and the load average and
   free memory at the start and the end. A ship's row has its push time (gate
   included), its gates' time (ship's own gate and the hook's, summed), its CI
-  time, the PR and the final state.
+  time, the PR and the final state. A `guardrails lock` run's row
+  (`kind: "lock"`) has the command's basename and a hash of its whole
+  command line (never the argument values), its exit code and any signal,
+  its outcome (`ran`, `lock-timeout`, `unserialized`, `already-held`, or
+  `killed` when it was stopped), and how long it queued and held the lock.
   Counts come from stryker's JSON report, which the gate always asks for;
   `report: "missing"` means the run left none. The times come from
   guardrails' progress plugin, so a run without the built plugin has counts
@@ -1109,7 +1126,8 @@ gate lock`, which `guardrails ship` reports as `lock-timeout` rather than as
   (`--since=24h`, `--since=90m`), for every repo or one (`--repo=<name>`):
   per rung, the queue and hold times, the dry-run and mutating times
   (median and p90), how many runs started warm and why the rest went cold;
-  per ship, the final states and the push, gate and CI times; and the
+  per ship, the final states and the push, gate and CI times; per
+  `guardrails lock` run, the outcomes, queue and hold times and commands; and the
   dry-run time by queue depth on arrival and by load per core at the start,
   which is what decides whether the machine can afford more concurrent
   lanes. `--json` prints the same as JSON.

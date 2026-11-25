@@ -80,7 +80,11 @@ they can override, not an open questionnaire:
   need a whole-repo clean baseline before they can gate anything (step 7).
   `stryker` needs a test suite worth mutating; recommending it for a repo with
   thin coverage just produces noise, and mutation testing is genuinely slow —
-  say so.
+  say so. A whole-repo stryker run to see where the repo stands, or any other
+  run that loads the machine, goes under
+  `node ./node_modules/guardrails-core/dist/cli.mjs lock -- <cmd>`, in the
+  background: it queues for the same machine-wide lock the gates take, and a
+  gate queued behind it names it. Not under a hand-rolled `lockf` or `flock`.
   **Moving an analyzer's rung.** An entry may be an object instead of a string,
   carrying a `rung` alongside the `mode`:
 

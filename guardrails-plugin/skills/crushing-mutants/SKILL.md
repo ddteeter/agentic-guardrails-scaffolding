@@ -85,10 +85,20 @@ flaky test, rather than a defect, is a common cause.
 
    ```sh
    rm -rf reports/mutation
-   npx stryker run --mutate "src/a.ts,src/b.ts" --reporters json
+   node ./node_modules/guardrails-core/dist/cli.mjs lock -- \
+     npx stryker run --mutate "src/a.ts,src/b.ts" --reporters json
    ```
 
    then read `reports/mutation/mutation.json`.
+
+   **`guardrails lock --` runs it under the machine-wide gate lock**, the one
+   every gate's stryker run takes, so your run and theirs take turns instead
+   of thrashing the machine together. A gate queued behind it names your run,
+   and it is logged to the run log. Do not take the lock with `lockf` or
+   `flock` yourself: that holder reads to every gate as "another checkout".
+   It waits for the lock as long as a push does (`--timeout=<seconds>` to
+   change that, `0` to try once) and exits 75 if the wait runs out. Run a
+   wait that long in the background.
 
    **`--mutate` takes a comma-separated file list**, not just one path. On a
    real paydown that is the difference between ~30 seconds and 20-odd minutes,
