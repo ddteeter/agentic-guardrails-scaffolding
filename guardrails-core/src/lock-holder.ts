@@ -111,6 +111,137 @@ export interface RunSummary {
   reportReadyAt?: number | undefined;
   total: number;
   reused: number;
+  /**
+  What this run's timeouts cost (#236); written with the report only.
+  */
+  timeouts?: TimeoutCosts | undefined;
+  /**
+  The settings a timeout budget is made of (#236), those that were known.
+  */
+  settings?: TimeoutSettings | undefined;
+}
+
+/**
+ * One file's wall-clock timeouts, and the first and last line they start on:
+ * many in a narrow span are likely one cause.
+ */
+export interface TimeoutFile {
+  /**
+  Relative to the repo.
+  */
+  file: string;
+  count: number;
+  firstLine: number;
+  lastLine: number;
+}
+
+/**
+ * What a run's timeouts cost (#236), counting only the mutants stryker ran.
+ *
+ * A **wall-clock** Timeout is one stryker's timer stopped; stryker restarts
+ * the test runner process after each. A **hit-limit** one ran its own code
+ * past the limit the dry run set, and is returned as an ordinary result.
+ *
+ * `budgetMs` adds up the timeout stryker gave each wall-clock Timeout: its
+ * `timeoutFactor × netTime + timeoutMS + the dry run's overhead`. A mutant's
+ * **gap** is the time from the result before it (or the plan) to its own: at
+ * concurrency 1 that is what it cost, restart included; above it, results
+ * interleave and a gap says little about one mutant.
+ */
+export interface TimeoutCosts {
+  wallClock: number;
+  hitLimit: number;
+  budgetMs: number;
+  wallClockGapMs: number;
+  /**
+  Every other result's gaps, hit-limit timeouts included.
+  */
+  otherGapMs: number;
+  /**
+  The files with the most wall-clock timeouts, at most five.
+  */
+  byFile: TimeoutFile[];
+}
+
+/**
+ * What stryker resolved for this run -- defaults, config and command line
+ * alike -- and what its dry run measured.
+ */
+export interface TimeoutSettings {
+  timeoutMS?: number;
+  timeoutFactor?: number;
+  concurrency?: number;
+  dryRunNetMs?: number;
+  dryRunOverheadMs?: number;
+}
+
+const SETTINGS = [
+  'timeoutMS',
+  'timeoutFactor',
+  'concurrency',
+  'dryRunNetMs',
+  'dryRunOverheadMs',
+] as const;
+
+function timeoutFileOf(value: unknown): TimeoutFile[] {
+  if (!isRecord(value)) {
+    return [];
+  }
+  const { file, count, firstLine, lastLine } = value;
+  return typeof file === 'string' &&
+    isCount(count) &&
+    isCount(firstLine) &&
+    isCount(lastLine)
+    ? [{ file, count, firstLine, lastLine }]
+    : [];
+}
+
+/**
+Timeout costs with every count there, or `undefined`. Bad file entries go.
+*/
+function timeoutCostsOf(value: unknown): TimeoutCosts | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  const { wallClock, hitLimit, budgetMs, wallClockGapMs, otherGapMs, byFile } =
+    value;
+  if (
+    !Array.isArray(byFile) ||
+    !isCount(wallClock) ||
+    !isCount(hitLimit) ||
+    !isCount(budgetMs) ||
+    !isCount(wallClockGapMs) ||
+    !isCount(otherGapMs)
+  ) {
+    return undefined;
+  }
+  const files: unknown[] = byFile;
+  return {
+    wallClock,
+    hitLimit,
+    budgetMs,
+    wallClockGapMs,
+    otherGapMs,
+    byFile: files.flatMap((each) => timeoutFileOf(each)),
+  };
+}
+
+/**
+ * The settings in `value` that are numbers, or `undefined` for none: the
+ * same reader takes stryker's options in the plugin and the summary here.
+ */
+export function timeoutSettingsOf(value: unknown): TimeoutSettings | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  const settings: TimeoutSettings = {};
+  for (const key of SETTINGS) {
+    const setting = value[key];
+    if (isCount(setting)) {
+      settings[key] = setting;
+    }
+  }
+  return Object.keys(settings).length === 0 ? undefined : settings;
 }
 
 /**
@@ -131,6 +262,8 @@ export function parseRunSummary(text: string): RunSummary | undefined {
     ...(isCount(reportReadyAt) && { reportReadyAt }),
     total,
     reused,
+    timeouts: timeoutCostsOf(parsed.timeouts),
+    settings: timeoutSettingsOf(parsed.settings),
   };
 }
 

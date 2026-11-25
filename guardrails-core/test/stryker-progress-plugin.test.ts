@@ -389,6 +389,14 @@ describe('ProgressReporter: the run summary (#176)', () => {
         reportReadyAt: 1_090_000,
         total: 5,
         reused: 2,
+        timeouts: {
+          wallClock: 0,
+          hitLimit: 0,
+          budgetMs: 0,
+          wallClockGapMs: 0,
+          otherGapMs: 0,
+          byFile: [],
+        },
       },
     ]);
   });
@@ -439,6 +447,277 @@ describe('ProgressReporter: the run summary (#176)', () => {
       reporter.onMutationTestingPlanReady(plans(1, 0));
       reporter.onMutationTestReportReady(...report);
     }).not.toThrow();
+  });
+});
+
+describe('ProgressReporter: what timeouts cost (#236)', () => {
+  const SUMMARY_FILE = '/repo/reports/guardrails-run.json';
+  const SUMMARY_ENV = {
+    ...LOCK_ENV,
+    GUARDRAILS_RUN_SUMMARY_FILE: SUMMARY_FILE,
+  };
+
+  /**
+  A reporter over a fake whose summaries are collected, with `options`.
+  */
+  function metered(options?: unknown): {
+    f: Fake;
+    reporter: ProgressReporter;
+    summaries: Record<string, unknown>[];
+  } {
+    const summaries: Record<string, unknown>[] = [];
+    const f = fake(SUMMARY_ENV, {
+      write: (filePath, content) => {
+        if (filePath === SUMMARY_FILE) {
+          summaries.push(JSON.parse(content) as Record<string, unknown>);
+        }
+      },
+    });
+    return { f, reporter: new ProgressReporter(f.io, options), summaries };
+  }
+
+  /**
+  A plan entry: the slice the reporter types, and what the meter reads.
+  */
+  type Plan = { plan: string } & Record<string, unknown>;
+
+  function runPlan(id: string, timeout: number): Plan {
+    return { plan: 'Run', mutant: { id }, runOptions: { timeout }, netTime: 1 };
+  }
+
+  function result(
+    id: string,
+    status: string,
+    extra: Record<string, unknown> = {},
+  ): { status: string } & Record<string, unknown> {
+    return {
+      id,
+      status,
+      fileName: '/dev/dialed-163/src/table.ts',
+      location: {
+        start: { line: 10, column: 0 },
+        end: { line: 10, column: 5 },
+      },
+      ...extra,
+    };
+  }
+
+  function at(line: number): Record<string, unknown> {
+    return { start: { line, column: 0 }, end: { line, column: 1 } };
+  }
+
+  it('records the dry run’s net time and overhead, from the plan on', () => {
+    const { reporter, summaries } = metered();
+    reporter.onDryRunCompleted({ timing: { net: 1200, overhead: 90_000 } });
+    reporter.onMutationTestingPlanReady(plans(1, 0));
+    reporter.onMutationTestReportReady(...report);
+    for (const summary of summaries) {
+      expect(summary.settings).toEqual({
+        dryRunNetMs: 1200,
+        dryRunOverheadMs: 90_000,
+      });
+    }
+    expect(summaries).toHaveLength(2);
+  });
+
+  it('records the timeout settings stryker resolved', () => {
+    const { reporter, summaries } = metered({
+      timeoutMS: 5000,
+      timeoutFactor: 1.5,
+      concurrency: 4,
+      mutate: ['src/a.ts'],
+    });
+    reporter.onMutationTestingPlanReady(plans(1, 0));
+    expect(summaries.at(-1)?.settings).toEqual({
+      timeoutMS: 5000,
+      timeoutFactor: 1.5,
+      concurrency: 4,
+    });
+  });
+
+  it.each([
+    ['no options', undefined],
+    ['options that are not an object', 'options'],
+    ['settings of the wrong kind', { timeoutMS: '5000', concurrency: '50%' }],
+    ['settings that are not finite', { timeoutMS: NaN }],
+  ])('records no settings from %s', (_label, options) => {
+    const { reporter, summaries } = metered(options);
+    reporter.onDryRunCompleted('not an event');
+    reporter.onDryRunCompleted({ timing: { net: 'x' } });
+    reporter.onMutationTestingPlanReady(plans(1, 0));
+    reporter.onMutationTestReportReady(...report);
+    expect(summaries).toHaveLength(2);
+    for (const summary of summaries) {
+      expect(summary).not.toHaveProperty('settings');
+    }
+  });
+
+  it('adds up each kind of result: its budget and the time since the last', () => {
+    const { f, reporter, summaries } = metered();
+    reporter.onMutationTestingPlanReady({
+      mutantPlans: [
+        runPlan('1', 5000),
+        runPlan('2', 6000),
+        runPlan('3', 7000),
+        runPlan('4', 8000),
+        { plan: 'EarlyResult', mutant: { id: '5' } },
+      ],
+    });
+    reporter.onMutantTested(result('5', 'Timeout'));
+    f.advance(10_000);
+    reporter.onMutantTested(result('1', 'Timeout'));
+    f.advance(2000);
+    reporter.onMutantTested(
+      result('2', 'Timeout', { statusReason: 'Hit limit reached (9/8)' }),
+    );
+    f.advance(1000);
+    reporter.onMutantTested(result('3', 'Killed'));
+    f.advance(12_000);
+    reporter.onMutantTested(
+      result('4', 'Timeout', {
+        fileName: '/dev/dialed-163/src/other.ts',
+        location: at(3),
+      }),
+    );
+    reporter.onMutationTestReportReady(...report);
+    expect(summaries.at(-1)?.timeouts).toEqual({
+      wallClock: 2,
+      hitLimit: 1,
+      budgetMs: 13_000,
+      wallClockGapMs: 22_000,
+      otherGapMs: 3000,
+      byFile: [
+        { file: 'src/other.ts', count: 1, firstLine: 3, lastLine: 3 },
+        { file: 'src/table.ts', count: 1, firstLine: 10, lastLine: 10 },
+      ],
+    });
+  });
+
+  it('writes the timeouts at the report only', () => {
+    const { reporter, summaries } = metered();
+    reporter.onMutationTestingPlanReady(plans(1, 0));
+    expect(summaries.at(-1)).not.toHaveProperty('timeouts');
+  });
+
+  it('counts wall-clock timeouts by file, most first, with the lines they span', () => {
+    const { reporter, summaries } = metered();
+    const files = ['a', 'b', 'c', 'd', 'e', 'f'];
+    const ids = files.flatMap((file, index) =>
+      Array.from({ length: index + 1 }, (_, each) => `${file}${String(each)}`),
+    );
+    reporter.onMutationTestingPlanReady({
+      mutantPlans: ids.map((id) => runPlan(id, 1)),
+    });
+    for (const id of ids) {
+      const line = 52 - Number(id.slice(1));
+      reporter.onMutantTested(
+        result(id, 'Timeout', {
+          fileName: `/dev/dialed-163/src/${id.slice(0, 1)}.ts`,
+          location: at(line),
+        }),
+      );
+    }
+    reporter.onMutationTestReportReady(...report);
+    expect(summaries.at(-1)?.timeouts).toMatchObject({
+      wallClock: ids.length,
+      byFile: [
+        { file: 'src/f.ts', count: 6, firstLine: 47, lastLine: 52 },
+        { file: 'src/e.ts', count: 5, firstLine: 48, lastLine: 52 },
+        { file: 'src/d.ts', count: 4, firstLine: 49, lastLine: 52 },
+        { file: 'src/c.ts', count: 3, firstLine: 50, lastLine: 52 },
+        { file: 'src/b.ts', count: 2, firstLine: 51, lastLine: 52 },
+      ],
+    });
+  });
+
+  it('breaks a tie between files by name', () => {
+    const { reporter, summaries } = metered();
+    reporter.onMutationTestingPlanReady({
+      mutantPlans: [runPlan('1', 1), runPlan('2', 1)],
+    });
+    reporter.onMutantTested(
+      result('1', 'Timeout', { fileName: '/dev/dialed-163/src/z.ts' }),
+    );
+    reporter.onMutantTested(
+      result('2', 'Timeout', { fileName: '/dev/dialed-163/src/y.ts' }),
+    );
+    reporter.onMutationTestReportReady(...report);
+    expect(summaries.at(-1)?.timeouts).toMatchObject({
+      byFile: [{ file: 'src/y.ts' }, { file: 'src/z.ts' }],
+    });
+  });
+
+  it('keeps a file stryker names relative to the repo as it is', () => {
+    const { reporter, summaries } = metered();
+    reporter.onMutationTestingPlanReady({ mutantPlans: [runPlan('1', 1)] });
+    reporter.onMutantTested(
+      result('1', 'Timeout', { fileName: 'src/x.ts', location: undefined }),
+    );
+    reporter.onMutationTestReportReady(...report);
+    expect(summaries.at(-1)?.timeouts).toMatchObject({
+      wallClock: 1,
+      byFile: [{ file: 'src/x.ts', count: 1 }],
+    });
+  });
+
+  it('ignores a result before the plan, one it did not plan, and garbage', () => {
+    const { f, reporter, summaries } = metered();
+    reporter.onMutantTested(result('1', 'Timeout'));
+    f.advance(4000);
+    reporter.onMutationTestingPlanReady({
+      mutantPlans: [
+        runPlan('1', 5000),
+        { plan: 'Run', mutant: { id: '2' }, runOptions: { timeout: 'x' } },
+        { plan: 'Run' },
+      ],
+    });
+    f.advance(1000);
+    reporter.onMutantTested(result('9', 'Timeout'));
+    reporter.onMutantTested({ status: 'Timeout' });
+    f.advance(1000);
+    reporter.onMutantTested(result('2', 'Timeout', { fileName: 7 }));
+    reporter.onMutationTestReportReady(...report);
+    expect(summaries.at(-1)?.timeouts).toEqual({
+      wallClock: 1,
+      hitLimit: 0,
+      budgetMs: 0,
+      wallClockGapMs: 2000,
+      otherGapMs: 0,
+      byFile: [],
+    });
+  });
+
+  it('counts a mutant once, however often it is reported', () => {
+    const { f, reporter, summaries } = metered();
+    reporter.onMutationTestingPlanReady({ mutantPlans: [runPlan('1', 5000)] });
+    f.advance(1000);
+    reporter.onMutantTested(result('1', 'Timeout'));
+    f.advance(1000);
+    reporter.onMutantTested(result('1', 'Timeout'));
+    reporter.onMutationTestReportReady(...report);
+    expect(summaries.at(-1)?.timeouts).toMatchObject({
+      wallClock: 1,
+      budgetMs: 5000,
+      wallClockGapMs: 1000,
+    });
+  });
+
+  it('measures nothing when the run holds no lock', () => {
+    const summaries: unknown[] = [];
+    const f = fake(
+      { GUARDRAILS_RUN_SUMMARY_FILE: SUMMARY_FILE },
+      {
+        write: (_filePath, content) => {
+          summaries.push(content);
+        },
+      },
+    );
+    const reporter = new ProgressReporter(f.io, { timeoutMS: 1 });
+    reporter.onDryRunCompleted({ timing: { net: 1, overhead: 1 } });
+    reporter.onMutationTestingPlanReady({ mutantPlans: [runPlan('1', 1)] });
+    reporter.onMutantTested(result('1', 'Timeout'));
+    reporter.onMutationTestReportReady(...report);
+    expect(summaries).toEqual([]);
   });
 });
 
@@ -633,7 +912,7 @@ describe('GuardrailsProgressReporter', () => {
     rmSync(directory, { recursive: true, force: true });
   });
 
-  it('is the plugin stryker loads, injecting nothing', () => {
+  it('is the plugin stryker loads, injecting the resolved options', () => {
     expect(strykerPlugins).toEqual([
       {
         kind: 'Reporter',
@@ -641,7 +920,7 @@ describe('GuardrailsProgressReporter', () => {
         injectableClass: GuardrailsProgressReporter,
       },
     ]);
-    expect(GuardrailsProgressReporter.inject).toEqual([]);
+    expect(GuardrailsProgressReporter.inject).toEqual(['options']);
   });
 
   it('writes and removes a real holder file from the env', () => {
@@ -649,7 +928,7 @@ describe('GuardrailsProgressReporter', () => {
     vi.stubEnv('GUARDRAILS_LOCK_HOLDER_FILE', target);
     vi.stubEnv('GUARDRAILS_LOCK_RUNG', 'commit');
     vi.stubEnv('GUARDRAILS_LOCK_REPO', '/dev/app');
-    const reporter = new GuardrailsProgressReporter();
+    const reporter = new GuardrailsProgressReporter({ timeoutMS: 5000 });
     expect(parseHolder(readFileSync(target, 'utf8'))).toMatchObject({
       repo: '/dev/app',
       rung: 'commit',
