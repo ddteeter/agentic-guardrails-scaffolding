@@ -1,3 +1,7 @@
+import { mkdtempSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+
 import { describe, expect, it } from 'vitest';
 
 import { TimeoutMeter } from '../src/timeout-meter.js';
@@ -71,6 +75,43 @@ describe('TimeoutMeter on events that are not what stryker sends', () => {
     expect(meter.costs()?.byFile).toEqual([
       { file: 'a.ts', count: 1, firstLine: 0, lastLine: 0 },
     ]);
+  });
+
+  it('makes a file relative to the repo reached through a symlink', () => {
+    // Stryker names files by their real path; the repo may be named through a
+    // symlink (macOS's /var is /private/var), found live by the drift guard.
+    const real = mkdtempSync(path.join(tmpdir(), 'guardrails-meter-'));
+    const link = `${real}-link`;
+    symlinkSync(real, link);
+    try {
+      const meter = new TimeoutMeter(link, undefined);
+      meter.planReady(
+        { mutantPlans: [{ plan: 'Run', mutant: { id: '1' } }] },
+        0,
+      );
+      meter.tested(
+        {
+          id: '1',
+          status: 'Timeout',
+          fileName: path.join(realpathSync(real), 'src', 'a.ts'),
+        },
+        1,
+      );
+      expect(meter.costs()?.byFile).toMatchObject([{ file: 'src/a.ts' }]);
+    } finally {
+      rmSync(link);
+      rmSync(real, { recursive: true });
+    }
+  });
+
+  it('keeps the root as given when it cannot be resolved', () => {
+    const meter = new TimeoutMeter('/no/such/repo', undefined);
+    meter.planReady({ mutantPlans: [{ plan: 'Run', mutant: { id: '1' } }] }, 0);
+    meter.tested(
+      { id: '1', status: 'Timeout', fileName: '/no/such/repo/src/a.ts' },
+      1,
+    );
+    expect(meter.costs()?.byFile).toMatchObject([{ file: 'src/a.ts' }]);
   });
 
   it('keeps no dry-run timing from an event without one', () => {

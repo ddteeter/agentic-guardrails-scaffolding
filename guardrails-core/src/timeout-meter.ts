@@ -12,6 +12,7 @@
  * Fed by the plugin; never throws, and reads every event defensively, since
  * it runs inside stryker and must not fail a run over a measurement.
  */
+import { realpathSync } from 'node:fs';
 import path from 'node:path';
 
 import { isRecord } from './is-record.js';
@@ -37,6 +38,19 @@ interface FileTally {
 function isCount(value: unknown): value is number {
   // `Number.isFinite` does not coerce, so it is false for every non-number.
   return Number.isFinite(value);
+}
+
+/**
+ * `root` as stryker names files under it: by real path, so a repo reached
+ * through a symlink (macOS's `/var` is `/private/var`) still contains them.
+ * `root` itself when it cannot be resolved.
+ */
+function realRoot(root: string): string {
+  try {
+    return realpathSync(root);
+  } catch {
+    return root;
+  }
 }
 
 /**
@@ -132,7 +146,7 @@ export class TimeoutMeter {
    * what stryker injects, read for its timeout settings and nothing else.
    */
   constructor(root: string, options: unknown) {
-    this.#root = root;
+    this.#root = realRoot(root);
     const { timeoutMS, timeoutFactor, concurrency } = isRecord(options)
       ? options
       : {};

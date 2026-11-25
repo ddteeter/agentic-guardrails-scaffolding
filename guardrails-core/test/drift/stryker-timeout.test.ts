@@ -25,7 +25,14 @@
  * repo's own mutation pass, for the reasons `stryker-runner.test.ts` gives.
  */
 
-import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { readFile, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -34,6 +41,13 @@ import { fileURLToPath } from 'node:url';
 import { expect, it } from 'vitest';
 
 import { type Exec, spawnExec } from '../../src/exec.js';
+import {
+  holderEnvironment,
+  parseRunSummary,
+  PROGRESS_REPORTER,
+  type RunSummary,
+  runSummaryPath,
+} from '../../src/lock-holder.js';
 import { runVerify, writeMutationFingerprint } from '../../src/verify/index.js';
 import { describeUnlessMutating } from './under-mutation.js';
 
@@ -440,6 +454,193 @@ describeUnlessMutating(here)(
         retested: 1,
         rescored: 0,
       });
+    }, 600_000);
+  },
+);
+
+/**
+The BUILT progress plugin, as a locked gate loads it.
+*/
+const builtPlugin = path.resolve(
+  here,
+  '../../dist/stryker-progress-plugin.mjs',
+);
+
+/**
+ * Three functions whose `Math.min` → `Math.max` mutant spins for a minute on
+ * the clock, evaluating no mutant while it spins, so only stryker's wall
+ * clock can stop it: three wall-clock Timeouts. Every other mutant here dies
+ * fast. `spin.ts` is not mutated.
+ */
+const HANG_SOURCE = `import { spinFor } from './spin.js';
+
+export function first(budget: number): number {
+  return spinFor(Math.min(budget, 5));
+}
+
+export function second(budget: number): number {
+  return spinFor(Math.min(budget, 5));
+}
+
+export function third(budget: number): number {
+  return spinFor(Math.min(budget, 5));
+}
+
+export function isPositive(value: number): boolean {
+  return value > 0;
+}
+`;
+
+const HANG_TEST = `import { describe, expect, it } from 'vitest';
+
+import { first, isPositive, second, third } from './src/hang.js';
+
+describe('hang', () => {
+  it('first spins for at most five milliseconds', () => {
+    expect(first(60_000)).toBe(5);
+  });
+
+  it('second spins for at most five milliseconds', () => {
+    expect(second(60_000)).toBe(5);
+  });
+
+  it('third spins for at most five milliseconds', () => {
+    expect(third(60_000)).toBe(5);
+  });
+
+  it('tells positive from not', () => {
+    expect(isPositive(1)).toBe(true);
+    expect(isPositive(0)).toBe(false);
+    expect(isPositive(-1)).toBe(false);
+  });
+});
+`;
+
+/**
+The line stryker's timeout decorator logs, at debug level, before it restarts.
+*/
+const RESTART_LINE = 'Timeout expired, restarting the process';
+
+/**
+How much one timeout may cost beyond its budget before the guard calls it news.
+*/
+const RESTART_ALLOWANCE_MS = 20_000;
+
+interface MeasuredRun {
+  summary: RunSummary;
+  restarts: number;
+}
+
+/**
+ * Real stryker over `directory` at concurrency 1, with the built plugin
+ * loaded as a locked gate loads it, and a debug log to count restarts in.
+ */
+async function measuredRun(directory: string): Promise<MeasuredRun> {
+  expect(
+    existsSync(builtPlugin),
+    `no built plugin at ${builtPlugin} -- run npm run build`,
+  ).toBe(true);
+  const result = await spawnExec(
+    path.join(binDirectory, 'stryker'),
+    [
+      'run',
+      '--reporters',
+      `json,${PROGRESS_REPORTER}`,
+      '--appendPlugins',
+      builtPlugin,
+      '--concurrency',
+      '1',
+      '--fileLogLevel',
+      'debug',
+    ],
+    {
+      cwd: directory,
+      env: {
+        ...cleanEnvironment(),
+        ...holderEnvironment(
+          path.join(directory, 'gate.lock'),
+          'push',
+          directory,
+        ),
+      },
+    },
+  );
+  expect(result.code, `${result.stdout}\n${result.stderr}`).toBe(0);
+  const summary = parseRunSummary(
+    await readFile(runSummaryPath(directory), 'utf8'),
+  );
+  const log = await readFile(path.join(directory, 'stryker.log'), 'utf8');
+  return {
+    summary: summary ?? expect.unreachable('the plugin wrote no run summary'),
+    restarts: log.split('\n').filter((line) => line.includes(RESTART_LINE))
+      .length,
+  };
+}
+
+/**
+ * #236 against real stryker: what a wall-clock Timeout costs, against the
+ * budget stryker gave it, and whether stryker restarts its test runner after
+ * one. Pins the Stryker internals the run log's timeout figures rest on: the
+ * budget formula, the restart and its log line, and that a hit-limit Timeout
+ * restarts nothing.
+ */
+describeUnlessMutating(here)(
+  'drift-guard: what a stryker Timeout costs (#236)',
+  () => {
+    it('restarts the runner once per wall-clock timeout, costing its budget and a bounded restart', async () => {
+      const directory = await buildFixture({
+        'src/spin.ts': SPIN_SOURCE,
+        'src/hang.ts': HANG_SOURCE,
+        'hang.test.ts': HANG_TEST,
+        'stryker.conf.json': strykerConfigWith({ mutate: ['src/hang.ts'] }),
+      });
+      const { summary, restarts } = await measuredRun(directory);
+      const { timeouts, settings } = summary;
+
+      expect(timeouts).toMatchObject({ wallClock: 3, hitLimit: 0 });
+      expect(restarts).toBe(3);
+      expect(timeouts?.byFile).toEqual([
+        { file: 'src/hang.ts', count: 3, firstLine: 4, lastLine: 12 },
+      ]);
+      // The settings stryker resolved: the config's timeoutMS, its default
+      // factor, the command line's concurrency.
+      expect(settings).toMatchObject({
+        timeoutMS: 1000,
+        timeoutFactor: 1.5,
+        concurrency: 1,
+        dryRunNetMs: expect.any(Number),
+        dryRunOverheadMs: expect.any(Number),
+      });
+      const net = settings?.dryRunNetMs ?? NaN;
+      const overhead = settings?.dryRunOverheadMs ?? NaN;
+      const budget = timeouts?.budgetMs ?? NaN;
+      const gap = timeouts?.wallClockGapMs ?? NaN;
+      // Each budget is timeoutFactor × netTime + timeoutMS + the dry run's
+      // overhead, where a mutant's netTime is its covering tests' share of
+      // the dry run's net time.
+      expect(budget).toBeGreaterThanOrEqual(3 * (1000 + overhead));
+      expect(budget).toBeLessThanOrEqual(3 * (1000 + overhead + 1.5 * net));
+      // At concurrency 1 a timeout's gap is what it cost: its budget, then
+      // the restart.
+      expect(gap).toBeGreaterThanOrEqual(budget);
+      expect(gap).toBeLessThanOrEqual(budget + 3 * RESTART_ALLOWANCE_MS);
+      process.stdout.write(
+        `#236 measured: budget ${String(Math.round(budget / 3))}ms per ` +
+          `timeout (dry-run overhead ${String(overhead)}ms, net ` +
+          `${String(net)}ms), actual ${String(Math.round(gap / 3))}ms, ` +
+          `excess ${String(Math.round((gap - budget) / 3))}ms; ` +
+          `${String(restarts)} restarts; other results ` +
+          `${String(timeouts?.otherGapMs)}ms\n`,
+      );
+    }, 600_000);
+
+    it('restarts nothing for a hit-limit timeout', async () => {
+      const directory = await buildFixture();
+      const { summary, restarts } = await measuredRun(directory);
+
+      expect(summary.timeouts?.wallClock).toBe(0);
+      expect(summary.timeouts?.hitLimit).toBeGreaterThan(0);
+      expect(restarts).toBe(0);
     }, 600_000);
   },
 );
