@@ -8,7 +8,7 @@
  * stryker runs seeded and why it runs cold, where a ship's time goes, and
  * whether dry runs slow down as more runs queue or the machine loads up.
  */
-import type { GateRow, RunRow, ShipRow } from './run-log.js';
+import type { GateRow, LockRow, RunRow, ShipRow } from './run-log.js';
 
 type StrykerPart = NonNullable<GateRow['stryker']>;
 
@@ -43,6 +43,20 @@ interface ShipSummary {
   ciMs?: Spread | undefined;
 }
 
+/**
+`guardrails lock -- <cmd>` runs (#201): what held the lock besides gates.
+*/
+interface LockSummary {
+  runs: number;
+  outcomes: Record<string, number>;
+  queuedMs?: Spread | undefined;
+  heldMs?: Spread | undefined;
+  /**
+  Each command's basename and its runs, most runs first.
+  */
+  commands: [string, number][];
+}
+
 interface Bucket {
   bucket: string;
   runs: number;
@@ -55,6 +69,7 @@ export interface RunStats {
   rows: number;
   rungs: Record<string, RungSummary>;
   ships: ShipSummary;
+  locks: LockSummary;
   /**
   Dry-run time by how many runs were queued ahead on arrival.
   */
@@ -113,21 +128,40 @@ function coldReason({ cache }: StrykerPart): string {
   return `local cache ${cache?.local ?? 'unknown'}, seed ${cache?.seed ?? 'unknown'}`;
 }
 
-function rungSummary(rows: readonly GateRow[]): RungSummary {
-  const mutated = present(rows.map((row) => row.stryker));
-  const cold = mutated.filter((stryker) => !isWarm(stryker));
+/**
+`keys` tallied, most common first.
+*/
+function ranked(keys: readonly string[]): [string, number][] {
+  return Object.entries(tally(keys)).toSorted(
+    ([, left], [, right]) => right - left,
+  );
+}
+
+/**
+What every row that takes the lock has: its runs, their outcomes, and how
+long they queued for the lock and held it.
+*/
+function lockedRuns(
+  rows: readonly (GateRow | LockRow)[],
+): Pick<RungSummary, 'runs' | 'outcomes' | 'queuedMs' | 'heldMs'> {
   return {
     runs: rows.length,
     outcomes: tally(rows.map((row) => row.outcome)),
     queuedMs: spreadOf(present(rows.map((row) => row.lock?.queuedMs))),
     heldMs: spreadOf(present(rows.map((row) => row.lock?.heldMs))),
+  };
+}
+
+function rungSummary(rows: readonly GateRow[]): RungSummary {
+  const mutated = present(rows.map((row) => row.stryker));
+  const cold = mutated.filter((stryker) => !isWarm(stryker));
+  return {
+    ...lockedRuns(rows),
     dryRunMs: spreadOf(present(rows.map((row) => row.stryker?.dryRunMs))),
     mutatingMs: spreadOf(present(rows.map((row) => row.stryker?.mutatingMs))),
     mutated: mutated.length,
     warm: mutated.length - cold.length,
-    coldReasons: Object.entries(
-      tally(cold.map((stryker) => coldReason(stryker))),
-    ).toSorted(([, left], [, right]) => right - left),
+    coldReasons: ranked(cold.map((stryker) => coldReason(stryker))),
   };
 }
 
@@ -138,6 +172,13 @@ function shipSummary(rows: readonly ShipRow[]): ShipSummary {
     pushMs: spreadOf(rows.map((row) => row.pushMs)),
     gateMs: spreadOf(present(rows.map((row) => row.gateMs))),
     ciMs: spreadOf(present(rows.map((row) => row.ciMs))),
+  };
+}
+
+function lockSummary(rows: readonly LockRow[]): LockSummary {
+  return {
+    ...lockedRuns(rows),
+    commands: ranked(rows.map((row) => row.command)),
   };
 }
 
@@ -199,6 +240,7 @@ export function summarizeRuns(
   });
   const gates = inWindow.filter((row): row is GateRow => row.kind === 'gate');
   const ships = inWindow.filter((row): row is ShipRow => row.kind === 'ship');
+  const locks = inWindow.filter((row): row is LockRow => row.kind === 'lock');
   const rungs: Record<string, RungSummary> = {};
   const rungNames = new Set(gates.map((row) => row.rung));
   for (const rung of rungNames) {
@@ -210,6 +252,7 @@ export function summarizeRuns(
     rows: inWindow.length,
     rungs,
     ships: shipSummary(ships),
+    locks: lockSummary(locks),
     byDepth: buckets(gates, DEPTHS, depthBucket),
     byLoad: buckets(gates, LOADS, loadBucket),
   };
@@ -275,9 +318,9 @@ The summary as the lines `guardrails stats` prints.
 */
 export function formatStats(stats: RunStats): string {
   if (stats.rows === 0) {
-    return `guardrails stats: no gate or ship runs logged from ${stats.from} to ${stats.to}.\n`;
+    return `guardrails stats: no gate, ship or lock runs logged from ${stats.from} to ${stats.to}.\n`;
   }
-  const { ships } = stats;
+  const { ships, locks } = stats;
   const lines = [
     `guardrails stats: ${String(stats.rows)} run(s) from ${stats.from} to ${stats.to}`,
     ...Object.entries(stats.rungs).flatMap(([rung, summary]) =>
@@ -290,6 +333,14 @@ export function formatStats(stats: RunStats): string {
           ...spreadText('push, gate included', ships.pushMs),
           ...spreadText('gate', ships.gateMs),
           ...spreadText('CI', ships.ciMs),
+        ]),
+    ...(locks.runs === 0
+      ? []
+      : [
+          `lock: ${String(locks.runs)} run(s) (${countsText(locks.outcomes)})`,
+          ...spreadText('queued for the lock', locks.queuedMs),
+          ...spreadText('held the lock', locks.heldMs),
+          `  commands: ${countsText(Object.fromEntries(locks.commands))}`,
         ]),
     ...bucketText('dry run by queue depth on arrival:', stats.byDepth),
     ...bucketText('dry run by load at start:', stats.byLoad),

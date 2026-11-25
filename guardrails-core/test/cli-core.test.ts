@@ -6521,7 +6521,9 @@ describe('stats: the run log, summarized', () => {
       ['--since=30m'],
       dependencies({ env: lockEnvironment() }),
     );
-    expect(out.join('')).toMatch(/^guardrails stats: no gate or ship runs/);
+    expect(out.join('')).toMatch(
+      /^guardrails stats: no gate, ship or lock runs/,
+    );
   });
 
   it('reads a missing log as empty', async () => {
@@ -6529,7 +6531,9 @@ describe('stats: the run log, summarized', () => {
     expect(
       await runCommand('stats', [], dependencies({ env: lockEnvironment() })),
     ).toBe(0);
-    expect(out.join('')).toMatch(/^guardrails stats: no gate or ship runs/);
+    expect(out.join('')).toMatch(
+      /^guardrails stats: no gate, ship or lock runs/,
+    );
   });
 
   it('refuses a window it cannot read', async () => {
