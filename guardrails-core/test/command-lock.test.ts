@@ -195,6 +195,13 @@ describe('the holder shim, run by sh', () => {
     expect(result).toEqual({ stdout: 'ran\n', stderr: '', code: 0 });
   });
 
+  it('refuses to run the command, exiting 73, when the start mark cannot be written', async () => {
+    startedFile = path.join(directory, 'missing', 'started');
+    const result = await runShim(['echo', 'ran']);
+    expect(result).toEqual({ stdout: '', stderr: '', code: 73 });
+    expect(existsSync(`${lockPath}.holder.json`)).toBe(false);
+  });
+
   it('exits 127 for a command that does not exist', async () => {
     const result = await runShim(['guardrails-no-such-command']);
     expect(result.code).toBe(127);
@@ -226,6 +233,7 @@ function machine(state: {
   timesOut?: boolean;
   commandCode?: number;
   holderToken?: string;
+  markFails?: boolean;
 }) {
   const calls: Call[] = [];
   const exec: Exec = (command, args, options) => {
@@ -256,6 +264,9 @@ function machine(state: {
     if (command === 'lockf') {
       if (state.timesOut === true) {
         return Promise.resolve({ stdout: '', stderr: '', code: 75 });
+      }
+      if (state.markFails === true) {
+        return Promise.resolve({ stdout: '', stderr: '', code: 73 });
       }
       const [started = '', holderFile = ''] = args.slice(9, 11);
       writeFileSync(started, '');
@@ -373,6 +384,23 @@ describe('runCommandUnderLock', () => {
     expect(lines[0]).toBe(
       'guardrails: waiting for the gate lock (up to 600s): another checkout holds it.',
     );
+  });
+
+  it('reports a start mark it could not write, never a lock timeout', async () => {
+    const { exec } = machine({ markFails: true });
+    expect(await runCommandUnderLock(options(exec).options)).toEqual({
+      outcome: 'no-start-mark',
+      startedFile,
+      lock: { queuedMs: 0, heldMs: 0, depthOnArrival: 0 },
+    });
+  });
+
+  it('passes a 73 through once the command ran', async () => {
+    const { exec } = machine({ commandCode: 73 });
+    expect(await runCommandUnderLock(options(exec).options)).toMatchObject({
+      outcome: 'ran',
+      result: { code: 73 },
+    });
   });
 
   it('stops watching the wait once the locked run settles', async () => {
@@ -746,6 +774,20 @@ describe('lockCommand', () => {
     );
     expect(rows()).toMatchObject([
       { outcome: 'lock-timeout', exitCode: 75, command: 'make' },
+    ]);
+  });
+
+  it('exits 73, naming the start mark, when it could not be written', async () => {
+    const { exec } = machine({ markFails: true });
+    const { dependencies, errors, rows } = cli(exec);
+    expect(await lockCommand(dependencies, ['--', 'make'])).toBe(73);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatch(
+      /^guardrails lock: could not write the start mark at .+\.started — make was not run\. Point TMPDIR at a writable directory\.\n$/u,
+    );
+    expect(errors[0]).not.toContain(LOCK_TIMEOUT_MARKER);
+    expect(rows()).toMatchObject([
+      { outcome: 'no-start-mark', exitCode: 73, command: 'make' },
     ]);
   });
 

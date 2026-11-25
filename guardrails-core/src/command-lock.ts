@@ -101,19 +101,28 @@ export function commandIdentity(argv: readonly string[]): {
 }
 
 /**
+The shim's exit when it could not write the start mark (sysexits'
+`EX_CANTCREAT`).
+*/
+const START_MARK_EXIT = 73;
+
+/**
  * The script the locker runs once it holds the lock. It marks the start (the
  * file whose existence tells a real exit 75 from a timeout, and whose mtime is
  * when the lock was taken), writes the holder file -- to a temporary name,
  * then renamed, so a waiter never reads half of it -- and then `exec`s the
  * command, which keeps the pid the holder file names. A holder file that
- * cannot be written costs only its label: the command runs regardless.
+ * cannot be written costs only its label: the command runs regardless. A
+ * start mark that cannot be written stops the run before the command: without
+ * it, the command's own exit 75 would read as a lock timeout, so the shim
+ * exits `START_MARK_EXIT` instead.
  *
  * `$1` is the start mark, `$2` the holder file, `$3` the holder record up to
  * its `pid`; the command follows. `printf`, not `:`, makes the mark: a failed
  * redirection on a special built-in would end the shell.
  */
 const HOLDER_SHIM =
-  '{ printf "" > "$1"; ' +
+  `{ printf "" > "$1" || exit ${String(START_MARK_EXIT)}; ` +
   String.raw`printf '%s%s,"startedAt":%s000}\n' "$3" "$$" "$(date +%s)" > "$2.$$" && ` +
   'mv -f "$2.$$" "$2"; } 2>/dev/null; shift 3; exec "$@"';
 
@@ -248,7 +257,11 @@ export type CommandLockRun =
   /**
   The wait ran out: nothing ran.
   */
-  | { outcome: 'lock-timeout'; holding: string; lock: LockPart };
+  | { outcome: 'lock-timeout'; holding: string; lock: LockPart }
+  /**
+  The lock was taken but the start mark could not be written: nothing ran.
+  */
+  | { outcome: 'no-start-mark'; startedFile: string; lock: LockPart };
 
 export interface CommandLockOptions {
   exec: Exec;
@@ -420,6 +433,9 @@ async function runLocked(
     const { holding } = await look();
     return { outcome: 'lock-timeout', holding, lock: part };
   }
+  if (acquiredAt === undefined && result.code === START_MARK_EXIT) {
+    return { outcome: 'no-start-mark', startedFile, lock: part };
+  }
   return { outcome: 'ran', result, lock: part };
 }
 
@@ -486,8 +502,9 @@ const TERMINATION_EXITS: Readonly<Record<TerminationSignal, number>> = {
 /**
  * `guardrails lock [--timeout=<s>] -- <cmd> [args…]`: run the command under
  * the gate lock and exit with its code -- 75, with the gate's lock-timeout
- * line, when the wait ran out; 127 for a program that could not start; 2 for
- * a command line it cannot read. One `kind: lock` row goes to the run log,
+ * line, when the wait ran out; 73, naming the file, when the start mark could
+ * not be written; 127 for a program that could not start; 2 for a command
+ * line it cannot read. One `kind: lock` row goes to the run log,
  * from the signal handler when the run is stopped part-way.
  */
 export async function lockCommand(
@@ -571,6 +588,14 @@ export async function lockCommand(
     );
     log({ exitCode: LOCK_TIMEOUT_EXIT, outcome: run.outcome, lock: run.lock });
     return LOCK_TIMEOUT_EXIT;
+  }
+  if (run.outcome === 'no-start-mark') {
+    stderr(
+      `guardrails lock: could not write the start mark at ${run.startedFile} — ` +
+        `${identity.command} was not run. Point TMPDIR at a writable directory.\n`,
+    );
+    log({ exitCode: START_MARK_EXIT, outcome: run.outcome, lock: run.lock });
+    return START_MARK_EXIT;
   }
   const exitCode = exitOf(run.result, identity.command, stderr);
   log({

@@ -126,7 +126,8 @@ export interface LockRow extends RowBase {
   exitCode: number;
   signal?: string | undefined;
   /**
-  `ran`, `lock-timeout`, `unserialized`, `already-held` or `killed`.
+  `ran`, `lock-timeout`, `no-start-mark`, `unserialized`, `already-held` or
+  `killed`.
   */
   outcome: string;
   /**
