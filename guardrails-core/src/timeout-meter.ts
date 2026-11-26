@@ -84,7 +84,7 @@ function budgetOf(plan: Readonly<Record<string, unknown>>): number {
 /**
 Each Run plan's mutant id, and the timeout stryker gave it.
 */
-function runBudgets(event: unknown): Map<unknown, number> {
+export function runBudgets(event: unknown): Map<unknown, number> {
   const budgets = new Map<unknown, number>();
   const plans = isRecord(event) ? event.mutantPlans : undefined;
   if (!Array.isArray(plans)) {

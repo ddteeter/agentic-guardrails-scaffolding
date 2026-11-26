@@ -47,6 +47,37 @@ interface TestedMutant {
 }
 
 /**
+What the plugin feeds each event to: the timeout meter and the work meter.
+*/
+interface Meter {
+  dryRunCompleted: (event: unknown) => void;
+  planReady: (event: unknown, at: number) => void;
+  tested: (result: unknown, at: number) => void;
+}
+
+/**
+The plan is ready: mutation starts, with how many mutants and how many reused.
+*/
+function recordPlan(holder: Holder, event: PlanReadyEvent, now: number): void {
+  holder.phase = 'mutating';
+  holder.total = event.mutantPlans.length;
+  holder.reused = event.mutantPlans.filter(
+    (plan) => plan.plan === 'EarlyResult',
+  ).length;
+  holder.mutatingSince = now;
+}
+
+/**
+One mutant has been tested.
+*/
+function recordTested(holder: Holder, result: TestedMutant): void {
+  holder.tested += 1;
+  if (result.status === 'Survived') {
+    holder.survived += 1;
+  }
+}
+
+/**
 The signals stryker's `UnexpectedExitHandler` treats as a stop.
 */
 const STOP_SIGNALS = ['SIGABRT', 'SIGHUP', 'SIGINT', 'SIGTERM'] as const;
@@ -258,6 +289,35 @@ export class ProgressReporter {
     this.#stopAbsorbing = absorbRepeatStopSignals(io.signals);
   }
 
+  /**
+  Feeds each of the run's meters, when the run has a target.
+  */
+  #measure(feed: (meter: Meter) => void): void {
+    const target = this.#target;
+    if (target === undefined) {
+      return;
+    }
+    feed(target.meter);
+    feed(target.work);
+  }
+
+  /**
+   * One event: the meters are fed, then the holder changes, both at the
+   * same moment.
+   */
+  #record(
+    feed: (meter: Meter, now: number) => void,
+    change: (holder: Holder, now: number) => void,
+  ): void {
+    const now = this.#io.now();
+    this.#measure((meter) => {
+      feed(meter, now);
+    });
+    this.#update((holder) => {
+      change(holder, now);
+    });
+  }
+
   #update(change: (holder: Holder) => void): void {
     const target = this.#target;
     if (target === undefined || this.#done) {
@@ -306,6 +366,7 @@ export class ProgressReporter {
       timeouts: reportReadyAt === undefined ? undefined : meter.costs(),
       settings: meter.settings(),
       dryRunCounts: work.dryRun(),
+      mutantRuns: reportReadyAt === undefined ? undefined : work.mutantRuns(),
     };
     try {
       this.#io.write(target.summaryFile, JSON.stringify(summary));
@@ -319,31 +380,32 @@ export class ProgressReporter {
    * and how many tests it ran (#200).
    */
   onDryRunCompleted(event: unknown): void {
-    this.#target?.meter.dryRunCompleted(event);
-    this.#target?.work.dryRunCompleted(event);
+    this.#measure((meter) => {
+      meter.dryRunCompleted(event);
+    });
   }
 
   onMutationTestingPlanReady(event: PlanReadyEvent): void {
-    this.#target?.meter.planReady(event, this.#io.now());
-    this.#update((holder) => {
-      holder.phase = 'mutating';
-      holder.total = event.mutantPlans.length;
-      holder.reused = event.mutantPlans.filter(
-        (plan) => plan.plan === 'EarlyResult',
-      ).length;
-      holder.mutatingSince = this.#io.now();
-    });
+    this.#record(
+      (meter, now) => {
+        meter.planReady(event, now);
+      },
+      (holder, now) => {
+        recordPlan(holder, event, now);
+      },
+    );
     this.#writeSummary();
   }
 
   onMutantTested(result: TestedMutant): void {
-    this.#target?.meter.tested(result, this.#io.now());
-    this.#update((holder) => {
-      holder.tested += 1;
-      if (result.status === 'Survived') {
-        holder.survived += 1;
-      }
-    });
+    this.#record(
+      (meter, now) => {
+        meter.tested(result, now);
+      },
+      (holder) => {
+        recordTested(holder, result);
+      },
+    );
   }
 
   /**

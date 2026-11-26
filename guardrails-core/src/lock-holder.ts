@@ -15,7 +15,12 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { type JsonFileResult, parseJsonText } from './json-file.js';
-import { type DryRunCounts, dryRunCountsOf } from './mutant-work.js';
+import {
+  type DryRunCounts,
+  dryRunCountsOf,
+  type MutantRuns,
+  mutantRunsOf,
+} from './mutant-work.js';
 import { isRung, type Rung } from './verify/analyzer-policy.js';
 import { isRecord } from './verify/report-shape.js';
 
@@ -124,6 +129,10 @@ export interface RunSummary {
   How many tests the dry run ran, and in how many files (#200).
   */
   dryRunCounts?: DryRunCounts | undefined;
+  /**
+  What the mutants stryker ran amounted to (#200); with the report only.
+  */
+  mutantRuns?: MutantRuns | undefined;
 }
 
 /**
@@ -271,6 +280,7 @@ export function parseRunSummary(text: string): RunSummary | undefined {
     timeouts: timeoutCostsOf(parsed.timeouts),
     settings: timeoutSettingsOf(parsed.settings),
     dryRunCounts: dryRunCountsOf(parsed.dryRunCounts),
+    mutantRuns: mutantRunsOf(parsed.mutantRuns),
   };
 }
 

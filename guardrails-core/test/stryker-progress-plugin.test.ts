@@ -397,6 +397,14 @@ describe('ProgressReporter: the run summary (#176)', () => {
           otherGapMs: 0,
           byFile: [],
         },
+        mutantRuns: {
+          ran: 0,
+          testsCompleted: 0,
+          coveredBy: 0,
+          withCoveredBy: 0,
+          static: 0,
+          byMutator: {},
+        },
       },
     ]);
   });
@@ -760,6 +768,39 @@ describe('ProgressReporter: what the dry run and each mutant run did (#200)', ()
     for (const summary of summaries) {
       expect(summary.dryRunCounts).toEqual({ tests: 3, testFiles: 2 });
     }
+  });
+
+  it('records, at the report only, what the mutants stryker ran amounted to', () => {
+    const { reporter, summaries } = metered();
+    const mutantPlans: ({ plan: string } & Record<string, unknown>)[] = [
+      { plan: 'Run', mutant: { id: '1' }, runOptions: { timeout: 1 } },
+      { plan: 'EarlyResult', mutant: { id: '2' } },
+    ];
+    reporter.onMutationTestingPlanReady({ mutantPlans });
+    const results: ({ status: string } & Record<string, unknown>)[] = [
+      { id: '2', status: 'Killed', mutatorName: 'StringLiteral' },
+      {
+        id: '1',
+        status: 'Survived',
+        mutatorName: 'EqualityOperator',
+        testsCompleted: 4,
+        coveredBy: ['a', 'b'],
+        static: false,
+      },
+    ];
+    for (const each of results) {
+      reporter.onMutantTested(each);
+    }
+    expect(summaries.at(-1)).not.toHaveProperty('mutantRuns');
+    reporter.onMutationTestReportReady(...report);
+    expect(summaries.at(-1)?.mutantRuns).toEqual({
+      ran: 1,
+      testsCompleted: 4,
+      coveredBy: 2,
+      withCoveredBy: 1,
+      static: 0,
+      byMutator: { EqualityOperator: { Survived: 1 } },
+    });
   });
 
   it('records no dry-run counts when the dry run said nothing', () => {

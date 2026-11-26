@@ -14,7 +14,7 @@ import {
   type TimeoutCosts,
   type TimeoutSettings,
 } from '../lock-holder.js';
-import type { DryRunCounts } from '../mutant-work.js';
+import type { DryRunCounts, MutantRuns } from '../mutant-work.js';
 import type { LockTiming } from '../mutation-lock.js';
 import type { CacheOutcome } from './prepare-cache.js';
 import { statusCounts } from './stryker-adapter.js';
@@ -68,6 +68,10 @@ interface StrykerRecord {
   How many tests the dry run ran, and in how many files (#200).
   */
   dryRunCounts?: DryRunCounts;
+  /**
+  What the mutants stryker ran amounted to (#200).
+  */
+  mutantRuns?: MutantRuns;
   report: 'read' | 'missing';
 }
 
@@ -216,6 +220,9 @@ export function mutationRunRecord(
     }),
     ...(summary?.dryRunCounts !== undefined && {
       dryRunCounts: summary.dryRunCounts,
+    }),
+    ...(summary?.mutantRuns !== undefined && {
+      mutantRuns: summary.mutantRuns,
     }),
     ...(counts !== undefined && {
       mutants: counts.total,

@@ -592,3 +592,62 @@ describe('parseRunSummary: what the dry run ran (#200)', () => {
     });
   });
 });
+
+describe('parseRunSummary: what the mutants stryker ran amounted to (#200)', () => {
+  const BASE = { startedAt: 1, total: 3, reused: 0 };
+  const RUNS = {
+    ran: 3,
+    testsCompleted: 45,
+    coveredBy: 6,
+    withCoveredBy: 2,
+    static: 1,
+    byMutator: {
+      ConditionalExpression: { Killed: 1, Survived: 1 },
+      StringLiteral: { Killed: 1 },
+    },
+  };
+
+  function parsed(extra: Record<string, unknown>): unknown {
+    return parseRunSummary(JSON.stringify({ ...BASE, ...extra }));
+  }
+
+  it('reads the tallies the plugin writes', () => {
+    expect(parsed({ mutantRuns: RUNS })).toEqual({
+      ...BASE,
+      mutantRuns: RUNS,
+    });
+  });
+
+  it.each([
+    ['not an object', 'runs'],
+    ['missing a count', { ...RUNS, static: undefined }],
+    ['with a count of the wrong kind', { ...RUNS, testsCompleted: '45' }],
+    ['with a mutator table that is not an object', { ...RUNS, byMutator: [] }],
+  ])('drops tallies %s', (_label, mutantRuns) => {
+    expect(parsed({ mutantRuns })).toEqual(BASE);
+  });
+
+  it('drops a status count that is not a number, and a mutator left with none', () => {
+    const byMutator = {
+      ConditionalExpression: { Killed: 1, Survived: 'one' },
+      StringLiteral: { Killed: null },
+      BooleanLiteral: 'Killed',
+    };
+    expect(parsed({ mutantRuns: { ...RUNS, byMutator } })).toEqual({
+      ...BASE,
+      mutantRuns: {
+        ...RUNS,
+        byMutator: { ConditionalExpression: { Killed: 1 } },
+      },
+    });
+  });
+
+  it('reads a mutator named like a prototype as a plain entry', () => {
+    const summary = parseRunSummary(
+      `{"startedAt":1,"total":1,"reused":0,"mutantRuns":{"ran":1,"testsCompleted":1,"coveredBy":0,"withCoveredBy":0,"static":0,"byMutator":{"__proto__":{"Killed":1}}}}`,
+    );
+    const byMutator = summary?.mutantRuns?.byMutator ?? {};
+    expect(Object.entries(byMutator)).toEqual([['__proto__', { Killed: 1 }]]);
+    expect(Object.getPrototypeOf(byMutator)).toBe(Object.prototype);
+  });
+});
