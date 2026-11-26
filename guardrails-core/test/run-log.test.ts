@@ -16,6 +16,7 @@ import {
   type GateRow,
   type LockRow,
   parseRuns,
+  projectOf,
   runLogPath,
   sampleMachine,
   type ShipRow,
@@ -271,6 +272,34 @@ describe('appendRun and parseRuns', () => {
     expect(parsed).toEqual(row);
     expect(parsed).not.toHaveProperty('gateMs');
     expect(parsed).not.toHaveProperty('ciMs');
+  });
+});
+
+describe('project identity (#236)', () => {
+  it('keeps a row’s project, at version 1', () => {
+    const row: GateRow = { ...GATE, repo: 'lane-3', project: 'app' };
+    const file = path.join(directory, 'runs.jsonl');
+    expect(appendRun(file, row)).toBeUndefined();
+    const text = readFileSync(file, 'utf8');
+    expect(JSON.parse(text)).toMatchObject({ v: 1, project: 'app' });
+    expect(parseRuns(text)).toEqual([row]);
+  });
+
+  it('reads a row written before projects unchanged', () => {
+    const [parsed] = parseRuns(JSON.stringify(SHIP));
+    expect(parsed).toEqual(SHIP);
+    expect(parsed).not.toHaveProperty('project');
+  });
+
+  it('drops a project that is not a string, and keeps the row', () => {
+    const [parsed] = parseRuns(JSON.stringify({ ...SHIP, project: 7 }));
+    expect(parsed).toEqual(SHIP);
+    expect(parsed).not.toHaveProperty('project');
+  });
+
+  it('names a row’s project, or its folder for a row from before projects', () => {
+    expect(projectOf({ ...SHIP, repo: 'lane-3', project: 'app' })).toBe('app');
+    expect(projectOf({ ...SHIP, repo: 'lane-3' })).toBe('lane-3');
   });
 });
 

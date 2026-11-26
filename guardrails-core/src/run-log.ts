@@ -120,7 +120,15 @@ interface StrykerPart {
 
 interface RowBase {
   v: 1;
+  /**
+  The checkout's folder name: a lane worktree's own, not its clone's.
+  */
   repo: string;
+  /**
+  The clone the checkout belongs to (#236), shared by all its worktrees.
+  Absent on a row written before it was recorded; read it with `projectOf`.
+  */
+  project?: string | undefined;
   branch?: string | undefined;
   /**
   The ship that ran this gate, or this ship's own id.
@@ -177,6 +185,14 @@ export interface LockRow extends RowBase {
 }
 
 export type RunRow = GateRow | ShipRow | LockRow;
+
+/**
+ * The project a row belongs to: its recorded one, or -- for a row written
+ * before projects were -- its folder name, the best the row can say.
+ */
+export function projectOf(row: RunRow): string {
+  return row.project ?? row.repo;
+}
 
 /**
 The slice of `node:os` a machine sample reads.
@@ -383,6 +399,7 @@ function baseOf(fields: Fields): RowBase | undefined {
   return {
     v: 1,
     repo,
+    project: stringOf(fields, 'project'),
     branch: stringOf(fields, 'branch'),
     ship: stringOf(fields, 'ship'),
     startedAt,

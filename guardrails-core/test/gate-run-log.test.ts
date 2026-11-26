@@ -64,9 +64,17 @@ const START = {
   machine: { load1: 6, freeMb: 2100 },
 };
 
-function onBranch(): ReturnType<Exec> {
-  return Promise.resolve({ stdout: 'feat/x\n', stderr: '', code: 0 });
-}
+/**
+On `feat/x`, in a lane worktree of the `app-clone` clone.
+*/
+const onBranch: Exec = (_command, args) =>
+  Promise.resolve({
+    stdout: args.includes('--git-common-dir')
+      ? '/work/app-clone/.git\n'
+      : 'feat/x\n',
+    stderr: '',
+    code: 0,
+  });
 
 const RAN: MutationRunRecord = {
   didRun: true,
@@ -132,6 +140,7 @@ describe('logGateRun', () => {
         kind: 'gate',
         rung: 'push',
         repo: 'dialed.run',
+        project: 'app-clone',
         branch: 'feat/x',
         ship: 'ship-7',
         startedAt: '2026-11-19T10:00:00.000Z',
@@ -213,19 +222,33 @@ describe('logGateRun', () => {
       'git prints nothing',
       () => Promise.resolve({ stdout: '\n', stderr: '', code: 0 }),
     ],
-  ])('leaves out the branch when %s', async (_label, exec) => {
-    await logGateRun(input({ exec }));
-    expect(rows()[0]).not.toHaveProperty('branch');
-  });
+  ])(
+    'leaves out the branch, and names the project by its folder, when %s',
+    async (_label, exec) => {
+      await logGateRun(input({ exec }));
+      expect(rows()[0]).not.toHaveProperty('branch');
+      expect(rows()[0]).toMatchObject({
+        repo: 'dialed.run',
+        project: 'dialed.run',
+      });
+    },
+  );
 
-  it('asks git for the branch in the repository it gates', async () => {
+  it('asks git for the branch and the clone in the repository it gates', async () => {
     const asked: (string | undefined)[] = [];
     const exec: Exec = (command, args, options) => {
       asked.push([command, ...args, options?.cwd].join(' '));
-      return onBranch();
+      return onBranch(command, args);
     };
     await logGateRun(input({ exec }));
-    expect(asked).toEqual(['git rev-parse --abbrev-ref HEAD /work/dialed.run']);
+    expect(
+      asked.toSorted((left, right) =>
+        String(left).localeCompare(String(right)),
+      ),
+    ).toEqual([
+      'git rev-parse --abbrev-ref HEAD /work/dialed.run',
+      'git rev-parse --git-common-dir /work/dialed.run',
+    ]);
   });
 
   it('leaves out an empty ship id', async () => {
@@ -289,6 +312,7 @@ describe('logShipRun', () => {
     logShipRun({
       lockPath,
       repoRoot: '/work/app',
+      project: 'app-clone',
       shipId: 'ship-1',
       start: START,
       status: STATUS,
@@ -300,6 +324,7 @@ describe('logShipRun', () => {
     expect(rows().at(-1)).toMatchObject({
       kind: 'ship',
       repo: 'app',
+      project: 'app-clone',
       gateMs: 50_000,
       pushMs: 5000,
     });
@@ -311,6 +336,7 @@ describe('logShipRun', () => {
     logShipRun({
       lockPath,
       repoRoot: '/work/app',
+      project: 'app-clone',
       shipId: 'ship-1',
       start: START,
       status: STATUS,
@@ -333,6 +359,7 @@ describe('logShipRun, further', () => {
     logShipRun({
       lockPath,
       repoRoot: '/work/app',
+      project: 'app-clone',
       shipId: 'ship-1',
       start: START,
       status: STATUS,
@@ -399,6 +426,7 @@ describe('logLockRun (#201)', () => {
     logLockRun({
       lockPath,
       repoRoot: '/dev/app',
+      project: 'app-clone',
       branch: 'feat/x',
       start: START,
       run: {
@@ -414,6 +442,7 @@ describe('logLockRun (#201)', () => {
         v: 1,
         kind: 'lock',
         repo: 'app',
+        project: 'app-clone',
         branch: 'feat/x',
         ship: 'ship-9',
         startedAt: '2026-11-19T10:00:00.000Z',
@@ -435,6 +464,7 @@ describe('logLockRun (#201)', () => {
     logLockRun({
       lockPath,
       repoRoot: '/dev/app',
+      project: 'app-clone',
       branch: undefined,
       start: START,
       run: RUN,
@@ -453,6 +483,7 @@ describe('logLockRun (#201)', () => {
     logLockRun({
       lockPath,
       repoRoot: '/dev/app',
+      project: 'app-clone',
       branch: undefined,
       start: START,
       run: { ...RUN, exitCode: 143, signal: 'SIGTERM', outcome: 'killed' },
@@ -471,6 +502,7 @@ describe('logLockRun (#201)', () => {
     logLockRun({
       lockPath,
       repoRoot: '/dev/app',
+      project: 'app-clone',
       branch: undefined,
       start: START,
       run: RUN,

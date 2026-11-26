@@ -141,6 +141,7 @@ export async function logGateRun(input: GateRunInput): Promise<void> {
     kind: 'gate',
     rung: input.rung,
     repo: path.basename(input.repoRoot),
+    project: await projectName(input.exec, input.repoRoot),
     branch: await branchOf(input.exec, input.repoRoot),
     ship: ship === '' ? undefined : ship,
     startedAt: input.start.startedAt,
@@ -178,6 +179,10 @@ export interface LockRunInput {
   synchronously on its way out.
   */
   branch: string | undefined;
+  /**
+  `projectName`'s answer, read before the run for the same reason.
+  */
+  project: string;
   start: RunStart;
   run: LockRunResult;
   environment: Readonly<Record<string, string | undefined>>;
@@ -196,6 +201,7 @@ export function logLockRun(input: LockRunInput): void {
     v: 1,
     kind: 'lock',
     repo: path.basename(input.repoRoot),
+    project: input.project,
     branch: input.branch,
     ship: ship === '' ? undefined : ship,
     startedAt: input.start.startedAt,
@@ -217,6 +223,10 @@ export function logLockRun(input: LockRunInput): void {
 export interface ShipRunInput {
   lockPath: string | undefined;
   repoRoot: string;
+  /**
+  `projectName`'s answer: the writer is synchronous.
+  */
+  project: string;
   shipId: string;
   start: RunStart;
   status: { state: string; branch: string; pr: number | null };
@@ -262,6 +272,7 @@ export function logShipRun(input: ShipRunInput): void {
     v: 1,
     kind: 'ship',
     repo: path.basename(input.repoRoot),
+    project: input.project,
     branch: input.status.branch,
     ship: input.shipId,
     startedAt: input.start.startedAt,

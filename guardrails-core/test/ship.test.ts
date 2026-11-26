@@ -56,6 +56,9 @@ interface Call {
   cwd: string | undefined;
 }
 
+const cloneQuestions = (calls: Call[]) =>
+  calls.filter((call) => call.line === 'git rev-parse --git-common-dir');
+
 /**
  * A git + gh whose every answer is `answers[<command line prefix>]`, else a
  * success with no output. Records every call.
@@ -2535,7 +2538,10 @@ describe('ship: its row in the run log (#176)', () => {
         outcome: 'pass',
       })}\n`,
     );
-    const { exec } = fakeExec(HAPPY);
+    const { exec } = fakeExec({
+      ...HAPPY,
+      'git rev-parse --git-common-dir': ok('/dev/app-clone/.git\n'),
+    });
     const status = await ship(
       options(exec, {
         shipId: 'ship-42',
@@ -2548,6 +2554,7 @@ describe('ship: its row in the run log (#176)', () => {
       v: 1,
       kind: 'ship',
       repo: path.basename(root),
+      project: 'app-clone',
       branch: 'feat/x',
       ship: 'ship-42',
       startedAt: '2026-11-19T10:00:01.000Z',
@@ -2643,6 +2650,19 @@ describe('ship: its row in the run log (#176)', () => {
     const { exec } = fakeExec(HAPPY);
     await ship(options(exec));
     expect(existsSync(logFile())).toBe(false);
+  });
+
+  it('asks git for the clone only when it has a row to write (#236)', async () => {
+    const unlogged = fakeExec(HAPPY);
+    await ship(options(unlogged.exec));
+    expect(cloneQuestions(unlogged.calls)).toEqual([]);
+    const logged = fakeExec(HAPPY);
+    await ship(
+      options(logged.exec, { lockPath: path.join(root, 'gate.lock') }),
+    );
+    expect(cloneQuestions(logged.calls)).toEqual([
+      { line: 'git rev-parse --git-common-dir', cwd: root },
+    ]);
   });
 
   it('says on stderr when its row cannot be written', async () => {
