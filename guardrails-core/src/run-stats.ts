@@ -8,7 +8,13 @@
  * stryker runs seeded and why it runs cold, where a ship's time goes, and
  * whether dry runs slow down as more runs queue or the machine loads up.
  */
-import type { GateRow, LockRow, RunRow, ShipRow } from './run-log.js';
+import {
+  type GateRow,
+  type LockRow,
+  projectOf,
+  type RunRow,
+  type ShipRow,
+} from './run-log.js';
 import {
   summarizeTimeouts,
   type TimeoutSummary,
@@ -97,7 +103,14 @@ export interface RunStats {
 export interface StatsWindow {
   now: Date;
   sinceMs: number;
+  /**
+  A checkout's folder name: one lane worktree, not its whole clone.
+  */
   repo?: string | undefined;
+  /**
+  A clone, every lane of it (#236): `projectOf` each row.
+  */
+  project?: string | undefined;
 }
 
 /**
@@ -238,6 +251,16 @@ function buckets(
 }
 
 /**
+Is `row` of the project and the folder the window names, if it names them?
+*/
+function isNamed(row: RunRow, window: StatsWindow): boolean {
+  return (
+    (window.repo === undefined || row.repo === window.repo) &&
+    (window.project === undefined || projectOf(row) === window.project)
+  );
+}
+
+/**
 What the rows inside the window say.
 */
 export function summarizeRuns(
@@ -248,11 +271,7 @@ export function summarizeRuns(
   const from = to - window.sinceMs;
   const inWindow = rows.filter((row) => {
     const at = Date.parse(row.startedAt);
-    return (
-      at >= from &&
-      at <= to &&
-      (window.repo === undefined || row.repo === window.repo)
-    );
+    return at >= from && at <= to && isNamed(row, window);
   });
   const gates = inWindow.filter((row): row is GateRow => row.kind === 'gate');
   const ships = inWindow.filter((row): row is ShipRow => row.kind === 'ship');

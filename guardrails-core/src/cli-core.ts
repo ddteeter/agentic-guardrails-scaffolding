@@ -2421,7 +2421,8 @@ async function lockStatusCommand(
 
 /**
  * `stats` (#176): what the machine-wide run log says about the last
- * `--since` (7 days by default), for one `--repo` or all, as text or
+ * `--since` (7 days by default), for one `--project` (a clone, every lane
+ * of it) or one `--repo` (a checkout's folder) or all, as text or
  * `--json`. The log sits beside the gate lock; a missing one reads as empty.
  */
 function statsCommand(dependencies: CliDependencies, rest: string[]): number {
@@ -2446,6 +2447,7 @@ function statsCommand(dependencies: CliDependencies, rest: string[]): number {
   const stats = summarizeRuns(parseRuns(text), {
     now: new Date(),
     sinceMs,
+    project: flag(rest, 'project'),
     repo: flag(rest, 'repo'),
   });
   dependencies.stdout(
@@ -2541,7 +2543,7 @@ export async function runCommand(
           '  preflight [--mode=hook]\n' +
           '  lock [--timeout=<seconds>] -- <cmd> [args…]\n' +
           '  lock-status | mutation-fingerprint\n' +
-          '  stats [--since=7d|24h|90m] [--repo=<name>] [--json]\n' +
+          '  stats [--since=7d|24h|90m] [--project=<name>] [--repo=<folder>] [--json]\n' +
           '  autofix | audit | sanctions-check | install-hooks\n' +
           '  state | report | scope-check | session-start | session-end\n',
       );

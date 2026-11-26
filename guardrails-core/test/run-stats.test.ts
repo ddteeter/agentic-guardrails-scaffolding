@@ -306,6 +306,38 @@ describe('summarizeRuns', () => {
   });
 });
 
+describe('one project, across its lanes (#236)', () => {
+  const rows: RunRow[] = [
+    gate({ repo: 'main', project: 'main' }),
+    gate({ repo: 'lane-1', project: 'main' }),
+    gate({ repo: 'main' }),
+    ship({ repo: 'lane-2', project: 'main' }),
+    gate({ repo: 'small', project: 'small' }),
+    gate({ repo: 'lane-1', project: 'small' }),
+  ];
+
+  it('narrows to a project’s rows, lanes and a row from before projects alike', () => {
+    const stats = summarizeRuns(rows, {
+      now: NOW,
+      sinceMs: WEEK,
+      project: 'main',
+    });
+    expect(stats.rows).toBe(4);
+    expect(stats.ships.runs).toBe(1);
+  });
+
+  it('narrows by project and folder together when both are named', () => {
+    expect(
+      summarizeRuns(rows, {
+        now: NOW,
+        sinceMs: WEEK,
+        project: 'small',
+        repo: 'lane-1',
+      }).rows,
+    ).toBe(1);
+  });
+});
+
 describe('formatStats', () => {
   it('says so when the window holds nothing', () => {
     expect(formatStats(summarizeRuns([], { now: NOW, sinceMs: WEEK }))).toBe(
