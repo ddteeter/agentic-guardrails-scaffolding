@@ -35,8 +35,9 @@ import process from 'node:process';
 import { auditDiff, findingKey, type AuditFinding } from './audit.js';
 import type { SanctionedFile, SanctionedSuppression } from './config.js';
 import type { Exec, ExecResult } from './exec.js';
-import { readTestCorpus, withCoveringTests } from './covering-tests.js';
-import { createImportResolver } from './import-graph.js';
+import { withRelatedTests } from './covering-tests.js';
+import type { StackConfig } from './packs/pack.js';
+import { implicitStacks, perPack } from './packs/stacks.js';
 import { withGuidance } from './guidance.js';
 import {
   decideGate,
@@ -82,10 +83,9 @@ import {
   type Violation,
 } from './violation.js';
 import { parseFileList } from './verify/git.js';
-import { runVerify } from './verify/index.js';
+import { runVerify, stackPacks } from './verify/index.js';
 import type { MutationLock } from './mutation-lock.js';
-import { loadWorkspaceResolver, withPackages } from './workspaces.js';
-import { repoSourceReader } from './repo-source.js';
+import { withPackages } from './workspaces.js';
 import { logGateRun, startRun } from './gate-run-log.js';
 import type { MutationRunRecord } from './verify/mutation-run.js';
 import { resolveBaseReference } from './verify/git.js';
@@ -130,6 +130,15 @@ interface ForwardedVerifyOptions {
    * The incremental-cache seed — see `VerifyOptions.mutationCacheSeed`.
    */
   mutationCacheSeed?: SeedSettings | undefined;
+  /**
+   * The repository's stacks — see `VerifyOptions.stacks`. Also decides which
+   * pack attributes a violation's package and finds its related tests.
+   */
+  stacks?: readonly StackConfig[] | undefined;
+  /**
+  `--stack=<id>` — see `VerifyOptions.stack`.
+  */
+  stack?: string | undefined;
 }
 
 /**
@@ -149,6 +158,8 @@ function forwardedMutationSettings(options: ForwardedVerifyOptions) {
     mutationTimeoutRetestLimit: options.mutationTimeoutRetestLimit,
     mutationScope: options.mutationScope,
     mutationCacheSeed: options.mutationCacheSeed,
+    stacks: options.stacks,
+    stack: options.stack,
   };
 }
 
@@ -646,16 +657,28 @@ function settleLeaseCycle(
   saveLeases(cycle.directory, next);
 }
 
+/**
+ * The manifest a fixer reads: each violation with its owning package, its
+ * guidance and the tests that cover its file. Package and tests are asked of
+ * the pack whose stack owns the file, so a Swift file is never answered by
+ * the TypeScript import graph. `stacks` absent means the implicit one.
+ */
 function forTheFixer(
   violations: readonly Violation[],
   repoRoot: string,
+  configured: readonly StackConfig[] | undefined,
 ): Violation[] {
-  const attributed = withPackages(violations, loadWorkspaceResolver(repoRoot));
-  return withCoveringTests(
+  const stacks = configured ?? implicitStacks();
+  const packs = stackPacks();
+  const attributed = withPackages(
+    violations,
+    perPack(stacks, packs, (pack, stack) => pack.ownerOf({ repoRoot, stack })),
+  );
+  return withRelatedTests(
     withGuidance(attributed),
-    () => readTestCorpus(repoRoot),
-    () => createImportResolver(repoRoot),
-    repoSourceReader(repoRoot),
+    perPack(stacks, packs, (pack, stack) =>
+      pack.coveringTests({ repoRoot, stack }),
+    ),
   );
 }
 
@@ -791,6 +814,7 @@ async function stopGate(
   const combined = forTheFixer(
     [...violations, ...auditFindings.map((finding) => toViolation(finding))],
     repoRoot,
+    options.stacks,
   );
 
   writeViolations(directory, sessionId, combined);
@@ -1084,6 +1108,7 @@ async function commitGate(
   const combined = forTheFixer(
     [...guided, ...findings.map((finding) => toViolation(finding))],
     options.repoRoot,
+    options.stacks,
   );
   writeViolations(directory, manifestId, combined);
   // Open a scope-lock loop for the fixer this block is about to name. Without

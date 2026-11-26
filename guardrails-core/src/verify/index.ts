@@ -68,10 +68,19 @@ import {
   PROGRESS_REPORTER,
   progressPluginBeside,
 } from '../lock-holder.js';
+import type { PackAnalyzer, StackConfig, StackPack } from '../packs/pack.js';
+import {
+  implicitStack,
+  implicitStacks,
+  packOf,
+  perPack,
+  stackOf,
+} from '../packs/stacks.js';
+import { npmInstallHint, typescriptPack } from '../packs/typescript.js';
 import { repoSourceReader } from '../repo-source.js';
 import { sanctionIntegrity, toIntegrityViolations } from '../sanctions.js';
 import type { Violation } from '../violation.js';
-import { loadWorkspaceResolver, withPackages } from '../workspaces.js';
+import { withPackages } from '../workspaces.js';
 import {
   type AnalyzerMode,
   RUNG_ORDER,
@@ -88,9 +97,11 @@ import {
 } from './fallow-adapter.js';
 import {
   isConfigFile,
-  isInsideNestedWorktree,
   isTestFile,
   isTypeScriptFile,
+} from '../packs/typescript-files.js';
+import {
+  isInsideNestedWorktree,
   mergeChangedFiles,
   nestedWorktreePaths,
   parseFileList,
@@ -277,6 +288,24 @@ export interface VerifyOptions {
   Told what the stryker run amounted to, once it has run or been put off.
   */
   onMutationRun?: ((record: MutationRunRecord) => void) | undefined;
+  /**
+   * The repository's stacks (`RepoConfig.stacks`). Absent means the
+   * repository configured none: one TypeScript stack at the root, which is
+   * the behaviour from before stacks existed. Present, even holding that same
+   * single stack, also stamps each violation with the stack it came from.
+   */
+  stacks?: readonly StackConfig[] | undefined;
+  /**
+   * The packs this run knows. Defaults to `stackPacks()`; injected in tests
+   * so a second stack can be exercised without its tools.
+   */
+  packs?: readonly StackPack<Analyzer>[] | undefined;
+  /**
+   * `--stack=<id>`: run only the stacks of this pack, so a Linux job and a
+   * macOS job each run their own tools and neither reports the other's
+   * missing. The sanction-integrity check runs either way.
+   */
+  stack?: string | undefined;
 }
 
 export interface VerifyResult {
@@ -526,7 +555,24 @@ function didGitCallFail(result: ExecResult): boolean {
   return result.signal !== undefined || result.code !== 0;
 }
 
-async function changedTypeScriptFiles(
+/**
+ * The change set of a run git could not answer for: no files, and what is
+ * said about why. Nothing is said when git could not be started at all,
+ * because `runVerify` reports that itself.
+ */
+function noFiles(violations: Violation[] = []): {
+  files: string[];
+  violations: Violation[];
+} {
+  return { files: [], violations };
+}
+
+/**
+ * Every file the rung's change set holds, whatever its language. Each stack
+ * takes its own share in `runVerify`: the files it owns that its pack calls
+ * source or config.
+ */
+async function changedFiles(
   options: VerifyOptions,
 ): Promise<{ files: string[]; violations: Violation[] }> {
   const { exec, repoRoot, baseBranch } = options;
@@ -541,27 +587,19 @@ async function changedTypeScriptFiles(
       { cwd: repoRoot },
     );
     if (staged.spawnFailed === true) {
-      return { files: [], violations: [] };
+      return noFiles();
     }
     if (didGitCallFail(staged)) {
-      return {
-        files: [],
-        violations: [analyzerFailedViolation('git', staged)],
-      };
+      return noFiles([analyzerFailedViolation('git', staged)]);
     }
-    return {
-      files: parseFileList(staged.stdout).filter((file) =>
-        isTypeScriptFile(file),
-      ),
-      violations: [],
-    };
+    return { files: parseFileList(staged.stdout), violations: [] };
   }
   const base = await resolveDiffBase(exec, repoRoot, baseBranch);
   if (base.spawnFailed === true) {
     // A spawn failure is git being absent entirely; runVerify reports that
     // separately via its own tracker, so stay silent here rather than blaming
     // the base branch for it.
-    return { files: [], violations: [] };
+    return noFiles();
   }
 
   let tracked: ExecResult;
@@ -572,22 +610,16 @@ async function changedTypeScriptFiles(
       { cwd: repoRoot },
     );
     if (head.spawnFailed === true) {
-      return { files: [], violations: [] };
+      return noFiles();
     }
     // A killed `rev-parse` reports exit 0 (see `ExecResult.signal`), which
     // would otherwise be read as "HEAD exists" and blamed on the consumer's
     // `baseBranch` — the wrong-blame failure again. git did not answer.
     if (head.signal !== undefined) {
-      return {
-        files: [],
-        violations: [analyzerFailedViolation('git', head)],
-      };
+      return noFiles([analyzerFailedViolation('git', head)]);
     }
     if (head.code === 0) {
-      return {
-        files: [],
-        violations: [unresolvableBaseViolation(baseBranch)],
-      };
+      return noFiles([unresolvableBaseViolation(baseBranch)]);
     }
     // An unborn repository has no base or HEAD yet. Its truthful changed set
     // is the whole index plus every untracked file; treating the absent base as
@@ -611,15 +643,12 @@ async function changedTypeScriptFiles(
     didGitCallFail(result),
   );
   if (failedGitCall !== undefined) {
-    return {
-      files: [],
-      violations: [analyzerFailedViolation('git', failedGitCall)],
-    };
+    return noFiles([analyzerFailedViolation('git', failedGitCall)]);
   }
-  const files = mergeChangedFiles(tracked.stdout, untracked.stdout).filter(
-    (file) => isTypeScriptFile(file),
-  );
-  return { files, violations: [] };
+  return {
+    files: mergeChangedFiles(tracked.stdout, untracked.stdout),
+    violations: [],
+  };
 }
 
 /**
@@ -2408,7 +2437,11 @@ type AnalyzerOptions = VerifyOptions & {
   onMutationRun: (record: MutationRunRecord) => void;
 };
 
-interface Analyzer {
+/**
+ * An analyzer as the orchestrator runs it: what selection reads
+ * (`PackAnalyzer`), plus the runner. Exported so a test can build a pack.
+ */
+export interface Analyzer extends PackAnalyzer {
   tool: string;
   /** npm package providing the binary — named in the missing-analyzer message
    *  and kept in sync with peerDependencies by a test. */
@@ -2510,6 +2543,22 @@ const ANALYZERS: Analyzer[] = [
   },
 ];
 
+/**
+ * The TypeScript pack, built from the table above. The table and its runners
+ * stay in this file (see `packs/typescript.ts` for why); everything else
+ * TypeScript-specific is behind the pack.
+ */
+const TYPESCRIPT_PACK: StackPack<Analyzer> = typescriptPack(ANALYZERS);
+
+/**
+ * Every pack this version of guardrails-core has. A configured stack whose
+ * pack is not here runs nothing and says so
+ * (`guardrails/stack-unsupported`).
+ */
+export function stackPacks(): readonly StackPack<Analyzer>[] {
+  return [TYPESCRIPT_PACK];
+}
+
 /** The npm packages a consumer repo must provide. Exported so a test can hold it
  *  against guardrails-core's peerDependencies — an analyzer added without its
  *  declaration would surface as a runtime error instead of an install warning. */
@@ -2538,37 +2587,43 @@ export const ANALYZER_PROVIDERS: readonly string[] = ANALYZERS.map(
 export const NON_PACKAGE_PROVIDERS: ReadonlySet<string> = new Set(['npm']);
 
 /**
- * Analyzer tool name -> the npm package that provides it, for every analyzer
- * a consumer can actually install. Read by `silentlySkippedAnalyzers` below,
- * which has to name both halves: the tool the consumer configures and the
- * package they type into `npm install`. Module-private now that the warning it
- * feeds lives here rather than in the scaffolder.
- *
- * A function rather than a module-level constant, deliberately. Top-level code
- * runs once when the module is imported, which is before any mutant is
- * switched on -- so a mutation in the expression below would be unkillable by
- * construction, and would have read as a survivor no test could ever address.
- * Computing it per call puts the expression back inside the tests' reach. The
- * table is six entries; there is nothing here worth memoising.
- */
-function installableAnalyzerProviders(): Readonly<Record<string, string>> {
-  return Object.fromEntries(
-    ANALYZERS.filter(
-      (analyzer) => !NON_PACKAGE_PROVIDERS.has(analyzer.provider),
-    ).map((analyzer) => [analyzer.tool, analyzer.provider]),
-  );
-}
-
-/**
- * Analyzers that are enabled but whose provider package the repo does not
- * declare — so `decideAnalyzer('auto', false)` runs-and-never-reports them and
- * the run prints `clean (0 violations)` having checked nothing.
+ * A pack's analyzers that are enabled but whose provider the repository did
+ * not declare — so `decideAnalyzer('auto', false)` runs-and-never-reports
+ * them and the run prints `clean (0 violations)` having checked nothing.
  *
  * `required` is excluded because it is precisely the fix: a missing binary is
  * then a blocking `guardrails/analyzer-missing`, which can never read as clean.
  * `off` is excluded because the consumer said so. Only analyzers with an
  * installable provider are considered — `npm-peers` shells out to `npm`, which
  * no repo declares and nobody should be told to install.
+ *
+ * Computed per call rather than held in a module-level table, deliberately.
+ * Top-level code runs once when the module is imported, which is before any
+ * mutant is switched on -- so a mutation in the expression below would be
+ * unkillable by construction, and would have read as a survivor no test could
+ * ever address. A pack's table is a handful of entries; there is nothing here
+ * worth memoising.
+ */
+function silentlySkippedIn(
+  pack: StackPack<Analyzer>,
+  stack: StackConfig,
+  analyzers: Readonly<Record<string, AnalyzerMode>>,
+  declared: ReadonlySet<string>,
+): (readonly [string, string])[] {
+  return pack.analyzers
+    .filter((analyzer) => !NON_PACKAGE_PROVIDERS.has(analyzer.provider))
+    .map((analyzer) => [analyzer.tool, analyzer.provider] as const)
+    .filter(([tool, provider]) => {
+      const isDeclared = pack.isProviderDeclared(stack, provider, declared);
+      return (
+        !isDeclared && analyzerMode(analyzers, tool, isDeclared) === 'auto'
+      );
+    });
+}
+
+/**
+ * The TypeScript pack's silently skipped analyzers, for a repository's one
+ * implicit stack: the question `init` asks before any stack is configured.
  *
  * Lives here rather than in the scaffolder because the warning belongs at every
  * rung that makes a claim about the repo, not only at the one that wrote the
@@ -2579,13 +2634,11 @@ export function silentlySkippedAnalyzers(
   analyzers: Readonly<Record<string, AnalyzerMode>>,
   declared: ReadonlySet<string>,
 ): readonly (readonly [string, string])[] {
-  return Object.entries(installableAnalyzerProviders()).filter(
-    ([tool, provider]) => {
-      const isDeclared = declared.has(provider);
-      return (
-        !isDeclared && analyzerMode(analyzers, tool, isDeclared) === 'auto'
-      );
-    },
+  return silentlySkippedIn(
+    TYPESCRIPT_PACK,
+    implicitStack(),
+    analyzers,
+    declared,
   );
 }
 
@@ -2637,15 +2690,21 @@ export const ANALYZER_TOOLS: readonly string[] = ANALYZERS.map(
 
 function unknownAnalyzerViolations(
   analyzers: Readonly<Record<string, AnalyzerMode>>,
+  packs: readonly StackPack<Analyzer>[],
 ): Violation[] {
+  // Every pack's names, whether or not a stack of that pack is configured:
+  // analyzer names are unique across packs, so one block serves them all.
+  const known = packs.flatMap((pack) =>
+    pack.analyzers.map((analyzer) => analyzer.tool),
+  );
   return Object.keys(analyzers)
-    .filter((key) => !ANALYZER_TOOLS.includes(key))
+    .filter((key) => !known.includes(key))
     .map((key) => ({
       ruleId: 'guardrails/analyzer-unknown',
       file: 'guardrails.config.json',
       message:
         `"${key}" in the "analyzers" block is not a known analyzer, so the ` +
-        `entry has no effect. Known analyzers: ${ANALYZER_TOOLS.join(', ')}. ` +
+        `entry has no effect. Known analyzers: ${known.join(', ')}. ` +
         `Check for a typo: whatever you meant this entry to do — turn an ` +
         `analyzer off, or require it — did not happen.`,
       severity: 'warn' as const,
@@ -2673,13 +2732,16 @@ function trackSpawnFailures(exec: Exec): { exec: Exec; failures: string[] } {
   return { exec: tracked, failures };
 }
 
-function missingToolViolation(tool: string, provider: string): Violation {
+/**
+`installHint` is the command that installs the tool, as its pack words it.
+*/
+function missingToolViolation(tool: string, installHint: string): Violation {
   return {
     ruleId: 'guardrails/analyzer-missing',
     file: 'package.json',
     message:
       `${tool} could not be started — it is not installed in this repo, so its ` +
-      `checks did NOT run. Install it: \`npm install --save-dev ${provider}\`. ` +
+      `checks did NOT run. Install it: ${installHint}. ` +
       `A missing analyzer is a failed gate, not a clean one.`,
     severity: 'error',
     fixable: false,
@@ -2724,22 +2786,46 @@ interface SelectedAnalyzer {
 }
 
 /**
- * Which analyzers run this pass, and whether each one's absence is an error.
- * Pure: the opt-in policy, the cadence rung, and the changed-files trigger are
- * all decisions, so they are made here and `runVerify` is left with the I/O.
+The inputs `selectAnalyzers` decides from, named for callers outside it.
+*/
+export interface AnalyzerSelection {
+  analyzers: Readonly<Record<string, AnalyzerMode>>;
+  analyzerRungs: Readonly<Record<string, Rung>>;
+  declared: ReadonlySet<string>;
+  profile: Rung;
+  hasChangedFiles: boolean;
+}
+
+/**
+One stack's selection: whose table, and whether its whole-project half runs.
+*/
+interface StackSelection extends AnalyzerSelection {
+  pack: StackPack<Analyzer>;
+  stack: StackConfig;
+  /**
+   * Whether the stack's whole-project analyzers run on this pass: at ci
+   * always; below it, when the stack's `wholeProjectTrigger` is `always` or
+   * the stack owns a changed file.
+   */
+  runsWholeProject: boolean;
+}
+
+/**
+ * Which of a stack's analyzers run this pass, and whether each one's absence
+ * is an error. Pure: the opt-in policy, the cadence rung, and the two
+ * triggers are all decisions, so they are made here and `runVerify` is left
+ * with the I/O.
  */
-function selectAnalyzers(
-  analyzers: Readonly<Record<string, AnalyzerMode>>,
-  analyzerRungs: Readonly<Record<string, Rung>>,
-  declared: ReadonlySet<string>,
-  profile: Rung,
-  hasChangedFiles: boolean,
-): SelectedAnalyzer[] {
+function selectAnalyzers(selection: StackSelection): SelectedAnalyzer[] {
   const selected: SelectedAnalyzer[] = [];
-  for (const analyzer of ANALYZERS) {
-    const isDeclared = declared.has(analyzer.provider);
+  for (const analyzer of selection.pack.analyzers) {
+    const isDeclared = selection.pack.isProviderDeclared(
+      selection.stack,
+      analyzer.provider,
+      selection.declared,
+    );
     const decision = decideAnalyzer(
-      analyzerMode(analyzers, analyzer.tool, isDeclared),
+      analyzerMode(selection.analyzers, analyzer.tool, isDeclared),
       isDeclared,
     );
     if (!decision.run) {
@@ -2747,11 +2833,15 @@ function selectAnalyzers(
     }
     // The consumer's override REPLACES the table's floor when present — see
     // `VerifyOptions.analyzerRungs`.
-    const rung = analyzerRungs[analyzer.tool] ?? analyzer.minRung;
-    if (RUNG_ORDER[profile] < RUNG_ORDER[rung]) {
+    const rung = selection.analyzerRungs[analyzer.tool] ?? analyzer.minRung;
+    if (RUNG_ORDER[selection.profile] < RUNG_ORDER[rung]) {
       continue;
     }
-    if (!hasChangedFiles && analyzer.scope === 'changed-files') {
+    const isTriggered =
+      analyzer.scope === 'changed-files'
+        ? selection.hasChangedFiles
+        : selection.runsWholeProject;
+    if (!isTriggered) {
       continue;
     }
     // `analyzer.provider` is already `string | undefined`, so a provider-less
@@ -2766,32 +2856,175 @@ function selectAnalyzers(
 }
 
 /**
-The inputs `selectAnalyzers` decides from, named for callers outside it.
-*/
-export interface AnalyzerSelection {
-  analyzers: Readonly<Record<string, AnalyzerMode>>;
-  analyzerRungs: Readonly<Record<string, Rung>>;
-  declared: ReadonlySet<string>;
-  profile: Rung;
-  hasChangedFiles: boolean;
-}
-
-/**
- * Would `runVerify` run `tool` on this pass? A view over `selectAnalyzers`
- * rather than a second copy of its rules, so a caller deciding something ahead
- * of the run (the pre-push lock probe) cannot disagree with the run itself.
+ * Would `runVerify` run `tool` on this pass, in a repository with no stacks
+ * configured? A view over `selectAnalyzers` rather than a second copy of its
+ * rules, so a caller deciding something ahead of the run (the pre-push lock
+ * probe) cannot disagree with the run itself.
  */
 export function isAnalyzerSelected(
   tool: string,
   selection: AnalyzerSelection,
 ): boolean {
-  return selectAnalyzers(
-    selection.analyzers,
-    selection.analyzerRungs,
-    selection.declared,
-    selection.profile,
-    selection.hasChangedFiles,
-  ).some(({ analyzer }) => analyzer.tool === tool);
+  return selectAnalyzers({
+    ...selection,
+    pack: TYPESCRIPT_PACK,
+    stack: implicitStack(),
+    runsWholeProject: true,
+  }).some(({ analyzer }) => analyzer.tool === tool);
+}
+
+/**
+ * A configured stack whose pack this version does not have. `warn`, on the
+ * footing of `guardrails/analyzer-unknown`: the entry has no effect and the
+ * run says so. (The diff auditor is keyed by file extension, not by stack, so
+ * the stack's files are still audited.)
+ */
+function unsupportedStackViolation(stack: StackConfig): Violation {
+  return {
+    ruleId: 'guardrails/stack-unsupported',
+    file: CONFIG_FILE_NAME,
+    message:
+      `the "${stack.pack}" stack at "${stack.root}" is configured, but this ` +
+      `version of guardrails-core has no ${stack.pack} pack, so none of its ` +
+      `analyzers ran. The diff auditor still reads its files. Upgrade ` +
+      `guardrails-core to a version that ships the pack, or remove the entry ` +
+      `until then.`,
+    severity: 'warn',
+    fixable: false,
+    tool: 'guardrails',
+  };
+}
+
+/**
+ * `--stack=<id>` named a pack no configured stack uses. An error, because the
+ * alternative is a job that selects nothing and reads clean for ever: the
+ * macOS job of a repository whose Swift stack was deleted from the config.
+ */
+function unmatchedStackViolation(selected: string): Violation {
+  return {
+    ruleId: 'guardrails/stack-unmatched',
+    file: CONFIG_FILE_NAME,
+    message:
+      `--stack=${selected} selects no stack: no entry of "stacks" in ` +
+      `guardrails.config.json has "pack": "${selected}", so no analyzer ran. ` +
+      `Add the stack, or drop the flag. A run that checked nothing is a ` +
+      `failed gate, not a clean one.`,
+    severity: 'error',
+    fixable: false,
+    tool: 'guardrails',
+  };
+}
+
+/**
+A stack this run selected, with the pack that gates it.
+*/
+interface RunnableStack {
+  stack: StackConfig;
+  pack: StackPack<Analyzer>;
+}
+
+/**
+ * Which stacks this run gates: those whose pack `only` names (all of them
+ * when it names none), each with its pack. A stack whose pack this version
+ * does not have is reported, and so is an `only` that matches no stack.
+ */
+function selectStacks(
+  stacks: readonly StackConfig[],
+  packs: readonly StackPack<Analyzer>[],
+  only: string | undefined,
+): { runnable: RunnableStack[]; violations: Violation[] } {
+  const selected =
+    only === undefined ? stacks : stacks.filter((stack) => stack.pack === only);
+  const runnable: RunnableStack[] = [];
+  const violations: Violation[] = [];
+  for (const stack of selected) {
+    const pack = packOf(packs, stack);
+    if (pack === undefined) {
+      violations.push(unsupportedStackViolation(stack));
+    } else {
+      runnable.push({ stack, pack });
+    }
+  }
+  if (only !== undefined && selected.length === 0) {
+    violations.push(unmatchedStackViolation(only));
+  }
+  return { runnable, violations };
+}
+
+/**
+What one stack's analyzers are run with: the same for every stack of a run.
+*/
+interface StackPass {
+  options: AnalyzerOptions;
+  resolveBin: (tool: string) => string;
+  /**
+  Commands that could not be started so far, appended to as analyzers run.
+  */
+  failures: readonly string[];
+  /**
+  Every changed file of the rung, whatever its stack.
+  */
+  changed: readonly string[];
+  stacks: readonly StackConfig[];
+  analyzers: Readonly<Record<string, AnalyzerMode>>;
+  declared: ReadonlySet<string>;
+  profile: Rung;
+}
+
+/**
+ * Run one stack's selected analyzers, in table order, over the stack's own
+ * share of the change set: the files it owns that its pack calls source or
+ * config. An analyzer that could not be started is reported in its pack's
+ * words when the repository asked for it.
+ */
+async function runStack(
+  { stack, pack }: RunnableStack,
+  pass: StackPass,
+): Promise<Violation[]> {
+  const owned = pass.changed.filter(
+    (file) => stackOf(file, pass.stacks) === stack,
+  );
+  const files = owned.filter(
+    (file) => pack.isSourceFile(file) || pack.isConfigFile(file),
+  );
+  const selected = selectAnalyzers({
+    pack,
+    stack,
+    analyzers: pass.analyzers,
+    analyzerRungs: pass.options.analyzerRungs ?? {},
+    declared: pass.declared,
+    profile: pass.profile,
+    hasChangedFiles: files.length > 0,
+    runsWholeProject:
+      pass.profile === 'ci' ||
+      stack.wholeProjectTrigger === 'always' ||
+      owned.length > 0,
+  });
+  const violations: Violation[] = [];
+  for (const { analyzer, missingProvider } of selected) {
+    const before = pass.failures.length;
+    violations.push(
+      ...(await analyzer.run(pass.options, pass.resolveBin, files)),
+    );
+    if (missingProvider !== undefined && pass.failures.length > before) {
+      violations.push(
+        missingToolViolation(analyzer.tool, pack.installHint(missingProvider)),
+      );
+    }
+  }
+  return violations;
+}
+
+/**
+ * `violations`, each marked with the pack it came from. Applied only for a
+ * repository that configured `stacks`: one that did not gets each violation
+ * exactly as the analyzer returned it, as it always has.
+ */
+function stampedWith(
+  violations: readonly Violation[],
+  stack: StackConfig,
+): Violation[] {
+  return violations.map((violation) => ({ ...violation, stack: stack.pack }));
 }
 
 export async function runVerify(options: VerifyOptions): Promise<VerifyResult> {
@@ -2805,8 +3038,8 @@ export async function runVerify(options: VerifyOptions): Promise<VerifyResult> {
       options.onMutationRun?.(record);
     },
   };
-  const { files, violations: gitViolations } =
-    await changedTypeScriptFiles(tracked);
+  const { files: changed, violations: gitViolations } =
+    await changedFiles(tracked);
   const resolveBin = options.resolveBin ?? ((tool) => tool);
   const profile = options.profile ?? 'stop';
 
@@ -2814,7 +3047,7 @@ export async function runVerify(options: VerifyOptions): Promise<VerifyResult> {
   // git failing to start is catastrophic and was equally silent: no changed
   // files means every diff-scoped analyzer is skipped, and the gate passes.
   if (failures.length > 0) {
-    violations.push(missingToolViolation('git', 'git'));
+    violations.push(missingToolViolation('git', npmInstallHint('git')));
   }
   const analyzers = options.analyzers ?? {};
   // KNOWN LIMIT: only the repo ROOT's package.json is read. A monorepo that
@@ -2831,7 +3064,9 @@ export async function runVerify(options: VerifyOptions): Promise<VerifyResult> {
     declaredProviders(
       readJsonFile(path.join(options.repoRoot, 'package.json')).parsed,
     );
-  violations.push(...unknownAnalyzerViolations(analyzers));
+  const packs = options.packs ?? stackPacks();
+  const stacks = options.stacks ?? implicitStacks();
+  violations.push(...unknownAnalyzerViolations(analyzers, packs));
   // The sanction-integrity check (#103). File reads only -- no git, no base
   // revision, no analyzer spawn -- so it runs on EVERY rung that reaches this
   // function (Stop, commit, push, ci and `npm run verify` alike) rather than
@@ -2842,19 +3077,25 @@ export async function runVerify(options: VerifyOptions): Promise<VerifyResult> {
   const integrity = sanctionIntegrity(readSource(CONFIG_FILE_NAME), readSource);
   violations.push(...toIntegrityViolations(integrity, CONFIG_FILE_NAME));
 
-  const selected = selectAnalyzers(
+  const selection = selectStacks(stacks, packs, options.stack);
+  violations.push(...selection.violations);
+  const pass: StackPass = {
+    options: tracked,
+    resolveBin,
+    failures,
+    changed,
+    stacks,
     analyzers,
-    options.analyzerRungs ?? {},
     declared,
     profile,
-    files.length > 0,
-  );
-  for (const { analyzer, missingProvider } of selected) {
-    const before = failures.length;
-    violations.push(...(await analyzer.run(tracked, resolveBin, files)));
-    if (missingProvider !== undefined && failures.length > before) {
-      violations.push(missingToolViolation(analyzer.tool, missingProvider));
-    }
+  };
+  for (const entry of selection.runnable) {
+    const found = await runStack(entry, pass);
+    violations.push(
+      ...(options.stacks === undefined
+        ? found
+        : stampedWith(found, entry.stack)),
+    );
   }
   // A nested worktree is a whole second checkout of this repository, and every
   // analyzer that walks the tree reports it. Filtering HERE rather than inside
@@ -2875,11 +3116,17 @@ export async function runVerify(options: VerifyOptions): Promise<VerifyResult> {
   );
 
   // Attribution is per-file, so it happens here rather than inside any adapter.
-  // Built once per run: the resolver reads the filesystem at construction and is
-  // pure thereafter.
+  // Each file is asked of the pack whose stack owns it. A pack's resolver is
+  // built once per run, the first time one of its files is asked about: it
+  // reads the filesystem at construction and is pure thereafter.
+  const ownerOf = perPack(stacks, packs, (pack, stack) =>
+    pack.ownerOf({ repoRoot: options.repoRoot, stack }),
+  );
   return {
-    violations: withPackages(scoped, loadWorkspaceResolver(options.repoRoot)),
-    skippedAnalyzers: silentlySkippedAnalyzers(analyzers, declared),
+    violations: withPackages(scoped, ownerOf),
+    skippedAnalyzers: selection.runnable.flatMap(({ stack, pack }) =>
+      silentlySkippedIn(pack, stack, analyzers, declared),
+    ),
     ...(mutationRun !== undefined && { mutationRun }),
   };
 }

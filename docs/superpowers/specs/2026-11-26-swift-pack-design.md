@@ -180,21 +180,23 @@ is not this lane's.
 // guardrails-core/src/packs/pack.ts
 export type StackPackId = 'typescript' | 'swift';
 
-export interface StackPack {
+export interface StackPack<Analyzer extends PackAnalyzer = PackAnalyzer> {
   id: StackPackId;
   isSourceFile(file: string): boolean;
   isTestFile(file: string): boolean;
   isConfigFile(file: string): boolean;
   analyzers: readonly Analyzer[];
-  isProviderDeclared(context: StackContext, provider: string): boolean;
+  isProviderDeclared(
+    stack: StackConfig,
+    provider: string,
+    manifest: ReadonlySet<string>,
+  ): boolean;
   installHint(provider: string): string;
-  autofix(context: StackContext, files: string[]): Promise<void>;
-  ownerOf(context: StackContext, file: string): string | undefined;
-  coveringTests(context: StackContext, file: string): string[] | undefined;
-  lexer: LineLexer;
-  signatures: readonly Signature[];
-  detect(probe: DetectProbe, root: string): boolean;
-  seeds(root: string): SeedFile[];
+  autofix(run: StackRun, files: string[]): Promise<void>;
+  ownerOf(context: StackContext): (file: string) => string | undefined;
+  coveringTests(
+    context: StackContext,
+  ): (file: string) => readonly string[] | undefined;
 }
 ```
 
@@ -207,10 +209,12 @@ Everything else stays generic: the `Violation` contract, the rungs,
 
 Each is forced by something in the code as it stands at 0.19.0.
 
-1. **`isProviderDeclared` takes the context, not the bare stack config.** For
-   TypeScript the answer comes from the repository's `package.json`, which
-   `runVerify` already reads once (and tests inject). The context carries that
-   declared set; the Swift pack will read `context.stack.tools` instead.
+1. **The pack is generic in its analyzer type.** `packs/pack.ts` declares
+   only what analyzer _selection_ reads (`PackAnalyzer`: tool, provider,
+   rung, scope); the orchestrator's `Analyzer` extends it with the runner.
+   That keeps `pack.ts` a leaf that does not import the orchestrator, which
+   imports the packs (the module graph has a no-circular rule, and type
+   imports count), without moving `VerifyOptions` out of `verify/index.ts`.
 2. **The TypeScript pack is built by a function that is handed its analyzer
    table**: `typescriptPack(analyzers)`. The plan has the pack own its
    analyzers. The runners (`runEslint` … `runStryker`) are about 2,000 lines
@@ -218,20 +222,36 @@ Each is forced by something in the code as it stands at 0.19.0.
    push gate mutates changed lines, so a no-behaviour move would cost a
    whole-file mutation run and risk a verdict difference for nothing. The
    table and its runners stay where they are; the orchestrator builds the pack
-   from them. A later change can move the runners in its own pull request.
-3. **`Analyzer`, `VerifyOptions` and `VerifyResult` move to a types-only
-   module** (`verify/analyzer.ts`) so that `packs/pack.ts` can name them
-   without importing the orchestrator, which imports the packs (the module
-   graph has a no-circular rule, and type imports count). `verify/index.ts`
-   re-exports the names, so no test import changes for them.
-4. **`ownerOf` and `coveringTests` wrap what exists** (`workspaces.ts`,
-   `covering-tests.ts`) rather than moving it, for the reason in 2.
-5. **`lexer` and `signatures` are added by GR-04**, where they are first used;
-   `detect` and `seeds` describe what `scaffold/` does today and are wired to
-   it without changing `init`'s behaviour.
-
-The registry is `stackPacks()` in `verify/index.ts`. In this branch it holds
-the TypeScript pack only; `packs/swift.ts` arrives with the adapters.
+   from them (`stackPacks()`). A later change can move the runners in its own
+   pull request.
+3. **`isProviderDeclared` also takes the `package.json` names.** For
+   TypeScript the answer is the repository's manifest, which `runVerify`
+   already reads once (and tests inject); the Swift pack will read
+   `stack.tools` instead and ignore the manifest.
+4. **`ownerOf` and `coveringTests` are bound to a stack once per run and
+   return a per-file function.** Both read from disk (workspace globs; up to
+   800 test files and the TypeScript resolver), and today's code loads each
+   once per run, lazily. A per-file method that took the context each time
+   would reload on every call or hide a cache. `perStack` in
+   `packs/stacks.ts` routes each file to the pack of the stack that owns it
+   and binds a stack the first time one of its files is asked about.
+   `coveringTests` wraps `covering-tests.ts` (now split into a per-file
+   `coveringTestsFinder` under the unchanged `withCoveringTests`), and
+   `ownerOf` wraps `workspaces.ts`.
+5. **`lexer` and `signatures` are not pack members.** GR-04's own text puts
+   both in `audit.ts`, keyed by file extension, and that is right: the
+   auditor is deliberately one cross-language scan, and it reads a file that
+   belongs to no stack, which a per-pack lookup could not.
+6. **`detect` and `seeds` are deferred to the package that needs them**
+   (GR-11, Swift `init` detection). An interface member with one
+   implementation and no caller cannot be tested, only declared.
+7. **The file predicates live in `packs/typescript-files.ts`**, apart from
+   the pack object: `covering-tests.ts` asks `isTestFile` and the pack wraps
+   `covering-tests.ts`, so one file would be a cycle.
+8. **`silentlySkippedAnalyzers` stays TypeScript's question for `init`**
+   (its signature and wording are unchanged); `runVerify` answers the same
+   question per selected stack through the pack, so `--stack=swift` does not
+   list TypeScript's undeclared tools.
 
 ### The TypeScript-specific surface (re-surveyed at `53b24da`)
 
@@ -247,7 +267,7 @@ the TypeScript pack only; `packs/swift.ts` arrives with the adapters.
 | `covering-tests.ts`                                                                                                                                                            | related tests for a manifest        | `pack.coveringTests`                                                                                  |
 | `audit.ts` `lexLine`, `SIGNATURES`, `AUDITABLE_EXTENSIONS`                                                                                                                     | JS lexer, signature table           | lexer table and `languages` (GR-04)                                                                   |
 | `scope.ts` `DENIED_FILE_NAMES`                                                                                                                                                 | fixer denylist                      | gains the Swift tool configs (GR-04)                                                                  |
-| `scaffold/detect.ts`, `seeds.ts`, `templates.ts`                                                                                                                               | `init` detection and seeds          | unchanged; `detect`/`seeds` wrap them                                                                 |
+| `scaffold/detect.ts`, `seeds.ts`, `templates.ts`                                                                                                                               | `init` detection and seeds          | unchanged; pack members deferred to GR-11                                                             |
 | `verify/prepare-cache.ts`, `importing-tests.ts`, `enclosing-spans.ts`, `import-graph.ts`, `typescript-loader.ts`, `verdict-dependencies.ts`, `mutate-ranges.ts` (planner half) | Stryker's cache and scope planner   | stay; they are internals of the TypeScript pack's `stryker` analyzer, reached only through its runner |
 | `stryker-adapter.ts`, `mutation-lock.ts`, `mutate-ranges.ts` (range half)                                                                                                      | report schema, lock, changed ranges | already generic; reused by the Swift runner later                                                     |
 
@@ -278,18 +298,21 @@ the TypeScript pack only; `packs/swift.ts` arrives with the adapters.
   entry, so a broken block can never turn the TypeScript gates off.
 - Parsing follows `config.ts`'s house style: key by key, anything of the wrong
   type keeps its default, and a dropped entry is named in
-  `RepoConfig.stackWarnings` (the shape `ship.warnings` uses), which the CLI
-  prints. An entry is dropped when it is not an object, when `pack` is not a
-  known id, or when `root` is not a non-blank string.
+  `RepoConfig.stacks.warnings` (the shape `ship.warnings` uses), which
+  `verify` and the gates print. An entry is dropped when it is not an object,
+  when `pack` is not a known id, or when `root` is not a path inside the
+  repository (blank, absolute, or climbing out with `..`).
 - `root` is normalised to a repository-relative POSIX path with no leading
   `./` or trailing `/`; `"."` is the repository root.
 - `wholeProjectTrigger` defaults per pack: `always` for TypeScript,
   `stack-changes` for Swift.
-- The Swift-only keys (`packages`, `app`, `developerDir`, `tools`,
-  `allowlist`, `allowPluginsIn`, `importRules`, `mutate`, `mutateExclude`,
-  `debugTargets`) are parsed into typed fields with empty defaults. Only
-  `debugTargets` is read in this branch (by the auditor, GR-04); the rest are
-  parsed so the adapters lane does not change the config contract again.
+- Of the Swift-only keys, **only `debugTargets` is parsed in this branch**
+  (the auditor reads it, GR-04). The others (`packages`, `app`,
+  `developerDir`, `tools`, `allowlist`, `allowPluginsIn`, `importRules`,
+  `mutate`, `mutateExclude`) are accepted and ignored. Each is parsed where
+  its analyzer arrives, beside the code that gives it meaning: validation
+  written before its consumer exists is a guess (what makes a tool pin or an
+  allowlist entry well-formed is the adapter's to say).
 
 ## GR-03 — multi-stack scoping
 
@@ -312,7 +335,11 @@ the TypeScript pack only; `packs/swift.ts` arrives with the adapters.
    are selected, so a Linux job and a macOS job each run their own tools and
    neither reports the other's missing. The sanction-integrity check and the
    auditor run in both. An id that is not a known pack is a usage error
-   (exit 2), not an empty pass.
+   (exit 2). An id no configured stack uses is an error-severity
+   `guardrails/stack-unmatched` violation, not an empty pass: the macOS job
+   of a repository whose Swift stack was deleted must not read clean for
+   ever. The commit and push rungs refuse the flag (exit 2) rather than gate
+   less than they were asked to.
 6. A configured stack whose pack has no implementation in the running version
    (`swift`, until the adapters release) yields one `warn`-severity
    `guardrails/stack-unsupported` violation against `guardrails.config.json`,
@@ -320,7 +347,11 @@ the TypeScript pack only; `packs/swift.ts` arrives with the adapters.
    and the run says so. The owner may prefer `error`; see `QUESTIONS.md`.
 7. Every violation an analyzer returns is stamped with `stack` (the pack id)
    **only when the config has a `stacks` key**, so the goldens, which have
-   none, do not change.
+   none, do not change. A TypeScript-only `stacks` block therefore reproduces
+   the goldens in everything but that stamp, which is what its parity test
+   asserts (and it counts the stamps, so a run that ignored the block cannot
+   pass as one that honoured it).
+8. `autofix` sends each edited file to the pack of the stack that owns it.
 
 Analyzer names stay globally unique across packs, so one `analyzers` block
 works and `analyzer-unknown` still catches typos.

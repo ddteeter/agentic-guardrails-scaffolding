@@ -32,6 +32,7 @@ import { expect, it } from 'vitest';
 import { describeUnlessMutating } from './drift/under-mutation.js';
 import {
   GOLDEN_DIRECTORY,
+  type ParityFixture,
   cleanEnvironment,
   fixtureNames,
   loadFixture,
@@ -76,8 +77,11 @@ function readGolden(name: string): Golden {
  * another wrote: the push rung remembers a passing tree, and a blocked gate
  * leaves a manifest behind.
  */
-async function runFixture(name: string): Promise<Golden> {
-  const fixture = loadFixture(name);
+async function runFixture(
+  name: string,
+  configure: (fixture: ParityFixture) => ParityFixture = (fixture) => fixture,
+): Promise<Golden> {
+  const fixture = configure(loadFixture(name));
   const outcomes: Golden = {};
   // In order, never at once: the four share one mutation lock.
   for (const argv of PARITY_COMMANDS) {
@@ -119,3 +123,75 @@ describeUnlessMutating(here)('verdict parity with the recorded goldens', () => {
     600_000,
   );
 });
+
+const CONFIG_FILE = 'guardrails.config.json';
+
+/**
+ * The fixture, with the stack every repository has implicitly written out in
+ * its config: one TypeScript stack at the root that always runs its
+ * whole-project analyzers.
+ */
+function withExplicitTypescriptStack(fixture: ParityFixture): ParityFixture {
+  const config = JSON.parse(fixture.base[CONFIG_FILE] ?? '{}') as Record<
+    string,
+    unknown
+  >;
+  return {
+    ...fixture,
+    base: {
+      ...fixture.base,
+      [CONFIG_FILE]: JSON.stringify({
+        ...config,
+        stacks: [
+          { pack: 'typescript', root: '.', wholeProjectTrigger: 'always' },
+        ],
+      }),
+    },
+  };
+}
+
+/**
+ * `outcomes` without the one thing a `stacks` key adds: each violation's
+ * `stack` stamp. Returns how many stamps it removed, so a run that silently
+ * ignored the key cannot pass as one that honoured it.
+ */
+function withoutStackStamps(outcomes: Golden): {
+  outcomes: Golden;
+  stamps: number;
+} {
+  let stamps = 0;
+  const unstamped = JSON.parse(
+    JSON.stringify(outcomes, (key, value: unknown) => {
+      if (key === 'stack' && value === 'typescript') {
+        stamps += 1;
+        return;
+      }
+      return value;
+    }),
+  ) as Golden;
+  return { outcomes: unstamped, stamps };
+}
+
+describeUnlessMutating(here)(
+  'a TypeScript-only stacks block reproduces the goldens',
+  () => {
+    it.concurrent.each(names)(
+      '%s: every rung answers as recorded, the stack stamp aside',
+      async (name) => {
+        const { outcomes } = withoutStackStamps(
+          await runFixture(name, withExplicitTypescriptStack),
+        );
+        expect(outcomes).toEqual(readGolden(name));
+      },
+      600_000,
+    );
+
+    it('stamps each analyzer violation, so the block was read and not ignored', async () => {
+      const { stamps } = withoutStackStamps(
+        await runFixture('eslint', withExplicitTypescriptStack),
+      );
+      // One violation in the manifest of each of the three gate rungs.
+      expect(stamps).toBe(3);
+    }, 600_000);
+  },
+);

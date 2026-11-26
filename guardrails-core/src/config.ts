@@ -13,6 +13,12 @@ import { auditKinds, type AuditKind } from './audit.js';
 import { DEFAULT_STOP_GRACE_SECONDS } from './exec.js';
 import type { GateConfig } from './gate-decision.js';
 import { makeIsLoose } from './loose-rules.js';
+import type { StackConfig, WholeProjectTrigger } from './packs/pack.js';
+import {
+  STACK_PACK_IDS,
+  defaultTrigger,
+  isStackPackId,
+} from './packs/stacks.js';
 import {
   type AnalyzerMode,
   type Rung,
@@ -163,6 +169,25 @@ interface ShipConfig {
    * What was dropped from `preflight` because it was not a command, one line
    * each, for ship and `guardrails preflight` to report. A malformed entry is
    * skipped rather than failing the push: the gate after it still runs.
+   */
+  warnings: string[];
+}
+
+/**
+See `RepoConfig.stacks`.
+*/
+interface StacksConfig {
+  /**
+   * The `stacks` block, entry by entry, or `undefined` when the repository
+   * configured none it can use. `undefined` is not an empty list: it means
+   * the one implicit TypeScript stack at the root, which is the behaviour
+   * from before stacks existed, so a broken block can never turn the
+   * TypeScript gates off.
+   */
+  configured: StackConfig[] | undefined;
+  /**
+   * What was dropped from `stacks` and why, one line each, for `verify` and
+   * the gates to report.
    */
   warnings: string[];
 }
@@ -355,6 +380,11 @@ export interface RepoConfig {
    * lock. See `ShipConfig`.
    */
   ship: ShipConfig;
+  /**
+   * The repository's stacks: which directory is gated by which language pack
+   * (`packs/pack.ts`). See `StacksConfig`.
+   */
+  stacks: StacksConfig;
   /** Copilot model id for the fast/thorough fixer .agent.md (the tier ladder on
    * Copilot). Unset → omit `model` so the agent loads on Copilot's default. */
   copilotFastModel?: string;
@@ -394,6 +424,7 @@ export function defaultConfig(): RepoConfig {
     denyForegroundWaits: true,
     foregroundSleepLimitSeconds: 120,
     ship: { preflight: [], warnings: [] },
+    stacks: { configured: undefined, warnings: [] },
   };
 }
 
@@ -838,6 +869,106 @@ function pickShip(value: unknown): ShipConfig {
   return { preflight, warnings };
 }
 
+const WHOLE_PROJECT_TRIGGERS: readonly WholeProjectTrigger[] = [
+  'always',
+  'stack-changes',
+];
+
+/**
+ * A stack's `root` as a repo-relative POSIX directory with no trailing
+ * slash (`.` for the repository itself), or `undefined` for anything that
+ * is not a path inside the repository: an absolute path, or one that climbs
+ * out of it.
+ */
+function pickStackRoot(value: unknown): string | undefined {
+  if (!isNonBlankString(value)) {
+    return undefined;
+  }
+  const normalized = path.posix.normalize(value.trim());
+  if (
+    normalized === '..' ||
+    path.posix.isAbsolute(normalized) ||
+    normalized.startsWith('../')
+  ) {
+    return undefined;
+  }
+  return normalized.endsWith('/') ? normalized.slice(0, -1) : normalized;
+}
+
+/**
+ * One `stacks` entry. `pack` and `root` decide whether the entry can be
+ * used at all; every other key keeps its default unless it is the right
+ * type. Keys a later pack will read (`tools`, `mutate`, …) are accepted and
+ * ignored here: each is parsed where its analyzer arrives, beside the code
+ * that gives it meaning.
+ */
+function parseStackEntry(
+  entry: unknown,
+  position: number,
+): ParsedEntry<StackConfig> {
+  const label = `stacks entry ${String(position)}`;
+  if (!isRecord(entry)) {
+    return { malformed: `${label} is not an object; ignored` };
+  }
+  const { pack } = entry;
+  if (!isStackPackId(pack)) {
+    return {
+      malformed:
+        `${label} names no known pack ` +
+        `(${STACK_PACK_IDS.join(', ')}); ignored`,
+    };
+  }
+  const root = pickStackRoot(entry.root);
+  if (root === undefined) {
+    return {
+      malformed: `${label} has no root inside the repository; ignored`,
+    };
+  }
+  return {
+    value: {
+      pack,
+      root,
+      exclude: pickNames(entry.exclude),
+      wholeProjectTrigger: pickString(
+        entry.wholeProjectTrigger,
+        defaultTrigger(pack),
+        WHOLE_PROJECT_TRIGGERS,
+      ),
+      debugTargets: pickNames(entry.debugTargets),
+    },
+  };
+}
+
+const TYPESCRIPT_DEFAULT_APPLIES = 'the TypeScript default applies';
+
+/**
+ * `stacks`, defensively. An absent key configures nothing and warns of
+ * nothing. A key that is not a list, or a list with no usable entry, also
+ * configures nothing — the implicit TypeScript stack applies — and says so.
+ */
+function pickStacks(value: unknown): StacksConfig {
+  if (value === undefined) {
+    return { configured: undefined, warnings: [] };
+  }
+  if (!Array.isArray(value)) {
+    return {
+      configured: undefined,
+      warnings: [`stacks is not a list; ${TYPESCRIPT_DEFAULT_APPLIES}`],
+    };
+  }
+  const { values, malformed } = parseEntryList(value, parseStackEntry);
+  if (values.length === 0) {
+    return {
+      configured: undefined,
+      warnings: [
+        ...malformed,
+        `stacks holds no usable entry; ${TYPESCRIPT_DEFAULT_APPLIES}`,
+      ],
+    };
+  }
+  return { configured: values, warnings: malformed };
+}
+
 /**
 `Number.isSafeInteger`, as a type guard.
 */
@@ -977,6 +1108,7 @@ export function loadConfig(
       defaults.foregroundSleepLimitSeconds,
     ),
     ship: pickShip(raw.ship),
+    stacks: pickStacks(raw.stacks),
     ...(typeof raw.copilotFastModel === 'string' && {
       copilotFastModel: raw.copilotFastModel,
     }),

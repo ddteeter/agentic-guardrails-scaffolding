@@ -33,8 +33,8 @@ import {
   type Lockfile,
 } from './cache-fingerprint.js';
 import type { SeedFetch } from './seed-cache.js';
+import { isTestFile } from '../packs/typescript-files.js';
 import {
-  isTestFile,
   isTestSpecFile,
   isTestSupportFile,
   isWiredToEveryTest,

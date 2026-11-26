@@ -7,12 +7,31 @@
  * native output into `Violation[]`.
  */
 
+import type { StackPackId } from './packs/pack.js';
+
 /**
 A violation is either a hard failure (`error`) or advisory (`warn`).
 */
 export type Severity = 'error' | 'warn';
 
-export interface Violation {
+/**
+ * What a run adds to each violation in a repository that configures
+ * `stacks`. Its own interface rather than one more optional member of
+ * `Violation`: with a fifth optional member the `dupes` analyzer read
+ * `Violation` and the unrelated `HookInput` as a 71-line clone of each
+ * other (two interfaces whose member lists rhyme), and the stamp is a
+ * separate fact from the contract an adapter fills in anyway.
+ */
+interface StackStamp {
+  /**
+   * The pack whose analyzer produced this (`typescript`, `swift`). Absent
+   * in a repository with no `stacks` key, which therefore reads exactly the
+   * violations it always has.
+   */
+  stack?: StackPackId;
+}
+
+export interface Violation extends StackStamp {
   /**
   Stable, namespaced id, e.g. `ts/no-assertionless-test`.
   */

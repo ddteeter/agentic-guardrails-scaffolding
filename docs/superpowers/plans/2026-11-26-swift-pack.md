@@ -45,10 +45,10 @@ suppression, no sanction, no golden edit after step 1.
 
 ## 2. GR-02 — the pack seam
 
-1. `verify/analyzer.ts`: the `Analyzer`, `VerifyOptions`, `VerifyResult`
-   types, moved and re-exported. No test change.
-2. `packs/pack.ts`: `StackPack`, `StackConfig`, `StackContext`.
-3. `packs/typescript.ts`: the three file predicates move here from
+1. `packs/pack.ts`: `StackPack` (generic in its analyzer type, so no type
+   has to move out of the orchestrator), `StackConfig`, `StackContext`.
+2. `packs/stacks.ts`: the implicit stack, `stackOf`, `perStack`, `packOf`.
+3. `packs/typescript-files.ts`: the three file predicates move here from
    `verify/git.ts`; tests change import paths only (list below).
 4. `typescriptPack(analyzers)` and the registry; `selectAnalyzers` reads the
    pack's table; `missingToolViolation` takes `pack.installHint`;
@@ -61,7 +61,17 @@ suppression, no sanction, no golden edit after step 1.
 
 Test files touched by the seam (import paths only):
 
-_Filled in as the commits land._
+- `guardrails-core/test/verify/git.test.ts`: `isConfigFile`, `isTestFile`
+  and `isTypeScriptFile` are imported from `src/packs/typescript-files.js`
+  instead of `src/verify/git.js`. Nothing else in the file changed.
+
+No other existing test was edited for the seam. Four files gained tests and
+changed no existing one: `test/config.test.ts` (`stacks` parsing),
+`test/covering-tests.test.ts` (`coveringTestsFinder`, `withRelatedTests`),
+`test/autofix.test.ts` (routing across stacks) and `test/parity.test.ts`
+(the explicit-stack run). New files: `test/packs/stacks.test.ts`,
+`test/packs/typescript.test.ts`, `test/verify/stacks.test.ts`,
+`test/cli-stacks.test.ts`.
 
 ## 3. GR-03 — multi-stack scoping
 

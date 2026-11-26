@@ -13,7 +13,6 @@
  * it runs inside stryker and must not fail a run over a measurement.
  */
 import { realpathSync } from 'node:fs';
-import path from 'node:path';
 
 import { isRecord } from './is-record.js';
 import {
@@ -22,6 +21,7 @@ import {
   type TimeoutSettings,
   timeoutSettingsOf,
 } from './lock-holder.js';
+import { repoRelative } from './repo-relative.js';
 import { isHitLimitReason } from './timeout-reason.js';
 
 /**
@@ -51,16 +51,6 @@ function realRoot(root: string): string {
   } catch {
     return root;
   }
-}
-
-/**
-`fileName` relative to `root`, with `/` between its parts.
-*/
-function repoRelative(root: string, fileName: string): string {
-  const relative = path.isAbsolute(fileName)
-    ? path.relative(root, fileName)
-    : fileName;
-  return relative.split(path.sep).join('/');
 }
 
 /**

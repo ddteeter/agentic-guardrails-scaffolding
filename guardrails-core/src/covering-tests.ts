@@ -25,7 +25,7 @@ import { readdirSync, readFileSync, type Dirent } from 'node:fs';
 import path from 'node:path';
 
 import type { ImportResolver } from './import-graph.js';
-import { isTestFile } from './verify/git.js';
+import { isTestFile } from './packs/typescript-files.js';
 import type { Violation } from './violation.js';
 
 /**
@@ -241,6 +241,47 @@ export function withCoveringTests(
   loadImports: () => ImportResolver | undefined,
   readSource?: (file: string) => string | undefined,
 ): Violation[] {
+  return withRelatedTests(
+    violations,
+    coveringTestsFinder(loadCorpus, loadImports, readSource),
+  );
+}
+
+/**
+ * `violations` with `relatedTests` set wherever `find` names any. A
+ * violation that already carries the key is never asked about, and one with
+ * no tests found (or none worked out) gets no key: an empty array would claim
+ * "searched, none exist", which would stop a fixer looking.
+ */
+export function withRelatedTests(
+  violations: readonly Violation[],
+  find: (file: string) => readonly string[] | undefined,
+): Violation[] {
+  return violations.map((violation) => {
+    if (violation.relatedTests !== undefined) {
+      return violation;
+    }
+    const related = find(violation.file);
+    return related === undefined || related.length === 0
+      ? violation
+      : { ...violation, relatedTests: related };
+  });
+}
+
+/**
+ * The tests that import a file, asked one file at a time (the shape a pack's
+ * `coveringTests` answers in). `undefined` for a file that is itself test
+ * material and for every file when there is no resolver; an empty list when
+ * the corpus was searched and nothing imports the file.
+ *
+ * The corpus and the resolver are each loaded once, on the first file that
+ * needs them, and each file is resolved once however often it is asked about.
+ */
+export function coveringTestsFinder(
+  loadCorpus: () => ReadonlyMap<string, string>,
+  loadImports: () => ImportResolver | undefined,
+  readSource?: (file: string) => string | undefined,
+): (file: string) => readonly string[] | undefined {
   let loaded:
     | typeof NO_RESOLVER
     | {
@@ -249,30 +290,23 @@ export function withCoveringTests(
       }
     | undefined;
   const byFile = new Map<string, readonly string[]>();
-  return violations.map((violation) => {
-    if (violation.relatedTests !== undefined || isTestFile(violation.file)) {
-      return violation;
+  return (file) => {
+    if (isTestFile(file)) {
+      return;
     }
     // The resolver first: without one there is nothing to ask, and the
     // corpus -- up to 800 test files -- would be read only to be discarded.
     loaded ??= loadBoth(loadImports, loadCorpus);
     if (loaded === NO_RESOLVER) {
-      return violation;
+      return;
     }
-    let related = byFile.get(violation.file);
+    let related = byFile.get(file);
     if (related === undefined) {
-      related = coveringTests(
-        violation.file,
-        loaded.corpus,
-        loaded.imports,
-        readSource,
-      );
-      byFile.set(violation.file, related);
+      related = coveringTests(file, loaded.corpus, loaded.imports, readSource);
+      byFile.set(file, related);
     }
-    return related.length === 0
-      ? violation
-      : { ...violation, relatedTests: related };
-  });
+    return related;
+  };
 }
 
 /**

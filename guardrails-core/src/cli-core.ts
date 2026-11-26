@@ -120,6 +120,7 @@ import {
   silentSkipWarning,
   writeMutationFingerprint,
 } from './verify/index.js';
+import { STACK_PACK_IDS, isStackPackId } from './packs/stacks.js';
 import { parseRuns, runLogPath } from './run-log.js';
 import { formatStats, parseSince, summarizeRuns } from './run-stats.js';
 import { resolveBaseReference } from './verify/git.js';
@@ -167,6 +168,28 @@ export interface CliDependencies {
 
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
+/**
+ * What every rung forwards to `runVerify` straight from the config file:
+ * which analyzers, at which rung, with which mutation settings, over which
+ * stacks. `verify`, the stop gate and the commit-rung gates each listed
+ * these field by field until the `dupes` analyzer reported the copies; a
+ * setting forwarded on one rung and not another is a rung that silently
+ * checks something else.
+ */
+function verifySettingsOf(config: RepoConfig) {
+  return {
+    analyzers: config.analyzers,
+    analyzerRungs: config.analyzerRungs,
+    mutationCacheInvalidation: config.mutationCache.invalidation,
+    mutationVerdictDependencies: config.mutationCache.verdictDependencies,
+    mutationCacheMaxTracedModules: config.mutationCache.maxTracedModules,
+    mutationTimeoutRetestLimit: config.mutationTimeouts.retestLimit,
+    mutationScope: config.mutationScope,
+    mutationCacheSeed: seedSettingsOf(config),
+    stacks: config.stacks.configured,
+  };
+}
+
 function binResolver(repoRoot: string): (tool: string) => string {
   return (tool) => resolveLocalBin(repoRoot, tool);
 }
@@ -202,6 +225,7 @@ function commitGateOptionsFromConfig(
   | 'mutationTimeoutRetestLimit'
   | 'mutationScope'
   | 'mutationCacheSeed'
+  | 'stacks'
   | 'config'
   | 'mutationLock'
 > {
@@ -212,17 +236,49 @@ function commitGateOptionsFromConfig(
     resolveBin: binResolver(repoRoot),
     sanctionedSuppressions: config.sanctionedSuppressions,
     sanctionedFiles: config.sanctionedFiles,
-    analyzers: config.analyzers,
-    analyzerRungs: config.analyzerRungs,
-    mutationCacheInvalidation: config.mutationCache.invalidation,
-    mutationVerdictDependencies: config.mutationCache.verdictDependencies,
-    mutationCacheMaxTracedModules: config.mutationCache.maxTracedModules,
-    mutationTimeoutRetestLimit: config.mutationTimeouts.retestLimit,
-    mutationScope: config.mutationScope,
-    mutationCacheSeed: seedSettingsOf(config),
+    ...verifySettingsOf(config),
     config: toGateConfig(config),
     mutationLock: machineLock(config.mutationLock),
   };
+}
+
+const STACK_FLAG_USAGE = `guardrails: --stack must be one of: ${STACK_PACK_IDS.join(', ')}.\n`;
+
+const STACK_FLAG_SCOPE =
+  'guardrails: --stack applies to `verify` and `gate --mode=ci` only; ' +
+  'the commit and push rungs gate every stack.\n';
+
+/**
+ * Why a command's `--stack` cannot be honoured, or `undefined` when it can
+ * (or was not given). The flag splits one repository's gates across two CI
+ * machines, so only the commands a CI job runs take it; anywhere else it is
+ * refused rather than ignored, because a rung that silently gated less than
+ * it was asked to is the failure this tool exists to prevent.
+ */
+function refusedStackFlag(
+  rest: string[],
+  canTakeFlag: boolean,
+): string | undefined {
+  const stack = flag(rest, 'stack');
+  if (stack === undefined) {
+    return undefined;
+  }
+  if (!canTakeFlag) {
+    return STACK_FLAG_SCOPE;
+  }
+  return isStackPackId(stack) ? undefined : STACK_FLAG_USAGE;
+}
+
+/**
+What `stacks` parsing dropped, one line each: said wherever a verdict is.
+*/
+function warnAboutStacks(
+  dependencies: CliDependencies,
+  config: RepoConfig,
+): void {
+  for (const warning of config.stacks.warnings) {
+    dependencies.stderr(`guardrails: ${warning}\n`);
+  }
 }
 
 function printViolations(
@@ -366,6 +422,26 @@ async function directContext(
 }
 
 /**
+ * `directContext` for the commands a `--stack` flag can reach: `undefined`
+ * (having said why) when the flag cannot be honoured here, and otherwise the
+ * context, with whatever `stacks` parsing dropped already reported.
+ */
+async function stackAwareContext(
+  dependencies: CliDependencies,
+  rest: string[],
+  canTakeFlag: boolean,
+): Promise<Awaited<ReturnType<typeof directContext>> | undefined> {
+  const refusal = refusedStackFlag(rest, canTakeFlag);
+  if (refusal !== undefined) {
+    dependencies.stderr(refusal);
+    return undefined;
+  }
+  const context = await directContext(dependencies, rest);
+  warnAboutStacks(dependencies, context.config);
+  return context;
+}
+
+/**
  * The one-line verdict, with warnings counted apart from errors: a
  * non-blocking advisory printed as "1 violation(s)." beside a zero exit sent
  * agents looking for a failure that was not there.
@@ -385,21 +461,19 @@ async function verifyCommand(
   dependencies: CliDependencies,
   rest: string[],
 ): Promise<number> {
-  const { repoRoot, config, base } = await directContext(dependencies, rest);
+  const context = await stackAwareContext(dependencies, rest, true);
+  if (context === undefined) {
+    return 2;
+  }
+  const { repoRoot, config, base } = context;
   const { violations, skippedAnalyzers } = await runVerify({
     repoRoot,
     baseBranch: base.base,
     exec: dependencies.exec,
     profile: 'ci',
+    stack: flag(rest, 'stack'),
     resolveBin: binResolver(repoRoot),
-    analyzers: config.analyzers,
-    analyzerRungs: config.analyzerRungs,
-    mutationCacheInvalidation: config.mutationCache.invalidation,
-    mutationVerdictDependencies: config.mutationCache.verdictDependencies,
-    mutationCacheMaxTracedModules: config.mutationCache.maxTracedModules,
-    mutationTimeoutRetestLimit: config.mutationTimeouts.retestLimit,
-    mutationScope: config.mutationScope,
-    mutationCacheSeed: seedSettingsOf(config),
+    ...verifySettingsOf(config),
   });
   printViolations(dependencies, violations);
   dependencies.stderr(`guardrails: ${verdictLine(violations)}\n`);
@@ -457,6 +531,7 @@ async function autofixCommand(dependencies: CliDependencies): Promise<number> {
     files: hookFilePaths(input),
     exec: dependencies.exec,
     resolveBin: binResolver(repoRoot),
+    stacks: loadConfig(repoRoot).stacks.configured,
   });
   return 0;
 }
@@ -515,14 +590,7 @@ async function gateStopCommand(
     exec: dependencies.exec,
     config: toGateConfig(config),
     resolveBin: binResolver(repoRoot),
-    analyzers: config.analyzers,
-    analyzerRungs: config.analyzerRungs,
-    mutationCacheInvalidation: config.mutationCache.invalidation,
-    mutationVerdictDependencies: config.mutationCache.verdictDependencies,
-    mutationCacheMaxTracedModules: config.mutationCache.maxTracedModules,
-    mutationTimeoutRetestLimit: config.mutationTimeouts.retestLimit,
-    mutationScope: config.mutationScope,
-    mutationCacheSeed: seedSettingsOf(config),
+    ...verifySettingsOf(config),
     isRetry: input.stopHookActive,
     mutationLock: machineLock(config.mutationLock),
   });
@@ -600,7 +668,11 @@ async function gateCommitCommand(
   profile: Rung,
   rest: string[],
 ): Promise<number> {
-  const { repoRoot, config, base } = await directContext(dependencies, rest);
+  const context = await stackAwareContext(dependencies, rest, profile === 'ci');
+  if (context === undefined) {
+    return 2;
+  }
+  const { repoRoot, config, base } = context;
   const {
     violations,
     findings,
@@ -618,6 +690,7 @@ async function gateCommitCommand(
     ),
     changedScope,
     profile,
+    stack: flag(rest, 'stack'),
   });
   if (cached === true) {
     // Said, so a two-second push gate is never mistaken for one that ran. No

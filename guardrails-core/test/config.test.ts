@@ -1070,3 +1070,170 @@ describe('ship.preflight (#243)', () => {
     expect(loadConfig(root).ship).toEqual({ preflight: [], warnings: [] });
   });
 });
+
+function stacksOf(stacks: unknown): ReturnType<typeof loadConfig>['stacks'] {
+  writeFileSync(
+    path.join(root, 'guardrails.config.json'),
+    JSON.stringify({ stacks }),
+  );
+  return loadConfig(root).stacks;
+}
+
+describe('stacks (GR-02)', () => {
+  const web = {
+    pack: 'typescript',
+    root: '.',
+    exclude: [],
+    wholeProjectTrigger: 'always',
+    debugTargets: [],
+  };
+
+  it('configures none by default, so the implicit TypeScript stack applies', () => {
+    expect(defaultConfig().stacks).toEqual({
+      configured: undefined,
+      warnings: [],
+    });
+  });
+
+  it('configures none for a config with no stacks key, and warns of nothing', () => {
+    writeFileSync(path.join(root, 'guardrails.config.json'), '{}');
+    expect(loadConfig(root).stacks).toEqual({
+      configured: undefined,
+      warnings: [],
+    });
+  });
+
+  it('reads every key of an entry', () => {
+    expect(
+      stacksOf([
+        {
+          pack: 'typescript',
+          root: '.',
+          exclude: [' ios/** ', 'docs/**'],
+          wholeProjectTrigger: 'stack-changes',
+        },
+        {
+          pack: 'swift',
+          root: 'ios',
+          debugTargets: ['DialedDebugHooks', ' Other '],
+          wholeProjectTrigger: 'always',
+        },
+      ]),
+    ).toEqual({
+      configured: [
+        {
+          ...web,
+          exclude: ['ios/**', 'docs/**'],
+          wholeProjectTrigger: 'stack-changes',
+        },
+        {
+          pack: 'swift',
+          root: 'ios',
+          exclude: [],
+          wholeProjectTrigger: 'always',
+          debugTargets: ['DialedDebugHooks', 'Other'],
+        },
+      ],
+      warnings: [],
+    });
+  });
+
+  it('defaults the trigger by pack: always for TypeScript, stack-changes for Swift', () => {
+    expect(
+      stacksOf([
+        { pack: 'typescript', root: '.' },
+        { pack: 'swift', root: 'ios', wholeProjectTrigger: 'sometimes' },
+      ]).configured?.map((stack) => stack.wholeProjectTrigger),
+    ).toEqual(['always', 'stack-changes']);
+  });
+
+  it.each([
+    ['./', '.'],
+    ['.', '.'],
+    ['ios/', 'ios'],
+    ['./ios//Packages/', 'ios/Packages'],
+    ['  ios  ', 'ios'],
+    ['..hidden', '..hidden'],
+  ])('normalises the root %j to %j', (written, read) => {
+    expect(
+      stacksOf([{ pack: 'swift', root: written }]).configured?.[0]?.root,
+    ).toBe(read);
+  });
+
+  it('reads a wrongly typed optional key as its default', () => {
+    expect(
+      stacksOf([
+        { pack: 'typescript', root: '.', exclude: 'ios/**', debugTargets: 3 },
+      ]).configured,
+    ).toEqual([web]);
+  });
+
+  it('accepts and ignores the keys later packs will read', () => {
+    expect(
+      stacksOf([
+        {
+          pack: 'typescript',
+          root: '.',
+          tools: { swiftlint: '0.65.1' },
+          mutate: ['ios/Packages/*/Sources/**'],
+        },
+      ]),
+    ).toEqual({ configured: [web], warnings: [] });
+  });
+
+  it('drops an entry it cannot use, naming it by position and reason', () => {
+    expect(
+      stacksOf([
+        'typescript',
+        { pack: 'java', root: '.' },
+        { root: '.' },
+        { pack: 'typescript' },
+        { pack: 'typescript', root: '  ' },
+        { pack: 'typescript', root: '/abs' },
+        { pack: 'typescript', root: '..' },
+        { pack: 'typescript', root: '../outside' },
+        { pack: 'typescript', root: 'a/../..' },
+        { pack: 'typescript', root: '.' },
+      ]),
+    ).toEqual({
+      configured: [web],
+      warnings: [
+        'stacks entry 1 is not an object; ignored',
+        'stacks entry 2 names no known pack (typescript, swift); ignored',
+        'stacks entry 3 names no known pack (typescript, swift); ignored',
+        'stacks entry 4 has no root inside the repository; ignored',
+        'stacks entry 5 has no root inside the repository; ignored',
+        'stacks entry 6 has no root inside the repository; ignored',
+        'stacks entry 7 has no root inside the repository; ignored',
+        'stacks entry 8 has no root inside the repository; ignored',
+        'stacks entry 9 has no root inside the repository; ignored',
+      ],
+    });
+  });
+
+  it.each([
+    ['a stacks that is not a list', { pack: 'typescript', root: '.' }],
+    ['a stacks that is a string', 'typescript'],
+  ])('reads %s as none configured, and says so', (_label, stacks) => {
+    expect(stacksOf(stacks)).toEqual({
+      configured: undefined,
+      warnings: ['stacks is not a list; the TypeScript default applies'],
+    });
+  });
+
+  it('reads a list with no usable entry as none configured, and says so', () => {
+    expect(stacksOf([])).toEqual({
+      configured: undefined,
+      warnings: [
+        'stacks holds no usable entry; the TypeScript default applies',
+      ],
+    });
+    expect(stacksOf([3])).toEqual({
+      configured: undefined,
+      warnings: [
+        'stacks entry 1 is not an object; ignored',
+        'stacks holds no usable entry; the TypeScript default applies',
+      ],
+    });
+  });
+});

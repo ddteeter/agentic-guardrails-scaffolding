@@ -2,11 +2,13 @@ import { describe, expect, it } from 'vitest';
 
 import type { Exec, ExecResult } from '../../src/exec.js';
 import {
-  isDependencyPath,
-  isInsideNestedWorktree,
   isConfigFile,
   isTestFile,
   isTypeScriptFile,
+} from '../../src/packs/typescript-files.js';
+import {
+  isDependencyPath,
+  isInsideNestedWorktree,
   mergeChangedFiles,
   nestedWorktreePaths,
   parseFileList,

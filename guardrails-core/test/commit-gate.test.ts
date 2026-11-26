@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -7,6 +7,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { Exec, ExecResult } from '../src/exec.js';
 import { runCommitGate } from '../src/gate.js';
 import type { GateConfig } from '../src/gate-decision.js';
+import type { StackConfig } from '../src/packs/pack.js';
+import { readViolations, stateDirectory } from '../src/state-store.js';
 
 /** Fixer names for the delegation pointer; these tests are about the auditor
  *  and the sanction budget, so the routing itself is exercised elsewhere. */
@@ -330,5 +332,91 @@ describe('the gate rung', () => {
     // `.husky/pre-commit` calls `gate --mode=commit`, and every existing caller
     // that passes no profile must keep the cadence it had.
     expect(await gateSpawns(undefined)).not.toContain('stryker');
+  });
+});
+
+/**
+An added suppression in `file`, as the branch diff the gate audits.
+*/
+function addedDisableIn(file: string): string {
+  return [
+    `diff --git a/${file} b/${file}`,
+    `--- a/${file}`,
+    `+++ b/${file}`,
+    '@@ -1,0 +1,1 @@',
+    '+// eslint-disable-next-line',
+  ].join('\n');
+}
+
+const NO_ANALYZERS = {
+  eslint: 'off',
+  tsc: 'off',
+  knip: 'off',
+  'npm-peers': 'off',
+  'dependency-cruiser': 'off',
+  stryker: 'off',
+} as const;
+
+function writeWorkspace(): void {
+  writeFileSync(
+    path.join(root, 'package.json'),
+    JSON.stringify({ workspaces: ['packages/*'] }),
+  );
+  mkdirSync(path.join(root, 'packages', 'billing'), { recursive: true });
+  writeFileSync(path.join(root, 'packages', 'billing', 'package.json'), '{}');
+}
+
+describe('the manifest a blocked commit gate writes, across stacks', () => {
+  it('names the package that owns an added suppression’s file', async () => {
+    writeWorkspace();
+    await runCommitGate({
+      repoRoot: root,
+      config,
+      baseBranch: 'main',
+      exec: fakeExec(addedDisableIn('packages/billing/src/a.ts')),
+      analyzers: NO_ANALYZERS,
+    });
+    expect(
+      readViolations(stateDirectory(root), 'nosession-commit').map(
+        (violation) => [violation.file, violation.package],
+      ),
+    ).toEqual([['packages/billing/src/a.ts', 'packages/billing']]);
+  });
+
+  it('leaves a file unattributed when its stack has no pack in this version', async () => {
+    writeWorkspace();
+    const stacks: StackConfig[] = [
+      {
+        pack: 'typescript',
+        root: '.',
+        exclude: ['packages/billing/**'],
+        wholeProjectTrigger: 'always',
+        debugTargets: [],
+      },
+      {
+        pack: 'swift',
+        root: 'packages/billing',
+        exclude: [],
+        wholeProjectTrigger: 'stack-changes',
+        debugTargets: [],
+      },
+    ];
+    const result = await runCommitGate({
+      repoRoot: root,
+      config,
+      baseBranch: 'main',
+      exec: fakeExec(addedDisableIn('packages/billing/src/a.ts')),
+      analyzers: NO_ANALYZERS,
+      stacks,
+    });
+    expect(result.blocked).toBe(true);
+    const written = readViolations(stateDirectory(root), 'nosession-commit');
+    expect(written.map((violation) => violation.ruleId)).toEqual([
+      'guardrails/stack-unsupported',
+      'guardrails/added-suppression',
+    ]);
+    // The file is owned by the Swift stack, which nobody can answer for.
+    expect(written[1]).not.toHaveProperty('package');
+    expect(written[1]).not.toHaveProperty('relatedTests');
   });
 });

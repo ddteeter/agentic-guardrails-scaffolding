@@ -28,8 +28,10 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   coveringTests,
+  coveringTestsFinder,
   readTestCorpus,
   withCoveringTests,
+  withRelatedTests,
 } from '../src/covering-tests.js';
 import {
   createImportResolver,
@@ -440,6 +442,82 @@ describe('withCoveringTests', () => {
         relatedTests: ['test/parent.test.ts'],
       },
     ]);
+  });
+});
+
+describe('coveringTestsFinder', () => {
+  const testFiles = new Map([['test/a.test.ts', '']]);
+  const imports = graph({ 'test/a.test.ts': ['src/a.ts'] });
+
+  it('answers the tests that import a file', () => {
+    const find = coveringTestsFinder(
+      () => testFiles,
+      () => imports,
+    );
+    expect(find('src/a.ts')).toEqual(['test/a.test.ts']);
+  });
+
+  it('answers an empty list, not undefined, when it looked and found none', () => {
+    const find = coveringTestsFinder(
+      () => testFiles,
+      () => imports,
+    );
+    expect(find('src/orphan.ts')).toEqual([]);
+  });
+
+  it('does not work out a test file, and loads nothing to say so', () => {
+    let loads = 0;
+    const find = coveringTestsFinder(
+      () => {
+        loads += 1;
+        return testFiles;
+      },
+      () => {
+        loads += 1;
+        return imports;
+      },
+    );
+    expect(find('test/a.test.ts')).toBeUndefined();
+    expect(loads).toBe(0);
+  });
+
+  it('does not work out anything without a resolver', () => {
+    const find = coveringTestsFinder(() => testFiles, nothing);
+    expect(find('src/a.ts')).toBeUndefined();
+  });
+});
+
+describe('withRelatedTests', () => {
+  const base = {
+    ruleId: 'stryker/survived',
+    file: 'src/a.ts',
+    message: 'm',
+    severity: 'error' as const,
+    fixable: false,
+    tool: 'stryker',
+  };
+
+  it('sets relatedTests from the finder', () => {
+    expect(withRelatedTests([base], () => ['test/a.test.ts'])).toEqual([
+      { ...base, relatedTests: ['test/a.test.ts'] },
+    ]);
+  });
+
+  it('adds no key when the finder found none, or did not look', () => {
+    expect(withRelatedTests([base], () => [])).toEqual([base]);
+    expect(withRelatedTests([base], nothing)).toEqual([base]);
+  });
+
+  it('never asks about a violation that already has its tests', () => {
+    const asked: string[] = [];
+    const already = { ...base, relatedTests: ['test/kept.test.ts'] };
+    expect(
+      withRelatedTests([already], (file) => {
+        asked.push(file);
+        return ['test/other.test.ts'];
+      }),
+    ).toEqual([already]);
+    expect(asked).toEqual([]);
   });
 });
 

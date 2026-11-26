@@ -427,6 +427,32 @@ directories in one command. Unchanged, and still outside the matcher:
 
 ## Roadmap: fixer-loop hardening (from the dogfooding live proof)
 
+- **A session that starts before the first build cannot spawn the fixer the
+  gate names (2026-11-26, open; found on the Swift-pack lane).** The fixer
+  agents are generated into `.claude/agents/` by `npm run build`, and that
+  directory is gitignored, so a fresh clone has none. Agents load at session
+  start. A cloud session starts on a fresh clone, builds, and then meets a
+  commit-gate block whose pointer says "spawn the guardrail-fixer-thorough
+  subagent": no such agent type exists in the session, and none will until a
+  new one starts. The main agent fixed the violations itself from the gate's
+  printed lines, which is the fallback the hook's wording already allows, but
+  the pointer was wrong for the whole session. Candidates: have
+  `session-start` say so when `.claude/agents/` is empty or older than the
+  plugin source (build first, then start a new session); or have the pointer
+  name the fallback when the agent file is missing on disk at block time.
+- **`dupes` read two unrelated interfaces as a 71-line clone (2026-11-26,
+  worked around in code; found on the Swift-pack lane).** Adding one optional
+  member (`stack?`) to `Violation` made `fallow dupes` in semantic mode pair
+  `violation.ts:15-81` with `hook-io.ts:30-100`, the `HookInput` interface:
+  two member lists whose shapes rhyme once identifiers are normalised, with
+  nothing to extract. It was reported at the commit rung only because
+  `violation.ts` was in the diff. Resolved without an ignore entry, by
+  carrying the stamp in its own small interface that `Violation` extends.
+  The finding stands for adopters: semantic mode over long interfaces of
+  optional members is a false-positive source, and the fixer's only honest
+  move there is the restructuring above or an escalation. Candidates: seed
+  `init`'s fallow config with a note on this class, or have the adapter drop
+  a clone group whose every instance is a single interface body.
 - **The PreToolUse commit gate checks the index BEFORE a compound
   `git add -A && git commit` stages anything (2026-11-06, open; found on
   #151).** The hook fires once, on the whole Bash command, so it gates the
