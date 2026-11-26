@@ -377,7 +377,9 @@ describeUnlessMutating(here)(
       // test filter does), in a `beforeAll` -- after the module has set
       // GREETING -- so no test sees it, and it SURVIVES. That is a stryker
       // bug: the same tests kill it. When this expectation fails because
-      // the mutant is Killed, stryker has fixed it.
+      // the mutant is Killed, stryker has fixed it: update the expectation,
+      // and revisit #200's deferred steps 4-8 (restricting the dry run with
+      // --testFiles), which this bug was one reason to defer.
       expect(staticMutant(relatedRun.mutants)).toMatchObject({
         status: 'Killed',
         static: true,
