@@ -14,6 +14,7 @@ import {
   type TimeoutSummary,
   timeoutLines,
 } from './timeout-stats.js';
+import { summarizeWork, type WorkSummary, workLines } from './work-stats.js';
 
 type StrykerPart = NonNullable<GateRow['stryker']>;
 
@@ -42,6 +43,10 @@ interface RungSummary {
   What the runs' timeouts cost, when any run measured them (#236).
   */
   timeouts?: TimeoutSummary | undefined;
+  /**
+  What the dry runs and mutant runs did, when any run says (#200).
+  */
+  work?: WorkSummary | undefined;
 }
 
 interface ShipSummary {
@@ -172,6 +177,7 @@ function rungSummary(rows: readonly GateRow[]): RungSummary {
     warm: mutated.length - cold.length,
     coldReasons: ranked(cold.map((stryker) => coldReason(stryker))),
     timeouts: summarizeTimeouts(mutated),
+    work: summarizeWork(rows),
   };
 }
 
@@ -301,6 +307,7 @@ function rungText(rung: string, summary: RungSummary): string[] {
     ...spreadText('held the lock', summary.heldMs),
     ...spreadText('dry run', summary.dryRunMs),
     ...spreadText('mutating', summary.mutatingMs),
+    ...workLines(summary.work),
     ...(summary.mutated === 0
       ? []
       : [
