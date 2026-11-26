@@ -143,6 +143,18 @@ describe('buildDesiredFiles — the shipped template tree', () => {
     expect(contentOf(desired, '.githooks/pre-push')).toContain('--mode=push');
   });
 
+  it('scaffolds a pre-push hook that runs ship.preflight first (#243)', () => {
+    // Owned, so `init --apply` refreshes an unedited hook to this one.
+    const hook = contentOf(
+      buildDesiredFiles(facts(), decisions()),
+      '.githooks/pre-push',
+    );
+    expect(hook).toContain('node "$cli" preflight --mode=hook || exit 1\n');
+    expect(hook.indexOf('preflight --mode=hook')).toBeLessThan(
+      hook.indexOf('gate --mode=push'),
+    );
+  });
+
   it('runs the shipped CI workflow at the ci rung, not the commit rung', () => {
     // Correctness, not tidiness: `--mode=commit` scopes to STAGED files, and
     // nothing is staged in a CI checkout -- so the old spelling would check an

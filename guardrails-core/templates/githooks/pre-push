@@ -29,6 +29,12 @@ cli="./node_modules/guardrails-core/dist/cli.mjs"
   exit 1
 }
 
+# The repository's cheap checks (`ship.preflight` in guardrails.config.json)
+# run first, so a red build costs seconds rather than a wait for the gate.
+# A pass is remembered by the tree it ran on, so a push `guardrails ship`
+# already checked skips them. Nothing configured runs nothing.
+node "$cli" preflight --mode=hook || exit 1
+
 node "$cli" gate --mode=push
 status=$?
 

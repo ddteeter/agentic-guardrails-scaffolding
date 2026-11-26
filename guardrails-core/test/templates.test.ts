@@ -302,8 +302,9 @@ describe('consumer templates', () => {
 });
 
 /**
- * A checkout whose installed CLI is a stub exiting with `FAKE_EXIT`, so the
- * real pre-push hook can be run end to end without a gate behind it.
+ * A checkout whose installed CLI is a stub exiting with `FAKE_EXIT` -- or,
+ * for `preflight`, with `FAKE_PREFLIGHT_EXIT` -- so the real pre-push hook
+ * can be run end to end without a gate behind it.
  */
 function stubbedCheckout(): string {
   const checkout = mkdtempSync(path.join(tmpdir(), 'guardrails-push-hook-'));
@@ -317,7 +318,10 @@ function stubbedCheckout(): string {
   writeFileSync(
     path.join(cliDirectory, 'cli.mjs'),
     "process.stderr.write(`ARGS ${process.argv.slice(2).join(' ')}\\n`);\n" +
-      "process.exit(Number(process.env.FAKE_EXIT ?? '0'));\n",
+      "const exit = process.argv[2] === 'preflight'\n" +
+      '  ? process.env.FAKE_PREFLIGHT_EXIT\n' +
+      '  : process.env.FAKE_EXIT;\n' +
+      "process.exit(Number(exit ?? '0'));\n",
   );
   return checkout;
 }
@@ -378,6 +382,43 @@ describe('the pre-push hook', () => {
       expect(result.stderr).toContain(LOCK_TIMEOUT_MARKER);
       expect(result.stderr).toContain('push again to re-queue');
       expect(result.stderr).not.toContain('guardrails: push blocked');
+    } finally {
+      rmSync(checkout, { recursive: true, force: true });
+    }
+  });
+
+  it('runs preflight in hook mode after the install check and before the gate (#243)', () => {
+    const lines = pushHook().split('\n');
+    const preflight = lines.indexOf(
+      'node "$cli" preflight --mode=hook || exit 1',
+    );
+    expect(preflight).toBeGreaterThan(
+      lines.findIndex((line) => line.startsWith('[ -f "$cli" ]')),
+    );
+    expect(preflight).toBeLessThan(
+      lines.indexOf(`node "$cli" ${PUSH_GATE_ARGS.join(' ')}`),
+    );
+  });
+
+  it('runs preflight, then the gate, when preflight passes (#243)', () => {
+    const checkout = stubbedCheckout();
+    try {
+      const result = runPushHook(checkout, {});
+      expect(result.status).toBe(0);
+      expect(result.stderr).toBe(
+        'ARGS preflight --mode=hook\nARGS gate --mode=push\n',
+      );
+    } finally {
+      rmSync(checkout, { recursive: true, force: true });
+    }
+  });
+
+  it('stops before the gate when preflight fails (#243)', () => {
+    const checkout = stubbedCheckout();
+    try {
+      const result = runPushHook(checkout, { FAKE_PREFLIGHT_EXIT: '1' });
+      expect(result.status).toBe(1);
+      expect(result.stderr).toBe('ARGS preflight --mode=hook\n');
     } finally {
       rmSync(checkout, { recursive: true, force: true });
     }
