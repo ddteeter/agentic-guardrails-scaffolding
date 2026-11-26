@@ -34,6 +34,7 @@ import process from 'node:process';
 
 import type { Exec } from './exec.js';
 import { packageVersion } from './package-root.js';
+import { resolveBaseReference } from './verify/git.js';
 
 /**
  * The inherited environment minus every `GIT_*` variable. A hook process can
@@ -100,4 +101,21 @@ export async function treeFingerprint(
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
+}
+
+/**
+ * The tree fingerprint taken against the RESOLVED base ref (`origin/main` in a
+ * checkout with no local `main`), with that ref. `undefined` when the tree
+ * could not be fingerprinted, which means "no memo". Shared by the push gate's
+ * pass memo and the preflight pass record.
+ */
+export async function fingerprintAgainstBase(
+  exec: Exec,
+  repoRoot: string,
+  baseBranch: string,
+): Promise<{ fingerprint: string; base: string } | undefined> {
+  const resolved = await resolveBaseReference(exec, repoRoot, baseBranch);
+  const base = resolved.ref ?? baseBranch;
+  const fingerprint = await treeFingerprint(exec, repoRoot, base);
+  return fingerprint === undefined ? undefined : { fingerprint, base };
 }

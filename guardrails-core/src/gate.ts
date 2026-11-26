@@ -65,7 +65,7 @@ import {
   stateDirectory,
   writeViolations,
 } from './state-store.js';
-import { treeFingerprint } from './tree-fingerprint.js';
+import { fingerprintAgainstBase, treeFingerprint } from './tree-fingerprint.js';
 import {
   findLeaseOverlap,
   type FixerLease,
@@ -957,18 +957,11 @@ async function pushPassKey(
   if (options.profile !== 'push') {
     return undefined;
   }
-  const resolved = await resolveBaseReference(
+  return fingerprintAgainstBase(
     options.exec,
     options.repoRoot,
     options.baseBranch,
   );
-  const base = resolved.ref ?? options.baseBranch;
-  const fingerprint = await treeFingerprint(
-    options.exec,
-    options.repoRoot,
-    base,
-  );
-  return fingerprint === undefined ? undefined : { fingerprint, base };
 }
 
 /**
