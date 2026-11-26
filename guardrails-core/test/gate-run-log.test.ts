@@ -200,7 +200,13 @@ describe('logGateRun', () => {
 
   it('writes nothing without a gate lock to sit beside', async () => {
     const { warnings, warn } = collecting();
-    await logGateRun(input({ lockPath: undefined, warn }));
+    const asked: string[] = [];
+    const exec: Exec = (command) => {
+      asked.push(command);
+      return Promise.resolve({ stdout: '', stderr: '', code: 0 });
+    };
+    await logGateRun(input({ lockPath: undefined, warn, exec }));
+    expect(asked).toEqual([]);
     expect(existsSync(`${lockPath}.runs.jsonl`)).toBe(false);
     expect(existsSync(STRAY)).toBe(false);
     expect(warnings).toEqual([]);

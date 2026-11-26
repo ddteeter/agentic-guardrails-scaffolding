@@ -195,10 +195,11 @@ const SEED_NOT_TRIED = ['skipped', 'off'];
  * A row from before the reason was recorded says so.
  */
 function seedNotTried(cold: readonly StrykerPart[]): SeedNotTried[] {
+  const caches = present(cold.map((stryker) => stryker.cache));
   return SEED_NOT_TRIED.flatMap((seed) => {
-    const reasons = cold
-      .filter((stryker) => stryker.cache?.seed === seed)
-      .map((stryker) => stryker.cache?.seedWhy ?? 'reason not recorded');
+    const reasons = caches
+      .filter((cache) => cache.seed === seed)
+      .map((cache) => cache.seedWhy ?? 'reason not recorded');
     return reasons.length === 0
       ? []
       : [{ seed, runs: reasons.length, reasons: ranked(reasons) }];
@@ -308,18 +309,21 @@ function isGate(row: RunRow): row is GateRow {
 /**
 Each project among `rows`, most runs first, then by name.
 */
-function projectSummaries(rows: readonly RunRow[]): ProjectSummary[] {
+function projectSummaries(
+  rows: readonly RunRow[],
+  gates: readonly GateRow[],
+): ProjectSummary[] {
   const names = [...new Set(rows.map((row) => projectOf(row)))];
   return names
     .map((project) => {
       const own = rows.filter((row) => projectOf(row) === project);
-      const gates = own.filter((row) => isGate(row));
+      const ownGates = gates.filter((row) => projectOf(row) === project);
       return {
         project,
         runs: own.length,
         legacy: own.filter((row) => row.project === undefined).length,
-        byDepth: buckets(gates, DEPTHS, depthBucket),
-        byLoad: buckets(gates, LOADS, loadBucket),
+        byDepth: buckets(ownGates, DEPTHS, depthBucket),
+        byLoad: buckets(ownGates, LOADS, loadBucket),
       };
     })
     .toSorted(
@@ -368,7 +372,7 @@ export function summarizeRuns(
     locks: lockSummary(locks),
     byDepth: buckets(gates, DEPTHS, depthBucket),
     byLoad: buckets(gates, LOADS, loadBucket),
-    projects: projectSummaries(inWindow),
+    projects: projectSummaries(inWindow, gates),
   };
 }
 
