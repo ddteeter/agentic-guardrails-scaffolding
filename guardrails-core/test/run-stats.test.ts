@@ -326,6 +326,31 @@ describe('one project, across its lanes (#236)', () => {
     expect(stats.ships.runs).toBe(1);
   });
 
+  it('counts each project’s runs, most first, and its rows from before projects', () => {
+    const stats = summarizeRuns(rows, { now: NOW, sinceMs: WEEK });
+    expect(
+      stats.projects.map(({ project, runs, legacy }) => ({
+        project,
+        runs,
+        legacy,
+      })),
+    ).toEqual([
+      { project: 'main', runs: 4, legacy: 1 },
+      { project: 'small', runs: 2, legacy: 0 },
+    ]);
+  });
+
+  it('orders projects with as many runs by name', () => {
+    const tied = summarizeRuns(
+      [gate({ project: 'zeta' }), gate({ project: 'alpha' })],
+      { now: NOW, sinceMs: WEEK },
+    );
+    expect(tied.projects.map(({ project }) => project)).toEqual([
+      'alpha',
+      'zeta',
+    ]);
+  });
+
   it('narrows by project and folder together when both are named', () => {
     expect(
       summarizeRuns(rows, {
@@ -335,6 +360,93 @@ describe('one project, across its lanes (#236)', () => {
         repo: 'lane-1',
       }).rows,
     ).toBe(1);
+  });
+});
+
+/**
+A push gate of `project` whose dry run took `seconds`, `depth` queued.
+*/
+function suiteGate(project: string, seconds: number, depth: number): GateRow {
+  return gate({
+    repo: `${project}-lane`,
+    project,
+    lock: { queuedMs: 0, heldMs: 600_000, depthOnArrival: depth },
+    stryker: {
+      files: 1,
+      cache: { local: 'kept', seed: 'off' },
+      dryRunMs: seconds * 1000,
+      report: 'read',
+    },
+  });
+}
+
+describe('a small suite and a large one, kept apart (#236)', () => {
+  const rows: RunRow[] = [
+    suiteGate('small', 13, 0),
+    suiteGate('small', 13, 0),
+    suiteGate('small', 8, 1),
+    suiteGate('large', 567, 0),
+    suiteGate('large', 567, 0),
+    suiteGate('large', 678, 1),
+    suiteGate('large', 678, 1),
+  ];
+  const stats = (): ReturnType<typeof summarizeRuns> =>
+    summarizeRuns(rows, { now: NOW, sinceMs: WEEK });
+
+  it('buckets each project’s dry runs on its own', () => {
+    const [large, small] = stats().projects;
+    expect(large?.project).toBe('large');
+    expect(large?.byDepth.slice(0, 2)).toEqual([
+      { bucket: '0', runs: 2, dryRunMs: { median: 567_000, p90: 567_000 } },
+      { bucket: '1', runs: 2, dryRunMs: { median: 678_000, p90: 678_000 } },
+    ]);
+    expect(small?.byDepth.slice(0, 2)).toEqual([
+      { bucket: '0', runs: 2, dryRunMs: { median: 13_000, p90: 13_000 } },
+      { bucket: '1', runs: 1, dryRunMs: { median: 8000, p90: 8000 } },
+    ]);
+    expect(small?.byLoad[0]).toEqual({
+      bucket: 'under 0.5 per core',
+      runs: 3,
+      dryRunMs: { median: 13_000, p90: 13_000 },
+    });
+  });
+
+  it('keeps the mixed tables in the summary', () => {
+    expect(stats().byDepth[0]).toMatchObject({ runs: 4 });
+  });
+
+  it('prints the tables per project, and not the mixed ones', () => {
+    const text = formatStats(stats());
+    expect(text).toContain('projects: large 4, small 3\n');
+    expect(text).not.toContain('dry run by queue depth on arrival:\n');
+    expect(text).not.toContain('dry run by load at start:\n');
+    expect(text).toContain(
+      [
+        'dry run by queue depth on arrival, large:',
+        '  0: 2 run(s), median 9m27s',
+        '  1: 2 run(s), median 11m18s',
+        'dry run by load at start, large:',
+        '  under 0.5 per core: 4 run(s), median 9m27s',
+        'dry run by queue depth on arrival, small:',
+        '  0: 2 run(s), median 13s',
+        '  1: 1 run(s), median 8s',
+        'dry run by load at start, small:',
+        '  under 0.5 per core: 3 run(s), median 13s',
+        '',
+      ].join('\n'),
+    );
+  });
+
+  it('says how many rows predate project identity', () => {
+    const text = formatStats(
+      summarizeRuns([...rows, gate({ repo: 'old' }), gate({ repo: 'old' })], {
+        now: NOW,
+        sinceMs: WEEK,
+      }),
+    );
+    expect(text).toContain(
+      'projects: large 4, small 3, old 2 (2 row(s) predate project identity)\n',
+    );
   });
 });
 
@@ -366,6 +478,7 @@ describe('formatStats', () => {
     expect(text).toBe(
       [
         'guardrails stats: 3 run(s) from 2026-11-12T12:00:00.000Z to 2026-11-19T12:00:00.000Z',
+        'projects: app 3 (3 row(s) predate project identity)',
         'push: 2 run(s) (pass 2)',
         '  queued for the lock: median 1m00s, p90 1m00s',
         '  held the lock: median 5m00s, p90 5m00s',
@@ -399,6 +512,7 @@ describe('formatStats', () => {
     ).toBe(
       [
         'guardrails stats: 1 run(s) from 2026-11-12T12:00:00.000Z to 2026-11-19T12:00:00.000Z',
+        'projects: app 1 (1 row(s) predate project identity)',
         'commit: 1 run(s) (pass 1)',
         '',
       ].join('\n'),
@@ -462,6 +576,7 @@ describe('lock runs in the stats (#201)', () => {
     ).toBe(
       [
         'guardrails stats: 3 run(s) from 2026-11-12T12:00:00.000Z to 2026-11-19T12:00:00.000Z',
+        'projects: app 3 (3 row(s) predate project identity)',
         'lock: 3 run(s) (ran 1, unserialized 1, lock-timeout 1)',
         '  queued for the lock: median 2m00s, p90 10m00s',
         '  held the lock: median 0s, p90 20m00s',

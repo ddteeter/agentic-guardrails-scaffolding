@@ -98,6 +98,22 @@ export interface RunStats {
   Dry-run time by the 1-minute load per core at the start.
   */
   byLoad: Bucket[];
+  /**
+  Each project's runs and dry-run tables, most runs first (#236): a large
+  suite and a small one mixed in one table look like contention.
+  */
+  projects: ProjectSummary[];
+}
+
+interface ProjectSummary {
+  project: string;
+  runs: number;
+  /**
+  Of those, the rows from before projects, named by their folder.
+  */
+  legacy: number;
+  byDepth: Bucket[];
+  byLoad: Bucket[];
 }
 
 export interface StatsWindow {
@@ -250,6 +266,33 @@ function buckets(
   });
 }
 
+function isGate(row: RunRow): row is GateRow {
+  return row.kind === 'gate';
+}
+
+/**
+Each project among `rows`, most runs first, then by name.
+*/
+function projectSummaries(rows: readonly RunRow[]): ProjectSummary[] {
+  const names = [...new Set(rows.map((row) => projectOf(row)))];
+  return names
+    .map((project) => {
+      const own = rows.filter((row) => projectOf(row) === project);
+      const gates = own.filter((row) => isGate(row));
+      return {
+        project,
+        runs: own.length,
+        legacy: own.filter((row) => row.project === undefined).length,
+        byDepth: buckets(gates, DEPTHS, depthBucket),
+        byLoad: buckets(gates, LOADS, loadBucket),
+      };
+    })
+    .toSorted(
+      (left, right) =>
+        right.runs - left.runs || left.project.localeCompare(right.project),
+    );
+}
+
 /**
 Is `row` of the project and the folder the window names, if it names them?
 */
@@ -273,7 +316,7 @@ export function summarizeRuns(
     const at = Date.parse(row.startedAt);
     return at >= from && at <= to && isNamed(row, window);
   });
-  const gates = inWindow.filter((row): row is GateRow => row.kind === 'gate');
+  const gates = inWindow.filter((row) => isGate(row));
   const ships = inWindow.filter((row): row is ShipRow => row.kind === 'ship');
   const locks = inWindow.filter((row): row is LockRow => row.kind === 'lock');
   const rungs: Record<string, RungSummary> = {};
@@ -290,6 +333,7 @@ export function summarizeRuns(
     locks: lockSummary(locks),
     byDepth: buckets(gates, DEPTHS, depthBucket),
     byLoad: buckets(gates, LOADS, loadBucket),
+    projects: projectSummaries(inWindow),
   };
 }
 
@@ -351,6 +395,37 @@ function bucketText(title: string, rows: readonly Bucket[]): string[] {
 }
 
 /**
+Each project and its runs, and how many rows predate project identity.
+*/
+function projectsLine(projects: readonly ProjectSummary[]): string {
+  const counts = projects
+    .map(({ project, runs }) => `${project} ${String(runs)}`)
+    .join(', ');
+  const legacy = projects.reduce((total, { legacy }) => total + legacy, 0);
+  return legacy === 0
+    ? `projects: ${counts}`
+    : `projects: ${counts} (${String(legacy)} row(s) predate project identity)`;
+}
+
+/**
+ * The dry-run tables: one pair for the window with a single project in it,
+ * else one per project -- a mix of suites in one table reads as contention.
+ * `--json` keeps the mixed pair either way.
+ */
+function bucketTables(stats: RunStats): string[] {
+  if (stats.projects.length <= 1) {
+    return [
+      ...bucketText('dry run by queue depth on arrival:', stats.byDepth),
+      ...bucketText('dry run by load at start:', stats.byLoad),
+    ];
+  }
+  return stats.projects.flatMap(({ project, byDepth, byLoad }) => [
+    ...bucketText(`dry run by queue depth on arrival, ${project}:`, byDepth),
+    ...bucketText(`dry run by load at start, ${project}:`, byLoad),
+  ]);
+}
+
+/**
 The summary as the lines `guardrails stats` prints.
 */
 export function formatStats(stats: RunStats): string {
@@ -360,6 +435,7 @@ export function formatStats(stats: RunStats): string {
   const { ships, locks } = stats;
   const lines = [
     `guardrails stats: ${String(stats.rows)} run(s) from ${stats.from} to ${stats.to}`,
+    projectsLine(stats.projects),
     ...Object.entries(stats.rungs).flatMap(([rung, summary]) =>
       rungText(rung, summary),
     ),
@@ -379,8 +455,7 @@ export function formatStats(stats: RunStats): string {
           ...spreadText('held the lock', locks.heldMs),
           `  commands: ${countsText(Object.fromEntries(locks.commands))}`,
         ]),
-    ...bucketText('dry run by queue depth on arrival:', stats.byDepth),
-    ...bucketText('dry run by load at start:', stats.byLoad),
+    ...bucketTables(stats),
   ];
   return `${lines.join('\n')}\n`;
 }
