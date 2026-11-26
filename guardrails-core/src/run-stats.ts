@@ -9,6 +9,11 @@
  * whether dry runs slow down as more runs queue or the machine loads up.
  */
 import type { GateRow, LockRow, RunRow, ShipRow } from './run-log.js';
+import {
+  summarizeTimeouts,
+  type TimeoutSummary,
+  timeoutLines,
+} from './timeout-stats.js';
 
 type StrykerPart = NonNullable<GateRow['stryker']>;
 
@@ -33,6 +38,10 @@ interface RungSummary {
   Why runs went cold, most common first.
   */
   coldReasons: [string, number][];
+  /**
+  What the runs' timeouts cost, when any run measured them (#236).
+  */
+  timeouts?: TimeoutSummary | undefined;
 }
 
 interface ShipSummary {
@@ -162,6 +171,7 @@ function rungSummary(rows: readonly GateRow[]): RungSummary {
     mutated: mutated.length,
     warm: mutated.length - cold.length,
     coldReasons: ranked(cold.map((stryker) => coldReason(stryker))),
+    timeouts: summarizeTimeouts(mutated),
   };
 }
 
@@ -299,6 +309,7 @@ function rungText(rung: string, summary: RungSummary): string[] {
             ([why, count]) => `    cold ${String(count)}×: ${why}`,
           ),
         ]),
+    ...timeoutLines(summary.timeouts, duration),
   ];
 }
 

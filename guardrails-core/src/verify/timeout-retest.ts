@@ -26,6 +26,7 @@
  * writes the files and runs stryker.
  */
 import { isRecord } from '../is-record.js';
+import { isHitLimitReason } from '../timeout-reason.js';
 import {
   type IncrementalCache,
   parseIncrementalCache,
@@ -41,8 +42,6 @@ import { isLocationInRanges } from './mutate-ranges.js';
 export const RETESTED_REASON =
   'it timed out in the full run but not when re-tested alone, so that ' +
   'timeout was the machine’s load, not this mutant';
-
-const HIT_LIMIT_PREFIX = 'Hit limit reached';
 
 /**
  * One end of a mutant's location as stryker's report writes it, or
@@ -140,11 +139,6 @@ export function timeoutKeys(cacheJson: string): Set<string> {
   );
 }
 
-function isHitLimit(raw: Readonly<Record<string, unknown>>): boolean {
-  const reason = raw.statusReason;
-  return typeof reason === 'string' && reason.startsWith(HIT_LIMIT_PREFIX);
-}
-
 interface RetestScope {
   /**
   The files this run mutates.
@@ -183,7 +177,7 @@ function isCandidate(each: KeyedMutant, scope: RetestScope): boolean {
   if (
     each.status !== 'Timeout' ||
     each.killedBy.length > 0 ||
-    isHitLimit(each.raw) ||
+    isHitLimitReason(each.raw.statusReason) ||
     scope.cachedTimeouts.has(each.key)
   ) {
     return false;

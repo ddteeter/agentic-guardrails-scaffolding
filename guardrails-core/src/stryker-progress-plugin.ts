@@ -27,6 +27,7 @@ import {
   PROGRESS_REPORTER,
   type RunSummary,
 } from './lock-holder.js';
+import { TimeoutMeter } from './timeout-meter.js';
 import { isRung } from './verify/analyzer-policy.js';
 
 /**
@@ -37,8 +38,9 @@ interface PlanReadyEvent {
 }
 
 /**
-The slice of stryker's `MutantResult` this reporter reads.
-*/
+ * The slice of stryker's `MutantResult` this reporter reads. The timeout
+ * meter reads more of it, defensively.
+ */
 interface TestedMutant {
   status: string;
 }
@@ -164,6 +166,10 @@ interface Target {
   file: string;
   holder: Holder;
   /**
+  What this run's timeouts cost (#236).
+  */
+  meter: TimeoutMeter;
+  /**
   Where the run summary goes (#176); absent when the env names no file.
   */
   summaryFile?: string | undefined;
@@ -172,7 +178,7 @@ interface Target {
 /**
 The holder this run writes, or `undefined` when the env does not ask for one.
 */
-function targetFrom(io: ProgressIo): Target | undefined {
+function targetFrom(io: ProgressIo, options: unknown): Target | undefined {
   const {
     GUARDRAILS_LOCK_HOLDER_FILE: file,
     GUARDRAILS_LOCK_RUNG: rung,
@@ -191,6 +197,7 @@ function targetFrom(io: ProgressIo): Target | undefined {
   return {
     file,
     summaryFile: summaryFile === '' ? undefined : summaryFile,
+    meter: new TimeoutMeter(repo, options),
     holder: {
       repo,
       rung,
@@ -221,9 +228,13 @@ export class ProgressReporter {
   #stopAbsorbing: (() => void) | undefined;
   #done = false;
 
-  constructor(io: ProgressIo) {
+  /**
+   * `options` is stryker's resolved options, read only for the timeout
+   * settings the run summary records (#236).
+   */
+  constructor(io: ProgressIo, options?: unknown) {
     this.#io = io;
-    const target = targetFrom(io);
+    const target = targetFrom(io, options);
     this.#target = target;
     if (target === undefined) {
       return;
@@ -272,19 +283,22 @@ export class ProgressReporter {
    * The run summary the gate reads after the run (#176): when the lock was
    * taken, the dry run ended and mutation ended, and the plan's counts.
    * Written at the plan and at the report, never throttled: two writes a run.
+   * The report's also says what the timeouts cost (#236).
    */
   #writeSummary(reportReadyAt?: number): void {
     const target = this.#target;
     if (target?.summaryFile === undefined) {
       return;
     }
-    const { holder } = target;
+    const { holder, meter } = target;
     const summary: RunSummary = {
       startedAt: holder.startedAt,
       planReadyAt: holder.mutatingSince,
       reportReadyAt,
       total: holder.total,
       reused: holder.reused,
+      timeouts: reportReadyAt === undefined ? undefined : meter.costs(),
+      settings: meter.settings(),
     };
     try {
       this.#io.write(target.summaryFile, JSON.stringify(summary));
@@ -293,7 +307,15 @@ export class ProgressReporter {
     }
   }
 
+  /**
+  The dry run's net time and overhead, which every mutant's timeout adds.
+  */
+  onDryRunCompleted(event: unknown): void {
+    this.#target?.meter.dryRunCompleted(event);
+  }
+
   onMutationTestingPlanReady(event: PlanReadyEvent): void {
+    this.#target?.meter.planReady(event, this.#io.now());
     this.#update((holder) => {
       holder.phase = 'mutating';
       holder.total = event.mutantPlans.length;
@@ -306,6 +328,7 @@ export class ProgressReporter {
   }
 
   onMutantTested(result: TestedMutant): void {
+    this.#target?.meter.tested(result, this.#io.now());
     this.#update((holder) => {
       holder.tested += 1;
       if (result.status === 'Survived') {
@@ -333,13 +356,15 @@ export class ProgressReporter {
 }
 
 /**
-The class stryker constructs: zero-arg, injecting nothing.
-*/
+ * The class stryker constructs, injecting its resolved options (the token
+ * `commonTokens.options` names, written out so nothing from stryker is
+ * imported).
+ */
 export class GuardrailsProgressReporter extends ProgressReporter {
-  static readonly inject = [] as const;
+  static readonly inject = ['options'] as const;
 
-  constructor() {
-    super(defaultIo());
+  constructor(options?: unknown) {
+    super(defaultIo(), options);
   }
 }
 

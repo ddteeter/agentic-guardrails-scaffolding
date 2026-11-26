@@ -487,3 +487,71 @@ describe('parseRunSummary (#176)', () => {
     ).toEqual({ startedAt: 1, reportReadyAt: 3, total: 0, reused: 0 });
   });
 });
+
+describe('parseRunSummary: what timeouts cost (#236)', () => {
+  const BASE = { startedAt: 1, total: 3, reused: 0 };
+  const TIMEOUTS = {
+    wallClock: 2,
+    hitLimit: 1,
+    budgetMs: 13_000,
+    wallClockGapMs: 22_000,
+    otherGapMs: 3000,
+    byFile: [{ file: 'src/table.ts', count: 2, firstLine: 3, lastLine: 9 }],
+  };
+  const SETTINGS = {
+    timeoutMS: 5000,
+    timeoutFactor: 1.5,
+    concurrency: 4,
+    dryRunNetMs: 1200,
+    dryRunOverheadMs: 90_000,
+  };
+
+  function parsed(extra: Record<string, unknown>): unknown {
+    return parseRunSummary(JSON.stringify({ ...BASE, ...extra }));
+  }
+
+  it('reads the timeouts and the settings the plugin writes', () => {
+    expect(parsed({ timeouts: TIMEOUTS, settings: SETTINGS })).toEqual({
+      ...BASE,
+      timeouts: TIMEOUTS,
+      settings: SETTINGS,
+    });
+  });
+
+  it('reads the settings it has, and drops one of the wrong kind', () => {
+    expect(
+      parsed({ settings: { timeoutMS: 5000, concurrency: '50%' } }),
+    ).toEqual({ ...BASE, settings: { timeoutMS: 5000 } });
+  });
+
+  it.each([
+    ['not an object', 'x'],
+    ['empty', {}],
+    ['of the wrong kind throughout', { timeoutMS: '1' }],
+  ])('drops settings that are %s', (_label, settings) => {
+    expect(parsed({ settings })).toEqual(BASE);
+  });
+
+  it.each([
+    ['not an object', 7],
+    ['missing a count', { ...TIMEOUTS, hitLimit: undefined }],
+    ['with a time of the wrong kind', { ...TIMEOUTS, budgetMs: '1' }],
+    ['with files that are not a list', { ...TIMEOUTS, byFile: {} }],
+  ])('drops timeouts %s', (_label, timeouts) => {
+    expect(parsed({ timeouts })).toEqual(BASE);
+  });
+
+  it('drops a file entry that is not all there, and keeps the rest', () => {
+    const byFile = [
+      TIMEOUTS.byFile[0],
+      { file: 'src/a.ts', count: 1, firstLine: 1 },
+      { file: 3, count: 1, firstLine: 1, lastLine: 1 },
+      'src/b.ts',
+      null,
+    ];
+    expect(parsed({ timeouts: { ...TIMEOUTS, byFile } })).toEqual({
+      ...BASE,
+      timeouts: TIMEOUTS,
+    });
+  });
+});

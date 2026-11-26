@@ -585,6 +585,29 @@ and how many were left. `0` turns the re-test off:
 ```
 
 The run log records `retested` and `rescored` for each run that re-tested.
+The re-test runs at concurrency 1, so its own timing is what its mutants cost
+one after another: the row also records `retestMutatingMs`, `retestBudgetMs`
+(the timeout budget stryker gave the mutants that timed out again, added up)
+and `retestTimedOut`. Their difference is what a timeout costs beyond its
+budget.
+
+**What a timeout costs (#236).** Stryker gives each mutant a timeout of
+`timeoutFactor × netTime + timeoutMS + the dry run's overhead`, where the
+overhead is the dry run's whole time less the time its tests ran: for vitest,
+mostly collecting and transforming the suite. The overhead cannot be
+configured, and it grows on a loaded machine, so every mutant's budget grows
+with it. After a wall-clock `Timeout` stryker also restarts its test runner
+process; a hit-limit one restarts nothing. On a locked run the progress
+plugin measures this, and the row's stryker part carries it as
+`timeoutCost` (wall-clock and hit-limit counts, the wall-clock ones' budget,
+the time each kind of result took, and the five files with the most
+wall-clock timeouts, with the first and last line they start on) and
+`timeoutSettings` (the `timeoutMS`, `timeoutFactor` and `concurrency` stryker
+resolved, and the dry run's net time and overhead). A result's time is the
+gap since the result before it, which is its own cost only at concurrency 1;
+above it, `guardrails stats` estimates from the budgets instead. File paths
+are relative to the repo and stay in the local run log. An unlocked run loads
+no plugin and records none of this.
 
 ## The clean-baseline prerequisite
 
@@ -1127,7 +1150,8 @@ far` rather than `another checkout holds it`. The command runs with
   per rung, the queue and hold times, the dry-run and mutating times
   (median and p90), how many runs started warm and why the rest went cold;
   per ship, the final states and the push, gate and CI times; per
-  `guardrails lock` run, the outcomes, queue and hold times and commands; and the
+  `guardrails lock` run, the outcomes, queue and hold times and commands; per
+  rung, what its timeouts cost (see "What a timeout costs"); and the
   dry-run time by queue depth on arrival and by load per core at the start,
   which is what decides whether the machine can afford more concurrent
   lanes. `--json` prints the same as JSON.

@@ -67,6 +67,24 @@ const GATE: GateRow = {
     noCoverage: 0,
     retested: 4,
     rescored: 1,
+    retestMutatingMs: 40_000,
+    retestBudgetMs: 24_000,
+    retestTimedOut: 3,
+    timeoutCost: {
+      wallClock: 5,
+      hitLimit: 1,
+      budgetMs: 600_000,
+      wallClockGapMs: 900_000,
+      otherGapMs: 400_000,
+      byFile: [{ file: 'src/table.ts', count: 5, firstLine: 12, lastLine: 80 }],
+    },
+    timeoutSettings: {
+      timeoutMS: 5000,
+      timeoutFactor: 1.5,
+      concurrency: 4,
+      dryRunNetMs: 30_000,
+      dryRunOverheadMs: 115_000,
+    },
     report: 'read',
   },
   machine: MACHINE,
@@ -184,6 +202,24 @@ describe('appendRun and parseRuns', () => {
     const [parsed] = parseRuns(JSON.stringify({ ...GATE, stryker }));
     expect(parsed).toEqual({ ...GATE, stryker: undefined });
     expect(parsed).not.toHaveProperty('stryker');
+  });
+
+  it('drops a timeout part that is malformed, and keeps the rest (#236)', () => {
+    const stryker = {
+      ...GATE.stryker,
+      timeoutCost: { wallClock: 'many' },
+      timeoutSettings: { timeoutMS: '5s' },
+      retestBudgetMs: '24s',
+    };
+    const [parsed] = parseRuns(JSON.stringify({ ...GATE, stryker }));
+    expect(parsed?.kind === 'gate' && parsed.stryker).toStrictEqual(
+      Object.fromEntries(
+        Object.entries(GATE.stryker ?? {}).filter(
+          ([key]) =>
+            !['timeoutCost', 'timeoutSettings', 'retestBudgetMs'].includes(key),
+        ),
+      ),
+    );
   });
 
   it('keeps a stryker part whose report went missing', () => {

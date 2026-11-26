@@ -39,6 +39,7 @@ const SIDECAR = path.join(
   'stryker-incremental.fingerprint.json',
 );
 const STRYKER_CONFIG = '{"testRunner":"vitest"}';
+const SUMMARY = path.join(ROOT, 'reports', 'guardrails-run.json');
 
 function sidecar(): string {
   const fingerprint = computeFingerprint({
@@ -112,6 +113,10 @@ interface StrykerCall {
   The process was killed by this signal.
   */
   signal?: NodeJS.Signals;
+  /**
+  The progress plugin's run summary it writes, as an object.
+  */
+  summary?: Record<string, unknown>;
 }
 
 function gate(
@@ -153,6 +158,9 @@ function gate(
     if (call.report !== undefined) {
       files.set(REPORT, call.report);
       files.set(CACHE, call.cache ?? call.report);
+    }
+    if (call.summary !== undefined) {
+      files.set(SUMMARY, JSON.stringify(call.summary));
     }
     return Promise.resolve({
       stdout: '',
@@ -267,6 +275,31 @@ function mutantsAt(cacheText: string | undefined): unknown[] {
   );
 }
 
+/**
+A run summary whose timeouts are `costs`, the rest zero.
+*/
+function summaryWith(
+  costs: Record<string, number>,
+  mutatingMs = 0,
+): Record<string, unknown> {
+  return {
+    startedAt: 1000,
+    planReadyAt: 2000,
+    reportReadyAt: 2000 + mutatingMs,
+    total: 1,
+    reused: 0,
+    timeouts: {
+      wallClock: 0,
+      hitLimit: 0,
+      budgetMs: 0,
+      wallClockGapMs: 0,
+      otherGapMs: 0,
+      byFile: [],
+      ...costs,
+    },
+  };
+}
+
 describe('a timed-out mutant is re-tested once, alone (#202)', () => {
   it('re-scores one that times out only under load as the survivor it is', async () => {
     const run = gate([
@@ -329,6 +362,60 @@ describe('a timed-out mutant is re-tested once, alone (#202)', () => {
       retested: 1,
       rescored: 0,
     });
+  });
+
+  it('records what the re-test measured, from its own summary (#236)', async () => {
+    const run = gate([
+      {
+        report: report(KILLED, TIMED_OUT),
+        summary: summaryWith({ wallClock: 1, budgetMs: 9000 }, 60_000),
+      },
+      {
+        report: report(KILLED, TIMED_OUT),
+        summary: summaryWith({ wallClock: 1, budgetMs: 4000 }, 7000),
+      },
+    ]);
+    await run.result;
+    expect(run.records[0]?.stryker).toMatchObject({
+      mutatingMs: 60_000,
+      timeoutCost: { wallClock: 1, budgetMs: 9000 },
+      retested: 1,
+      retestMutatingMs: 7000,
+      retestBudgetMs: 4000,
+      retestTimedOut: 1,
+    });
+  });
+
+  it('records no re-test measurement from the first run’s summary', async () => {
+    const run = gate([
+      {
+        report: report(KILLED, TIMED_OUT),
+        summary: summaryWith({ wallClock: 1, budgetMs: 9000 }, 60_000),
+      },
+      { report: report(KILLED, TIMED_OUT) },
+    ]);
+    await run.result;
+    const stryker = run.records[0]?.stryker;
+    expect(stryker).toMatchObject({ retested: 1, mutatingMs: 60_000 });
+    expect(stryker).not.toHaveProperty('retestMutatingMs');
+    expect(stryker).not.toHaveProperty('retestBudgetMs');
+    expect(stryker).not.toHaveProperty('retestTimedOut');
+  });
+
+  it('records no re-test measurement from a re-test stopped before its report', async () => {
+    const run = gate([
+      { report: report(KILLED, TIMED_OUT) },
+      {
+        report: report(KILLED, TIMED_OUT),
+        summary: { startedAt: 1000, planReadyAt: 2000, total: 1, reused: 0 },
+      },
+    ]);
+    await run.result;
+    const stryker = run.records[0]?.stryker;
+    expect(stryker).toMatchObject({ retested: 1 });
+    expect(stryker).not.toHaveProperty('retestMutatingMs');
+    expect(stryker).not.toHaveProperty('retestBudgetMs');
+    expect(stryker).not.toHaveProperty('retestTimedOut');
   });
 
   it('runs stryker once when no timeout qualifies', async () => {

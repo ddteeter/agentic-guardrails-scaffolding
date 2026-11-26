@@ -8,7 +8,12 @@
  * without the built plugin no summary, a crash no report -- and the record
  * then says only what it knows.
  */
-import { type RunSummary, parseRunSummary } from '../lock-holder.js';
+import {
+  parseRunSummary,
+  type RunSummary,
+  type TimeoutCosts,
+  type TimeoutSettings,
+} from '../lock-holder.js';
 import type { LockTiming } from '../mutation-lock.js';
 import type { CacheOutcome } from './prepare-cache.js';
 import { statusCounts } from './stryker-adapter.js';
@@ -44,6 +49,20 @@ interface StrykerRecord {
   Of those, the ones that did not time out again.
   */
   rescored?: number;
+  /**
+  What the re-test measured, alone (#236): see `RetestCounts`.
+  */
+  retestMutatingMs?: number;
+  retestBudgetMs?: number;
+  retestTimedOut?: number;
+  /**
+  What this run's timeouts cost, from the plugin's summary (#236).
+  */
+  timeoutCost?: TimeoutCosts;
+  /**
+  The settings its timeout budgets were made of (#236).
+  */
+  timeoutSettings?: TimeoutSettings;
   report: 'read' | 'missing';
 }
 
@@ -88,9 +107,47 @@ export interface MutationRunInputs {
 /**
 What a timeout re-test amounted to (#202).
 */
-export interface RetestCounts {
+export interface RetestCounts extends RetestMeasurement {
   retested: number;
   rescored: number;
+}
+
+/**
+ * What the re-test's own run summary says (#236). It runs at concurrency 1,
+ * so its mutating time is what its mutants cost, one after another, and
+ * against the budget stryker gave the ones that timed out again it shows
+ * what a timeout costs beyond its budget: the worker restart. Each is absent
+ * when the summary does not say.
+ */
+export interface RetestMeasurement {
+  /**
+  The re-test's mutating time.
+  */
+  retestMutatingMs?: number;
+  /**
+  The timeout budget of its wall-clock timeouts, added up.
+  */
+  retestBudgetMs?: number;
+  /**
+  Its wall-clock timeouts.
+  */
+  retestTimedOut?: number;
+}
+
+/**
+What the re-test's run summary, `summaryText`, measured.
+*/
+export function retestMeasurement(summaryText: string): RetestMeasurement {
+  const summary = parseRunSummary(summaryText);
+  const { mutatingMs } = phaseTimes(summary);
+  const costs = summary?.timeouts;
+  return {
+    ...(mutatingMs !== undefined && { retestMutatingMs: mutatingMs }),
+    ...(costs !== undefined && {
+      retestBudgetMs: costs.budgetMs,
+      retestTimedOut: costs.wallClock,
+    }),
+  };
 }
 
 /**
@@ -148,6 +205,10 @@ export function mutationRunRecord(
     files: inputs.files,
     cache: inputs.cache,
     ...phaseTimes(summary),
+    ...(summary?.timeouts !== undefined && { timeoutCost: summary.timeouts }),
+    ...(summary?.settings !== undefined && {
+      timeoutSettings: summary.settings,
+    }),
     ...(counts !== undefined && {
       mutants: counts.total,
       timeouts: counts.Timeout ?? 0,
