@@ -16,6 +16,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { type CliDependencies, runCommand } from '../src/cli-core.js';
 import { type Exec, type ExecResult, spawnExec } from '../src/exec.js';
+import { preflightFailedLine } from '../src/preflight.js';
 import { PUSH_GATE_ARGS } from '../src/push-hook.js';
 import { gateFailures } from '../src/ship.js';
 import {
@@ -6587,5 +6588,258 @@ describe('stats: the run log, summarized', () => {
   it('is listed in the usage', async () => {
     await runCommand('no-such-command', [], dependencies());
     expect(errors.join('')).toContain('stats [--since=');
+  });
+});
+
+function writeShipConfig(ship: unknown): void {
+  writeFileSync(
+    path.join(root, 'guardrails.config.json'),
+    JSON.stringify({ ship }),
+  );
+}
+
+describe('runCommand — ship with ship.preflight (#243)', () => {
+  it('runs the configured commands before the push gate', async () => {
+    writeShipConfig({ preflight: ['npm run lint'] });
+    const calls: string[] = [];
+    await runCommand(
+      'ship',
+      [],
+      dependencies({ exec: shipExec('pass', calls) }),
+    );
+    const preflight = calls.indexOf('sh -c npm run lint');
+    expect(preflight).toBeGreaterThan(-1);
+    expect(preflight).toBeLessThan(
+      calls.findIndex((line) => line.startsWith(process.execPath)),
+    );
+  });
+
+  it('stops on a failing command as preflight-failed, exit 1', async () => {
+    writeShipConfig({ preflight: ['npm run lint'] });
+    const inner = shipExec('pass');
+    const exec: Exec = (command, args, execOptions) =>
+      command === 'sh'
+        ? Promise.resolve({ stdout: '', stderr: 'lint failed', code: 1 })
+        : inner(command, args, execOptions);
+    expect(await runCommand('ship', [], dependencies({ exec }))).toBe(1);
+    expect(out.join('')).toContain(
+      'guardrails ship: preflight-failed — feat/x, PR #42 U; failing: npm run lint',
+    );
+  });
+
+  it('warns of a dropped entry in its summary', async () => {
+    writeShipConfig({ preflight: [7, 'npm run lint'] });
+    await runCommand('ship', [], dependencies({ exec: shipExec('pass') }));
+    expect(out.join('')).toContain(
+      '; warning: ship.preflight entry 1 is not a command; ignored',
+    );
+  });
+
+  it('says what preflight-failed is, and names the key, in --help', async () => {
+    await runCommand('ship', ['--help'], dependencies());
+    const printed = out.join('');
+    expect(printed).toContain('preflight-failed');
+    expect(printed).toContain('ship.preflight');
+  });
+});
+
+/**
+ * A git and sh where the tree fingerprints as `tree1`, every command passes
+ * unless `failing` names it, and every call is recorded.
+ */
+function preflightExec(
+  calls: string[],
+  failing: Record<string, ExecResult> = {},
+): Exec {
+  return (command, args) => {
+    const line = [command, ...args].join(' ');
+    calls.push(line);
+    const failed = failing[line];
+    if (failed !== undefined) {
+      return Promise.resolve(failed);
+    }
+    if (line === 'git rev-parse --git-path index') {
+      return Promise.resolve(ok('.git/index\n'));
+    }
+    if (line === 'git write-tree') {
+      return Promise.resolve(ok('tree1\n'));
+    }
+    if (line.startsWith('git merge-base')) {
+      return Promise.resolve(ok('base1\n'));
+    }
+    return Promise.resolve(ok(''));
+  };
+}
+
+function shLinesOf(calls: readonly string[]): string[] {
+  return calls.filter((line) => line.startsWith('sh -c'));
+}
+
+function preflightRecordFile(): string {
+  return path.join(root, '.guardrails', 'state', 'preflight-pass.json');
+}
+
+describe('runCommand — preflight (#243)', () => {
+  it('runs every command, records the pass and exits 0', async () => {
+    writeShipConfig({ preflight: ['npm run build', 'npm test'] });
+    const calls: string[] = [];
+    const code = await runCommand(
+      'preflight',
+      [],
+      dependencies({ exec: preflightExec(calls) }),
+    );
+    expect(code).toBe(0);
+    expect(shLinesOf(calls)).toEqual(['sh -c npm run build', 'sh -c npm test']);
+    expect(existsSync(preflightRecordFile())).toBe(true);
+    expect(errors.join('')).toBe(
+      'guardrails: preflight passed (2 command(s)).\n',
+    );
+  });
+
+  it('runs nothing with --mode=hook when the record covers the tree', async () => {
+    writeShipConfig({ preflight: ['npm test'] });
+    await runCommand(
+      'preflight',
+      [],
+      dependencies({ exec: preflightExec([]) }),
+    );
+    errors.length = 0;
+    const calls: string[] = [];
+    const code = await runCommand(
+      'preflight',
+      ['--mode=hook'],
+      dependencies({ exec: preflightExec(calls) }),
+    );
+    expect(code).toBe(0);
+    expect(shLinesOf(calls)).toEqual([]);
+    expect(errors.join('')).toBe(
+      'guardrails: preflight already passed on this tree; skipped.\n',
+    );
+  });
+
+  it('runs the commands without --mode=hook, even when the record covers the tree', async () => {
+    writeShipConfig({ preflight: ['npm test'] });
+    await runCommand(
+      'preflight',
+      [],
+      dependencies({ exec: preflightExec([]) }),
+    );
+    const calls: string[] = [];
+    await runCommand(
+      'preflight',
+      [],
+      dependencies({ exec: preflightExec(calls) }),
+    );
+    expect(shLinesOf(calls)).toEqual(['sh -c npm test']);
+  });
+
+  it('runs the commands with --mode=hook when there is no record', async () => {
+    writeShipConfig({ preflight: ['npm test'] });
+    const calls: string[] = [];
+    expect(
+      await runCommand(
+        'preflight',
+        ['--mode=hook'],
+        dependencies({ exec: preflightExec(calls) }),
+      ),
+    ).toBe(0);
+    expect(shLinesOf(calls)).toEqual(['sh -c npm test']);
+    expect(existsSync(preflightRecordFile())).toBe(true);
+  });
+
+  it('exits 1 on a failing command, with its output and the marker last', async () => {
+    writeShipConfig({ preflight: ['npm run build', 'npm test'] });
+    const calls: string[] = [];
+    const code = await runCommand(
+      'preflight',
+      ['--mode=hook'],
+      dependencies({
+        exec: preflightExec(calls, {
+          'sh -c npm run build': {
+            stdout: 'built\n',
+            stderr: 'boom\n',
+            code: 2,
+          },
+        }),
+      }),
+    );
+    expect(code).toBe(1);
+    expect(shLinesOf(calls)).toEqual(['sh -c npm run build']);
+    expect(errors.join('')).toBe(
+      'built\nboom\n' +
+        'guardrails: preflight "npm run build" exited 2.\n' +
+        `${preflightFailedLine('npm run build')}\n`,
+    );
+    expect(existsSync(preflightRecordFile())).toBe(false);
+  });
+
+  it('exits 1 on a command that was killed, with the marker last', async () => {
+    writeShipConfig({ preflight: ['npm test'] });
+    const code = await runCommand(
+      'preflight',
+      [],
+      dependencies({
+        exec: preflightExec([], {
+          'sh -c npm test': {
+            stdout: '',
+            stderr: '',
+            code: 0,
+            signal: 'SIGTERM',
+          },
+        }),
+      }),
+    );
+    expect(code).toBe(1);
+    expect(errors.join('')).toBe(
+      'guardrails: preflight "npm test" was ended by SIGTERM before it finished.\n' +
+        `${preflightFailedLine('npm test')}\n`,
+    );
+  });
+
+  it('exits 0 and asks nothing when nothing is configured', async () => {
+    const calls: string[] = [];
+    expect(
+      await runCommand(
+        'preflight',
+        ['--mode=hook'],
+        dependencies({ exec: preflightExec(calls) }),
+      ),
+    ).toBe(0);
+    expect(shLinesOf(calls)).toEqual([]);
+    expect(errors).toEqual([]);
+  });
+
+  it('warns of a dropped entry on stderr and runs the rest', async () => {
+    writeShipConfig({ preflight: ['', 'npm test'] });
+    const calls: string[] = [];
+    await runCommand(
+      'preflight',
+      [],
+      dependencies({ exec: preflightExec(calls) }),
+    );
+    expect(errors[0]).toBe(
+      'guardrails: ship.preflight entry 1 is not a command; ignored\n',
+    );
+    expect(shLinesOf(calls)).toEqual(['sh -c npm test']);
+  });
+
+  it('runs each command in the injected environment, not the process one', async () => {
+    writeShipConfig({ preflight: ['npm test'] });
+    const seen: (NodeJS.ProcessEnv | undefined)[] = [];
+    const inner = preflightExec([]);
+    const exec: Exec = (command, args, execOptions) => {
+      if (command === 'sh') {
+        seen.push(execOptions?.env);
+      }
+      return inner(command, args, execOptions);
+    };
+    const injected = { PREFLIGHT_PROBE: 'injected' };
+    await runCommand('preflight', [], dependencies({ exec, env: injected }));
+    expect(seen).toEqual([injected]);
+  });
+
+  it('is listed in the usage', async () => {
+    await runCommand('nope', [], dependencies());
+    expect(errors.join('')).toContain('  preflight [--mode=hook]\n');
   });
 });

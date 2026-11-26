@@ -105,6 +105,11 @@ import {
   stateDirectory,
   sweepStale,
 } from './state-store.js';
+import {
+  type PreflightRun,
+  preflightFailedLine,
+  runPreflight,
+} from './preflight.js';
 import { type PushGate, ship, shipSummary, writeShipStatus } from './ship.js';
 import { withHeartbeat } from './state.js';
 import { hasErrors, isViolation, type Violation } from './violation.js';
@@ -1784,7 +1789,7 @@ const SHIP_USAGE =
   '       [--force-with-lease] [--rerun-failed] [--attach=<file>[#alt]]...';
 
 /**
- * What `ship --help` prints: every flag, the five outcomes, and where the
+ * What `ship --help` prints: every flag, every outcome, and where the
  * outcome is written -- enough for an agent to run it without reading source.
  */
 const SHIP_HELP =
@@ -1793,7 +1798,10 @@ const SHIP_HELP =
   'write the outcome as JSON. Run it in the background; exit 0 only on green.\n' +
   'Runs the push gate first, with no connection to the remote open\n' +
   '(gate --mode=push, as the pre-push hook does); the hook then finds the\n' +
-  'pass and returns at once. Nothing is pushed unless the gate passed.\n\n' +
+  'pass and returns at once. Nothing is pushed unless the gate passed.\n' +
+  'Before the gate it runs ship.preflight from guardrails.config.json, if\n' +
+  'set: cheap commands, in order, the first failure stopping the ship as\n' +
+  'preflight-failed, with the command in failing and no wait for the lock.\n\n' +
   '  --body-file=<f>    open a missing PR with this body (default: gh --fill)\n' +
   '  --title=<t>        open a missing PR with this title; otherwise the body\n' +
   '                     file\'s first line when it is "# <title>" (stripped\n' +
@@ -1808,8 +1816,8 @@ const SHIP_HELP =
   '  --attach=<f>[#alt] attach an image or video (repeatable): on a new PR\n' +
   '                     with it, on an open one as a comment -- each run\n' +
   '                     posts again. A failed upload is a warning only.\n\n' +
-  'states: green | gate-blocked | lock-timeout | ci-red | behind |\n' +
-  '        conflicting | error\n' +
+  'states: green | preflight-failed | gate-blocked | lock-timeout | ci-red |\n' +
+  '        behind | conflicting | error\n' +
   'gate-blocked lists each finding in failing as <file>:<line> <rule>\n' +
   '(or <file>:<line> added <kind> for a suppression). A connection that\n' +
   'drops after the gate passed is an error that says so: ship again.\n' +
@@ -1850,7 +1858,7 @@ async function shipCommand(
     dependencies.stdout(SHIP_HELP);
     return 0;
   }
-  const { repoRoot, base } = await directContext(dependencies, rest);
+  const { repoRoot, config, base } = await directContext(dependencies, rest);
   const named = flag(rest, 'status-file');
   const statusPath =
     named === undefined
@@ -1872,13 +1880,85 @@ async function shipCommand(
     attach: flags(rest, 'attach').map((file) =>
       resolveAttachment(dependencies.cwd, file),
     ),
-    lockPath: machineLock(loadConfig(repoRoot).mutationLock).path,
+    preflight: {
+      commands: config.ship.preflight,
+      baseBranch: config.baseBranch,
+      warnings: config.ship.warnings,
+    },
+    lockPath: machineLock(config.mutationLock).path,
   });
   writeShipStatus(statusPath, status);
   dependencies.stdout(
     `${shipSummary(status, path.relative(repoRoot, statusPath))}\n`,
   );
   return status.state === 'green' ? 0 : 1;
+}
+
+/**
+ * What `guardrails preflight` prints for a run, and its exit code. Every
+ * stop ends on `preflightFailedLine`, which ship reads back out of a push
+ * the hook stopped.
+ */
+function reportPreflight(
+  dependencies: CliDependencies,
+  run: PreflightRun,
+  count: number,
+): number {
+  if (!('command' in run)) {
+    const said = PASSED_LINES[run.verdict];
+    if (said !== undefined) {
+      dependencies.stderr(said(count));
+    }
+    return 0;
+  }
+  const { result, command } = run;
+  const why =
+    run.verdict === 'failed' ? `exited ${String(result.code)}` : run.why;
+  dependencies.stderr(
+    `${result.stdout}${result.stderr}` +
+      `guardrails: preflight "${command}" ${why}.\n` +
+      `${preflightFailedLine(command)}\n`,
+  );
+  return 1;
+}
+
+/**
+What `guardrails preflight` says on a pass; nothing when nothing is set.
+*/
+const PASSED_LINES: Readonly<
+  Record<string, ((count: number) => string) | undefined>
+> = {
+  passed: (count) =>
+    `guardrails: preflight passed (${String(count)} command(s)).\n`,
+  remembered: () =>
+    'guardrails: preflight already passed on this tree; skipped.\n',
+};
+
+/**
+ * `preflight [--mode=hook]` (#243): run `ship.preflight`, the cheap checks
+ * before the push gate. The pre-push hook passes `--mode=hook`, which skips
+ * the commands when the pass record covers this tree -- as it does when ship
+ * ran them before its push. Run by hand it always runs them, and refreshes
+ * the record. Exit 1 when a command failed or reached no verdict.
+ */
+async function preflightCommand(
+  dependencies: CliDependencies,
+  rest: string[],
+): Promise<number> {
+  const repoRoot = await commandRepoRoot(dependencies);
+  const config = loadConfig(repoRoot);
+  for (const warning of config.ship.warnings) {
+    dependencies.stderr(`guardrails: ${warning}\n`);
+  }
+  const run = await runPreflight({
+    exec: dependencies.exec,
+    repoRoot,
+    baseBranch: config.baseBranch,
+    commands: config.ship.preflight,
+    env: dependencies.env ?? process.env,
+    remember: rest.includes('--mode=hook'),
+  });
+  return reportPreflight(dependencies, run, config.ship.preflight.length);
 }
 
 /**
@@ -2393,6 +2473,7 @@ const PLAIN_COMMANDS: ReadonlyMap<string, PlainCommand> = new Map<
   ['lock-status', lockStatusCommand],
   ['mutation-fingerprint', mutationFingerprintCommand],
   ['lock', lockCommand],
+  ['preflight', preflightCommand],
 ]);
 
 export async function runCommand(
@@ -2453,6 +2534,7 @@ export async function runCommand(
           '  verify [--base=<ref>]\n' +
           '  sanction [--from=<violations manifest>]\n' +
           `  ${SHIP_USAGE}\n` +
+          '  preflight [--mode=hook]\n' +
           '  lock [--timeout=<seconds>] -- <cmd> [args…]\n' +
           '  lock-status | mutation-fingerprint\n' +
           '  stats [--since=7d|24h|90m] [--repo=<name>] [--json]\n' +
