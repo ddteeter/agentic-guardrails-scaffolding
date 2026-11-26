@@ -3294,3 +3294,302 @@ describe('ship --rerun-failed (#198)', () => {
     });
   });
 });
+
+const PREFLIGHT_COMMANDS = ['npm run build', 'npm test'];
+
+function withPreflight(
+  exec: Exec,
+  commands: readonly string[] = PREFLIGHT_COMMANDS,
+  over: Partial<ShipOptions> = {},
+): ShipOptions {
+  return options(exec, {
+    preflight: { commands, baseBranch: 'main', warnings: [] },
+    ...over,
+  });
+}
+
+function preflightCalls(calls: readonly Call[]): string[] {
+  return calls
+    .filter((call) => call.line.startsWith('sh -c'))
+    .map((call) => call.line);
+}
+
+/**
+The git answers that give the tree a fingerprint, so a pass is recorded.
+*/
+const FINGERPRINTED: Record<string, ExecResult | ExecResult[]> = {
+  'git rev-parse --git-path index': ok('.git/index\n'),
+  'git write-tree': ok('tree1\n'),
+  'git merge-base main HEAD': ok('base1\n'),
+};
+
+function preflightRecord(): string {
+  return path.join(root, '.guardrails', 'state', 'preflight-pass.json');
+}
+
+describe('ship: preflight commands (#243)', () => {
+  it('runs each command in order, after the prechecks and before the gate', async () => {
+    const { exec, calls } = fakeExec(HAPPY);
+    const status = await ship(withPreflight(exec));
+    expect(status.state).toBe('green');
+    expect(preflightCalls(calls)).toEqual([
+      'sh -c npm run build',
+      'sh -c npm test',
+    ]);
+    const first = indexOf(calls, 'sh -c npm run build');
+    expect(first).toBeGreaterThan(
+      indexOf(calls, 'git merge-base --is-ancestor'),
+    );
+    expect(first).toBeGreaterThan(indexOf(calls, 'git status --porcelain'));
+    expect(indexOf(calls, 'sh -c npm test')).toBeLessThan(
+      indexOf(calls, GATE_LINE),
+    );
+    expect(
+      calls
+        .filter((call) => call.line.startsWith('sh -c'))
+        .map((call) => call.cwd),
+    ).toEqual([root, root]);
+  });
+
+  it('runs the commands in the gate’s environment, with stdin closed', async () => {
+    const seen: {
+      env: NodeJS.ProcessEnv | undefined;
+      input: string | undefined;
+    }[] = [];
+    const { exec: base } = fakeExec(HAPPY);
+    const exec: Exec = (command, args, execOptions) => {
+      if (command === 'sh') {
+        seen.push({ env: execOptions?.env, input: execOptions?.input });
+      }
+      return base(command, args, execOptions);
+    };
+    await ship(withPreflight(exec, ['npm test'], { shipId: 'ship-9' }));
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.env?.GUARDRAILS_SHIP_ID).toBe('ship-9');
+    expect(seen[0]?.input).toBe('');
+  });
+
+  it('stops on a command that fails: names it, keeps its tail, and gates nothing', async () => {
+    const printed = Array.from(
+      { length: 60 },
+      (_, index) => `line ${String(index)}`,
+    );
+    const { exec, calls } = fakeExec({
+      ...HAPPY,
+      'gh pr view': failed('no pull requests found'),
+      'sh -c npm run build': {
+        stdout: printed.join('\n'),
+        stderr: '',
+        code: 2,
+      },
+    });
+    const status = await ship(withPreflight(exec));
+    expect(status).toMatchObject({
+      state: 'preflight-failed',
+      failing: ['npm run build'],
+      pr: null,
+      url: null,
+    });
+    const tail = status.tail.split('\n');
+    expect(tail).toHaveLength(40);
+    expect(tail.at(-1)).toBe(
+      'guardrails ship: preflight "npm run build" exited 2. Nothing was ' +
+        'pushed; the gate did not run.',
+    );
+    expect(tail.at(-2)).toBe('line 59');
+    expect(indexOf(calls, GATE_LINE)).toBe(-1);
+    expect(indexOf(calls, 'git push')).toBe(-1);
+    expect(indexOf(calls, 'sh -c npm test')).toBe(-1);
+  });
+
+  it('still names the PR the branch already has when preflight fails', async () => {
+    const { exec } = fakeExec({
+      ...HAPPY,
+      'sh -c npm test': failed('1 failed'),
+    });
+    const status = await ship(withPreflight(exec));
+    expect(status).toMatchObject({
+      state: 'preflight-failed',
+      failing: ['npm test'],
+      pr: 42,
+      url: 'https://github.com/o/r/pull/42',
+    });
+  });
+
+  it.each([
+    [
+      'ended by a signal',
+      {
+        stdout: '',
+        stderr: '',
+        code: 0,
+        signal: 'SIGKILL',
+      } satisfies ExecResult,
+      'was ended by SIGKILL before it finished',
+    ],
+    [
+      'that could not start',
+      {
+        stdout: '',
+        stderr: 'spawn sh ENOENT',
+        code: 1,
+        spawnFailed: true,
+      } satisfies ExecResult,
+      'could not be started',
+    ],
+  ])(
+    'reads a command %s as an error, and gates nothing',
+    async (_label, result, why) => {
+      const { exec, calls } = fakeExec({
+        ...HAPPY,
+        'sh -c npm run build': result,
+      });
+      const status = await ship(withPreflight(exec));
+      expect(status).toMatchObject({ state: 'error', failing: [], pr: 42 });
+      expect(status.tail.split('\n').at(-1)).toBe(
+        `guardrails ship: preflight "npm run build" ${why}. Nothing was pushed; ` +
+          'the gate did not run.',
+      );
+      expect(indexOf(calls, GATE_LINE)).toBe(-1);
+      expect(indexOf(calls, 'git push')).toBe(-1);
+    },
+  );
+
+  it('runs nothing, and asks nothing more, for an empty or absent list', async () => {
+    const baseline = fakeExec(HAPPY);
+    await ship(options(baseline.exec));
+    const empty = fakeExec(HAPPY);
+    await ship(withPreflight(empty.exec, []));
+    expect(preflightCalls(empty.calls)).toEqual([]);
+    expect(empty.calls).toEqual(baseline.calls);
+  });
+
+  it('gates nothing when HEAD moved while the commands ran', async () => {
+    const { exec, calls } = fakeExec({
+      ...HAPPY,
+      'git rev-parse HEAD': [ok('abc123\n'), ok('def456\n')],
+    });
+    const status = await ship(withPreflight(exec));
+    expect(status).toMatchObject({ state: 'error', pr: 42 });
+    expect(status.tail).toContain('HEAD moved from abc123 to def456');
+    expect(status.tail).toContain('while preflight or the push gate ran');
+    expect(indexOf(calls, GATE_LINE)).toBe(-1);
+    expect(indexOf(calls, 'git push')).toBe(-1);
+  });
+
+  it('reports the entries the config dropped as warnings, first', async () => {
+    const dropped = ['ship.preflight entry 2 is not a command; ignored'];
+    const { exec } = fakeExec(HAPPY);
+    const status = await ship(
+      options(exec, {
+        preflight: {
+          commands: ['npm test'],
+          baseBranch: 'main',
+          warnings: dropped,
+        },
+      }),
+    );
+    expect(status.state).toBe('green');
+    expect(status.warnings[0]).toBe(dropped[0]);
+  });
+
+  it('keeps the dropped-entry warnings when preflight fails', async () => {
+    const dropped = ['ship.preflight entry 1 is not a command; ignored'];
+    const { exec } = fakeExec({ ...HAPPY, 'sh -c npm test': failed('red') });
+    const status = await ship(
+      options(exec, {
+        preflight: {
+          commands: ['npm test'],
+          baseBranch: 'main',
+          warnings: dropped,
+        },
+      }),
+    );
+    expect(status.state).toBe('preflight-failed');
+    expect(status.warnings).toEqual(dropped);
+  });
+
+  it('never runs preflight for --rerun-failed', async () => {
+    const { exec, calls } = fakeExec(HAPPY);
+    await ship(withPreflight(exec, PREFLIGHT_COMMANDS, { rerunFailed: true }));
+    expect(preflightCalls(calls)).toEqual([]);
+  });
+});
+
+describe('ship: the preflight pass record (#243)', () => {
+  it('records a pass, and a second ship of the same tree runs no command', async () => {
+    const first = fakeExec({ ...HAPPY, ...FINGERPRINTED });
+    await ship(withPreflight(first.exec));
+    expect(preflightCalls(first.calls)).toHaveLength(2);
+    expect(existsSync(preflightRecord())).toBe(true);
+
+    const second = fakeExec({ ...HAPPY, ...FINGERPRINTED });
+    const status = await ship(withPreflight(second.exec));
+    expect(status.state).toBe('green');
+    expect(preflightCalls(second.calls)).toEqual([]);
+    expect(indexOf(second.calls, GATE_LINE)).toBeGreaterThan(-1);
+  });
+
+  it('leaves the record as it was when a command fails', async () => {
+    const first = fakeExec({ ...HAPPY, ...FINGERPRINTED });
+    await ship(withPreflight(first.exec, ['npm test']));
+    const before = readFileSync(preflightRecord(), 'utf8');
+
+    const second = fakeExec({
+      ...HAPPY,
+      ...FINGERPRINTED,
+      'sh -c npm run build': failed('red'),
+    });
+    const status = await ship(withPreflight(second.exec));
+    expect(status.state).toBe('preflight-failed');
+    expect(readFileSync(preflightRecord(), 'utf8')).toBe(before);
+  });
+});
+
+describe('classifyPushFailure: a hook stopped by preflight (#243)', () => {
+  const STOPPED = 'guardrails: push stopped — preflight "npm test" failed';
+
+  it('reads the preflight line as preflight-failed', () => {
+    expect(classifyPushFailure(failed(`1 failed\n${STOPPED}`))).toBe(
+      'preflight-failed',
+    );
+  });
+
+  it('is still a gate block when the gate’s own line comes last', () => {
+    expect(
+      classifyPushFailure(
+        failed(
+          `${STOPPED}\nsrc/a.ts:1 [stryker/survived]\n` +
+            "guardrails: push blocked — resolve violations or run 'guardrails verify'.",
+        ),
+      ),
+    ).toBe('gate-blocked');
+  });
+
+  it('names the command the hook stopped on', async () => {
+    const { exec } = fakeExec({
+      ...HAPPY,
+      'git push': failed(
+        `1 failed\n${STOPPED}\nerror: failed to push some refs`,
+      ),
+    });
+    const status = await ship(options(exec));
+    expect(status).toMatchObject({
+      state: 'preflight-failed',
+      failing: ['npm test'],
+      pr: 42,
+    });
+  });
+
+  it('names nothing when the hook’s line carries no command', async () => {
+    const { exec } = fakeExec({
+      ...HAPPY,
+      'git push': failed(
+        'guardrails: push stopped — preflight\nerror: failed to push some refs',
+      ),
+    });
+    const status = await ship(options(exec));
+    expect(status.state).toBe('preflight-failed');
+    expect(status.failing).toEqual([]);
+  });
+});

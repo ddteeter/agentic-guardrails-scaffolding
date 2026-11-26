@@ -40,6 +40,12 @@ import { parseJsonText } from './json-file.js';
 import { logShipRun, type RunClock, startRun } from './gate-run-log.js';
 import { LOCK_TIMEOUT_EXIT, LOCK_TIMEOUT_MARKER } from './mutation-lock.js';
 import {
+  PREFLIGHT_FAILED_MARKER,
+  preflightFailedCommand,
+  type PreflightRun,
+  runPreflight,
+} from './preflight.js';
+import {
   splitTitleLine,
   titleTypeMismatch,
   type TypeMismatch,
@@ -48,6 +54,7 @@ import {
 type ShipState =
   | 'green'
   | 'gate-blocked'
+  | 'preflight-failed'
   | 'lock-timeout'
   | 'ci-red'
   | 'behind'
@@ -61,7 +68,8 @@ export interface ShipStatus {
   url: string | null;
   /**
   The checks that failed or were cancelled, on `ci-red`; the files that
-  conflict with the base, on `conflicting`.
+  conflict with the base, on `conflicting`; the command that failed, on
+  `preflight-failed`.
   */
   failing: string[];
   /**
@@ -145,6 +153,19 @@ export interface ShipOptions {
   it: on a new PR through `gh pr create`, on an open one as a comment.
   */
   attach?: readonly string[] | undefined;
+  /**
+   * `ship.preflight` (#243): commands run before the push gate, each from the
+   * repository root, stopping at the first to fail. `baseBranch` is the
+   * configured one, which the pre-push hook's `guardrails preflight` keys its
+   * pass record by too; `warnings` are the entries the config dropped.
+   */
+  preflight?:
+    | {
+        commands: readonly string[];
+        baseBranch: string;
+        warnings: readonly string[];
+      }
+    | undefined;
   now?: () => Date;
   /**
   Waits between looks for checks that have not registered; a seam for tests.
@@ -223,18 +244,39 @@ function tailOf(text: string): string {
  */
 export function classifyPushFailure(
   result: ExecResult,
-): 'gate-blocked' | 'lock-timeout' | 'error' {
+): 'gate-blocked' | 'preflight-failed' | 'lock-timeout' | 'error' {
   const text = output(result);
   if (text.includes(LOCK_TIMEOUT_MARKER)) {
     return 'lock-timeout';
   }
   const verdict = text
     .split('\n')
-    .findLast((line) => line.startsWith(GATE_BLOCK_MARKER));
+    .findLast(
+      (line) =>
+        line.startsWith(GATE_BLOCK_MARKER) ||
+        line.startsWith(PREFLIGHT_FAILED_MARKER),
+    );
   if (verdict === undefined || verdict.includes(NOT_INSTALLED_MARKER)) {
     return 'error';
   }
-  return 'gate-blocked';
+  return verdict.startsWith(PREFLIGHT_FAILED_MARKER)
+    ? 'preflight-failed'
+    : 'gate-blocked';
+}
+
+/**
+ * A preflight-failed outcome read out of a failed push's `text`: the hook's
+ * `guardrails preflight` named the command it stopped on (#243).
+ */
+function hookPreflightFailed(text: string): Outcome {
+  const command = text
+    .split('\n')
+    .map((line) => preflightFailedCommand(line))
+    .findLast((named) => named !== undefined);
+  return {
+    ...failure('preflight-failed', text),
+    failing: command === undefined ? [] : [command],
+  };
 }
 
 /**
@@ -556,11 +598,19 @@ function pushFailure(
 ): Promise<Outcome> {
   const state = classifyPushFailure(pushed);
   const text = pushFailureText(pushed, state);
-  return withExistingPullRequest(
-    options,
-    branch,
-    state === 'gate-blocked' ? gateBlocked(text) : failure(state, text),
-  );
+  return withExistingPullRequest(options, branch, pushOutcome(state, text));
+}
+
+/**
+A failed push's outcome, with what failed read out of its text.
+*/
+function pushOutcome(state: ShipState, text: string): Outcome {
+  if (state === 'gate-blocked') {
+    return gateBlocked(text);
+  }
+  return state === 'preflight-failed'
+    ? hookPreflightFailed(text)
+    : failure(state, text);
 }
 
 /**
@@ -643,10 +693,68 @@ async function headMoved(
     ? undefined
     : failure(
         'error',
-        `guardrails ship: HEAD moved from ${sha} to ${now} while the push ` +
-          `gate ran, so the gate did not check what would be pushed. Ship ` +
-          `again. ${NOTHING_PUSHED}`,
+        `guardrails ship: HEAD moved from ${sha} to ${now} while preflight ` +
+          `or the push gate ran, so they did not check what would be ` +
+          `pushed. Ship again. ${NOTHING_PUSHED}`,
       );
+}
+
+const PREFLIGHT_STOPPED = 'Nothing was pushed; the gate did not run.';
+
+/**
+ * What a preflight run says about going on to the gate: `undefined` to go
+ * on, or the outcome to stop on. A command that exited non-zero is
+ * `preflight-failed`; one that reached no verdict is an `error`.
+ */
+function preflightOutcome(run: PreflightRun): Outcome | undefined {
+  if (run.verdict === 'failed') {
+    const { command, result } = run;
+    return {
+      ...failure(
+        'preflight-failed',
+        `${output(result)}\nguardrails ship: preflight "${command}" exited ` +
+          `${String(result.code)}. ${PREFLIGHT_STOPPED}`,
+      ),
+      failing: [command],
+    };
+  }
+  if (run.verdict === 'error') {
+    return failure(
+      'error',
+      `${output(run.result)}\nguardrails ship: preflight "${run.command}" ` +
+        `${run.why}. ${PREFLIGHT_STOPPED}`,
+    );
+  }
+  return undefined;
+}
+
+/**
+ * Run `ship.preflight` before the gate (#243): `undefined` to go on to the
+ * gate, or the outcome to stop on. Nothing configured asks nothing. A pass
+ * is followed by the HEAD check, so a command that commits cannot lead into
+ * a gate of another commit.
+ */
+async function preflightStop(
+  options: ShipOptions,
+  branch: string,
+  sha: string,
+): Promise<Outcome | undefined> {
+  const { preflight } = options;
+  if (preflight === undefined || preflight.commands.length === 0) {
+    return undefined;
+  }
+  const run = await runPreflight({
+    exec: options.exec,
+    repoRoot: options.repoRoot,
+    baseBranch: preflight.baseBranch,
+    commands: preflight.commands,
+    env: gateEnvironment(options),
+    remember: true,
+  });
+  const verdict = preflightOutcome(run) ?? (await headMoved(options, sha));
+  return verdict === undefined
+    ? undefined
+    : withExistingPullRequest(options, branch, verdict);
 }
 
 /**
@@ -1548,7 +1656,23 @@ async function settleWithWarnings(
   return { ...settled, warnings: [...earlier, ...settled.warnings] };
 }
 
+/**
+ * A ship of the branch, with the `ship.preflight` entries the config
+ * dropped warned of first, however it ended.
+ */
 async function shipOutcome(
+  options: ShipOptions,
+  branch: string,
+  times: ShipTimes,
+): Promise<Finished> {
+  const finished = await pushAndWatch(options, branch, times);
+  return {
+    ...finished,
+    warnings: [...(options.preflight?.warnings ?? []), ...finished.warnings],
+  };
+}
+
+async function pushAndWatch(
   options: ShipOptions,
   branch: string,
   times: ShipTimes,
@@ -1558,6 +1682,10 @@ async function shipOutcome(
     return stopped(ready);
   }
   const { sha } = ready;
+  const preflightStopped = await preflightStop(options, branch, sha);
+  if (preflightStopped !== undefined) {
+    return stopped(preflightStopped);
+  }
   const now = clockOf(options);
   const pushStart = now();
   const pushed = await gateThenPush(options, branch, sha);
