@@ -1015,8 +1015,9 @@ ship.log 2>&1 &`), finish the task, and let whoever started the agent read
   waits with `gh pr checks --watch --fail-fast`, and writes
   `.guardrails/state/ship-status.json` (`--status-file=<f>` to move it):
   `{state, branch, pr, url, failing, tail, finishedAt, warnings, diagnosis}`. `state` is
-  `green`, `gate-blocked`, `lock-timeout`, `ci-red` (with the failing check
-  names), `behind`, `conflicting` (with the conflicted files) or `error`. It
+  `green`, `preflight-failed` (with the failing command), `gate-blocked`,
+  `lock-timeout`, `ci-red` (with the failing check names), `behind`,
+  `conflicting` (with the conflicted files) or `error`. It
   prints one line and exits 0 only on green. The watch ends at the first
   failed check, so `ci-red` names it while slower checks are still running.
   Before pushing, and so before the gate lock, ship fetches the base and
@@ -1071,6 +1072,53 @@ ship.log 2>&1 &`), finish the task, and let whoever started the agent read
   `gh`, authenticated, and checks that before pushing: a missing or logged-out
   `gh` is an `error` that says how to fix it, and nothing is pushed.
   `ship --help` prints all of this and pushes nothing.
+- **Cheap checks before the gate (`ship.preflight`).** The push gate waits
+  for the machine-wide lock, so a check that runs after it -- a build, a fast
+  test run, chained after `sh .githooks/pre-push` in your own hook -- is found
+  red only once the lane has paid for that wait. List such checks in
+  `guardrails.config.json` instead:
+
+  ```json
+  { "ship": { "preflight": ["npm run build", "npm test"] } }
+  ```
+
+  ship runs them after its own checks (gh, the body file, the base) and
+  before the gate, each with `sh -c` from the repository root and stdin
+  closed, in order, stopping at the first to fail. One that exits non-zero
+  ends the ship as `preflight-failed`: `failing` names the command, `tail`
+  holds the last 40 lines of its output, and nothing is pushed or gated. One
+  that is killed or cannot start is `error`. After they pass, HEAD must
+  still be the commit ship is about to gate. An entry that is not a
+  non-blank string is dropped and named in `warnings`. Missing, empty or
+  malformed, the key runs nothing, and ship behaves as before.
+  `--rerun-failed` never runs them. A lane acts on `preflight-failed` the
+  way it acts on `gate-blocked`: it fixes what the command reported, commits,
+  and ships again.
+
+  The scaffolded pre-push hook runs the same list with
+  `guardrails preflight --mode=hook`, before its gate line, so a plain
+  `git push` checks it too. A pass is recorded in
+  `.guardrails/state/preflight-pass.json`, keyed by the tree fingerprint
+  (tracked and untracked files, the merge-base, the guardrails-core version),
+  the base ref, a hash of the command list and the Node version. It is
+  written only when every command passed and the tree was the same after
+  them as before. With `--mode=hook` a matching record skips the commands,
+  which is what happens when ship's push fires the hook, and ship itself
+  honours it, so a ship retried on the same tree skips them too.
+  `guardrails preflight` without the flag always runs them and refreshes the
+  record. It exits 0 when they passed, when nothing is configured, or (hook
+  mode) when the record matched; it exits 1 when one failed, was killed or
+  could not start, ending its output with
+  `guardrails: push stopped — preflight "<cmd>" failed`, which ship reads
+  as `preflight-failed` if the hook stops a push.
+
+  Limits: the record cannot see environment variables, the network, or
+  tools outside the repository, so a command whose result depends on them
+  does not belong in the list; CI stays authoritative. A message-only amend
+  keeps the record (the tree is the same); an amend that changes content
+  runs the commands again. A command that reads output an earlier hook step
+  writes (a coverage report, say) must not move ahead of that step.
+
 - **A new pull request's title** is `--title=<t>` when given, else the body
   file's first line when it is `# <title>` (that line is dropped from the
   body), else the last commit's subject. Ship sets it only when it opens the
@@ -1222,7 +1270,8 @@ makes pushes take turns, so each lane ships itself:
 
 - A lane ships with `guardrails ship --body-file=<f>` under
   `run_in_background`, ends its turn, and is woken once with one status.
-- A lane that is still active fixes its own `gate-blocked` or `ci-red` from
+- A lane that is still active fixes its own `preflight-failed`,
+  `gate-blocked` or `ci-red` from
   the status file's `tail` and `failing`. On `lock-timeout` it runs
   `guardrails ship` again, which re-queues. On `behind` or `conflicting` it
   rebases onto the base and ships again with `--force-with-lease` if the
