@@ -92,6 +92,39 @@ export async function branchOf(
 }
 
 /**
+ * The clone a git common directory belongs to: the folder holding `.git`,
+ * or the directory's own name less a trailing `.git` -- a bare repository's
+ * `foo.git`, a submodule's `.git/modules/lib`.
+ */
+function cloneNameOf(commonDirectory: string): string {
+  const base = path.basename(commonDirectory);
+  if (base === '.git') {
+    return path.basename(path.dirname(commonDirectory));
+  }
+  return base.endsWith('.git') ? base.slice(0, -'.git'.length) : base;
+}
+
+/**
+ * The project a checkout belongs to (#236): one name for every worktree of a
+ * clone, where the folder name differs per lane. Always a basename, never a
+ * path; the folder's own name when git cannot say.
+ */
+export async function projectName(
+  exec: Exec,
+  repoRoot: string,
+): Promise<string> {
+  const result = await exec('git', ['rev-parse', '--git-common-dir'], {
+    cwd: repoRoot,
+  });
+  // An empty answer resolves to `repoRoot` itself, and so to its name.
+  const name =
+    result.code === 0
+      ? cloneNameOf(path.resolve(repoRoot, result.stdout.trim()))
+      : '';
+  return name === '' ? path.basename(repoRoot) : name;
+}
+
+/**
 Append this gate's row, when it should have one.
 */
 export async function logGateRun(input: GateRunInput): Promise<void> {

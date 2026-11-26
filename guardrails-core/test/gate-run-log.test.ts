@@ -17,6 +17,7 @@ import {
   logGateRun,
   logLockRun,
   logShipRun,
+  projectName,
   type RunClock,
   startRun,
 } from '../src/gate-run-log.js';
@@ -482,4 +483,60 @@ describe('logLockRun (#201)', () => {
       /^guardrails: could not write the run log \(.*(EACCES|permission).*\)\.$/i,
     );
   });
+});
+
+describe('projectName (#236)', () => {
+  function commonDirectory(stdout: string, code = 0): Exec {
+    return () => Promise.resolve({ stdout, stderr: '', code });
+  }
+
+  it.each<[string, Exec, string]>([
+    ['an absolute .git', commonDirectory('/x/main/.git\n'), 'main'],
+    [
+      'a relative .git, resolved against the repository',
+      commonDirectory('.git\n'),
+      'app',
+    ],
+    ['a bare repository', commonDirectory('/x/foo.git\n'), 'foo'],
+    [
+      'a submodule’s modules folder',
+      commonDirectory('/x/main/.git/modules/lib\n'),
+      'lib',
+    ],
+    [
+      'a relative submodule folder',
+      commonDirectory('../.git/modules/lib\n'),
+      'lib',
+    ],
+    ['git failing', commonDirectory('fatal: not a git repository', 128), 'app'],
+    ['git printing nothing', commonDirectory('\n'), 'app'],
+  ])('names the project from %s', async (_label, exec, name) => {
+    await expect(projectName(exec, '/work/lanes/app')).resolves.toBe(name);
+  });
+
+  it('names a linked worktree by the clone it belongs to', async () => {
+    const exec = commonDirectory('/work/main/.git\n');
+    await expect(
+      projectName(exec, '/work/main/.claude/worktrees/lane-1'),
+    ).resolves.toBe('main');
+  });
+
+  it('asks git for the common directory in the repository it names', async () => {
+    const asked: string[] = [];
+    const exec: Exec = (command, args, options) => {
+      asked.push([command, ...args, options?.cwd].join(' '));
+      return Promise.resolve({ stdout: '.git\n', stderr: '', code: 0 });
+    };
+    await projectName(exec, '/work/app');
+    expect(asked).toEqual(['git rev-parse --git-common-dir /work/app']);
+  });
+
+  it.each(['/x/a/b/.git', '/x/a/b.git', '.git', '/x/.git/modules/a', '/'])(
+    'answers a name with no path separator for %s',
+    async (stdout) => {
+      const name = await projectName(commonDirectory(stdout), '/work/app');
+      expect(name).not.toContain(path.sep);
+      expect(name).not.toBe('');
+    },
+  );
 });
