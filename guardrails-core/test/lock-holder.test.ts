@@ -555,3 +555,103 @@ describe('parseRunSummary: what timeouts cost (#236)', () => {
     });
   });
 });
+
+describe('parseRunSummary: what the dry run ran (#200)', () => {
+  const BASE = { startedAt: 1, total: 3, reused: 0 };
+
+  function parsed(extra: Record<string, unknown>): unknown {
+    return parseRunSummary(JSON.stringify({ ...BASE, ...extra }));
+  }
+
+  it('reads the dry run’s test and file counts', () => {
+    expect(parsed({ dryRunCounts: { tests: 40, testFiles: 6 } })).toEqual({
+      ...BASE,
+      dryRunCounts: { tests: 40, testFiles: 6 },
+    });
+  });
+
+  it('reads a test count without a file count', () => {
+    expect(parsed({ dryRunCounts: { tests: 40 } })).toEqual({
+      ...BASE,
+      dryRunCounts: { tests: 40 },
+    });
+  });
+
+  it.each([
+    ['not an object', 4],
+    ['without a test count', { testFiles: 2 }],
+    ['with a test count of the wrong kind', { tests: '4' }],
+  ])('drops dry-run counts that are %s', (_label, dryRunCounts) => {
+    expect(parsed({ dryRunCounts })).toEqual(BASE);
+  });
+
+  it('drops a file count of the wrong kind, and keeps the test count', () => {
+    expect(parsed({ dryRunCounts: { tests: 4, testFiles: '2' } })).toEqual({
+      ...BASE,
+      dryRunCounts: { tests: 4 },
+    });
+  });
+});
+
+describe('parseRunSummary: what the mutants stryker ran amounted to (#200)', () => {
+  const BASE = { startedAt: 1, total: 3, reused: 0 };
+  const RUNS = {
+    ran: 3,
+    testsCompleted: 45,
+    coveredBy: 6,
+    withCoveredBy: 2,
+    static: 1,
+    byMutator: {
+      ConditionalExpression: { Killed: 1, Survived: 1 },
+      StringLiteral: { Killed: 1 },
+    },
+  };
+
+  function parsed(extra: Record<string, unknown>): unknown {
+    return parseRunSummary(JSON.stringify({ ...BASE, ...extra }));
+  }
+
+  it('reads the tallies the plugin writes', () => {
+    expect(parsed({ mutantRuns: RUNS })).toEqual({
+      ...BASE,
+      mutantRuns: RUNS,
+    });
+  });
+
+  it.each([
+    ['not an object', 'runs'],
+    ['missing a count', { ...RUNS, static: undefined }],
+    ['with a count of the wrong kind', { ...RUNS, testsCompleted: '45' }],
+    ['with a mutator table that is not an object', { ...RUNS, byMutator: [] }],
+  ])('drops tallies %s', (_label, mutantRuns) => {
+    expect(parsed({ mutantRuns })).toEqual(BASE);
+  });
+
+  it('drops a status count that is not a number, and a mutator left with none', () => {
+    const byMutator = {
+      ConditionalExpression: { Killed: 1, Survived: 'one' },
+      StringLiteral: { Killed: null },
+      BooleanLiteral: 'Killed',
+      // An array's entries are numbered counts, so only the object check drops it.
+      ArrayDeclaration: [1, 2],
+      // `Object.entries` throws on null, so the object check must come first.
+      ObjectLiteral: null,
+    };
+    expect(parsed({ mutantRuns: { ...RUNS, byMutator } })).toEqual({
+      ...BASE,
+      mutantRuns: {
+        ...RUNS,
+        byMutator: { ConditionalExpression: { Killed: 1 } },
+      },
+    });
+  });
+
+  it('reads a mutator named like a prototype as a plain entry', () => {
+    const summary = parseRunSummary(
+      `{"startedAt":1,"total":1,"reused":0,"mutantRuns":{"ran":1,"testsCompleted":1,"coveredBy":0,"withCoveredBy":0,"static":0,"byMutator":{"__proto__":{"Killed":1}}}}`,
+    );
+    const byMutator = summary?.mutantRuns?.byMutator ?? {};
+    expect(Object.entries(byMutator)).toEqual([['__proto__', { Killed: 1 }]]);
+    expect(Object.getPrototypeOf(byMutator)).toBe(Object.prototype);
+  });
+});

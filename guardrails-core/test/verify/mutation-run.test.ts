@@ -223,6 +223,51 @@ describe('mutationRunRecord', () => {
     });
   });
 
+  it('copies what the dry run ran from the summary (#200)', () => {
+    const record = mutationRunRecord({
+      files: 1,
+      cache: CACHE,
+      didRun: true,
+      summaryText: JSON.stringify({
+        ...JSON.parse(SUMMARY),
+        dryRunCounts: { tests: 12, testFiles: 3 },
+      }),
+      reportText: REPORT,
+    });
+    expect(record.stryker.dryRunCounts).toEqual({ tests: 12, testFiles: 3 });
+  });
+
+  it('copies what the mutants stryker ran amounted to (#200)', () => {
+    const mutantRuns = {
+      ran: 2,
+      testsCompleted: 7,
+      coveredBy: 5,
+      withCoveredBy: 2,
+      static: 0,
+      byMutator: { StringLiteral: { Killed: 2 } },
+    };
+    const record = mutationRunRecord({
+      files: 1,
+      cache: CACHE,
+      didRun: true,
+      summaryText: JSON.stringify({ ...JSON.parse(SUMMARY), mutantRuns }),
+      reportText: REPORT,
+    });
+    expect(record.stryker.mutantRuns).toEqual(mutantRuns);
+  });
+
+  it('says nothing of dry-run counts or mutant runs a summary does not hold', () => {
+    const record = mutationRunRecord({
+      files: 1,
+      cache: CACHE,
+      didRun: true,
+      summaryText: SUMMARY,
+      reportText: REPORT,
+    });
+    expect(record.stryker).not.toHaveProperty('dryRunCounts');
+    expect(record.stryker).not.toHaveProperty('mutantRuns');
+  });
+
   it('says nothing of timeout costs a summary does not hold', () => {
     const record = mutationRunRecord({
       files: 1,

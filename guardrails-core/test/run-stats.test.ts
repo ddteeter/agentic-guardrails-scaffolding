@@ -150,6 +150,7 @@ describe('summarizeRuns', () => {
       mutated: 3,
       warm: 2,
       coldReasons: [['different stryker options', 1]],
+      work: { share: { dryRunMs: 490_000, heldMs: 1_100_000, runs: 3 } },
     });
     expect(appStats().rungs.commit).toMatchObject({
       runs: 1,
@@ -338,6 +339,7 @@ describe('formatStats', () => {
         '  held the lock: median 5m00s, p90 5m00s',
         '  dry run: median 30s, p90 1m30s',
         '  mutating: median 3m20s, p90 3m20s',
+        '  dry run’s share of the lock held: 20% over 2 run(s)',
         '  started warm: 1 of 2',
         '    cold 1×: a reason',
         'ship: 1 run(s) (green 1)',

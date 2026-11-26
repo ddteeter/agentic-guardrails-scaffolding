@@ -609,6 +609,29 @@ above it, `guardrails stats` estimates from the budgets instead. File paths
 are relative to the repo and stay in the local run log. An unlocked run loads
 no plugin and records none of this.
 
+**What the dry run and each mutant run did (#200).** The same plugin also
+records two counts-only parts in the row's stryker part. `dryRunCounts` is
+how many tests stryker's dry run ran (`tests`) and in how many distinct files
+(`testFiles`, absent when no test named its file). `mutantRuns` covers the
+mutants stryker ran — not those reused from a cache or settled early: how
+many (`ran`), the tests they ran added up (`testsCompleted`), their covering
+tests added up (`coveredBy`) over the mutants that listed them
+(`withCoveredBy`, so `coveredBy / withCoveredBy` is the mean), how many were
+static (`static`: reached only as modules load, so stryker runs every test
+for one), and `byMutator`, each stryker mutator name with its count per
+status. No test name and no path is kept. `guardrails stats` prints, per
+rung, the dry run's share of the lock time held (`dryRunMs` against
+`lock.heldMs`, so older rows count too), the median tests per gate in the
+dry run and in mutant runs, and the mutants run by mutator and status.
+
+The dry run is already limited to related tests: the vitest runner's
+`related` option is on by default, so vitest runs only the specs whose
+imports reach a mutated file. What it still pays for is walking every spec's
+import graph to find them. Stryker's `--testFiles` would skip that walk, but
+it also makes stryker activate every mutant at runtime, which lets a static
+mutant survive tests that would kill it; `test/drift/stryker-related-dry-run.test.ts`
+pins both. The gate does not use `--testFiles`.
+
 ## The clean-baseline prerequisite
 
 **Run `guardrails verify` clean before turning the gate on.** tsc, knip, and

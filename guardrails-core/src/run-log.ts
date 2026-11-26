@@ -19,6 +19,12 @@ import {
   type TimeoutSettings,
   timeoutSettingsOf,
 } from './lock-holder.js';
+import {
+  type DryRunCounts,
+  dryRunCountsOf,
+  type MutantRuns,
+  mutantRunsOf,
+} from './mutant-work.js';
 
 export interface MachineSample {
   load1: number;
@@ -98,6 +104,14 @@ interface StrykerPart {
   The settings its timeout budgets were made of (#236).
   */
   timeoutSettings?: TimeoutSettings | undefined;
+  /**
+  How many tests the dry run ran, and in how many files (#200).
+  */
+  dryRunCounts?: DryRunCounts | undefined;
+  /**
+  What the mutants stryker ran amounted to (#200).
+  */
+  mutantRuns?: MutantRuns | undefined;
   /**
   Whether stryker's JSON report could be read for the counts.
   */
@@ -344,6 +358,8 @@ function strykerOf(value: unknown): StrykerPart | undefined {
     ),
     timeoutCost: timeoutCostsOf(value.timeoutCost),
     timeoutSettings: timeoutSettingsOf(value.timeoutSettings),
+    dryRunCounts: dryRunCountsOf(value.dryRunCounts),
+    mutantRuns: mutantRunsOf(value.mutantRuns),
     report,
   };
 }

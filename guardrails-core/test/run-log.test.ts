@@ -85,6 +85,18 @@ const GATE: GateRow = {
       dryRunNetMs: 30_000,
       dryRunOverheadMs: 115_000,
     },
+    dryRunCounts: { tests: 1840, testFiles: 212 },
+    mutantRuns: {
+      ran: 32,
+      testsCompleted: 410,
+      coveredBy: 960,
+      withCoveredBy: 30,
+      static: 2,
+      byMutator: {
+        ConditionalExpression: { Killed: 20, Timeout: 2 },
+        StringLiteral: { Killed: 10 },
+      },
+    },
     report: 'read',
   },
   machine: MACHINE,
@@ -217,6 +229,22 @@ describe('appendRun and parseRuns', () => {
         Object.entries(GATE.stryker ?? {}).filter(
           ([key]) =>
             !['timeoutCost', 'timeoutSettings', 'retestBudgetMs'].includes(key),
+        ),
+      ),
+    );
+  });
+
+  it('drops dry-run counts that are malformed, and keeps the rest (#200)', () => {
+    const stryker = {
+      ...GATE.stryker,
+      dryRunCounts: { tests: 'many' },
+      mutantRuns: { ran: 'some' },
+    };
+    const [parsed] = parseRuns(JSON.stringify({ ...GATE, stryker }));
+    expect(parsed?.kind === 'gate' && parsed.stryker).toStrictEqual(
+      Object.fromEntries(
+        Object.entries(GATE.stryker ?? {}).filter(
+          ([key]) => !['dryRunCounts', 'mutantRuns'].includes(key),
         ),
       ),
     );

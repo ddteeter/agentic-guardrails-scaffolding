@@ -397,6 +397,14 @@ describe('ProgressReporter: the run summary (#176)', () => {
           otherGapMs: 0,
           byFile: [],
         },
+        mutantRuns: {
+          ran: 0,
+          testsCompleted: 0,
+          coveredBy: 0,
+          withCoveredBy: 0,
+          static: 0,
+          byMutator: {},
+        },
       },
     ]);
   });
@@ -718,6 +726,87 @@ describe('ProgressReporter: what timeouts cost (#236)', () => {
     reporter.onMutantTested(result('1', 'Timeout'));
     reporter.onMutationTestReportReady(...report);
     expect(summaries).toEqual([]);
+  });
+});
+
+describe('ProgressReporter: what the dry run and each mutant run did (#200)', () => {
+  const SUMMARY_FILE = '/repo/reports/guardrails-run.json';
+
+  function metered(): {
+    reporter: ProgressReporter;
+    summaries: Record<string, unknown>[];
+  } {
+    const summaries: Record<string, unknown>[] = [];
+    const f = fake(
+      { ...LOCK_ENV, GUARDRAILS_RUN_SUMMARY_FILE: SUMMARY_FILE },
+      {
+        write: (filePath, content) => {
+          if (filePath === SUMMARY_FILE) {
+            summaries.push(JSON.parse(content) as Record<string, unknown>);
+          }
+        },
+      },
+    );
+    return { reporter: new ProgressReporter(f.io), summaries };
+  }
+
+  it('records how many tests the dry run ran, and in how many files', () => {
+    const { reporter, summaries } = metered();
+    reporter.onDryRunCompleted({
+      result: {
+        tests: [
+          { id: '1', name: 'one', timeSpentMs: 1, fileName: '/r/a.test.ts' },
+          { id: '2', name: 'two', timeSpentMs: 1, fileName: '/r/a.test.ts' },
+          { id: '3', name: 'three', timeSpentMs: 1, fileName: '/r/b.test.ts' },
+        ],
+      },
+      timing: { net: 3, overhead: 10 },
+    });
+    reporter.onMutationTestingPlanReady(plans(1, 0));
+    reporter.onMutationTestReportReady(...report);
+    expect(summaries).toHaveLength(2);
+    for (const summary of summaries) {
+      expect(summary.dryRunCounts).toEqual({ tests: 3, testFiles: 2 });
+    }
+  });
+
+  it('records, at the report only, what the mutants stryker ran amounted to', () => {
+    const { reporter, summaries } = metered();
+    const mutantPlans: ({ plan: string } & Record<string, unknown>)[] = [
+      { plan: 'Run', mutant: { id: '1' }, runOptions: { timeout: 1 } },
+      { plan: 'EarlyResult', mutant: { id: '2' } },
+    ];
+    reporter.onMutationTestingPlanReady({ mutantPlans });
+    const results: ({ status: string } & Record<string, unknown>)[] = [
+      { id: '2', status: 'Killed', mutatorName: 'StringLiteral' },
+      {
+        id: '1',
+        status: 'Survived',
+        mutatorName: 'EqualityOperator',
+        testsCompleted: 4,
+        coveredBy: ['a', 'b'],
+        static: false,
+      },
+    ];
+    for (const each of results) {
+      reporter.onMutantTested(each);
+    }
+    expect(summaries.at(-1)).not.toHaveProperty('mutantRuns');
+    reporter.onMutationTestReportReady(...report);
+    expect(summaries.at(-1)?.mutantRuns).toEqual({
+      ran: 1,
+      testsCompleted: 4,
+      coveredBy: 2,
+      withCoveredBy: 1,
+      static: 0,
+      byMutator: { EqualityOperator: { Survived: 1 } },
+    });
+  });
+
+  it('records no dry-run counts when the dry run said nothing', () => {
+    const { reporter, summaries } = metered();
+    reporter.onMutationTestingPlanReady(plans(1, 0));
+    expect(summaries.at(-1)).not.toHaveProperty('dryRunCounts');
   });
 });
 
