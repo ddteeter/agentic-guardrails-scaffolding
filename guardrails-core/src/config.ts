@@ -149,6 +149,24 @@ interface MutationTimeoutsConfig {
   retestLimit: number;
 }
 
+/**
+See `RepoConfig.ship`.
+*/
+interface ShipConfig {
+  /**
+   * Shell commands run in order, from the repository root, before the push
+   * gate; the first to fail stops the push. Empty by default, which runs
+   * nothing. See `preflight.ts`.
+   */
+  preflight: string[];
+  /**
+   * What was dropped from `preflight` because it was not a command, one line
+   * each, for ship and `guardrails preflight` to report. A malformed entry is
+   * skipped rather than failing the push: the gate after it still runs.
+   */
+  warnings: string[];
+}
+
 export interface RepoConfig {
   baseBranch: string;
   maxAttempts: number;
@@ -331,6 +349,12 @@ export interface RepoConfig {
    * `denyForegroundWaits` is on. A short sleep is a pause; a long one is a wait.
    */
   foregroundSleepLimitSeconds: number;
+  /**
+   * What `guardrails ship` and the pre-push hook run before the push gate
+   * (#243): cheap checks whose failure should not cost a wait for the gate
+   * lock. See `ShipConfig`.
+   */
+  ship: ShipConfig;
   /** Copilot model id for the fast/thorough fixer .agent.md (the tier ladder on
    * Copilot). Unset → omit `model` so the agent loads on Copilot's default. */
   copilotFastModel?: string;
@@ -369,6 +393,7 @@ export function defaultConfig(): RepoConfig {
     mutationScope: { ...DEFAULT_MUTATION_SCOPE },
     denyForegroundWaits: true,
     foregroundSleepLimitSeconds: 120,
+    ship: { preflight: [], warnings: [] },
   };
 }
 
@@ -789,6 +814,31 @@ function pickNames(value: unknown): string[] {
 }
 
 /**
+ * `ship`, defensively: anything but an object with an array `preflight`
+ * runs nothing. Each entry that is not a non-blank string is dropped, and
+ * named by its 1-based position in a warning.
+ */
+function pickShip(value: unknown): ShipConfig {
+  const section = isRecord(value) ? value : {};
+  const entries: unknown[] = Array.isArray(section.preflight)
+    ? section.preflight
+    : [];
+  const preflight: string[] = [];
+  const warnings: string[] = [];
+  for (const [index, entry] of entries.entries()) {
+    const command = pickCommand(entry);
+    if (command === undefined) {
+      warnings.push(
+        `ship.preflight entry ${String(index + 1)} is not a command; ignored`,
+      );
+    } else {
+      preflight.push(command.trim());
+    }
+  }
+  return { preflight, warnings };
+}
+
+/**
 `Number.isSafeInteger`, as a type guard.
 */
 function isWholeNumber(value: unknown): value is number {
@@ -926,6 +976,7 @@ export function loadConfig(
       raw.foregroundSleepLimitSeconds,
       defaults.foregroundSleepLimitSeconds,
     ),
+    ship: pickShip(raw.ship),
     ...(typeof raw.copilotFastModel === 'string' && {
       copilotFastModel: raw.copilotFastModel,
     }),

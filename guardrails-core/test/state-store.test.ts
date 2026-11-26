@@ -25,11 +25,13 @@ import {
   markAgentIdentityReported,
   loadCleanTree,
   loadLeases,
+  loadPreflightPass,
   loadPushPass,
   loadRecurrence,
   loadSession,
   saveCleanTree,
   saveLeases,
+  savePreflightPass,
   savePushPass,
   readDecisions,
   readViolations,
@@ -790,5 +792,62 @@ describe('push pass memo', () => {
       fingerprint: 'TREE',
       base: 'main',
     });
+  });
+});
+
+function preflightPassPath(): string {
+  return path.join(directory, 'preflight-pass.json');
+}
+
+const PREFLIGHT_PASS = {
+  fingerprint: 'TREE|BASE|1.0.0',
+  base: 'main',
+  commands: 'c0ffee',
+  node: 'v24.0.0',
+};
+
+describe('preflight pass record (#243)', () => {
+  it('round-trips the fingerprint, base, commands and node', () => {
+    savePreflightPass(directory, PREFLIGHT_PASS);
+    expect(existsSync(preflightPassPath())).toBe(true);
+    expect(loadPreflightPass(directory)).toEqual(PREFLIGHT_PASS);
+  });
+
+  it('is undefined when nothing was saved', () => {
+    expect(loadPreflightPass(directory)).toBeUndefined();
+  });
+
+  it.each([
+    ['a missing fingerprint', { ...PREFLIGHT_PASS, fingerprint: undefined }],
+    ['a non-string base', { ...PREFLIGHT_PASS, base: 7 }],
+    ['a missing commands hash', { ...PREFLIGHT_PASS, commands: undefined }],
+    ['a non-string node', { ...PREFLIGHT_PASS, node: 24 }],
+    ['an array', ['TREE', 'main']],
+    ['null', null],
+  ])('is undefined for %s', (_label, raw) => {
+    writeFileSync(preflightPassPath(), JSON.stringify(raw));
+    expect(loadPreflightPass(directory)).toBeUndefined();
+  });
+
+  it('is undefined for a file that is not JSON', () => {
+    writeFileSync(preflightPassPath(), '{not json');
+    expect(loadPreflightPass(directory)).toBeUndefined();
+  });
+
+  it('keeps only the fields it knows', () => {
+    writeFileSync(
+      preflightPassPath(),
+      JSON.stringify({ ...PREFLIGHT_PASS, extra: true }),
+    );
+    expect(loadPreflightPass(directory)).toEqual(PREFLIGHT_PASS);
+  });
+
+  it('survives the stale sweep, which would report it as a swept session', () => {
+    savePreflightPass(directory, PREFLIGHT_PASS);
+    const old = new Date(Date.now() - 1000 * 60 * 60 * 24 * 30);
+    utimesSync(preflightPassPath(), old, old);
+
+    expect(sweepStale(directory, 1000, Date.now())).toEqual([]);
+    expect(loadPreflightPass(directory)).toEqual(PREFLIGHT_PASS);
   });
 });

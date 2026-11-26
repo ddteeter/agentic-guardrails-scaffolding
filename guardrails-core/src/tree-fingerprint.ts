@@ -34,16 +34,27 @@ import process from 'node:process';
 
 import type { Exec } from './exec.js';
 import { packageVersion } from './package-root.js';
+import { resolveBaseReference } from './verify/git.js';
 
 /**
- * The inherited environment minus every `GIT_*` variable. A hook process can
- * inherit `GIT_DIR`/`GIT_INDEX_FILE` from git itself, which would point these
- * calls at whatever repository invoked the hook rather than at `repoRoot`.
+ * `environment` minus every `GIT_*` variable. A hook process can inherit
+ * `GIT_DIR`/`GIT_INDEX_FILE` from git itself, which would point git -- run
+ * here, or by a command a hook runs -- at whatever repository invoked the
+ * hook rather than at the one it is working in.
  */
-function cleanEnvironment(): NodeJS.ProcessEnv {
+export function withoutGitVariables(
+  environment: NodeJS.ProcessEnv,
+): NodeJS.ProcessEnv {
   return Object.fromEntries(
-    Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')),
+    Object.entries(environment).filter(([key]) => !key.startsWith('GIT_')),
   );
+}
+
+/**
+The inherited environment, without its `GIT_*` variables.
+*/
+function cleanEnvironment(): NodeJS.ProcessEnv {
+  return withoutGitVariables(process.env);
 }
 
 export async function treeFingerprint(
@@ -100,4 +111,21 @@ export async function treeFingerprint(
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
+}
+
+/**
+ * The tree fingerprint taken against the RESOLVED base ref (`origin/main` in a
+ * checkout with no local `main`), with that ref. `undefined` when the tree
+ * could not be fingerprinted, which means "no memo". Shared by the push gate's
+ * pass memo and the preflight pass record.
+ */
+export async function fingerprintAgainstBase(
+  exec: Exec,
+  repoRoot: string,
+  baseBranch: string,
+): Promise<{ fingerprint: string; base: string } | undefined> {
+  const resolved = await resolveBaseReference(exec, repoRoot, baseBranch);
+  const base = resolved.ref ?? baseBranch;
+  const fingerprint = await treeFingerprint(exec, repoRoot, base);
+  return fingerprint === undefined ? undefined : { fingerprint, base };
 }

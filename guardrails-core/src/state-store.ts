@@ -129,6 +129,50 @@ export function savePushPass(directory: string, pass: PushPass): void {
   writeJson(pushPassFile(directory), pass);
 }
 
+/**
+ * The last tree `ship.preflight` passed on (#243), so the pre-push hook and a
+ * retried ship skip commands that already passed on it. Keyed like
+ * `PushPass`, plus a hash of the command list and the Node version that ran
+ * it: a changed list, or a new Node, has not been checked.
+ */
+export interface PreflightPass {
+  fingerprint: string;
+  base: string;
+  commands: string;
+  node: string;
+}
+
+const PREFLIGHT_PASS_FILE = 'preflight-pass.json';
+
+function preflightPassFile(directory: string): string {
+  return path.join(directory, PREFLIGHT_PASS_FILE);
+}
+
+export function loadPreflightPass(
+  directory: string,
+): PreflightPass | undefined {
+  const raw = readJson(preflightPassFile(directory));
+  return isRecord(raw) &&
+    typeof raw.fingerprint === 'string' &&
+    typeof raw.base === 'string' &&
+    typeof raw.commands === 'string' &&
+    typeof raw.node === 'string'
+    ? {
+        fingerprint: raw.fingerprint,
+        base: raw.base,
+        commands: raw.commands,
+        node: raw.node,
+      }
+    : undefined;
+}
+
+export function savePreflightPass(
+  directory: string,
+  pass: PreflightPass,
+): void {
+  writeJson(preflightPassFile(directory), pass);
+}
+
 const SHIP_STATUS_FILE = 'ship-status.json';
 
 /**
@@ -482,6 +526,7 @@ const SHARED_STATE_FILES: ReadonlySet<string> = new Set([
   'leases.json',
   CLEAN_TREE_FILE,
   PUSH_PASS_FILE,
+  PREFLIGHT_PASS_FILE,
   SHIP_STATUS_FILE,
 ]);
 
