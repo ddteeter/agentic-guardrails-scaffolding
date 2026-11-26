@@ -150,6 +150,7 @@ describe('summarizeRuns', () => {
       mutated: 3,
       warm: 2,
       coldReasons: [['different stryker options', 1]],
+      seedNotTried: [],
       work: { share: { dryRunMs: 490_000, heldMs: 1_100_000, runs: 3 } },
     });
     expect(appStats().rungs.commit).toMatchObject({
@@ -380,6 +381,101 @@ function suiteGate(project: string, seconds: number, depth: number): GateRow {
   });
 }
 
+/**
+A cold gate whose seed was `seed`, for `seedWhy`, its local cache `local`.
+*/
+function seedless(
+  seed: string,
+  seedWhy: string | undefined,
+  local = 'none',
+  why?: string,
+): GateRow {
+  return gate({
+    stryker: {
+      files: 1,
+      cache: { local, seed, why, seedWhy },
+      report: 'read',
+    },
+  });
+}
+
+describe('cold starts whose seed was never tried (#236)', () => {
+  const NO_GRAPH = 'a test-support file changed, and there is no import graph';
+  const NO_COVERAGE = 'this run cannot report per-test coverage';
+  const UNSET = 'mutationCache.seedFrom is not set';
+  const rows = [
+    seedless('skipped', NO_GRAPH),
+    seedless('skipped', NO_COVERAGE),
+    seedless('skipped', NO_GRAPH),
+    seedless('skipped', undefined),
+    seedless('off', UNSET, 'discarded', 'this change set invalidates it'),
+    seedless('skipped', NO_GRAPH, 'kept'),
+    seedless('refused', undefined),
+  ];
+  const push = () =>
+    summarizeRuns(rows, { now: NOW, sinceMs: WEEK }).rungs.push;
+
+  it('keys a cold run with no cache reason by why its seed was not tried', () => {
+    expect(push()?.coldReasons).toEqual([
+      [`local cache none, seed skipped: ${NO_GRAPH}`, 2],
+      [`local cache none, seed skipped: ${NO_COVERAGE}`, 1],
+      ['local cache none, seed skipped', 1],
+      ['this change set invalidates it', 1],
+      ['local cache none, seed refused', 1],
+    ]);
+  });
+
+  it('tallies the cold runs whose seed was skipped or off, by reason', () => {
+    expect(push()?.seedNotTried).toEqual([
+      {
+        seed: 'skipped',
+        runs: 4,
+        reasons: [
+          [NO_GRAPH, 2],
+          [NO_COVERAGE, 1],
+          ['reason not recorded', 1],
+        ],
+      },
+      { seed: 'off', runs: 1, reasons: [[UNSET, 1]] },
+    ]);
+  });
+
+  it('prints the tally under the cold reasons', () => {
+    const text = formatStats(summarizeRuns(rows, { now: NOW, sinceMs: WEEK }));
+    expect(text).toContain(
+      [
+        '    cold 1×: local cache none, seed refused',
+        `    seed skipped 4×: ${NO_GRAPH} 2, ${NO_COVERAGE} 1, reason not recorded 1`,
+        `    seed off 1×: ${UNSET} 1`,
+        '',
+      ].join('\n'),
+    );
+  });
+
+  it('lists the seed state with more cold runs first', () => {
+    const tally = summarizeRuns(
+      [
+        seedless('skipped', NO_GRAPH),
+        seedless('off', UNSET),
+        seedless('off', UNSET),
+      ],
+      { now: NOW, sinceMs: WEEK },
+    ).rungs.push?.seedNotTried;
+    expect(tally?.map(({ seed }) => seed)).toEqual(['off', 'skipped']);
+  });
+
+  it('prints no tally when every cold run tried its seed', () => {
+    const text = formatStats(
+      summarizeRuns([seedless('refused', undefined)], {
+        now: NOW,
+        sinceMs: WEEK,
+      }),
+    );
+    expect(text).not.toContain('seed skipped');
+    expect(text).not.toContain('seed off');
+  });
+});
+
 describe('a small suite and a large one, kept apart (#236)', () => {
   const rows: RunRow[] = [
     suiteGate('small', 13, 0),
@@ -487,6 +583,7 @@ describe('formatStats', () => {
         '  dry run’s share of the lock held: 20% over 2 run(s)',
         '  started warm: 1 of 2',
         '    cold 1×: a reason',
+        '    seed off 1×: reason not recorded 1',
         'ship: 1 run(s) (green 1)',
         '  push, gate included: median 10m00s, p90 10m00s',
         '  gate: median 9m50s, p90 9m50s',

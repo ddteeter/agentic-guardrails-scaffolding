@@ -46,6 +46,10 @@ interface RungSummary {
   */
   coldReasons: [string, number][];
   /**
+  Of the cold runs, those whose seed was skipped or off, and why (#236).
+  */
+  seedNotTried: SeedNotTried[];
+  /**
   What the runs' timeouts cost, when any run measured them (#236).
   */
   timeouts?: TimeoutSummary | undefined;
@@ -53,6 +57,15 @@ interface RungSummary {
   What the dry runs and mutant runs did, when any run says (#200).
   */
   work?: WorkSummary | undefined;
+}
+
+interface SeedNotTried {
+  seed: string;
+  runs: number;
+  /**
+  Why, most common first.
+  */
+  reasons: [string, number][];
 }
 
 interface ShipSummary {
@@ -168,7 +181,28 @@ function coldReason({ cache }: StrykerPart): string {
   if (cache?.why !== undefined) {
     return cache.why;
   }
-  return `local cache ${cache?.local ?? 'unknown'}, seed ${cache?.seed ?? 'unknown'}`;
+  const states = `local cache ${cache?.local ?? 'unknown'}, seed ${cache?.seed ?? 'unknown'}`;
+  return cache?.seedWhy === undefined ? states : `${states}: ${cache.seedWhy}`;
+}
+
+/**
+The seed states that mean no seed was tried.
+*/
+const SEED_NOT_TRIED = ['skipped', 'off'];
+
+/**
+ * The cold runs whose seed was never tried, per seed state, with why (#236).
+ * A row from before the reason was recorded says so.
+ */
+function seedNotTried(cold: readonly StrykerPart[]): SeedNotTried[] {
+  return SEED_NOT_TRIED.flatMap((seed) => {
+    const reasons = cold
+      .filter((stryker) => stryker.cache?.seed === seed)
+      .map((stryker) => stryker.cache?.seedWhy ?? 'reason not recorded');
+    return reasons.length === 0
+      ? []
+      : [{ seed, runs: reasons.length, reasons: ranked(reasons) }];
+  }).toSorted((left, right) => right.runs - left.runs);
 }
 
 /**
@@ -205,6 +239,7 @@ function rungSummary(rows: readonly GateRow[]): RungSummary {
     mutated: mutated.length,
     warm: mutated.length - cold.length,
     coldReasons: ranked(cold.map((stryker) => coldReason(stryker))),
+    seedNotTried: seedNotTried(cold),
     timeouts: summarizeTimeouts(mutated),
     work: summarizeWork(rows),
   };
@@ -377,6 +412,10 @@ function rungText(rung: string, summary: RungSummary): string[] {
           `  started warm: ${String(summary.warm)} of ${String(summary.mutated)}`,
           ...summary.coldReasons.map(
             ([why, count]) => `    cold ${String(count)}×: ${why}`,
+          ),
+          ...summary.seedNotTried.map(
+            ({ seed, runs, reasons }) =>
+              `    seed ${seed} ${String(runs)}×: ${countsText(Object.fromEntries(reasons))}`,
           ),
         ]),
     ...timeoutLines(summary.timeouts, duration),
