@@ -14,11 +14,11 @@
  *
  * The fixture: a target with one static mutant and runtime ones; six spec
  * files, two reaching the target (one through a helper) and four that do not,
- * each of those with an import chain of its own and a top-level await. Real
+ * each of those with an import chain of its own and a marker it writes if it runs. Real
  * stryker runs it twice, without and with `--testFiles` naming the two that
  * reach it, and the guard records both answers whichever way they come out:
  *
- * - how much the dry run's overhead shrinks;
+ * - how much the dry run's overhead shrinks (printed: a measurement, not pinned);
  * - whether the static mutant falsely survives under `--testFiles`.
  *
  * It pins what stryker 10.0 does. Where an assertion pins a stryker bug, it
@@ -27,7 +27,13 @@
  * Fixture written to a temp directory at run time, and skipped under this
  * repo's own mutation pass, for the reasons `stryker-runner.test.ts` gives.
  */
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  writeFileSync,
+} from 'node:fs';
 import { readFile, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -120,7 +126,6 @@ The specs that do not reach the target, and the length of each one's chain.
 */
 const UNRELATED_SPECS = 4;
 const CHAIN_LENGTH = 40;
-const TOP_LEVEL_AWAIT_MS = 300;
 
 /**
 `src/unrelated-<spec>/m<index>.ts`: one link of a spec's own import chain.
@@ -131,12 +136,19 @@ function chainLink(index: number): string {
     : 'export const depth = 1;\n';
 }
 
-function unrelatedTest(spec: number): string {
-  return `import { describe, expect, it } from 'vitest';
+/**
+An unrelated spec. Executing it writes a marker into `markers` (an absolute
+path outside stryker's sandbox), so whether any unrelated spec RAN is a fact
+on disk, not something read off a timing that machine load can stretch.
+*/
+function unrelatedTest(spec: number, markers: string): string {
+  return `import { writeFileSync } from 'node:fs';
+
+import { describe, expect, it } from 'vitest';
 
 import { depth } from './src/unrelated-${String(spec)}/m0.js';
 
-await new Promise((resolve) => setTimeout(resolve, ${String(TOP_LEVEL_AWAIT_MS)}));
+writeFileSync(${JSON.stringify(path.join(markers, `unrelated-${String(spec)}`))}, 'ran');
 
 describe('unrelated ${String(spec)}', () => {
   it('walks its chain', () => {
@@ -146,10 +158,10 @@ describe('unrelated ${String(spec)}', () => {
 `;
 }
 
-function unrelatedFiles(): Record<string, string> {
+function unrelatedFiles(markers: string): Record<string, string> {
   const files: Record<string, string> = {};
   for (let spec = 1; spec <= UNRELATED_SPECS; spec += 1) {
-    files[`unrelated-${String(spec)}.test.ts`] = unrelatedTest(spec);
+    files[`unrelated-${String(spec)}.test.ts`] = unrelatedTest(spec, markers);
     for (let index = 0; index < CHAIN_LENGTH; index += 1) {
       files[`src/unrelated-${String(spec)}/m${String(index)}.ts`] =
         chainLink(index);
@@ -186,12 +198,13 @@ async function buildFixture(): Promise<string> {
   const directory = mkdtempSync(
     path.join(tmpdir(), 'guardrails-stryker-related-'),
   );
+  mkdirSync(markerDirectory(directory));
   const files: Record<string, string> = {
     'src/target.ts': TARGET_SOURCE,
     'src/helper.ts': HELPER_SOURCE,
     'target.test.ts': TARGET_TEST,
     'helper.test.ts': HELPER_TEST,
-    ...unrelatedFiles(),
+    ...unrelatedFiles(markerDirectory(directory)),
     'package.json': `${JSON.stringify({ name: 'stryker-related-fixture', private: true, type: 'module' })}\n`,
     'vitest.config.ts': `import { defineConfig } from 'vitest/config';\n\nexport default defineConfig({ test: { include: ['*.test.ts'] } });\n`,
     'stryker.conf.json': `${JSON.stringify(STRYKER_CONFIG)}\n`,
@@ -207,6 +220,14 @@ async function buildFixture(): Promise<string> {
     'dir',
   );
   return directory;
+}
+
+/**
+Where the unrelated specs write their markers: beside the fixture, never
+copied into stryker's sandbox.
+*/
+function markerDirectory(directory: string): string {
+  return `${directory}-markers`;
 }
 
 interface ReportedMutant {
@@ -314,11 +335,6 @@ function runtimeVerdicts(run: StrykerRun): string[] {
   return verdicts(run.mutants).filter((verdict) => !verdict.startsWith('1:'));
 }
 
-/**
-What the unrelated specs' top-level awaits would add, had any of them run.
-*/
-const UNRELATED_EXECUTION_MS = UNRELATED_SPECS * TOP_LEVEL_AWAIT_MS;
-
 function spikeReport(
   related: readonly StrykerRun[],
   restricted: readonly StrykerRun[],
@@ -362,14 +378,16 @@ describeUnlessMutating(here)(
       }
 
       // (a) The dry run is related-only already: every run ran the two
-      // specs that reach the target, and none ran an unrelated one, whose
-      // top-level await would show in the overhead. What --testFiles saves
-      // is vitest's walk of the unrelated specs' import graphs.
+      // specs that reach the target, and no unrelated spec ever executed
+      // (none wrote its marker). What --testFiles saves is vitest's walk of
+      // the unrelated specs' import graphs. How much it saves is the
+      // spike's measurement, printed above, not asserted: the gap is tens of
+      // milliseconds, and machine load can stretch either run past it.
       for (const run of [...related, ...restricted]) {
         expect(run.summary.dryRunCounts).toEqual({ tests: 4, testFiles: 2 });
-        expect(overheadOf(run)).toBeLessThan(UNRELATED_EXECUTION_MS);
+        expect(Number.isFinite(overheadOf(run))).toBe(true);
       }
-      expect(leastOverhead(restricted)).toBeLessThan(leastOverhead(related));
+      expect(readdirSync(markerDirectory(directory))).toEqual([]);
 
       // (b) The static mutant. Related-only, stryker runs every test with
       // the mutant active as modules load, and the greeting test kills it.
