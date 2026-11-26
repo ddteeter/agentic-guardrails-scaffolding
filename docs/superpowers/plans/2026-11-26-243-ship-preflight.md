@@ -61,7 +61,7 @@ These steps change two things in steps 0–8. The runner lives in a new `src/pre
 ### The `guardrails preflight [--mode=hook]` command
 
 - Exit 0: the commands passed, the list is empty, or (`--mode=hook` only) the record matched.
-- Exit 1: a command failed, was killed, or could not start. Stderr gets `guardrails: push stopped — preflight "<cmd>" failed` (`PREFLIGHT_FAILED_MARKER`).
+- Exit 1: a command failed, was killed, or could not start. A failure ends stderr on `guardrails: push stopped — preflight "<cmd>" failed` (`PREFLIGHT_FAILED_MARKER`); a kill or failed start on `guardrails: push stopped — no preflight verdict from "<cmd>"` (`PREFLIGHT_ERROR_MARKER`), which ship classifies as `error`. `<cmd>` is JSON-encoded.
 - Without `--mode=hook`, it always runs the commands and refreshes the record.
 - Malformed entries produce a warning on stderr.
 

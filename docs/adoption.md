@@ -1108,9 +1108,16 @@ ship.log 2>&1 &`), finish the task, and let whoever started the agent read
   `guardrails preflight` without the flag always runs them and refreshes the
   record. It exits 0 when they passed, when nothing is configured, or (hook
   mode) when the record matched; it exits 1 when one failed, was killed or
-  could not start, ending its output with
+  could not start. A failure ends its output with
   `guardrails: push stopped — preflight "<cmd>" failed`, which ship reads
-  as `preflight-failed` if the hook stops a push.
+  as `preflight-failed` if the hook stops a push; a kill or a failed start
+  ends it with `guardrails: push stopped — no preflight verdict from "<cmd>"`,
+  which ship reads as `error`. The command is JSON-encoded on that line, so
+  one with a newline or a quote stays on one line. Both ship and the hook run
+  the commands without the inherited `GIT_*` variables, so a command's git
+  acts on the repository it runs in, not the one that fired the hook.
+  Commands run via `sh -c`, so on Windows they need a POSIX `sh` (Git Bash,
+  for example), as the hooks already do.
 
   Limits: the record cannot see environment variables, the network, or
   tools outside the repository, so a command whose result depends on them

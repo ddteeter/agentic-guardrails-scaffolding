@@ -14,6 +14,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { Exec, ExecResult } from '../src/exec.js';
 import { isRecord } from '../src/is-record.js';
+import { preflightErrorLine, preflightFailedLine } from '../src/preflight.js';
 import { parseRuns } from '../src/run-log.js';
 import {
   LOCK_TIMEOUT_MARKER,
@@ -3564,6 +3565,32 @@ describe('classifyPushFailure: a hook stopped by preflight (#243)', () => {
         ),
       ),
     ).toBe('gate-blocked');
+  });
+
+  it('reads a preflight that reached no verdict as an error', () => {
+    expect(
+      classifyPushFailure(
+        failed(
+          'guardrails: preflight "npm test" was ended by SIGTERM before it finished.\n' +
+            `${preflightErrorLine('npm test')}\nerror: failed to push some refs`,
+        ),
+      ),
+    ).toBe('error');
+  });
+
+  it('names a multi-line command the hook stopped on', async () => {
+    const { exec } = fakeExec({
+      ...HAPPY,
+      'git push': failed(
+        `1 failed\n${preflightFailedLine('npm run build\nnpm test')}\n` +
+          'error: failed to push some refs',
+      ),
+    });
+    const status = await ship(options(exec));
+    expect(status).toMatchObject({
+      state: 'preflight-failed',
+      failing: ['npm run build\nnpm test'],
+    });
   });
 
   it('names the command the hook stopped on', async () => {

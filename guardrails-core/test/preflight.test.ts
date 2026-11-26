@@ -10,7 +10,9 @@ import type { Exec, ExecResult } from '../src/exec.js';
 import { packageVersion } from '../src/package-root.js';
 import {
   isRememberedPreflight,
+  PREFLIGHT_ERROR_MARKER,
   PREFLIGHT_FAILED_MARKER,
+  preflightErrorLine,
   preflightFailedCommand,
   preflightFailedLine,
   preflightKey,
@@ -198,6 +200,19 @@ describe('runPreflight: running the commands (#243)', () => {
     ]);
   });
 
+  it('strips every GIT_* variable from the commands’ environment', async () => {
+    const { exec, calls } = fakeExec(fingerprinted());
+    await runPreflight(
+      options(exec, {
+        env: { MARK: 'yes', GIT_DIR: '/elsewhere/.git', GIT_INDEX_FILE: 'x' },
+      }),
+    );
+    const environments = calls
+      .filter((call) => call.line.startsWith('sh -c'))
+      .map((call) => call.env);
+    expect(environments).toEqual([{ MARK: 'yes' }, { MARK: 'yes' }]);
+  });
+
   it('runs nothing, and asks git nothing, for an empty list', async () => {
     const { exec, calls } = fakeExec(fingerprinted());
     expect(await runPreflight(options(exec, { commands: [] }))).toEqual({
@@ -368,6 +383,53 @@ describe('the preflight-failed line (#243)', () => {
     expect(preflightFailedCommand(preflightFailedLine(command))).toBe(command);
   });
 
+  it('keeps a command with a newline on one line, and reads it back', () => {
+    const command = 'npm run build\nnpm test';
+    const line = preflightFailedLine(command);
+    expect(line).not.toContain('\n');
+    expect(line).toBe(
+      String.raw`${PREFLIGHT_FAILED_MARKER} "npm run build\nnpm test" failed`,
+    );
+    expect(preflightFailedCommand(line)).toBe(command);
+  });
+
+  it('reads back a command holding a double quote', () => {
+    const command = 'echo "done';
+    expect(preflightFailedLine(command)).toBe(
+      String.raw`${PREFLIGHT_FAILED_MARKER} "echo \"done" failed`,
+    );
+    expect(preflightFailedCommand(preflightFailedLine(command))).toBe(command);
+  });
+
+  it('reads nothing out of a line whose command is not a JSON string', () => {
+    expect(
+      preflightFailedCommand(
+        String.raw`${PREFLIGHT_FAILED_MARKER} "abc\" failed`,
+      ),
+    ).toBeUndefined();
+    expect(
+      preflightFailedCommand(`${PREFLIGHT_FAILED_MARKER} "a"b" failed`),
+    ).toBeUndefined();
+  });
+
+  it('reads nothing out of JSON that is not a string', () => {
+    expect(
+      preflightFailedCommand(`${PREFLIGHT_FAILED_MARKER} 123 failed`),
+    ).toBeUndefined();
+    expect(
+      preflightFailedCommand(`${PREFLIGHT_FAILED_MARKER} ["a"] failed`),
+    ).toBeUndefined();
+  });
+
+  it('needs both the marker at the start and the failed ending', () => {
+    const start = `${PREFLIGHT_FAILED_MARKER} `;
+    expect(
+      preflightFailedCommand(`${'x'.repeat(start.length)}"a" failed`),
+    ).toBeUndefined();
+    expect(preflightFailedCommand(`${start}"a" passed`)).toBeUndefined();
+    expect(preflightFailedCommand(`${start}"a" failed`)).toBe('a');
+  });
+
   it('reads nothing out of any other line', () => {
     expect(
       preflightFailedCommand('guardrails: push blocked — x'),
@@ -375,5 +437,19 @@ describe('the preflight-failed line (#243)', () => {
     expect(
       preflightFailedCommand(`  ${preflightFailedLine('npm test')}`),
     ).toBeUndefined();
+  });
+});
+
+describe('the preflight error line (#243)', () => {
+  it('names the command after a marker that is not the failed one', () => {
+    expect(PREFLIGHT_ERROR_MARKER).toBe(
+      'guardrails: push stopped — no preflight verdict from',
+    );
+    expect(preflightErrorLine('npm\ntest')).toBe(
+      String.raw`${PREFLIGHT_ERROR_MARKER} "npm\ntest"`,
+    );
+    expect(preflightErrorLine('npm test')).not.toContain(
+      PREFLIGHT_FAILED_MARKER,
+    );
   });
 });

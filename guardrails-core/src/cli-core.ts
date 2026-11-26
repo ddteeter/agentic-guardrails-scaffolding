@@ -107,6 +107,7 @@ import {
 } from './state-store.js';
 import {
   type PreflightRun,
+  preflightErrorLine,
   preflightFailedLine,
   runPreflight,
 } from './preflight.js';
@@ -1895,9 +1896,10 @@ async function shipCommand(
 }
 
 /**
- * What `guardrails preflight` prints for a run, and its exit code. Every
- * stop ends on `preflightFailedLine`, which ship reads back out of a push
- * the hook stopped.
+ * What `guardrails preflight` prints for a run, and its exit code. A failed
+ * command ends on `preflightFailedLine`, which ship reads back out of a push
+ * the hook stopped as `preflight-failed`; one that reached no verdict ends on
+ * `preflightErrorLine`, which ship reads as `error`.
  */
 function reportPreflight(
   dependencies: CliDependencies,
@@ -1912,12 +1914,14 @@ function reportPreflight(
     return 0;
   }
   const { result, command } = run;
-  const why =
-    run.verdict === 'failed' ? `exited ${String(result.code)}` : run.why;
+  const [why, last] =
+    run.verdict === 'failed'
+      ? [`exited ${String(result.code)}`, preflightFailedLine(command)]
+      : [run.why, preflightErrorLine(command)];
   dependencies.stderr(
     `${result.stdout}${result.stderr}` +
       `guardrails: preflight "${command}" ${why}.\n` +
-      `${preflightFailedLine(command)}\n`,
+      `${last}\n`,
   );
   return 1;
 }

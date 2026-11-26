@@ -16,7 +16,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { type CliDependencies, runCommand } from '../src/cli-core.js';
 import { type Exec, type ExecResult, spawnExec } from '../src/exec.js';
-import { preflightFailedLine } from '../src/preflight.js';
+import { preflightErrorLine, preflightFailedLine } from '../src/preflight.js';
 import { PUSH_GATE_ARGS } from '../src/push-hook.js';
 import { gateFailures } from '../src/ship.js';
 import {
@@ -6679,6 +6679,24 @@ function preflightRecordFile(): string {
   return path.join(root, '.guardrails', 'state', 'preflight-pass.json');
 }
 
+/**
+A `preflightExec` that also records the environment each `sh` ran in.
+*/
+function shEnvironmentExec(): {
+  exec: Exec;
+  seen: (NodeJS.ProcessEnv | undefined)[];
+} {
+  const seen: (NodeJS.ProcessEnv | undefined)[] = [];
+  const inner = preflightExec([]);
+  const exec: Exec = (command, args, execOptions) => {
+    if (command === 'sh') {
+      seen.push(execOptions?.env);
+    }
+    return inner(command, args, execOptions);
+  };
+  return { exec, seen };
+}
+
 describe('runCommand — preflight (#243)', () => {
   it('runs every command, records the pass and exits 0', async () => {
     writeShipConfig({ preflight: ['npm run build', 'npm test'] });
@@ -6773,7 +6791,7 @@ describe('runCommand — preflight (#243)', () => {
     expect(existsSync(preflightRecordFile())).toBe(false);
   });
 
-  it('exits 1 on a command that was killed, with the marker last', async () => {
+  it('exits 1 on a command that was killed, ending on the no-verdict line', async () => {
     writeShipConfig({ preflight: ['npm test'] });
     const code = await runCommand(
       'preflight',
@@ -6792,7 +6810,7 @@ describe('runCommand — preflight (#243)', () => {
     expect(code).toBe(1);
     expect(errors.join('')).toBe(
       'guardrails: preflight "npm test" was ended by SIGTERM before it finished.\n' +
-        `${preflightFailedLine('npm test')}\n`,
+        `${preflightErrorLine('npm test')}\n`,
     );
   });
 
@@ -6825,17 +6843,24 @@ describe('runCommand — preflight (#243)', () => {
 
   it('runs each command in the injected environment, not the process one', async () => {
     writeShipConfig({ preflight: ['npm test'] });
-    const seen: (NodeJS.ProcessEnv | undefined)[] = [];
-    const inner = preflightExec([]);
-    const exec: Exec = (command, args, execOptions) => {
-      if (command === 'sh') {
-        seen.push(execOptions?.env);
-      }
-      return inner(command, args, execOptions);
-    };
+    const { exec, seen } = shEnvironmentExec();
     const injected = { PREFLIGHT_PROBE: 'injected' };
     await runCommand('preflight', [], dependencies({ exec, env: injected }));
     expect(seen).toEqual([injected]);
+  });
+
+  it('runs each command without the hook’s GIT_* variables', async () => {
+    writeShipConfig({ preflight: ['npm test'] });
+    const { exec, seen } = shEnvironmentExec();
+    await runCommand(
+      'preflight',
+      ['--mode=hook'],
+      dependencies({
+        exec,
+        env: { PREFLIGHT_PROBE: 'injected', GIT_DIR: '/elsewhere/.git' },
+      }),
+    );
+    expect(seen).toEqual([{ PREFLIGHT_PROBE: 'injected' }]);
   });
 
   it('is listed in the usage', async () => {

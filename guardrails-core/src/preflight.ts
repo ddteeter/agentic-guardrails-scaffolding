@@ -22,13 +22,17 @@ import { createHash } from 'node:crypto';
 import process from 'node:process';
 
 import type { Exec, ExecResult } from './exec.js';
+import { parseJsonText } from './json-file.js';
 import {
   loadPreflightPass,
   type PreflightPass,
   savePreflightPass,
   stateDirectory,
 } from './state-store.js';
-import { fingerprintAgainstBase } from './tree-fingerprint.js';
+import {
+  fingerprintAgainstBase,
+  withoutGitVariables,
+} from './tree-fingerprint.js';
 
 export interface PreflightOptions {
   exec: Exec;
@@ -39,8 +43,10 @@ export interface PreflightOptions {
   baseBranch: string;
   commands: readonly string[];
   /**
-  The environment the commands run in.
-  */
+   * The environment the commands run in, less its `GIT_*` variables: a
+   * pre-push hook carries `GIT_DIR` and the like, which would point a
+   * command's git -- or a test's git in a temporary repository -- elsewhere.
+   */
   env: NodeJS.ProcessEnv;
   /**
    * Skip the commands when the pass record covers this tree. Off for a
@@ -136,7 +142,7 @@ async function runCommands(
   for (const command of options.commands) {
     const result = await options.exec('sh', ['-c', command], {
       cwd: options.repoRoot,
-      env: options.env,
+      env: withoutGitVariables(options.env),
       input: '',
     });
     const verdict = preflightVerdict(command, result);
@@ -179,23 +185,47 @@ export async function runPreflight(
 }
 
 /**
- * The start of the line `guardrails preflight` prints when it stops a push,
+ * The start of the line `guardrails preflight` prints when a command fails,
  * which ship reads back out of a failed push (`classifyPushFailure`).
  */
 export const PREFLIGHT_FAILED_MARKER = 'guardrails: push stopped — preflight';
 
+/**
+ * The start of the line `guardrails preflight` prints when a command reached
+ * no verdict (killed, or never started). It does not begin with
+ * `PREFLIGHT_FAILED_MARKER`, so ship reads a push it stopped as `error`.
+ */
+export const PREFLIGHT_ERROR_MARKER =
+  'guardrails: push stopped — no preflight verdict from';
+
+/**
+ * The command is JSON-encoded, so one holding a newline or a quote stays on
+ * one line and reads back whole.
+ */
 export function preflightFailedLine(command: string): string {
-  return `${PREFLIGHT_FAILED_MARKER} "${command}" failed`;
+  return `${PREFLIGHT_FAILED_MARKER} ${JSON.stringify(command)} failed`;
 }
 
-const FAILED_LINE_END = '" failed';
+export function preflightErrorLine(command: string): string {
+  return `${PREFLIGHT_ERROR_MARKER} ${JSON.stringify(command)}`;
+}
+
+const FAILED_LINE_END = ' failed';
+
+/**
+A JSON string's value, or `undefined` for text that is not one.
+*/
+function decodedString(text: string): string | undefined {
+  const { parsed } = parseJsonText(text);
+  return typeof parsed === 'string' ? parsed : undefined;
+}
 
 /**
 The command a `preflightFailedLine` names, or `undefined` for any other line.
 */
 export function preflightFailedCommand(line: string): string | undefined {
-  const start = `${PREFLIGHT_FAILED_MARKER} "`;
+  const start = `${PREFLIGHT_FAILED_MARKER} `;
   return line.startsWith(start) && line.endsWith(FAILED_LINE_END)
-    ? line.slice(start.length, -FAILED_LINE_END.length)
+    ? decodedString(line.slice(start.length, -FAILED_LINE_END.length))
     : undefined;
 }

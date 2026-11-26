@@ -37,14 +37,24 @@ import { packageVersion } from './package-root.js';
 import { resolveBaseReference } from './verify/git.js';
 
 /**
- * The inherited environment minus every `GIT_*` variable. A hook process can
- * inherit `GIT_DIR`/`GIT_INDEX_FILE` from git itself, which would point these
- * calls at whatever repository invoked the hook rather than at `repoRoot`.
+ * `environment` minus every `GIT_*` variable. A hook process can inherit
+ * `GIT_DIR`/`GIT_INDEX_FILE` from git itself, which would point git -- run
+ * here, or by a command a hook runs -- at whatever repository invoked the
+ * hook rather than at the one it is working in.
  */
-function cleanEnvironment(): NodeJS.ProcessEnv {
+export function withoutGitVariables(
+  environment: NodeJS.ProcessEnv,
+): NodeJS.ProcessEnv {
   return Object.fromEntries(
-    Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')),
+    Object.entries(environment).filter(([key]) => !key.startsWith('GIT_')),
   );
+}
+
+/**
+The inherited environment, without its `GIT_*` variables.
+*/
+function cleanEnvironment(): NodeJS.ProcessEnv {
+  return withoutGitVariables(process.env);
 }
 
 export async function treeFingerprint(
