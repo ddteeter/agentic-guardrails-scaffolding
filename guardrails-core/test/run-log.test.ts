@@ -297,6 +297,24 @@ describe('project identity (#236)', () => {
     expect(parsed).not.toHaveProperty('project');
   });
 
+  it('keeps why a seed was skipped, and drops a reason that is not text', () => {
+    const cache = { local: 'none', seed: 'skipped', seedWhy: 'no graph' };
+    const stryker = { files: 1, cache, report: 'read' as const };
+    expect(parseRuns(JSON.stringify({ ...GATE, stryker }))).toEqual([
+      { ...GATE, stryker },
+    ]);
+    const [parsed] = parseRuns(
+      JSON.stringify({
+        ...GATE,
+        stryker: { ...stryker, cache: { ...cache, seedWhy: 3 } },
+      }),
+    );
+    expect(parsed?.kind === 'gate' && parsed.stryker?.cache).toStrictEqual({
+      local: 'none',
+      seed: 'skipped',
+    });
+  });
+
   it('names a row’s project, or its folder for a row from before projects', () => {
     expect(projectOf({ ...SHIP, repo: 'lane-3', project: 'app' })).toBe('app');
     expect(projectOf({ ...SHIP, repo: 'lane-3' })).toBe('lane-3');

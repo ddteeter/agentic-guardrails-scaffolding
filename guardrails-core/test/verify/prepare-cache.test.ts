@@ -155,6 +155,11 @@ function healthyRepo(overrides: Record<string, string | Entry> = {}) {
   });
 }
 
+/**
+Why the seed is off in a repo that configures none (#236).
+*/
+const SEED_NOT_SET = 'mutationCache.seedFrom is not set';
+
 const run: CacheRun = {
   mutateFiles: ['src/a.ts', 'src/b.ts'],
   changedFiles: ['src/a.ts', 'src/b.ts'],
@@ -550,6 +555,7 @@ describe('prepareIncrementalCache', () => {
       expect(outcome).toEqual({
         local: 'discarded',
         seed: 'off',
+        seedWhy: SEED_NOT_SET,
         why: 'this change set invalidates it',
       });
     });
@@ -861,6 +867,7 @@ describe('prepareIncrementalCache says what it did (#176)', () => {
     expect(await prepareIncrementalCache(seams, run)).toEqual({
       local: 'kept',
       seed: 'off',
+      seedWhy: SEED_NOT_SET,
     });
   });
 
@@ -870,6 +877,7 @@ describe('prepareIncrementalCache says what it did (#176)', () => {
     expect(await prepareIncrementalCache(seams, run)).toEqual({
       local: 'none',
       seed: 'off',
+      seedWhy: SEED_NOT_SET,
     });
   });
 
@@ -902,6 +910,7 @@ describe('prepareIncrementalCache says what it did (#176)', () => {
       expect(await prepareIncrementalCache(seams, run)).toEqual({
         local: 'discarded',
         seed: 'off',
+        seedWhy: SEED_NOT_SET,
         why,
       });
     },
@@ -918,6 +927,7 @@ describe('prepareIncrementalCache says what it did (#176)', () => {
     ).toEqual({
       local: 'discarded',
       seed: 'off',
+      seedWhy: SEED_NOT_SET,
       why: 'this change set invalidates it',
     });
   });
@@ -932,6 +942,7 @@ describe('prepareIncrementalCache says what it did (#176)', () => {
     ).toEqual({
       local: 'discarded',
       seed: 'off',
+      seedWhy: SEED_NOT_SET,
       why: 'this change set invalidates it',
     });
   });
@@ -969,8 +980,57 @@ describe('prepareIncrementalCache says what it did (#176)', () => {
         ...run,
         changedFiles: [...run.changedFiles, 'test/helpers.ts'],
       }),
-    ).toEqual({ local: 'none', seed: 'skipped' });
+    ).toEqual({
+      local: 'none',
+      seed: 'skipped',
+      seedWhy:
+        'a test-support file changed, and there is no import graph to trace it',
+    });
     expect(seedCalls()).toBe(0);
+  });
+
+  it('skipped a seed a run that cannot report coverage would discard, and says why (#236)', async () => {
+    const { seams, seedCalls } = freshWorktree(cacheJson());
+    expect(
+      await prepareIncrementalCache(seams, {
+        ...run,
+        canThisRunReportCoverage: false,
+      }),
+    ).toEqual({
+      local: 'none',
+      seed: 'skipped',
+      seedWhy: 'this run cannot report per-test coverage',
+    });
+    expect(seedCalls()).toBe(0);
+  });
+
+  it('turned the seed off with no installed stryker, and says why (#236)', async () => {
+    const { seams, files, seedCalls } = freshWorktree(cacheJson());
+    files.set(STRYKER_MANIFEST, { contents: '{}', mtime: 1000 });
+    expect(await prepareIncrementalCache(seams, run)).toEqual({
+      local: 'none',
+      seed: 'off',
+      seedWhy: 'no installed stryker to fingerprint this checkout',
+    });
+    expect(seedCalls()).toBe(0);
+  });
+
+  it('gives no seed reason for a seed it used, refused or did not need', async () => {
+    const used = await prepareIncrementalCache(
+      freshWorktree(cacheJson()).seams,
+      run,
+    );
+    const refused = await prepareIncrementalCache(
+      freshWorktree(undefined).seams,
+      run,
+    );
+    const notNeeded = await prepareIncrementalCache(
+      oldCheckout(cacheJson()).seams,
+      run,
+    );
+    for (const outcome of [used, refused, notNeeded]) {
+      expect(outcome).not.toHaveProperty('seedWhy');
+    }
   });
 });
 
@@ -1022,7 +1082,11 @@ describe('a changed test-support file under targeted invalidation (#197)', () =>
       helperChanged,
     );
     expect(kept(files)).toEqual({ 'src/a.ts': [], 'src/b.ts': ['Killed'] });
-    expect(outcome).toEqual({ local: 'kept', seed: 'off' });
+    expect(outcome).toEqual({
+      local: 'kept',
+      seed: 'off',
+      seedWhy: SEED_NOT_SET,
+    });
   });
 
   it('asks about the changed support files against the cached tests', async () => {
@@ -1099,6 +1163,7 @@ describe('a changed test-support file under targeted invalidation (#197)', () =>
       expect(outcome).toEqual({
         local: 'discarded',
         seed: 'off',
+        seedWhy: SEED_NOT_SET,
         why: `${file} changed, and it reaches tests without an import`,
       });
     },
@@ -1116,6 +1181,7 @@ describe('a changed test-support file under targeted invalidation (#197)', () =>
     expect(outcome).toEqual({
       local: 'discarded',
       seed: 'off',
+      seedWhy: SEED_NOT_SET,
       why: 'test/helpers.ts changed, and no test imports it',
     });
   });
@@ -1136,6 +1202,7 @@ describe('a changed test-support file under targeted invalidation (#197)', () =>
       expect(outcome).toEqual({
         local: 'discarded',
         seed: 'off',
+        seedWhy: SEED_NOT_SET,
         why: 'the tests that import test/helpers.ts could not be traced',
       });
     },
@@ -1148,6 +1215,7 @@ describe('a changed test-support file under targeted invalidation (#197)', () =>
     expect(outcome).toEqual({
       local: 'discarded',
       seed: 'off',
+      seedWhy: SEED_NOT_SET,
       why: 'test/helpers.ts changed, and there is no import graph to trace what imports it',
     });
   });
@@ -1166,6 +1234,7 @@ describe('a changed test-support file under targeted invalidation (#197)', () =>
     expect(outcome).toEqual({
       local: 'discarded',
       seed: 'off',
+      seedWhy: SEED_NOT_SET,
       why: 'test/other.ts changed, and no test imports it',
     });
   });
@@ -1229,17 +1298,36 @@ describe('a changed test-support file under targeted invalidation (#197)', () =>
         { ...run, changedFiles: [...run.changedFiles, 'vitest.setup.ts'] },
       );
       expect(seedCalls()).toBe(0);
-      expect(outcome).toEqual({ local: 'none', seed: 'skipped' });
+      expect(outcome).toEqual({
+        local: 'none',
+        seed: 'skipped',
+        seedWhy: 'a test-support file wired to every test changed',
+      });
     });
 
-    it('skips the seed under any-test-change', async () => {
-      const { seams, seedCalls } = freshWorktree(cacheJson());
-      const graph = importersSeam({ 'test/helpers.ts': ['a.test.ts'] });
-      await prepareIncrementalCache(
-        { ...seams, importersOf: graph.importersOf },
-        { ...helperChanged, invalidation: 'any-test-change' },
-      );
-      expect(seedCalls()).toBe(0);
-    });
+    it.each<[string, string]>([
+      ['a support file', 'test/helpers.ts'],
+      ['a test', 'a.test.ts'],
+    ])(
+      'skips the seed under any-test-change when %s changed, and says why',
+      async (_label, file) => {
+        const { seams, seedCalls } = freshWorktree(cacheJson());
+        const graph = importersSeam({ 'test/helpers.ts': ['a.test.ts'] });
+        const outcome = await prepareIncrementalCache(
+          { ...seams, importersOf: graph.importersOf },
+          {
+            ...run,
+            changedFiles: [...run.changedFiles, file],
+            invalidation: 'any-test-change',
+          },
+        );
+        expect(seedCalls()).toBe(0);
+        expect(outcome).toEqual({
+          local: 'none',
+          seed: 'skipped',
+          seedWhy: 'a test or test-support file changed under any-test-change',
+        });
+      },
+    );
   });
 });

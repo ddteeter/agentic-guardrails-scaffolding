@@ -379,6 +379,10 @@ export interface CacheOutcome {
   local: 'kept' | 'none' | 'discarded';
   seed: 'used' | 'refused' | 'not-needed' | 'skipped' | 'off';
   why?: string;
+  /**
+  Why the seed was `skipped` or `off`, which `why` never says (#236).
+  */
+  seedWhy?: string;
 }
 
 interface LocalVerdict {
@@ -437,22 +441,32 @@ async function reusableCache(
 }
 
 /**
- * Could a seed be used at all? A run that cannot report per-test coverage
- * would discard one unread, and so would one that changed a test-support
- * file it cannot trace: one wired to every test, one with no import graph to
- * ask, or any under `any-test-change` — which also discards a seed for any
- * changed test. Waiting on a download for it buys nothing.
+ * Why a seed could not be used at all, or `undefined` when it could. A run
+ * that cannot report per-test coverage would discard one unread, and so
+ * would one that changed a test-support file it cannot trace: one wired to
+ * every test, one with no import graph to ask, or any under
+ * `any-test-change` — which also discards a seed for any changed test.
+ * Waiting on a download for it buys nothing. The reason names the cause,
+ * not the file (#236).
  */
-function canUseSeed(seams: CacheSeams, run: CacheRun): boolean {
-  return (
-    run.canThisRunReportCoverage &&
-    run.changedFiles.every((file) =>
-      run.invalidation === 'any-test-change'
-        ? !isTestFile(file) && !isTestSupportFile(file)
-        : !isTestSupportFile(file) ||
-          (!isWiredToEveryTest(file) && seams.importersOf !== undefined),
+function seedSkipReason(seams: CacheSeams, run: CacheRun): string | undefined {
+  if (!run.canThisRunReportCoverage) {
+    return 'this run cannot report per-test coverage';
+  }
+  if (run.invalidation === 'any-test-change') {
+    return run.changedFiles.some(
+      (file) => isTestFile(file) || isTestSupportFile(file),
     )
-  );
+      ? 'a test or test-support file changed under any-test-change'
+      : undefined;
+  }
+  const support = run.changedFiles.filter((file) => isTestSupportFile(file));
+  if (support.some((file) => isWiredToEveryTest(file))) {
+    return 'a test-support file wired to every test changed';
+  }
+  return support.length > 0 && seams.importersOf === undefined
+    ? 'a test-support file changed, and there is no import graph to trace it'
+    : undefined;
 }
 
 /**
@@ -508,14 +522,21 @@ async function withSeed(
 ): Promise<SeedVerdict> {
   const missing = run.mutateFiles.filter((file) => !local?.files.has(file));
   const { seed: fetchSeed } = seams;
-  if (fingerprint === undefined || fetchSeed === undefined) {
-    return { seed: 'off' };
+  if (fetchSeed === undefined) {
+    return { seed: 'off', seedWhy: 'mutationCache.seedFrom is not set' };
+  }
+  if (fingerprint === undefined) {
+    return {
+      seed: 'off',
+      seedWhy: 'no installed stryker to fingerprint this checkout',
+    };
   }
   if (missing.length === 0) {
     return { seed: 'not-needed' };
   }
-  if (!canUseSeed(seams, run)) {
-    return { seed: 'skipped' };
+  const skipped = seedSkipReason(seams, run);
+  if (skipped !== undefined) {
+    return { seed: 'skipped', seedWhy: skipped };
   }
   const fetched = await fetchSeed(fingerprint);
   if ('why' in fetched) {
@@ -553,6 +574,7 @@ interface SeedVerdict {
   json?: string;
   seed: CacheOutcome['seed'];
   why?: string;
+  seedWhy?: string;
 }
 
 async function writeOrRemove(
@@ -645,5 +667,6 @@ export async function prepareIncrementalCache(
     local: local.local,
     seed: seeded.seed,
     ...(why.length > 0 && { why: why.join('; ') }),
+    ...(seeded.seedWhy !== undefined && { seedWhy: seeded.seedWhy }),
   };
 }

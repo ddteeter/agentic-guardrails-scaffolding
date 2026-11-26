@@ -61,6 +61,10 @@ interface CachePart {
   Why the local cache was discarded or the seed refused.
   */
   why?: string | undefined;
+  /**
+  Why the seed was skipped or off (#236); absent on older rows.
+  */
+  seedWhy?: string | undefined;
 }
 
 interface StrykerPart {
@@ -339,7 +343,13 @@ function lockOf(value: unknown): LockPart | undefined {
 
 function cacheOf(value: unknown): CachePart | undefined {
   const fields = required(value, { local: 'string', seed: 'string' });
-  return fields && { ...fields, why: optionalString(value, 'why') };
+  return (
+    fields && {
+      ...fields,
+      why: optionalString(value, 'why'),
+      seedWhy: optionalString(value, 'seedWhy'),
+    }
+  );
 }
 
 const STRYKER_COUNTS = [
