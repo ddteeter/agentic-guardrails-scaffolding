@@ -223,6 +223,31 @@ describe('mutationRunRecord', () => {
     });
   });
 
+  it('copies what the dry run ran from the summary (#200)', () => {
+    const record = mutationRunRecord({
+      files: 1,
+      cache: CACHE,
+      didRun: true,
+      summaryText: JSON.stringify({
+        ...JSON.parse(SUMMARY),
+        dryRunCounts: { tests: 12, testFiles: 3 },
+      }),
+      reportText: REPORT,
+    });
+    expect(record.stryker.dryRunCounts).toEqual({ tests: 12, testFiles: 3 });
+  });
+
+  it('says nothing of dry-run counts a summary does not hold', () => {
+    const record = mutationRunRecord({
+      files: 1,
+      cache: CACHE,
+      didRun: true,
+      summaryText: SUMMARY,
+      reportText: REPORT,
+    });
+    expect(record.stryker).not.toHaveProperty('dryRunCounts');
+  });
+
   it('says nothing of timeout costs a summary does not hold', () => {
     const record = mutationRunRecord({
       files: 1,

@@ -29,6 +29,7 @@ import {
 } from './lock-holder.js';
 import { TimeoutMeter } from './timeout-meter.js';
 import { isRung } from './verify/analyzer-policy.js';
+import { WorkMeter } from './work-meter.js';
 
 /**
 The slice of stryker's `MutationTestingPlanReadyEvent` this reporter reads.
@@ -170,6 +171,10 @@ interface Target {
   */
   meter: TimeoutMeter;
   /**
+  What this run's dry run and mutant runs did (#200).
+  */
+  work: WorkMeter;
+  /**
   Where the run summary goes (#176); absent when the env names no file.
   */
   summaryFile?: string | undefined;
@@ -198,6 +203,7 @@ function targetFrom(io: ProgressIo, options: unknown): Target | undefined {
     file,
     summaryFile: summaryFile === '' ? undefined : summaryFile,
     meter: new TimeoutMeter(repo, options),
+    work: new WorkMeter(),
     holder: {
       repo,
       rung,
@@ -290,7 +296,7 @@ export class ProgressReporter {
     if (target?.summaryFile === undefined) {
       return;
     }
-    const { holder, meter } = target;
+    const { holder, meter, work } = target;
     const summary: RunSummary = {
       startedAt: holder.startedAt,
       planReadyAt: holder.mutatingSince,
@@ -299,6 +305,7 @@ export class ProgressReporter {
       reused: holder.reused,
       timeouts: reportReadyAt === undefined ? undefined : meter.costs(),
       settings: meter.settings(),
+      dryRunCounts: work.dryRun(),
     };
     try {
       this.#io.write(target.summaryFile, JSON.stringify(summary));
@@ -308,10 +315,12 @@ export class ProgressReporter {
   }
 
   /**
-  The dry run's net time and overhead, which every mutant's timeout adds.
-  */
+   * The dry run's net time and overhead, which every mutant's timeout adds,
+   * and how many tests it ran (#200).
+   */
   onDryRunCompleted(event: unknown): void {
     this.#target?.meter.dryRunCompleted(event);
+    this.#target?.work.dryRunCompleted(event);
   }
 
   onMutationTestingPlanReady(event: PlanReadyEvent): void {

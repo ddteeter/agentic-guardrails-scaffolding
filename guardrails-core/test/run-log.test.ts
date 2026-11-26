@@ -85,6 +85,7 @@ const GATE: GateRow = {
       dryRunNetMs: 30_000,
       dryRunOverheadMs: 115_000,
     },
+    dryRunCounts: { tests: 1840, testFiles: 212 },
     report: 'read',
   },
   machine: MACHINE,
@@ -217,6 +218,18 @@ describe('appendRun and parseRuns', () => {
         Object.entries(GATE.stryker ?? {}).filter(
           ([key]) =>
             !['timeoutCost', 'timeoutSettings', 'retestBudgetMs'].includes(key),
+        ),
+      ),
+    );
+  });
+
+  it('drops dry-run counts that are malformed, and keeps the rest (#200)', () => {
+    const stryker = { ...GATE.stryker, dryRunCounts: { tests: 'many' } };
+    const [parsed] = parseRuns(JSON.stringify({ ...GATE, stryker }));
+    expect(parsed?.kind === 'gate' && parsed.stryker).toStrictEqual(
+      Object.fromEntries(
+        Object.entries(GATE.stryker ?? {}).filter(
+          ([key]) => key !== 'dryRunCounts',
         ),
       ),
     );

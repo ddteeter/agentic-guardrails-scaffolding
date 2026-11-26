@@ -555,3 +555,40 @@ describe('parseRunSummary: what timeouts cost (#236)', () => {
     });
   });
 });
+
+describe('parseRunSummary: what the dry run ran (#200)', () => {
+  const BASE = { startedAt: 1, total: 3, reused: 0 };
+
+  function parsed(extra: Record<string, unknown>): unknown {
+    return parseRunSummary(JSON.stringify({ ...BASE, ...extra }));
+  }
+
+  it('reads the dry run’s test and file counts', () => {
+    expect(parsed({ dryRunCounts: { tests: 40, testFiles: 6 } })).toEqual({
+      ...BASE,
+      dryRunCounts: { tests: 40, testFiles: 6 },
+    });
+  });
+
+  it('reads a test count without a file count', () => {
+    expect(parsed({ dryRunCounts: { tests: 40 } })).toEqual({
+      ...BASE,
+      dryRunCounts: { tests: 40 },
+    });
+  });
+
+  it.each([
+    ['not an object', 4],
+    ['without a test count', { testFiles: 2 }],
+    ['with a test count of the wrong kind', { tests: '4' }],
+  ])('drops dry-run counts that are %s', (_label, dryRunCounts) => {
+    expect(parsed({ dryRunCounts })).toEqual(BASE);
+  });
+
+  it('drops a file count of the wrong kind, and keeps the test count', () => {
+    expect(parsed({ dryRunCounts: { tests: 4, testFiles: '2' } })).toEqual({
+      ...BASE,
+      dryRunCounts: { tests: 4 },
+    });
+  });
+});

@@ -721,6 +721,54 @@ describe('ProgressReporter: what timeouts cost (#236)', () => {
   });
 });
 
+describe('ProgressReporter: what the dry run and each mutant run did (#200)', () => {
+  const SUMMARY_FILE = '/repo/reports/guardrails-run.json';
+
+  function metered(): {
+    reporter: ProgressReporter;
+    summaries: Record<string, unknown>[];
+  } {
+    const summaries: Record<string, unknown>[] = [];
+    const f = fake(
+      { ...LOCK_ENV, GUARDRAILS_RUN_SUMMARY_FILE: SUMMARY_FILE },
+      {
+        write: (filePath, content) => {
+          if (filePath === SUMMARY_FILE) {
+            summaries.push(JSON.parse(content) as Record<string, unknown>);
+          }
+        },
+      },
+    );
+    return { reporter: new ProgressReporter(f.io), summaries };
+  }
+
+  it('records how many tests the dry run ran, and in how many files', () => {
+    const { reporter, summaries } = metered();
+    reporter.onDryRunCompleted({
+      result: {
+        tests: [
+          { id: '1', name: 'one', timeSpentMs: 1, fileName: '/r/a.test.ts' },
+          { id: '2', name: 'two', timeSpentMs: 1, fileName: '/r/a.test.ts' },
+          { id: '3', name: 'three', timeSpentMs: 1, fileName: '/r/b.test.ts' },
+        ],
+      },
+      timing: { net: 3, overhead: 10 },
+    });
+    reporter.onMutationTestingPlanReady(plans(1, 0));
+    reporter.onMutationTestReportReady(...report);
+    expect(summaries).toHaveLength(2);
+    for (const summary of summaries) {
+      expect(summary.dryRunCounts).toEqual({ tests: 3, testFiles: 2 });
+    }
+  });
+
+  it('records no dry-run counts when the dry run said nothing', () => {
+    const { reporter, summaries } = metered();
+    reporter.onMutationTestingPlanReady(plans(1, 0));
+    expect(summaries.at(-1)).not.toHaveProperty('dryRunCounts');
+  });
+});
+
 describe('absorbRepeatStopSignals', () => {
   // Measured (plan.md, 2026-11-07): a tree-kill gives stryker two SIGTERMs
   // 7ms apart -- its own and the gate's forward -- and stryker's second-signal

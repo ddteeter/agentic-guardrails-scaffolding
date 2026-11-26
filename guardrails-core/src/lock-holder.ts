@@ -15,6 +15,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { type JsonFileResult, parseJsonText } from './json-file.js';
+import { type DryRunCounts, dryRunCountsOf } from './mutant-work.js';
 import { isRung, type Rung } from './verify/analyzer-policy.js';
 import { isRecord } from './verify/report-shape.js';
 
@@ -119,6 +120,10 @@ export interface RunSummary {
   The settings a timeout budget is made of (#236), those that were known.
   */
   settings?: TimeoutSettings | undefined;
+  /**
+  How many tests the dry run ran, and in how many files (#200).
+  */
+  dryRunCounts?: DryRunCounts | undefined;
 }
 
 /**
@@ -265,6 +270,7 @@ export function parseRunSummary(text: string): RunSummary | undefined {
     reused,
     timeouts: timeoutCostsOf(parsed.timeouts),
     settings: timeoutSettingsOf(parsed.settings),
+    dryRunCounts: dryRunCountsOf(parsed.dryRunCounts),
   };
 }
 
