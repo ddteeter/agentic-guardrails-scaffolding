@@ -1223,16 +1223,38 @@ far` rather than `another checkout holds it`. The command runs with
   `report: "missing"` means the run left none. The times come from
   guardrails' progress plugin, so a run without the built plugin has counts
   but no phase times. Writing the log never fails a gate or a ship.
+  Every row has `repo`, the checkout's folder name, and `project`, the clone
+  the checkout belongs to (from `git rev-parse --git-common-dir`). Every
+  lane worktree of one clone has the same `project`, but each has its own
+  `repo`. Separate clones of one remote are separate projects. A gate row's
+  cache part has `seedWhy` when the seed was `skipped` or `off`. It names
+  the cause, such as no per-test coverage, no import graph, or
+  `mutationCache.seedFrom` not set, and never a file. Rows written before
+  these fields lack them, and the log stays at version 1.
 - **`guardrails stats`** summarizes the log for the last week
-  (`--since=24h`, `--since=90m`), for every repo or one (`--repo=<name>`):
-  per rung, the queue and hold times, the dry-run and mutating times
-  (median and p90), how many runs started warm and why the rest went cold;
-  per ship, the final states and the push, gate and CI times; per
-  `guardrails lock` run, the outcomes, queue and hold times and commands; per
-  rung, what its timeouts cost (see "What a timeout costs"); and the
-  dry-run time by queue depth on arrival and by load per core at the start,
-  which is what decides whether the machine can afford more concurrent
-  lanes. `--json` prints the same as JSON.
+  (`--since=24h`, `--since=90m`), for every project or one
+  (`--project=<name>`, every lane of a clone), or for one checkout
+  (`--repo=<folder>`). It prints:
+  - a `projects:` line counting each project's runs, and how many rows
+    predate project identity (those are counted under their folder name);
+  - per rung, the queue and hold times, the dry-run and mutating times
+    (median and p90), how many runs started warm and why the rest went cold,
+    and, for the cold runs whose seed was never tried, a
+    `seed skipped N×: <reason> n, …` tally (`reason not recorded` for an
+    older row);
+  - per ship, the final states and the push, gate and CI times;
+  - per `guardrails lock` run, the outcomes, queue and hold times and
+    commands;
+  - per rung, what its timeouts cost (see "What a timeout costs");
+  - the dry-run time by queue depth on arrival and by load per core at the
+    start, which is what decides whether the machine can afford more
+    concurrent lanes. With more than one project in the window these tables
+    are printed per project, because a large suite and a small one mixed in
+    one table look like contention.
+
+  `--json` prints the same as JSON, with the mixed tables kept and a
+  `projects` list added. The output names your projects, so check it before
+  you paste it anywhere public.
 
 A `CLAUDE.md` snippet for adopters:
 
