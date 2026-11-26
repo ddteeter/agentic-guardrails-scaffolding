@@ -1,0 +1,105 @@
+{
+  "gate --mode=commit": {
+    "exitCode": 1,
+    "stdout": [],
+    "stderr": [
+      "src/sum-a.ts:1 [fallow/code-duplication] Duplicated code (12 lines), also at src/sum-b.ts:1. Extract the shared logic when the duplicated behaviour should evolve together; leave it duplicated when the similarity is accidental and likely to diverge. (dupes)",
+      "src/sum-b.ts:1 [fallow/code-duplication] Duplicated code (12 lines), also at src/sum-a.ts:1. Extract the shared logic when the duplicated behaviour should evolve together; leave it duplicated when the similarity is accidental and likely to diverge. (dupes)",
+      "guardrails: the above is also written to .guardrails/state/nosession-commit.last.json — an agent can spawn the guardrail-fixer-thorough subagent against that path instead of working through it inline."
+    ],
+    "manifests": {
+      "nosession-commit.last.json": [
+        {
+          "ruleId": "fallow/code-duplication",
+          "file": "src/sum-a.ts",
+          "line": 1,
+          "message": "Duplicated code (12 lines), also at src/sum-b.ts:1. Extract the shared logic when the duplicated behaviour should evolve together; leave it duplicated when the similarity is accidental and likely to diverge.",
+          "severity": "error",
+          "fixable": false,
+          "tool": "dupes"
+        },
+        {
+          "ruleId": "fallow/code-duplication",
+          "file": "src/sum-b.ts",
+          "line": 1,
+          "message": "Duplicated code (12 lines), also at src/sum-a.ts:1. Extract the shared logic when the duplicated behaviour should evolve together; leave it duplicated when the similarity is accidental and likely to diverge.",
+          "severity": "error",
+          "fixable": false,
+          "tool": "dupes"
+        }
+      ]
+    }
+  },
+  "gate --mode=push": {
+    "exitCode": 1,
+    "stdout": [],
+    "stderr": [
+      "src/sum-a.ts:1 [fallow/code-duplication] Duplicated code (12 lines), also at src/sum-b.ts:1. Extract the shared logic when the duplicated behaviour should evolve together; leave it duplicated when the similarity is accidental and likely to diverge. (dupes)",
+      "src/sum-b.ts:1 [fallow/code-duplication] Duplicated code (12 lines), also at src/sum-a.ts:1. Extract the shared logic when the duplicated behaviour should evolve together; leave it duplicated when the similarity is accidental and likely to diverge. (dupes)",
+      "guardrails: the above is also written to .guardrails/state/nosession-push.last.json — an agent can spawn the guardrail-fixer-thorough subagent against that path instead of working through it inline."
+    ],
+    "manifests": {
+      "nosession-push.last.json": [
+        {
+          "ruleId": "fallow/code-duplication",
+          "file": "src/sum-a.ts",
+          "line": 1,
+          "message": "Duplicated code (12 lines), also at src/sum-b.ts:1. Extract the shared logic when the duplicated behaviour should evolve together; leave it duplicated when the similarity is accidental and likely to diverge.",
+          "severity": "error",
+          "fixable": false,
+          "tool": "dupes"
+        },
+        {
+          "ruleId": "fallow/code-duplication",
+          "file": "src/sum-b.ts",
+          "line": 1,
+          "message": "Duplicated code (12 lines), also at src/sum-a.ts:1. Extract the shared logic when the duplicated behaviour should evolve together; leave it duplicated when the similarity is accidental and likely to diverge.",
+          "severity": "error",
+          "fixable": false,
+          "tool": "dupes"
+        }
+      ]
+    }
+  },
+  "gate --mode=ci": {
+    "exitCode": 1,
+    "stdout": [],
+    "stderr": [
+      "src/sum-a.ts:1 [fallow/code-duplication] Duplicated code (12 lines), also at src/sum-b.ts:1. Extract the shared logic when the duplicated behaviour should evolve together; leave it duplicated when the similarity is accidental and likely to diverge. (dupes)",
+      "src/sum-b.ts:1 [fallow/code-duplication] Duplicated code (12 lines), also at src/sum-a.ts:1. Extract the shared logic when the duplicated behaviour should evolve together; leave it duplicated when the similarity is accidental and likely to diverge. (dupes)",
+      "guardrails: the above is also written to .guardrails/state/nosession-ci.last.json — an agent can spawn the guardrail-fixer-thorough subagent against that path instead of working through it inline."
+    ],
+    "manifests": {
+      "nosession-ci.last.json": [
+        {
+          "ruleId": "fallow/code-duplication",
+          "file": "src/sum-a.ts",
+          "line": 1,
+          "message": "Duplicated code (12 lines), also at src/sum-b.ts:1. Extract the shared logic when the duplicated behaviour should evolve together; leave it duplicated when the similarity is accidental and likely to diverge.",
+          "severity": "error",
+          "fixable": false,
+          "tool": "dupes"
+        },
+        {
+          "ruleId": "fallow/code-duplication",
+          "file": "src/sum-b.ts",
+          "line": 1,
+          "message": "Duplicated code (12 lines), also at src/sum-a.ts:1. Extract the shared logic when the duplicated behaviour should evolve together; leave it duplicated when the similarity is accidental and likely to diverge.",
+          "severity": "error",
+          "fixable": false,
+          "tool": "dupes"
+        }
+      ]
+    }
+  },
+  "verify": {
+    "exitCode": 1,
+    "stdout": [],
+    "stderr": [
+      "src/sum-a.ts:1 [fallow/code-duplication] Duplicated code (12 lines), also at src/sum-b.ts:1. Extract the shared logic when the duplicated behaviour should evolve together; leave it duplicated when the similarity is accidental and likely to diverge. (dupes)",
+      "src/sum-b.ts:1 [fallow/code-duplication] Duplicated code (12 lines), also at src/sum-a.ts:1. Extract the shared logic when the duplicated behaviour should evolve together; leave it duplicated when the similarity is accidental and likely to diverge. (dupes)",
+      "guardrails: 2 error(s), 0 warning(s)."
+    ],
+    "manifests": {}
+  }
+}

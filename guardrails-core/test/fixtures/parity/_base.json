@@ -1,0 +1,20 @@
+{
+  "description": "The files every parity fixture starts from.",
+  "base": {
+    ".gitignore": "node_modules\nreports\n.stryker-tmp\n.guardrails\n.fallow\ncoverage\n",
+    "package.json": "{\n  \"name\": \"parity-fixture\",\n  \"private\": true,\n  \"type\": \"module\",\n  \"devDependencies\": {\n    \"@eslint/js\": \"*\",\n    \"@stryker-mutator/core\": \"*\",\n    \"@stryker-mutator/vitest-runner\": \"*\",\n    \"dependency-cruiser\": \"*\",\n    \"eslint\": \"*\",\n    \"fallow\": \"*\",\n    \"knip\": \"*\",\n    \"typescript\": \"*\",\n    \"typescript-eslint\": \"*\",\n    \"vitest\": \"*\"\n  }\n}\n",
+    "tsconfig.json": "{\n  \"compilerOptions\": {\n    \"target\": \"ES2022\",\n    \"module\": \"NodeNext\",\n    \"moduleResolution\": \"NodeNext\",\n    \"strict\": true,\n    \"noEmit\": true,\n    \"skipLibCheck\": true,\n    \"types\": []\n  },\n  \"include\": [\n    \"src/**/*.ts\"\n  ]\n}\n",
+    "eslint.config.js": "import js from '@eslint/js';\nimport tseslint from 'typescript-eslint';\n\nexport default tseslint.config(\n  { ignores: ['node_modules/', 'reports/', '.stryker-tmp/'] },\n  js.configs.recommended,\n  ...tseslint.configs.recommended,\n);\n",
+    "knip.json": "{\n  \"entry\": [\n    \"src/index.ts\"\n  ],\n  \"project\": [\n    \"src/**/*.ts\"\n  ],\n  \"ignoreDependencies\": [\n    \"dependency-cruiser\",\n    \"fallow\",\n    \"@stryker-mutator/core\",\n    \"@stryker-mutator/vitest-runner\"\n  ]\n}\n",
+    ".dependency-cruiser.cjs": "module.exports = {\n  forbidden: [\n    {\n      name: 'domain-not-to-infra',\n      severity: 'error',\n      comment: 'The domain layer must not import infrastructure.',\n      from: { path: '^src/domain' },\n      to: { path: '^src/infra' },\n    },\n  ],\n  options: {\n    doNotFollow: { path: 'node_modules' },\n    exclude: { path: '(^|/)(node_modules|reports|\\\\.stryker-tmp)/' },\n    tsConfig: { fileName: 'tsconfig.json' },\n    tsPreCompilationDeps: true,\n  },\n};\n",
+    "stryker.conf.json": "{\n  \"testRunner\": \"vitest\",\n  \"plugins\": [\n    \"@stryker-mutator/vitest-runner\"\n  ],\n  \"reporters\": [\n    \"json\"\n  ],\n  \"vitest\": {\n    \"configFile\": \"vitest.config.ts\"\n  },\n  \"mutate\": [\n    \"src/**/*.ts\",\n    \"!src/**/*.test.ts\"\n  ],\n  \"coverageAnalysis\": \"perTest\"\n}\n",
+    "vitest.config.ts": "import { defineConfig } from 'vitest/config';\n\nexport default defineConfig({ test: { include: ['src/**/*.test.ts'] } });\n",
+    ".fallowrc.json": "{\n  \"duplicates\": {\n    \"mode\": \"semantic\",\n    \"minTokens\": 30,\n    \"minLines\": 5\n  },\n  \"health\": {\n    \"maxCyclomatic\": 5,\n    \"maxCognitive\": 5\n  }\n}\n",
+    "README.md": "# parity fixture\n",
+    "guardrails.config.json": "{\n  \"baseBranch\": \"main\",\n  \"enforcement\": \"block\",\n  \"analyzers\": {\n    \"eslint\": \"off\",\n    \"tsc\": \"off\",\n    \"knip\": \"off\",\n    \"npm-peers\": \"off\",\n    \"dependency-cruiser\": \"off\",\n    \"stryker\": \"off\",\n    \"dupes\": \"off\",\n    \"complexity\": \"off\"\n  }\n}\n",
+    "src/tier.ts": "export function tier(spend: number): string {\n  if (spend >= 1000) {\n    return 'gold';\n  }\n  if (spend >= 100) {\n    return 'silver';\n  }\n  return 'bronze';\n}\n",
+    "src/tier.test.ts": "import { describe, expect, it } from 'vitest';\n\nimport { tier } from './tier.js';\n\ndescribe('tier', () => {\n  it('pins every boundary', () => {\n    expect(tier(1000)).toBe('gold');\n    expect(tier(999)).toBe('silver');\n    expect(tier(100)).toBe('silver');\n    expect(tier(99)).toBe('bronze');\n  });\n});\n",
+    "src/index.ts": "import { tier } from './tier.js';\n\nexport function describeSpend(spend: number): string {\n  return `tier: ${tier(spend)}`;\n}\n"
+  },
+  "change": {}
+}

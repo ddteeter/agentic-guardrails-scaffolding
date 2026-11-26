@@ -1,0 +1,74 @@
+{
+  "gate --mode=commit": {
+    "exitCode": 1,
+    "stdout": [],
+    "stderr": [
+      "src/count.ts:2 [TS2322] Type 'string' is not assignable to type 'number'. (tsc)",
+      "guardrails: the above is also written to .guardrails/state/nosession-commit.last.json — an agent can spawn the guardrail-fixer subagent against that path instead of working through it inline."
+    ],
+    "manifests": {
+      "nosession-commit.last.json": [
+        {
+          "ruleId": "TS2322",
+          "file": "src/count.ts",
+          "line": 2,
+          "message": "Type 'string' is not assignable to type 'number'.",
+          "severity": "error",
+          "fixable": false,
+          "tool": "tsc"
+        }
+      ]
+    }
+  },
+  "gate --mode=push": {
+    "exitCode": 1,
+    "stdout": [],
+    "stderr": [
+      "src/count.ts:2 [TS2322] Type 'string' is not assignable to type 'number'. (tsc)",
+      "guardrails: the above is also written to .guardrails/state/nosession-push.last.json — an agent can spawn the guardrail-fixer subagent against that path instead of working through it inline."
+    ],
+    "manifests": {
+      "nosession-push.last.json": [
+        {
+          "ruleId": "TS2322",
+          "file": "src/count.ts",
+          "line": 2,
+          "message": "Type 'string' is not assignable to type 'number'.",
+          "severity": "error",
+          "fixable": false,
+          "tool": "tsc"
+        }
+      ]
+    }
+  },
+  "gate --mode=ci": {
+    "exitCode": 1,
+    "stdout": [],
+    "stderr": [
+      "src/count.ts:2 [TS2322] Type 'string' is not assignable to type 'number'. (tsc)",
+      "guardrails: the above is also written to .guardrails/state/nosession-ci.last.json — an agent can spawn the guardrail-fixer subagent against that path instead of working through it inline."
+    ],
+    "manifests": {
+      "nosession-ci.last.json": [
+        {
+          "ruleId": "TS2322",
+          "file": "src/count.ts",
+          "line": 2,
+          "message": "Type 'string' is not assignable to type 'number'.",
+          "severity": "error",
+          "fixable": false,
+          "tool": "tsc"
+        }
+      ]
+    }
+  },
+  "verify": {
+    "exitCode": 1,
+    "stdout": [],
+    "stderr": [
+      "src/count.ts:2 [TS2322] Type 'string' is not assignable to type 'number'. (tsc)",
+      "guardrails: 1 error(s), 0 warning(s)."
+    ],
+    "manifests": {}
+  }
+}

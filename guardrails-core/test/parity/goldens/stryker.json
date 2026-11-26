@@ -1,0 +1,80 @@
+{
+  "gate --mode=commit": {
+    "exitCode": 1,
+    "stdout": [],
+    "stderr": [
+      "src/grade.ts:6 [stryker/survived] EqualityOperator mutant survived — a test executes this line but does not assert its behavior. It replaced the code with `score > 90`. (stryker)",
+      "guardrails: the above is also written to .guardrails/state/nosession-commit.last.json — an agent can spawn the guardrail-fixer-thorough subagent against that path instead of working through it inline."
+    ],
+    "manifests": {
+      "nosession-commit.last.json": [
+        {
+          "ruleId": "stryker/survived",
+          "file": "src/grade.ts",
+          "line": 6,
+          "message": "EqualityOperator mutant survived — a test executes this line but does not assert its behavior. It replaced the code with `score > 90`.",
+          "severity": "error",
+          "fixable": false,
+          "tool": "stryker",
+          "guidance": "docs/guardrails/crushing-mutants.md",
+          "relatedTests": ["src/grade.test.ts"]
+        }
+      ]
+    }
+  },
+  "gate --mode=push": {
+    "exitCode": 1,
+    "stdout": [],
+    "stderr": [
+      "src/grade.ts:6 [stryker/survived] EqualityOperator mutant survived — a test executes this line but does not assert its behavior. It replaced the code with `score > 90`. (stryker)",
+      "guardrails: the above is also written to .guardrails/state/nosession-push.last.json — an agent can spawn the guardrail-fixer-thorough subagent against that path instead of working through it inline."
+    ],
+    "manifests": {
+      "nosession-push.last.json": [
+        {
+          "ruleId": "stryker/survived",
+          "file": "src/grade.ts",
+          "line": 6,
+          "message": "EqualityOperator mutant survived — a test executes this line but does not assert its behavior. It replaced the code with `score > 90`.",
+          "severity": "error",
+          "fixable": false,
+          "tool": "stryker",
+          "guidance": "docs/guardrails/crushing-mutants.md",
+          "relatedTests": ["src/grade.test.ts"]
+        }
+      ]
+    }
+  },
+  "gate --mode=ci": {
+    "exitCode": 1,
+    "stdout": [],
+    "stderr": [
+      "src/grade.ts:6 [stryker/survived] EqualityOperator mutant survived — a test executes this line but does not assert its behavior. It replaced the code with `score > 90`. (stryker)",
+      "guardrails: the above is also written to .guardrails/state/nosession-ci.last.json — an agent can spawn the guardrail-fixer-thorough subagent against that path instead of working through it inline."
+    ],
+    "manifests": {
+      "nosession-ci.last.json": [
+        {
+          "ruleId": "stryker/survived",
+          "file": "src/grade.ts",
+          "line": 6,
+          "message": "EqualityOperator mutant survived — a test executes this line but does not assert its behavior. It replaced the code with `score > 90`.",
+          "severity": "error",
+          "fixable": false,
+          "tool": "stryker",
+          "guidance": "docs/guardrails/crushing-mutants.md",
+          "relatedTests": ["src/grade.test.ts"]
+        }
+      ]
+    }
+  },
+  "verify": {
+    "exitCode": 1,
+    "stdout": [],
+    "stderr": [
+      "src/grade.ts:6 [stryker/survived] EqualityOperator mutant survived — a test executes this line but does not assert its behavior. It replaced the code with `score > 90`. (stryker)",
+      "guardrails: 1 error(s), 0 warning(s)."
+    ],
+    "manifests": {}
+  }
+}

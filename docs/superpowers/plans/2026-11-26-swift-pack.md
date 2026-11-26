@@ -30,7 +30,7 @@ suppression, no sanction, no golden edit after step 1.
    the change staged), with `GIT_*` stripped from the environment and a
    `node_modules` symlink. Unit-tested without any analyzer.
 2. `test/parity/normalise.ts`: the fixture path (and its realpath) to
-   `<root>`, durations to `<duration>`. Unit-tested on literal strings.
+   `<root>`, and nothing else. Unit-tested on literal strings.
 3. `test/parity/run.ts`: run one command through `runCommand` with real
    `spawnExec`, capture exit code, stdout, stderr.
 4. The fixtures (`test/fixtures/parity/*.json`): `clean`, one per analyzer,
@@ -115,4 +115,18 @@ in `QUESTIONS.md`.
 
 ## Verification log
 
-_Filled in as each package lands: commands run and their results._
+### GR-01
+
+- Environment check on a clean `main` (`53b24da`), Node 24: `npm ci`,
+  `npm run build`, `npm run typecheck`, `npm run lint` exit 0; `npm test`
+  115 files, 4,264 tests passed (with the two environment conditions in
+  `QUESTIONS.md` entry 7 removed).
+- Goldens recorded at `53b24da` with no change under `src/`: 20 fixtures,
+  four commands each. Replayed twice with identical results.
+- Cost: the parity suite takes about 23 s of wall-clock time on the cloud
+  machine (about 60 s of CPU), real Stryker run included, with fixtures run
+  five at a time.
+- Step 7, by hand: `'Unused file'` changed to `'Unused file!'` in
+  `verify/knip-adapter.ts`; `parity.test.ts` failed on the `knip` fixture,
+  naming the changed message in both the printed line and the manifest;
+  reverted.

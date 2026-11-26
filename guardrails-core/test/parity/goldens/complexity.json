@@ -1,0 +1,74 @@
+{
+  "gate --mode=commit": {
+    "exitCode": 1,
+    "stdout": [],
+    "stderr": [
+      "src/route.ts:1 [fallow/high-complexity] `route` is over the complexity threshold: cyclomatic 11 (limit 5), cognitive 14 (limit 5). Extract helper functions to split it; do not suppress it with a fallow-ignore comment. (complexity)",
+      "guardrails: the above is also written to .guardrails/state/nosession-commit.last.json — an agent can spawn the guardrail-fixer-thorough subagent against that path instead of working through it inline."
+    ],
+    "manifests": {
+      "nosession-commit.last.json": [
+        {
+          "ruleId": "fallow/high-complexity",
+          "file": "src/route.ts",
+          "line": 1,
+          "message": "`route` is over the complexity threshold: cyclomatic 11 (limit 5), cognitive 14 (limit 5). Extract helper functions to split it; do not suppress it with a fallow-ignore comment.",
+          "severity": "error",
+          "fixable": false,
+          "tool": "complexity"
+        }
+      ]
+    }
+  },
+  "gate --mode=push": {
+    "exitCode": 1,
+    "stdout": [],
+    "stderr": [
+      "src/route.ts:1 [fallow/high-complexity] `route` is over the complexity threshold: cyclomatic 11 (limit 5), cognitive 14 (limit 5). Extract helper functions to split it; do not suppress it with a fallow-ignore comment. (complexity)",
+      "guardrails: the above is also written to .guardrails/state/nosession-push.last.json — an agent can spawn the guardrail-fixer-thorough subagent against that path instead of working through it inline."
+    ],
+    "manifests": {
+      "nosession-push.last.json": [
+        {
+          "ruleId": "fallow/high-complexity",
+          "file": "src/route.ts",
+          "line": 1,
+          "message": "`route` is over the complexity threshold: cyclomatic 11 (limit 5), cognitive 14 (limit 5). Extract helper functions to split it; do not suppress it with a fallow-ignore comment.",
+          "severity": "error",
+          "fixable": false,
+          "tool": "complexity"
+        }
+      ]
+    }
+  },
+  "gate --mode=ci": {
+    "exitCode": 1,
+    "stdout": [],
+    "stderr": [
+      "src/route.ts:1 [fallow/high-complexity] `route` is over the complexity threshold: cyclomatic 11 (limit 5), cognitive 14 (limit 5). Extract helper functions to split it; do not suppress it with a fallow-ignore comment. (complexity)",
+      "guardrails: the above is also written to .guardrails/state/nosession-ci.last.json — an agent can spawn the guardrail-fixer-thorough subagent against that path instead of working through it inline."
+    ],
+    "manifests": {
+      "nosession-ci.last.json": [
+        {
+          "ruleId": "fallow/high-complexity",
+          "file": "src/route.ts",
+          "line": 1,
+          "message": "`route` is over the complexity threshold: cyclomatic 11 (limit 5), cognitive 14 (limit 5). Extract helper functions to split it; do not suppress it with a fallow-ignore comment.",
+          "severity": "error",
+          "fixable": false,
+          "tool": "complexity"
+        }
+      ]
+    }
+  },
+  "verify": {
+    "exitCode": 1,
+    "stdout": [],
+    "stderr": [
+      "src/route.ts:1 [fallow/high-complexity] `route` is over the complexity threshold: cyclomatic 11 (limit 5), cognitive 14 (limit 5). Extract helper functions to split it; do not suppress it with a fallow-ignore comment. (complexity)",
+      "guardrails: 1 error(s), 0 warning(s)."
+    ],
+    "manifests": {}
+  }
+}

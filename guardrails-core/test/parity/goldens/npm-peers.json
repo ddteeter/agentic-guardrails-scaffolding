@@ -1,0 +1,71 @@
+{
+  "gate --mode=commit": {
+    "exitCode": 1,
+    "stdout": [],
+    "stderr": [
+      "package.json:? [guardrails/peer-range-violation] host@1.0.0 violates a peer range required by another installed package: \"^2.0.0\" from node_modules/plugin. Pin host inside that range, or upgrade the package that requires it. A graph only reaches this state by being installed past npm's own peer check (--legacy-peer-deps, --force) or by workspace hoisting, so it will not fail again at install time. (npm)",
+      "guardrails: the above is also written to .guardrails/state/nosession-commit.last.json — an agent can spawn the guardrail-fixer subagent against that path instead of working through it inline."
+    ],
+    "manifests": {
+      "nosession-commit.last.json": [
+        {
+          "ruleId": "guardrails/peer-range-violation",
+          "file": "package.json",
+          "message": "host@1.0.0 violates a peer range required by another installed package: \"^2.0.0\" from node_modules/plugin. Pin host inside that range, or upgrade the package that requires it. A graph only reaches this state by being installed past npm's own peer check (--legacy-peer-deps, --force) or by workspace hoisting, so it will not fail again at install time.",
+          "severity": "error",
+          "fixable": false,
+          "tool": "npm"
+        }
+      ]
+    }
+  },
+  "gate --mode=push": {
+    "exitCode": 1,
+    "stdout": [],
+    "stderr": [
+      "package.json:? [guardrails/peer-range-violation] host@1.0.0 violates a peer range required by another installed package: \"^2.0.0\" from node_modules/plugin. Pin host inside that range, or upgrade the package that requires it. A graph only reaches this state by being installed past npm's own peer check (--legacy-peer-deps, --force) or by workspace hoisting, so it will not fail again at install time. (npm)",
+      "guardrails: the above is also written to .guardrails/state/nosession-push.last.json — an agent can spawn the guardrail-fixer subagent against that path instead of working through it inline."
+    ],
+    "manifests": {
+      "nosession-push.last.json": [
+        {
+          "ruleId": "guardrails/peer-range-violation",
+          "file": "package.json",
+          "message": "host@1.0.0 violates a peer range required by another installed package: \"^2.0.0\" from node_modules/plugin. Pin host inside that range, or upgrade the package that requires it. A graph only reaches this state by being installed past npm's own peer check (--legacy-peer-deps, --force) or by workspace hoisting, so it will not fail again at install time.",
+          "severity": "error",
+          "fixable": false,
+          "tool": "npm"
+        }
+      ]
+    }
+  },
+  "gate --mode=ci": {
+    "exitCode": 1,
+    "stdout": [],
+    "stderr": [
+      "package.json:? [guardrails/peer-range-violation] host@1.0.0 violates a peer range required by another installed package: \"^2.0.0\" from node_modules/plugin. Pin host inside that range, or upgrade the package that requires it. A graph only reaches this state by being installed past npm's own peer check (--legacy-peer-deps, --force) or by workspace hoisting, so it will not fail again at install time. (npm)",
+      "guardrails: the above is also written to .guardrails/state/nosession-ci.last.json — an agent can spawn the guardrail-fixer subagent against that path instead of working through it inline."
+    ],
+    "manifests": {
+      "nosession-ci.last.json": [
+        {
+          "ruleId": "guardrails/peer-range-violation",
+          "file": "package.json",
+          "message": "host@1.0.0 violates a peer range required by another installed package: \"^2.0.0\" from node_modules/plugin. Pin host inside that range, or upgrade the package that requires it. A graph only reaches this state by being installed past npm's own peer check (--legacy-peer-deps, --force) or by workspace hoisting, so it will not fail again at install time.",
+          "severity": "error",
+          "fixable": false,
+          "tool": "npm"
+        }
+      ]
+    }
+  },
+  "verify": {
+    "exitCode": 1,
+    "stdout": [],
+    "stderr": [
+      "package.json:? [guardrails/peer-range-violation] host@1.0.0 violates a peer range required by another installed package: \"^2.0.0\" from node_modules/plugin. Pin host inside that range, or upgrade the package that requires it. A graph only reaches this state by being installed past npm's own peer check (--legacy-peer-deps, --force) or by workspace hoisting, so it will not fail again at install time. (npm)",
+      "guardrails: 1 error(s), 0 warning(s)."
+    ],
+    "manifests": {}
+  }
+}

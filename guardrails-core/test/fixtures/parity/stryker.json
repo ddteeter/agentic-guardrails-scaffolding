@@ -1,0 +1,10 @@
+{
+  "description": "A real Stryker run over two changed functions: every mutant of one is killed, a boundary mutant of the other survives.",
+  "base": {
+    "guardrails.config.json": "{\n  \"baseBranch\": \"main\",\n  \"enforcement\": \"block\",\n  \"analyzers\": {\n    \"eslint\": \"off\",\n    \"tsc\": \"off\",\n    \"knip\": \"off\",\n    \"npm-peers\": \"off\",\n    \"dependency-cruiser\": \"off\",\n    \"stryker\": \"required\",\n    \"dupes\": \"off\",\n    \"complexity\": \"off\"\n  }\n}\n"
+  },
+  "change": {
+    "src/grade.ts": "export function passed(score: number): boolean {\n  return score >= 50;\n}\n\nexport function honours(score: number): boolean {\n  return score >= 90;\n}\n",
+    "src/grade.test.ts": "import { describe, expect, it } from 'vitest';\n\nimport { honours, passed } from './grade.js';\n\ndescribe('grade', () => {\n  it('pins the pass boundary on both sides', () => {\n    expect(passed(50)).toBe(true);\n    expect(passed(49)).toBe(false);\n  });\n\n  it('checks honours away from its boundary only', () => {\n    expect(honours(100)).toBe(true);\n    expect(honours(10)).toBe(false);\n  });\n});\n"
+  }
+}

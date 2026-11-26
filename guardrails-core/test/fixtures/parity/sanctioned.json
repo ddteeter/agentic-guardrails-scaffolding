@@ -1,0 +1,10 @@
+{
+  "description": "An added suppression that a sanctionedSuppressions entry covers, beside one it does not.",
+  "base": {
+    "guardrails.config.json": "{\n  \"baseBranch\": \"main\",\n  \"enforcement\": \"block\",\n  \"analyzers\": {\n    \"eslint\": \"off\",\n    \"tsc\": \"off\",\n    \"knip\": \"off\",\n    \"npm-peers\": \"off\",\n    \"dependency-cruiser\": \"off\",\n    \"stryker\": \"off\",\n    \"dupes\": \"off\",\n    \"complexity\": \"off\"\n  },\n  \"sanctionedSuppressions\": [\n    {\n      \"key\": \"src/quiet.ts|eslint-disable|// eslint-disable-next-line no-debugger\",\n      \"reason\": \"Fixture: the granted one.\"\n    }\n  ]\n}\n"
+  },
+  "change": {
+    "src/quiet.ts": "export function quiet(): number {\n  // eslint-disable-next-line no-debugger\n  debugger;\n  return 1;\n}\n",
+    "src/loud.ts": "export function loud(): number {\n  // eslint-disable-next-line no-debugger\n  debugger;\n  return 2;\n}\n"
+  }
+}

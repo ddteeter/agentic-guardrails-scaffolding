@@ -1,0 +1,9 @@
+{
+  "description": "An added eslint-disable directive, with every analyzer off: the auditor alone answers.",
+  "base": {
+    "guardrails.config.json": "{\n  \"baseBranch\": \"main\",\n  \"enforcement\": \"block\",\n  \"analyzers\": {\n    \"eslint\": \"off\",\n    \"tsc\": \"off\",\n    \"knip\": \"off\",\n    \"npm-peers\": \"off\",\n    \"dependency-cruiser\": \"off\",\n    \"stryker\": \"off\",\n    \"dupes\": \"off\",\n    \"complexity\": \"off\"\n  }\n}\n"
+  },
+  "change": {
+    "src/quiet.ts": "export function quiet(): number {\n  // eslint-disable-next-line no-debugger\n  debugger;\n  return 1;\n}\n"
+  }
+}

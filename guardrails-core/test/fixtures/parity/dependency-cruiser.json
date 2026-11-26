@@ -1,0 +1,11 @@
+{
+  "description": "One forbidden import: the domain layer reaching into infrastructure.",
+  "base": {
+    "guardrails.config.json": "{\n  \"baseBranch\": \"main\",\n  \"enforcement\": \"block\",\n  \"analyzers\": {\n    \"eslint\": \"off\",\n    \"tsc\": \"off\",\n    \"knip\": \"off\",\n    \"npm-peers\": \"off\",\n    \"dependency-cruiser\": \"required\",\n    \"stryker\": \"off\",\n    \"dupes\": \"off\",\n    \"complexity\": \"off\"\n  }\n}\n"
+  },
+  "change": {
+    "src/infra/store.ts": "export function load(): number {\n  return 1;\n}\n",
+    "src/domain/rule.ts": "import { load } from '../infra/store.js';\n\nexport function rule(): number {\n  return load() + 1;\n}\n",
+    "src/index.ts": "import { rule } from './domain/rule.js';\nimport { tier } from './tier.js';\n\nexport function describeSpend(spend: number): string {\n  return `tier: ${tier(spend)}`;\n}\n\nexport const extra = rule;\n"
+  }
+}

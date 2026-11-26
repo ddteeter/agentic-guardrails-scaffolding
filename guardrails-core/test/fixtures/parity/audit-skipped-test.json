@@ -1,0 +1,9 @@
+{
+  "description": "An added skipped test.",
+  "base": {
+    "guardrails.config.json": "{\n  \"baseBranch\": \"main\",\n  \"enforcement\": \"block\",\n  \"analyzers\": {\n    \"eslint\": \"off\",\n    \"tsc\": \"off\",\n    \"knip\": \"off\",\n    \"npm-peers\": \"off\",\n    \"dependency-cruiser\": \"off\",\n    \"stryker\": \"off\",\n    \"dupes\": \"off\",\n    \"complexity\": \"off\"\n  }\n}\n"
+  },
+  "change": {
+    "src/tier.test.ts": "import { describe, expect, it } from 'vitest';\n\nimport { tier } from './tier.js';\n\ndescribe('tier', () => {\n  it.skip('is not run', () => {\n    expect(tier(5)).toBe('gold');\n  });\n\n  it('pins every boundary', () => {\n    expect(tier(1000)).toBe('gold');\n    expect(tier(999)).toBe('silver');\n    expect(tier(100)).toBe('silver');\n    expect(tier(99)).toBe('bronze');\n  });\n});\n"
+  }
+}

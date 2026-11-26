@@ -1,0 +1,10 @@
+{
+  "description": "One ESLint violation (no-debugger) in a changed file.",
+  "base": {
+    "guardrails.config.json": "{\n  \"baseBranch\": \"main\",\n  \"enforcement\": \"block\",\n  \"analyzers\": {\n    \"eslint\": \"required\",\n    \"tsc\": \"off\",\n    \"knip\": \"off\",\n    \"npm-peers\": \"off\",\n    \"dependency-cruiser\": \"off\",\n    \"stryker\": \"off\",\n    \"dupes\": \"off\",\n    \"complexity\": \"off\"\n  }\n}\n"
+  },
+  "change": {
+    "src/pause.ts": "export function pause(): number {\n  debugger;\n  return 1;\n}\n",
+    "src/index.ts": "import { pause } from './pause.js';\nimport { tier } from './tier.js';\n\nexport function describeSpend(spend: number): string {\n  return `tier: ${tier(spend)}`;\n}\n\nexport const extra = pause;\n"
+  }
+}

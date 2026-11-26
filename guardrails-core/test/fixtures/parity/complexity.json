@@ -1,0 +1,9 @@
+{
+  "description": "One changed function over the fixture's cyclomatic and cognitive thresholds.",
+  "base": {
+    "guardrails.config.json": "{\n  \"baseBranch\": \"main\",\n  \"enforcement\": \"block\",\n  \"analyzers\": {\n    \"eslint\": \"off\",\n    \"tsc\": \"off\",\n    \"knip\": \"off\",\n    \"npm-peers\": \"off\",\n    \"dependency-cruiser\": \"off\",\n    \"stryker\": \"off\",\n    \"dupes\": \"off\",\n    \"complexity\": \"required\"\n  }\n}\n"
+  },
+  "change": {
+    "src/route.ts": "export function route(code: number, retry: boolean, admin: boolean): string {\n  if (code === 1) {\n    if (retry) {\n      if (admin) {\n        return 'a';\n      }\n      return 'b';\n    }\n    return 'c';\n  }\n  if (code === 2 && retry) {\n    return 'd';\n  }\n  if (code === 3 || admin) {\n    return 'e';\n  }\n  for (let index = 0; index < code; index += 1) {\n    if (index % 2 === 0 && retry) {\n      return 'f';\n    }\n  }\n  return 'g';\n}\n"
+  }
+}

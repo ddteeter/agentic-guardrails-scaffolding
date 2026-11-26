@@ -1,0 +1,9 @@
+{
+  "description": "An added @SuppressWarnings annotation in a Java file.",
+  "base": {
+    "guardrails.config.json": "{\n  \"baseBranch\": \"main\",\n  \"enforcement\": \"block\",\n  \"analyzers\": {\n    \"eslint\": \"off\",\n    \"tsc\": \"off\",\n    \"knip\": \"off\",\n    \"npm-peers\": \"off\",\n    \"dependency-cruiser\": \"off\",\n    \"stryker\": \"off\",\n    \"dupes\": \"off\",\n    \"complexity\": \"off\"\n  }\n}\n"
+  },
+  "change": {
+    "src/Legacy.java": "class Legacy {\n  @SuppressWarnings(\"unchecked\")\n  void run() {}\n}\n"
+  }
+}

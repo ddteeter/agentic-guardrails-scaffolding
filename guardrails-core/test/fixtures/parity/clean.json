@@ -1,0 +1,10 @@
+{
+  "description": "A change with no violation; every analyzer that needs no install of its own is required.",
+  "base": {
+    "guardrails.config.json": "{\n  \"baseBranch\": \"main\",\n  \"enforcement\": \"block\",\n  \"analyzers\": {\n    \"eslint\": \"required\",\n    \"tsc\": \"required\",\n    \"knip\": \"required\",\n    \"npm-peers\": \"off\",\n    \"dependency-cruiser\": \"required\",\n    \"stryker\": \"off\",\n    \"dupes\": \"required\",\n    \"complexity\": \"required\"\n  }\n}\n"
+  },
+  "change": {
+    "src/label.ts": "export function label(name: string): string {\n  return `label: ${name}`;\n}\n",
+    "src/index.ts": "import { label } from './label.js';\nimport { tier } from './tier.js';\n\nexport function describeSpend(spend: number): string {\n  return `tier: ${tier(spend)}`;\n}\n\nexport const extra = label;\n"
+  }
+}

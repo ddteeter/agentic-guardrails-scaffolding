@@ -1,0 +1,71 @@
+{
+  "gate --mode=commit": {
+    "exitCode": 1,
+    "stdout": [],
+    "stderr": [
+      "src/orphan.ts:? [knip/files] Unused file (knip)",
+      "guardrails: the above is also written to .guardrails/state/nosession-commit.last.json — an agent can spawn the guardrail-fixer-thorough subagent against that path instead of working through it inline."
+    ],
+    "manifests": {
+      "nosession-commit.last.json": [
+        {
+          "ruleId": "knip/files",
+          "file": "src/orphan.ts",
+          "message": "Unused file",
+          "severity": "error",
+          "fixable": false,
+          "tool": "knip"
+        }
+      ]
+    }
+  },
+  "gate --mode=push": {
+    "exitCode": 1,
+    "stdout": [],
+    "stderr": [
+      "src/orphan.ts:? [knip/files] Unused file (knip)",
+      "guardrails: the above is also written to .guardrails/state/nosession-push.last.json — an agent can spawn the guardrail-fixer-thorough subagent against that path instead of working through it inline."
+    ],
+    "manifests": {
+      "nosession-push.last.json": [
+        {
+          "ruleId": "knip/files",
+          "file": "src/orphan.ts",
+          "message": "Unused file",
+          "severity": "error",
+          "fixable": false,
+          "tool": "knip"
+        }
+      ]
+    }
+  },
+  "gate --mode=ci": {
+    "exitCode": 1,
+    "stdout": [],
+    "stderr": [
+      "src/orphan.ts:? [knip/files] Unused file (knip)",
+      "guardrails: the above is also written to .guardrails/state/nosession-ci.last.json — an agent can spawn the guardrail-fixer-thorough subagent against that path instead of working through it inline."
+    ],
+    "manifests": {
+      "nosession-ci.last.json": [
+        {
+          "ruleId": "knip/files",
+          "file": "src/orphan.ts",
+          "message": "Unused file",
+          "severity": "error",
+          "fixable": false,
+          "tool": "knip"
+        }
+      ]
+    }
+  },
+  "verify": {
+    "exitCode": 1,
+    "stdout": [],
+    "stderr": [
+      "src/orphan.ts:? [knip/files] Unused file (knip)",
+      "guardrails: 1 error(s), 0 warning(s)."
+    ],
+    "manifests": {}
+  }
+}

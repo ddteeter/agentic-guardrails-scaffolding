@@ -1,0 +1,13 @@
+{
+  "description": "An installed tree with one unmet peer range, built by hand so the answer does not depend on this repository's own install.",
+  "nodeModules": "none",
+  "base": {
+    "guardrails.config.json": "{\n  \"baseBranch\": \"main\",\n  \"enforcement\": \"block\",\n  \"analyzers\": {\n    \"eslint\": \"off\",\n    \"tsc\": \"off\",\n    \"knip\": \"off\",\n    \"npm-peers\": \"required\",\n    \"dependency-cruiser\": \"off\",\n    \"stryker\": \"off\",\n    \"dupes\": \"off\",\n    \"complexity\": \"off\"\n  }\n}\n",
+    "package.json": "{\n  \"name\": \"parity-fixture\",\n  \"private\": true,\n  \"type\": \"module\",\n  \"dependencies\": {\n    \"plugin\": \"1.0.0\",\n    \"host\": \"1.0.0\"\n  }\n}\n",
+    "node_modules/plugin/package.json": "{\n  \"name\": \"plugin\",\n  \"version\": \"1.0.0\",\n  \"peerDependencies\": {\n    \"host\": \"^2.0.0\"\n  }\n}\n",
+    "node_modules/host/package.json": "{\n  \"name\": \"host\",\n  \"version\": \"1.0.0\"\n}\n"
+  },
+  "change": {
+    "README.md": "# parity fixture\n\nA line of prose.\n"
+  }
+}

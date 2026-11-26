@@ -52,9 +52,10 @@ five releases old.
 **What.** The parity suite runs the real analyzers. Stryker runs in one
 fixture, four times (commit, push, ci, `verify`).
 
-**Cost.** Measured figures are in the plan's verification log once recorded.
-The suite adds wall-clock time to `npm test`, `test:coverage` (so to every
-push) and CI.
+**Cost.** Measured on the cloud machine: the whole parity suite (20
+fixtures, four commands each, the real Stryker run included) takes about 23 s
+of wall-clock time and about 60 s of CPU. It runs in `npm test`,
+`test:coverage` (so at every push) and CI.
 
 **Recommendation.** Keep the real run; it is the only golden that would have
 caught a change to how Stryker is invoked or read. If the time is unwelcome

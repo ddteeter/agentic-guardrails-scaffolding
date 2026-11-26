@@ -1,0 +1,9 @@
+{
+  "description": "An added @ts-expect-error directive.",
+  "base": {
+    "guardrails.config.json": "{\n  \"baseBranch\": \"main\",\n  \"enforcement\": \"block\",\n  \"analyzers\": {\n    \"eslint\": \"off\",\n    \"tsc\": \"off\",\n    \"knip\": \"off\",\n    \"npm-peers\": \"off\",\n    \"dependency-cruiser\": \"off\",\n    \"stryker\": \"off\",\n    \"dupes\": \"off\",\n    \"complexity\": \"off\"\n  }\n}\n"
+  },
+  "change": {
+    "src/quiet.ts": "export function quiet(): number {\n  // @ts-expect-error deliberately wrong\n  const total: number = 'three';\n  return total;\n}\n"
+  }
+}

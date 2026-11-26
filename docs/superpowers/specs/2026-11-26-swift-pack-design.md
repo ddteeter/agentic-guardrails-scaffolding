@@ -64,8 +64,10 @@ reserve `'java'` now is a question for the owner.
 ### What a golden is
 
 A golden is the normalised output of one guardrails command run against one
-fixture repository with the **real analyzers**: its exit code, stdout and
-stderr. Four commands are recorded per fixture, because GR-02 and GR-03 touch
+fixture repository with the **real analyzers**: its exit code, stdout,
+stderr, and every violations manifest it left in the state directory (the
+printed lines do not carry a violation's package, related tests or guidance;
+the manifest a fixer is pointed at does). Four commands are recorded per fixture, because GR-02 and GR-03 touch
 all four paths (config loading, analyzer selection, the auditor, and the
 `--stack` flag):
 
@@ -114,14 +116,19 @@ repository's, which is how the drift guards already run real tools.
 
 The fixture set:
 
-- `clean` — a change with no violation, every TypeScript analyzer on;
+- `clean` — a change with no violation, with ESLint, tsc, knip,
+  dependency-cruiser, dupes and complexity all required (Stryker and
+  npm-peers run in their own fixtures only: the first for cost, the second
+  because its answer would otherwise depend on this repository's install);
 - one per analyzer with exactly one violation: `eslint`, `tsc`, `knip`,
   `dependency-cruiser`, `stryker`, `dupes`, `complexity`, `npm-peers`;
 - one per existing audit kind: `eslint-disable`, `ts-suppress`, `cast-any`,
   `suppress-warnings`, `disabled-test`, `skipped-test`, `mutation-suppress`,
   `analyzer-ignore`;
 - `sanctioned` — a suppression covered by a `sanctionedSuppressions` entry;
-- `outside-source` — a change that touches no source file (a `README.md`).
+- `outside-source` — a change that touches no source file (a `README.md`);
+- `workspace` — a violation inside a workspace member, so the manifest
+  carries the owning package.
 
 Every fixture pins its `analyzers` block explicitly, so each golden exercises
 what its name says and the suite's cost stays bounded: audit fixtures turn
@@ -132,9 +139,10 @@ survivor), which keeps the real mutation run to four invocations.
 ### Normalisation
 
 Only what cannot be stable is rewritten: the fixture's temporary path (also in
-its `realpath` form) becomes `<root>`, and durations become `<duration>`.
-Nothing else is touched; in particular message text, rule ids, ordering and
-counts are compared exactly.
+its `realpath` form) becomes `<root>`. Nothing else is touched; message
+text, rule ids, ordering and counts are compared exactly. No recorded output
+holds a duration, so none is masked: a mask nobody exercises is a place for a
+real difference to hide.
 
 ### The rule
 

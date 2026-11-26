@@ -1,0 +1,9 @@
+{
+  "description": "A change that touches no source file: only whole-project analyzers have anything to run on.",
+  "base": {
+    "guardrails.config.json": "{\n  \"baseBranch\": \"main\",\n  \"enforcement\": \"block\",\n  \"analyzers\": {\n    \"eslint\": \"required\",\n    \"tsc\": \"required\",\n    \"knip\": \"required\",\n    \"npm-peers\": \"off\",\n    \"dependency-cruiser\": \"required\",\n    \"stryker\": \"off\",\n    \"dupes\": \"required\",\n    \"complexity\": \"required\"\n  }\n}\n"
+  },
+  "change": {
+    "README.md": "# parity fixture\n\nA line of prose.\n"
+  }
+}

@@ -1,0 +1,71 @@
+{
+  "gate --mode=commit": {
+    "exitCode": 1,
+    "stdout": [],
+    "stderr": [
+      "src/domain/rule.ts:? [dependency-cruiser/domain-not-to-infra] domain-not-to-infra: src/domain/rule.ts → src/infra/store.ts (dependency-cruiser)",
+      "guardrails: the above is also written to .guardrails/state/nosession-commit.last.json — an agent can spawn the guardrail-fixer-thorough subagent against that path instead of working through it inline."
+    ],
+    "manifests": {
+      "nosession-commit.last.json": [
+        {
+          "ruleId": "dependency-cruiser/domain-not-to-infra",
+          "file": "src/domain/rule.ts",
+          "message": "domain-not-to-infra: src/domain/rule.ts → src/infra/store.ts",
+          "severity": "error",
+          "fixable": false,
+          "tool": "dependency-cruiser"
+        }
+      ]
+    }
+  },
+  "gate --mode=push": {
+    "exitCode": 1,
+    "stdout": [],
+    "stderr": [
+      "src/domain/rule.ts:? [dependency-cruiser/domain-not-to-infra] domain-not-to-infra: src/domain/rule.ts → src/infra/store.ts (dependency-cruiser)",
+      "guardrails: the above is also written to .guardrails/state/nosession-push.last.json — an agent can spawn the guardrail-fixer-thorough subagent against that path instead of working through it inline."
+    ],
+    "manifests": {
+      "nosession-push.last.json": [
+        {
+          "ruleId": "dependency-cruiser/domain-not-to-infra",
+          "file": "src/domain/rule.ts",
+          "message": "domain-not-to-infra: src/domain/rule.ts → src/infra/store.ts",
+          "severity": "error",
+          "fixable": false,
+          "tool": "dependency-cruiser"
+        }
+      ]
+    }
+  },
+  "gate --mode=ci": {
+    "exitCode": 1,
+    "stdout": [],
+    "stderr": [
+      "src/domain/rule.ts:? [dependency-cruiser/domain-not-to-infra] domain-not-to-infra: src/domain/rule.ts → src/infra/store.ts (dependency-cruiser)",
+      "guardrails: the above is also written to .guardrails/state/nosession-ci.last.json — an agent can spawn the guardrail-fixer-thorough subagent against that path instead of working through it inline."
+    ],
+    "manifests": {
+      "nosession-ci.last.json": [
+        {
+          "ruleId": "dependency-cruiser/domain-not-to-infra",
+          "file": "src/domain/rule.ts",
+          "message": "domain-not-to-infra: src/domain/rule.ts → src/infra/store.ts",
+          "severity": "error",
+          "fixable": false,
+          "tool": "dependency-cruiser"
+        }
+      ]
+    }
+  },
+  "verify": {
+    "exitCode": 1,
+    "stdout": [],
+    "stderr": [
+      "src/domain/rule.ts:? [dependency-cruiser/domain-not-to-infra] domain-not-to-infra: src/domain/rule.ts → src/infra/store.ts (dependency-cruiser)",
+      "guardrails: 1 error(s), 0 warning(s)."
+    ],
+    "manifests": {}
+  }
+}

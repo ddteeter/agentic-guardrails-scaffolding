@@ -1,0 +1,71 @@
+{
+  "gate --mode=commit": {
+    "exitCode": 1,
+    "stdout": [],
+    "stderr": [
+      "src/quiet.ts:2 added cast-any: return (value as any).length;",
+      "guardrails: the above is also written to .guardrails/state/nosession-commit.last.json — an agent can spawn the guardrail-fixer subagent against that path instead of working through it inline."
+    ],
+    "manifests": {
+      "nosession-commit.last.json": [
+        {
+          "ruleId": "guardrails/added-suppression",
+          "file": "src/quiet.ts",
+          "line": 2,
+          "message": "Forbidden cast-any added during the fix loop: return (value as any).length;. Remove it and fix the underlying finding, or report that you could not — an exemption is a developer-approved grant in guardrails.config.json, and a suppression is not a shortcut to one. `guardrails sanction` derives that grant entry for whoever can reach that file; ASK the developer before adding it, and never grant it to yourself.",
+          "severity": "error",
+          "fixable": false,
+          "tool": "guardrails"
+        }
+      ]
+    }
+  },
+  "gate --mode=push": {
+    "exitCode": 1,
+    "stdout": [],
+    "stderr": [
+      "src/quiet.ts:2 added cast-any: return (value as any).length;",
+      "guardrails: the above is also written to .guardrails/state/nosession-push.last.json — an agent can spawn the guardrail-fixer subagent against that path instead of working through it inline."
+    ],
+    "manifests": {
+      "nosession-push.last.json": [
+        {
+          "ruleId": "guardrails/added-suppression",
+          "file": "src/quiet.ts",
+          "line": 2,
+          "message": "Forbidden cast-any added during the fix loop: return (value as any).length;. Remove it and fix the underlying finding, or report that you could not — an exemption is a developer-approved grant in guardrails.config.json, and a suppression is not a shortcut to one. `guardrails sanction` derives that grant entry for whoever can reach that file; ASK the developer before adding it, and never grant it to yourself.",
+          "severity": "error",
+          "fixable": false,
+          "tool": "guardrails"
+        }
+      ]
+    }
+  },
+  "gate --mode=ci": {
+    "exitCode": 1,
+    "stdout": [],
+    "stderr": [
+      "src/quiet.ts:2 added cast-any: return (value as any).length;",
+      "guardrails: the above is also written to .guardrails/state/nosession-ci.last.json — an agent can spawn the guardrail-fixer subagent against that path instead of working through it inline."
+    ],
+    "manifests": {
+      "nosession-ci.last.json": [
+        {
+          "ruleId": "guardrails/added-suppression",
+          "file": "src/quiet.ts",
+          "line": 2,
+          "message": "Forbidden cast-any added during the fix loop: return (value as any).length;. Remove it and fix the underlying finding, or report that you could not — an exemption is a developer-approved grant in guardrails.config.json, and a suppression is not a shortcut to one. `guardrails sanction` derives that grant entry for whoever can reach that file; ASK the developer before adding it, and never grant it to yourself.",
+          "severity": "error",
+          "fixable": false,
+          "tool": "guardrails"
+        }
+      ]
+    }
+  },
+  "verify": {
+    "exitCode": 0,
+    "stdout": [],
+    "stderr": ["guardrails: clean (0 violations)."],
+    "manifests": {}
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "description": "Two changed files holding the same function under different names.",
+  "base": {
+    "guardrails.config.json": "{\n  \"baseBranch\": \"main\",\n  \"enforcement\": \"block\",\n  \"analyzers\": {\n    \"eslint\": \"off\",\n    \"tsc\": \"off\",\n    \"knip\": \"off\",\n    \"npm-peers\": \"off\",\n    \"dependency-cruiser\": \"off\",\n    \"stryker\": \"off\",\n    \"dupes\": \"required\",\n    \"complexity\": \"off\"\n  }\n}\n"
+  },
+  "change": {
+    "src/sum-a.ts": "export function sumA(values: number[]): number {\n  let total = 0;\n  for (const value of values) {\n    if (value > 10) {\n      total += value * 2;\n    } else {\n      total += value;\n    }\n  }\n  const scaled = total * 3;\n  const shifted = scaled + 7;\n  return shifted - 1;\n}\n",
+    "src/sum-b.ts": "export function sumB(values: number[]): number {\n  let total = 0;\n  for (const value of values) {\n    if (value > 10) {\n      total += value * 2;\n    } else {\n      total += value;\n    }\n  }\n  const scaled = total * 3;\n  const shifted = scaled + 7;\n  return shifted - 1;\n}\n"
+  }
+}
