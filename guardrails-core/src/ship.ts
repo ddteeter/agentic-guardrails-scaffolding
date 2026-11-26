@@ -1489,7 +1489,7 @@ async function usableHead(
  * used, the commit to push, and the base. The commit and the warnings to
  * carry on with, or the outcome to stop on.
  */
-async function preflight(
+async function prechecks(
   options: ShipOptions,
   branch: string,
 ): Promise<Outcome | { sha: string; warnings: string[] }> {
@@ -1553,7 +1553,7 @@ async function shipOutcome(
   branch: string,
   times: ShipTimes,
 ): Promise<Finished> {
-  const ready = await preflight(options, branch);
+  const ready = await prechecks(options, branch);
   if (!('sha' in ready)) {
     return stopped(ready);
   }

@@ -214,7 +214,7 @@ describe('ship: the push gate runs before git push (#204)', () => {
     expect(gates).toEqual([{ line: GATE_LINE, cwd: root }]);
   });
 
-  it('runs no gate when the preflight stops the ship', async () => {
+  it('runs no gate when the prechecks stop the ship', async () => {
     const { exec, calls } = fakeExec({
       ...HAPPY,
       'gh auth status': failed('You are not logged into any GitHub hosts.'),
