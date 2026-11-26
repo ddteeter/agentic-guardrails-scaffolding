@@ -278,13 +278,16 @@ describe('commandTarget: git directory options', () => {
   it('reads long, pathological commands in linear time', () => {
     // A RATIO, not a wall-clock budget: this suite runs beside other agents'
     // mutation gates at load averages of 20-45, where an absolute limit is
-    // noise. Ten times the input costs about ten times as long when the read
-    // is linear and about a hundred times when it is quadratic; 30 sits well
-    // between them. The 1 ms floor keeps a sub-millisecond small run from
-    // inflating the ratio. The absolute ceiling is only a backstop.
+    // noise. A hundred times the input costs about a hundred times as long
+    // when the read is linear and about ten thousand times when it is
+    // quadratic. 1000 is their geometric mean, so load has to skew the ratio
+    // tenfold either way to flip the verdict; at 10x input the margin was
+    // about 3x and a loaded machine crossed it (#246). The 1 ms floor keeps a
+    // sub-millisecond small run from inflating the ratio. The absolute ceiling
+    // is only a backstop.
     const small = fastestRead(2000);
-    const large = fastestRead(20_000);
-    expect(large / Math.max(small, 1)).toBeLessThan(30);
-    expect(large).toBeLessThan(60_000);
+    const large = fastestRead(200_000);
+    expect(large / Math.max(small, 1)).toBeLessThan(1000);
+    expect(large).toBeLessThan(120_000);
   }, 300_000);
 });
