@@ -632,6 +632,10 @@ describe('parseRunSummary: what the mutants stryker ran amounted to (#200)', () 
       ConditionalExpression: { Killed: 1, Survived: 'one' },
       StringLiteral: { Killed: null },
       BooleanLiteral: 'Killed',
+      // An array's entries are numbered counts, so only the object check drops it.
+      ArrayDeclaration: [1, 2],
+      // `Object.entries` throws on null, so the object check must come first.
+      ObjectLiteral: null,
     };
     expect(parsed({ mutantRuns: { ...RUNS, byMutator } })).toEqual({
       ...BASE,
