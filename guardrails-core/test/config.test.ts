@@ -1024,3 +1024,49 @@ describe('denyForegroundWaits and foregroundSleepLimitSeconds', () => {
     expect(loadConfig(root).foregroundSleepLimitSeconds).toBe(120);
   });
 });
+
+function shipOf(ship: unknown): ReturnType<typeof loadConfig>['ship'] {
+  writeFileSync(
+    path.join(root, 'guardrails.config.json'),
+    JSON.stringify({ ship }),
+  );
+  return loadConfig(root).ship;
+}
+
+describe('ship.preflight (#243)', () => {
+  it('runs nothing before the gate by default', () => {
+    expect(defaultConfig().ship).toEqual({ preflight: [], warnings: [] });
+  });
+
+  it('keeps each command, trimmed, in order', () => {
+    expect(shipOf({ preflight: ['  npm run build ', 'npm test'] })).toEqual({
+      preflight: ['npm run build', 'npm test'],
+      warnings: [],
+    });
+  });
+
+  it.each([
+    ['a missing key', {}],
+    ['a ship that is not an object', 3],
+    ['a preflight that is a string', { preflight: 'npm test' }],
+    ['a preflight that is an object', { preflight: { 0: 'npm test' } }],
+  ])('reads %s as no commands, with nothing to warn of', (_label, ship) => {
+    expect(shipOf(ship)).toEqual({ preflight: [], warnings: [] });
+  });
+
+  it('drops an entry that is not a command, and says which', () => {
+    expect(shipOf({ preflight: [1, '', 'x', ' '.repeat(3), null] })).toEqual({
+      preflight: ['x'],
+      warnings: [
+        'ship.preflight entry 1 is not a command; ignored',
+        'ship.preflight entry 2 is not a command; ignored',
+        'ship.preflight entry 4 is not a command; ignored',
+        'ship.preflight entry 5 is not a command; ignored',
+      ],
+    });
+  });
+
+  it('reads no config file as no commands', () => {
+    expect(loadConfig(root).ship).toEqual({ preflight: [], warnings: [] });
+  });
+});
