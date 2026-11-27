@@ -1519,6 +1519,40 @@ describe('pretooluse gate trigger conditions', () => {
     }
   });
 
+  it('reads past a global option that takes its value as the next word', async () => {
+    // `-c` and `-C` were the only ones allowed a separate value, so the word
+    // after any other was taken for the subcommand and the write behind it
+    // was not seen, even in command position.
+    for (const command of [
+      'git --namespace x commit -m y',
+      'git --work-tree . commit -m y',
+      'git --git-dir .git push',
+      'git --config-env a.b=C commit -m y',
+      'git --namespace x --work-tree . -c a=b commit -m y',
+      'git --namespace x commit -n -m y',
+    ]) {
+      out.length = 0;
+      expect(
+        await runPreToolUse(preToolUseStdin('bash', command)),
+        `should gate: ${command}`,
+      ).toContain('deny');
+    }
+  });
+
+  it('does not take a read behind such an option for a write', async () => {
+    for (const command of [
+      'git --namespace x log',
+      'git --work-tree . status',
+      'git --git-dir .git rev-parse HEAD',
+    ]) {
+      out.length = 0;
+      expect(
+        await runPreToolUse(preToolUseStdin('bash', command)),
+        `should not gate: ${command}`,
+      ).toBe('');
+    }
+  });
+
   it('gates -n on a subcommand that may be an alias for commit', async () => {
     // git expands an alias before it reads the flag: in a repository whose
     // config says `ci` is `commit`, this is a commit with no hook. The

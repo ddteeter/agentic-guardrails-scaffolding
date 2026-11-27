@@ -91,6 +91,25 @@ describe('hasHookBypass: -n on a commit reached through an alias', () => {
     expect(hasHookBypass(`git --no-pager ${name} x -n 3`)).toBe(false);
   });
 
+  it('finds the subcommand behind a global option that takes a separate value', () => {
+    expect(
+      caught([
+        // `x` and `.` are values, and the subcommand after them owns its -n.
+        'git --namespace x log -n 3',
+        'git --work-tree . push -n',
+        'git --git-dir .git fetch -n',
+        'git --config-env a.b=C show -n 1',
+      ]),
+    ).toEqual([]);
+    expect(
+      missed([
+        'git --namespace x commit -n',
+        'git --work-tree . commit -n',
+        'git --git-dir .git ci -n',
+      ]),
+    ).toEqual([]);
+  });
+
   it('does not read an alias used without -n, or an n that is not that flag', () => {
     expect(
       caught([

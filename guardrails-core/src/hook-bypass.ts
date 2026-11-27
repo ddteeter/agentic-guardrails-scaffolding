@@ -13,7 +13,7 @@
 import { placedGitCommands } from './command-target.js';
 
 /**
- * git's global options: a flag token, or `-c`/`-C` plus its separate value.
+ * git's global options: a flag token, or an option plus its separate value.
  *
  * The value alternative requires a NON-`-` first character, and that is what
  * keeps the run linear. Without it the two alternatives can tile the same token
@@ -33,7 +33,15 @@ import { placedGitCommands } from './command-target.js';
  * the property by TIMING instead: the guarantee is "no exponential path
  * exists", which no example input can assert on its own.
  */
-export const GIT_GLOBAL_OPTIONS = String.raw`(?:[ \t]+(?:-[cC][ \t]+[^-\s][^ \t]*|-[^ \t]+))*`;
+/**
+ * The global options that take their value as the NEXT word, the same ones
+ * `command-target.ts` knows. `-c` and `-C` were the only two read this way,
+ * so `git --namespace x commit` had `x` taken for its subcommand and the
+ * commit behind it was not seen, even in command position.
+ */
+const SEPARATE_VALUE_OPTIONS =
+  '(?:-[cC]|--namespace|--config-env|--git-dir|--work-tree)';
+export const GIT_GLOBAL_OPTIONS = String.raw`(?:[ \t]+(?:${SEPARATE_VALUE_OPTIONS}[ \t]+[^-\s][^ \t]*|-[^ \t]+))*`;
 
 /**
  * What takes a write out of reach of its git hook: the flag that skips it, or
