@@ -1380,6 +1380,20 @@ core/src/audit.ts`) surfaced that it was a context-free text scan: it flagged
     stripper of its own (`withoutQuotedText`), wrong in the opposite direction
     on purpose: it may only miss a denial, so it drops what follows an
     unterminated quote. The two stay separate for that reason.
+  - **Autofix traded one lint error for another (fixed 2026-11-27, in this
+    repo's own config).** PostToolUse `eslint --fix` rewrote
+    `readSource: () => undefined` to `readSource: () => {}`:
+    `unicorn/no-useless-undefined` is fixable and checks arrow bodies by
+    default, and the result is a `@typescript-eslint/no-empty-function` error
+    with no fix. Reconciled the pair with `checkArrowFunctionBody: false`
+    rather than dropping the rule's fix: ESLint has no per-rule switch for
+    fixes, an arrow whose body is `undefined` is the explicit spelling of
+    "returns nothing on purpose", and the rule's other checks keep their fix.
+    `drift/autofix-trade.test.ts` holds it against the real plugins, with a
+    control that reproduces the trade. `main` has no SEEDED ESLint config to
+    fix this in (`init` never writes one), so consumers still meet it in a
+    config they wrote; the general cure is #215's, a fix that leaves a new
+    error is reverted. See QUESTIONS.md.
 
 ## Roadmap: analyzer opt-in (pack composition, not all-or-nothing) — shipped
 

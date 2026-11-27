@@ -55,7 +55,19 @@ export default tseslint.config(
       },
     },
     rules: {
-      'unicorn/no-useless-undefined': ['error', { checkArguments: false }],
+      // `checkArrowFunctionBody: false` reconciles this rule with
+      // `@typescript-eslint/no-empty-function`. The rule is fixable, and its
+      // fix for `() => undefined` is `() => {}` -- which the other rule then
+      // reports, with no fix of its own. The PostToolUse autofix applied the
+      // first silently and handed the agent the second: one finding traded
+      // for another, in the class that exists to remove them. An arrow whose
+      // body is `undefined` is also the explicit spelling of "returns nothing
+      // on purpose", so it is the one to keep. Held by
+      // guardrails-core/test/drift/autofix-trade.test.ts.
+      'unicorn/no-useless-undefined': [
+        'error',
+        { checkArguments: false, checkArrowFunctionBody: false },
+      ],
 
       // Allowlist common short names. Renamed from
       // `unicorn/prevent-abbreviations` in unicorn 74, which deprecated the old
