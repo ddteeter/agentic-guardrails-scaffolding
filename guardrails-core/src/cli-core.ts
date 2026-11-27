@@ -94,6 +94,7 @@ import { foregroundWait, foregroundWaitDenial } from './foreground-wait.js';
 import {
   GIT_GLOBAL_OPTIONS,
   hasHookBypass,
+  isAssembledBypass,
   isBypassingGit,
   isBypassOutOfReach,
 } from './hook-bypass.js';
@@ -831,6 +832,12 @@ const GIT_PUSH = new RegExp(
 
 const PUSH_ANYWHERE = /\bpush\b/;
 
+const ASSEMBLED_BYPASS =
+  'guardrails: this command spells a way past the git hooks through quotes ' +
+  'or backslashes: it names one only once they are taken out. It was ' +
+  'refused, not checked. Write the git command plainly, and without the ' +
+  'bypass.';
+
 const OUT_OF_REACH =
   'guardrails: this command names a way past the git hooks, runs git where ' +
   'this gate cannot read it (after a wrapper or a path, or inside a string, ' +
@@ -1148,6 +1155,11 @@ async function gatePreToolUseCommand(
   const stdin = await dependencies.readStdin();
   const input = parseHookInput(stdin);
   if (didDenyForegroundWait(dependencies, input, dialect)) {
+    return;
+  }
+  const call = shellCall(input);
+  if (SHELL_TOOLS.test(call.toolName) && isAssembledBypass(call.command)) {
+    denyPreToolUse(dependencies, ASSEMBLED_BYPASS, dialect);
     return;
   }
   if (!isShellGitWrite(input)) {

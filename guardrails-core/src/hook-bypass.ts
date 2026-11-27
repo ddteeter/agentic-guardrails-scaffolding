@@ -210,6 +210,27 @@ export function isBypassingGit(command: string): boolean {
 }
 
 /**
+ * Does this command name a bypass and git ONLY once its quotes and
+ * backslashes are taken out?
+ *
+ * The shell removes those before git sees a word, so a flag, a config key or
+ * `git` itself can be written in pieces no pattern over the text will find.
+ * Taking the characters out and asking again finds the pieces, and what it
+ * finds is not gated but refused: gating would mean trusting a reading of a
+ * command built to be misread, and nothing honest is written that way.
+ *
+ * Quotes and backslashes only. A word put together by the shell's own
+ * expansions -- a variable, a substitution, an escape sequence -- is beyond
+ * any reading of the text, and is the stated limit of this gate.
+ */
+export function isAssembledBypass(command: string): boolean {
+  return (
+    !isBypassingGit(command) &&
+    isBypassingGit(command.replaceAll(/\\\n|['"\\]/g, ''))
+  );
+}
+
+/**
  * What moves a command, or git itself, off the directory the shell starts in:
  * the shell's own `cd`, git's `-C` and its location options and variables, a
  * wrapper told where to run (`env --chdir`, `env -C`, `sudo --chdir`,

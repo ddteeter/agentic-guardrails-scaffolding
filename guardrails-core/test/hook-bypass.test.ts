@@ -6,7 +6,11 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { hasHookBypass, isBypassOutOfReach } from '../src/hook-bypass.js';
+import {
+  hasHookBypass,
+  isAssembledBypass,
+  isBypassOutOfReach,
+} from '../src/hook-bypass.js';
 
 /**
 The commands of `commands` that are NOT read as naming a bypass.
@@ -262,5 +266,75 @@ describe('isBypassOutOfReach: a wrapper or an interpreter that changes directory
     ]) {
       expect(isBypassOutOfReach(command), command).toBe(false);
     }
+  });
+});
+
+/**
+ * The shell removes quotes and backslashes before git sees a word, so a
+ * bypass can be written in pieces that no pattern over the text finds. A
+ * command that names one only once those characters are taken out is not
+ * gated: it is refused, since nothing honest is written that way.
+ */
+describe('isAssembledBypass: a bypass spelled through quotes or backslashes', () => {
+  it('finds a flag or a key that only reads as one with the quotes removed', () => {
+    for (const command of [
+      'git commit --n"o-verify" -m x',
+      "git commit --no-'verify' -m x",
+      'git push "--no"-verify',
+      "git commit -'n' -m x",
+      String.raw`git commit --no-\verify -m x`,
+      String.raw`git commit -\n -m x`,
+      'git -c core.hooks"Path"=/dev/null commit -m x',
+      String.raw`git -c core.hooks\Path=/dev/null push`,
+      'git -c al"ias".ci=commit ci -m x',
+      'GIT_CONFIG_GLO"BAL"=/tmp/x git push',
+      "git -c inc'lude'.path=/tmp/x push",
+    ]) {
+      expect(isAssembledBypass(command), command).toBe(true);
+    }
+  });
+
+  it('finds the word git put together the same way, beside a bypass', () => {
+    for (const command of [
+      "g''it commit --no-verify -m x",
+      String.raw`gi\t push --no-verify`,
+      'g"i"t -c core.hookspath=/dev/null commit -m x',
+      'gi\\\nt commit --no-verify -m x',
+    ]) {
+      expect(isAssembledBypass(command), JSON.stringify(command)).toBe(true);
+    }
+  });
+
+  it('is not what a bypass written plainly is: that one is gated, not refused', () => {
+    for (const command of [
+      'git commit --no-verify -m x',
+      'git commit "--no-verify" -m x',
+      'git commit -n -m "x"',
+      'git \\\n commit --no-verify -m x',
+      'git -c core.hooksPath=/dev/null push',
+    ]) {
+      expect(isAssembledBypass(command), JSON.stringify(command)).toBe(false);
+    }
+  });
+
+  it('is not an ordinary command that happens to have quotes in it', () => {
+    for (const command of [
+      `git commit -m "it's fine"`,
+      `git commit -m 'n'`,
+      `git commit -m "-"`,
+      `git log --format='%an' -n 3`,
+      String.raw`echo "a" 'b' \c`,
+      // No git: nothing to bypass.
+      'echo --n"o-verify"',
+      `npm run release -- --no-'verify'`,
+    ]) {
+      expect(isAssembledBypass(command), command).toBe(false);
+    }
+  });
+
+  it('refuses a commit whose whole message is a quoted flag: the price', () => {
+    // With the quotes gone this is `-m -n`, and nothing here models which
+    // word is a value. A message that is a bare flag is rare enough to pay.
+    expect(isAssembledBypass("git commit -m '-n'")).toBe(true);
   });
 });

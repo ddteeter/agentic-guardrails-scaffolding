@@ -1553,6 +1553,47 @@ describe('pretooluse gate trigger conditions', () => {
     }
   });
 
+  it('refuses a command that spells a bypass through quotes or backslashes', async () => {
+    for (const command of [
+      'git commit --n"o-verify" -m x',
+      "git commit -'n' -m x",
+      'git -c core.hooks"Path"=/dev/null push',
+      "g''it commit --no-verify -m x",
+    ]) {
+      out.length = 0;
+      const output = await runPreToolUse(preToolUseStdin('bash', command));
+      expect(output, command).toContain(
+        'spells a way past the git hooks through quotes or backslashes',
+      );
+      // Refused before anything is checked: this is not the gate's verdict.
+      expect(output, command).not.toContain('added suppression(s)');
+    }
+  });
+
+  it('refuses it for every shell tool, and for no other tool', async () => {
+    const command = 'git commit --n"o-verify" -m x';
+    for (const tool of ['Bash', 'shell', 'powershell']) {
+      out.length = 0;
+      expect(
+        await runPreToolUse(preToolUseStdin(tool, command)),
+        tool,
+      ).toContain('spells a way past the git hooks');
+    }
+    out.length = 0;
+    expect(await runPreToolUse(preToolUseStdin('Edit', command))).toBe('');
+    out.length = 0;
+    expect(await runPreToolUse(preToolUseStdin(undefined, command))).toBe('');
+  });
+
+  it('gates, and does not refuse, a bypass that is written plainly', async () => {
+    out.length = 0;
+    const output = await runPreToolUse(
+      preToolUseStdin('bash', 'git commit "--no-verify" -m "it\'s x"'),
+    );
+    expect(output).toContain('added suppression(s)');
+    expect(output).not.toContain('spells a way past');
+  });
+
   it('gates -n on a subcommand that may be an alias for commit', async () => {
     // git expands an alias before it reads the flag: in a repository whose
     // config says `ci` is `commit`, this is a commit with no hook. The
