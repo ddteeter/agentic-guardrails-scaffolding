@@ -1348,8 +1348,12 @@ core/src/audit.ts`) surfaced that it was a context-free text scan: it flagged
     whoever is reading the terminal. When a commit rung deferred its mutation
     run, the deny and the hook output now say so in a sentence an agent acts
     on: run `guardrails gate --mode=push` in the background before reporting
-    done (#229). Not changed: the Stop rung's pointer and manifest still
-    include warnings; same shape, left open.
+    done (#229). The Stop rung had the same shape and got the same filter
+    the same day, by the owner's ruling on QUESTIONS.md entry 5: its pointer,
+    its manifest, its lease, its fixer tier and its recurrence tallies now
+    read only what blocks. The tallies are the part worth knowing about: a
+    warning present on three blocked turns used to be reported as a rule
+    that "has failed verification in 3 separate turns".
   - **A fresh install had no `node_modules/.bin/guardrails-core` (fixed
     2026-11-27).** The workspace's `bin` points at `dist/cli.mjs`, which only
     `prepare` builds, after npm has linked bins; npm skips a bin whose target

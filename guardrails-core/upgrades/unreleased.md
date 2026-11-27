@@ -17,6 +17,18 @@ supersedes:
   added suppressions. Warnings are still printed by `gate --mode=commit`, and
   are in neither the count nor the manifest. Before, seven "Nothing to do"
   mutation deferrals beside two errors read as nine violations to fix.
+- **The Stop gate does the same, and its counts change.** The Stop pointer's
+  `N guardrail violation(s)` now counts error-severity violations and added
+  suppressions only, and the manifest it names (`<session>.last.json`) holds
+  only those. A warning no longer picks the fixer's tier, is no longer part
+  of the files a fixer is said to hold, and is no longer tallied in the
+  recurrence counts: `ruleCounts` in the session state, and through it
+  `.guardrails/state/recurrence.json` and the "has failed verification in N
+  separate turns" note, count a rule only on a turn where it blocked. The
+  `violations` and `rules` fields of a Stop row in the decision log shrink the
+  same way, so a `guardrails report` taken across this version compares
+  rows counted two ways. Whether a turn is blocked is unchanged: a turn with
+  only warnings ended before and ends now.
 - **A commit rung that deferred mutation testing says what to do (#229).**
   When the mutation lock is busy and the commit rung defers, its output and
   the PreToolUse deny now say how many files were deferred and to run

@@ -106,6 +106,13 @@ commit rung.
 **Meanwhile.** Fixed the commit rung only, as the item says, and noted the
 Stop rung as open in `plan.md`.
 
+**Decided (owner, 2026-11-27, relayed by the sprint coordinator): build it.**
+Done in its own commit. The Stop gate filters to what blocks before it
+builds its manifest, so the pointer's count, the manifest, the file claim,
+the fixer tier and the recurrence tallies all follow. No existing assertion
+changed. The unreleased upgrade notes say that the Stop pointer's count and
+the recurrence tallies change.
+
 ## 6. Item 3 gives up one accidental catch
 
 **What.** Before, a commit inside any quoted string was gated whenever a

@@ -780,9 +780,14 @@ async function stopGate(
     : await treeFingerprint(exec, repoRoot, baseBranch);
   const isUnchanged =
     fingerprint !== undefined && loadCleanTree(directory) === fingerprint;
-  const { violations } = isUnchanged
-    ? { violations: [] }
-    : await runVerify(verifyOptions);
+  // Only what BLOCKS, as at the commit rung: a warning is not a violation to
+  // fix. Left in, it was counted in the pointer, written to the manifest the
+  // fixer reads, claimed as a file somebody is editing, allowed to pick the
+  // fixer's tier, and tallied as a rule that keeps failing -- so a deferral
+  // seen on three blocked turns was reported as a recurring mistake.
+  const verified = isUnchanged ? undefined : await runVerify(verifyOptions);
+  const violations =
+    verified === undefined ? [] : blockingViolations(verified.violations);
   // Guidance rides on the violation so it reaches the fixer through the
   // manifest — the one channel every runtime reads. `runVerify`'s violations
   // are already attributed; `withPackages` is idempotent, so re-applying is a

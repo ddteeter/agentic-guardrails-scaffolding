@@ -86,6 +86,108 @@ function eslintError(): string {
   ]);
 }
 
+/**
+An eslint run that reports one error and, on another file, two warnings.
+*/
+function eslintErrorAndWarnings(): string {
+  return JSON.stringify([
+    {
+      filePath: path.join(root, 'src/foo.ts'),
+      messages: [{ ruleId: 'no-console', severity: 2, message: 'x', line: 2 }],
+    },
+    {
+      filePath: path.join(root, 'src/bar.ts'),
+      messages: [
+        { ruleId: 'prefer-const', severity: 1, message: 'y', line: 1 },
+        { ruleId: 'prefer-const', severity: 1, message: 'y', line: 4 },
+      ],
+    },
+  ]);
+}
+
+/**
+A Stop gate over two changed files whose eslint run answers `eslintJson`.
+*/
+function stopOver(eslintJson: () => string): StopGateOptions {
+  return options(
+    makeExec((line) => {
+      if (line.includes('--name-only')) return ok('src/foo.ts\nsrc/bar.ts');
+      if (line.includes('eslint')) return ok(eslintJson());
+      if (line.includes('--showConfig'))
+        return ok(JSON.stringify({ files: ['src/foo.ts', 'src/bar.ts'] }));
+      return ok('');
+    }),
+  );
+}
+
+/**
+ * The owner's ruling on the hardening lane's fifth question (2026-11-27): the
+ * Stop rung gets the commit rung's rule. A warning is printed for whoever is
+ * reading; it is not counted in the pointer, not handed to a fixer, and not
+ * tallied as a mistake that keeps recurring.
+ */
+describe('runStopGate: a pointer counts, and a fixer is handed, what blocks', () => {
+  it('counts the error and not the warnings beside it', async () => {
+    const { decision } = await runStopGate(stopOver(eslintErrorAndWarnings));
+
+    expect(decision.message).toContain('1 guardrail violation(s) written to ');
+    expect(decision.log.violations).toBe(1);
+    expect(decision.log.rules).toEqual({ 'no-console': 1 });
+  });
+
+  it('writes the error and not the warnings to the manifest', async () => {
+    await runStopGate(stopOver(eslintErrorAndWarnings));
+
+    expect(
+      readViolations(stateDirectory(root), 'sid').map((violation) => [
+        violation.ruleId,
+        violation.file,
+      ]),
+    ).toEqual([['no-console', 'src/foo.ts']]);
+  });
+
+  it('claims the file with the error and not the one with only warnings', async () => {
+    await runStopGate(stopOver(eslintErrorAndWarnings));
+
+    expect(leases().map((lease) => lease.files)).toEqual([['src/foo.ts']]);
+  });
+
+  it('does not tally a warning as a rule that failed this turn', async () => {
+    const { decision } = await runStopGate(stopOver(eslintErrorAndWarnings));
+
+    expect(decision.nextSession.ruleCounts).toEqual({ 'no-console': 1 });
+  });
+
+  it('routes on what blocks: a loose warning does not pick the thorough fixer', async () => {
+    const { decision } = await runStopGate({
+      ...stopOver(eslintErrorAndWarnings),
+      config: {
+        ...config,
+        isLoose: (violation) => violation.ruleId === 'prefer-const',
+      },
+    });
+
+    expect(decision.fixerAgent).toBe('guardrail-fixer');
+  });
+
+  it('lets a turn with only warnings end, with nothing in the manifest', async () => {
+    const onlyWarnings = (): string =>
+      JSON.stringify([
+        {
+          filePath: path.join(root, 'src/bar.ts'),
+          messages: [
+            { ruleId: 'prefer-const', severity: 1, message: 'y', line: 1 },
+          ],
+        },
+      ]);
+    const { decision } = await runStopGate(stopOver(onlyWarnings));
+
+    expect(decision.outcome).toBe('clean');
+    expect(readViolations(stateDirectory(root), 'sid')).toEqual([]);
+    expect(decision.log.violations).toBe(0);
+  });
+});
+
 describe('runStopGate', () => {
   /**
    * #83: the caller, not `decideGate`, writes the decision log — the engine is
