@@ -36,6 +36,7 @@ import {
 } from './gate.js';
 import { leaseWaitNote } from './gate-decision.js';
 import { findGitRoot, resolveRepoRoot } from './repo-root.js';
+import { isFixerAgentMissing, unbuiltFixerAgents } from './fixer-agents.js';
 import { repoSourceReader } from './repo-source.js';
 import {
   formatGrantReport,
@@ -536,10 +537,18 @@ async function gateStopCommand(
     isRetry: input.stopHookActive,
     mutationLock: machineLock(config.mutationLock),
   });
+  const told = {
+    ...decision,
+    message:
+      decision.message +
+      // A decision that names no fixer has no agent to be missing: the empty
+      // name has no source, so it adds nothing.
+      missingFixerNote(repoRoot, decision.fixerAgent ?? '', dialect),
+  };
   const output =
     dialect === 'claude'
-      ? formatStopHookOutput(decision)
-      : formatCopilotStopOutput(decision);
+      ? formatStopHookOutput(told)
+      : formatCopilotStopOutput(told);
   if (decision.outcome === 'release') {
     dependencies.stderr(
       'guardrails: releasing Stop retry with unresolved violations; ' +
@@ -714,6 +723,12 @@ async function gateCommitCommand(
       `${delegation.fixerAgent} subagent against that path instead of ` +
       `working through it inline.\n`,
   );
+  // A git hook cannot tell which host ran the commit, so it speaks to the one
+  // whose agents can be missing.
+  const unbuilt = missingFixerNote(repoRoot, delegation.fixerAgent, 'claude');
+  if (unbuilt !== '') {
+    dependencies.stderr(`guardrails:${unbuilt}\n`);
+  }
   // `enforcement` governs the commit and preToolUse gates only; the Claude Code
   // Stop loop is deliberately never softened (see RepoConfig.enforcement). Under
   // `warn` the findings are still printed in full above — a zero exit must never
@@ -1142,7 +1157,9 @@ async function gatePreToolUseCommand(
   // so the compiler already knows a block carries one. That is the point of the
   // union -- the guard it replaces was unreachable code the tests could never
   // reach and a mutant could therefore never be killed on.
-  const reason = commitPointer(violations, findings.length, delegation);
+  const reason =
+    commitPointer(violations, findings.length, delegation) +
+    missingFixerNote(repoRoot, delegation.fixerAgent, dialect);
   // Under `warn` the gate reports and allows. stderr rather than a deny payload,
   // because both hook dialects treat a deny payload as the block itself — there
   // is no "allow, but say this" channel — and stderr still surfaces in the
@@ -2180,6 +2197,67 @@ function warnAboutStaleGuidance(
 }
 
 /**
+ * Say, as a session starts, that it starts without its fixer agents.
+ *
+ * Only a checkout that GENERATES them can be in this state (see
+ * `fixer-agents.ts`), and the moment to say it is now: Claude Code loads
+ * agents when a session starts, so a build run later in this session changes
+ * the files and not what the session can spawn. Silent everywhere else, and
+ * once the build has run -- this fires on every session.
+ */
+function warnAboutUnbuiltFixers(
+  dependencies: CliDependencies,
+  repoRoot: string,
+): void {
+  const config = loadConfig(repoRoot);
+  const unbuilt = unbuiltFixerAgents(
+    [config.fastFixer, config.thoroughFixer],
+    repoSourceReader(repoRoot),
+  );
+  if (unbuilt.length > 0) {
+    dependencies.stderr(
+      `guardrails: the fixer agents in .claude/agents/ are missing or behind ` +
+        `guardrails-plugin/agents/ (${unbuilt.join(', ')}). \`npm run build\` ` +
+        `generates them, and a session loads its agents when it starts: ` +
+        `build, then start a new session. In this one a gate may name a ` +
+        `fixer you cannot spawn; resolve its violations yourself from the ` +
+        `manifest it names.\n`,
+    );
+  }
+}
+
+/**
+ * What a pointer adds when the fixer it names has no definition in this
+ * checkout, or nothing.
+ *
+ * A pointer that says only "spawn the guardrail-fixer" leaves a session with
+ * no such agent type nowhere to go: the gate blocks until the fixer has run.
+ * So where the definition is missing the fallback is named -- and only there,
+ * because "resolve them yourself" is the instruction the pointer otherwise
+ * exists to withhold. Claude Code only: `.claude/agents/` is its directory,
+ * and the other hosts' agents are committed files.
+ */
+function missingFixerNote(
+  repoRoot: string,
+  fixerAgent: string,
+  dialect: Dialect,
+): string {
+  if (
+    dialect !== 'claude' ||
+    !isFixerAgentMissing(fixerAgent, repoSourceReader(repoRoot))
+  ) {
+    return '';
+  }
+  return (
+    ` NOTE: this checkout has no definition for ${fixerAgent} ` +
+    `(.claude/agents/${fixerAgent}.md is missing: \`npm run build\` ` +
+    `generates it, and a session loads its agents when it starts). If you ` +
+    `cannot spawn it, read that manifest and resolve the violations ` +
+    `yourself; then build and start a new session.`
+  );
+}
+
+/**
  * Deny this call if it is a git write; let anything else through. The one
  * shape of refusal every host honours on a pre-tool hook.
  */
@@ -2614,6 +2692,7 @@ export async function runCommand(
     case 'session-start': {
       sweepStale(stateDirectory(dependencies.cwd), SESSION_TTL_MS, Date.now());
       warnAboutStaleGuidance(dependencies, dependencies.cwd);
+      warnAboutUnbuiltFixers(dependencies, dependencies.cwd);
       return 0;
     }
     case 'init': {

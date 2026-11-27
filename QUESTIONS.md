@@ -59,3 +59,28 @@ That changes what autofix does to consumer code, so it wants its own issue.
 
 **Meanwhile.** Reconciled the pair here (`checkArrowFunctionBody: false`) with
 a live probe that reproduces the trade when the option is taken away.
+
+## 4. Item 5 cannot see the session it was written for
+
+**What.** Both halves read the disk: `session-start` reports fixer agents
+that are missing or behind their source, and a gate pointer names the
+fallback when the fixer it names has no definition. In the reported case
+neither fires. Before the first build there is no `dist/`, so the SessionStart
+hook has no CLI to run (it fails with `ERR_MODULE_NOT_FOUND`, or in a nested
+worktree silently runs the enclosing checkout's copy, which stands down).
+Once that session has run the build, the agent files exist, and nothing on
+disk says the session started before them.
+
+**Cost.** The first session in a fresh clone still gets "spawn the
+guardrail-fixer" with no such agent type, unless it happened to start after
+a build of the code and before a build of the agents.
+
+**Recommend.** Record what the session actually has, not what the disk has:
+the install-remedy refusal (`guardrails-core is not installed in this
+checkout ... run npm ci`) is shown exactly to a session that predates the
+install, so it can say "and start a new session afterwards", and can leave a
+marker the later gate reads. That writes state from an untrusted copy of the
+CLI, which the code avoids on purpose today, so it is your call.
+
+**Meanwhile.** Shipped the two disk checks, limited to a checkout that has
+`guardrails-plugin/agents/` so that no consumer sees a new line.
