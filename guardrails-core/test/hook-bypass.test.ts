@@ -289,6 +289,39 @@ describe('isBypassOutOfReach: a wrapper or an interpreter that changes directory
     }
   });
 
+  it('knows a program that is handed a directory to work in', () => {
+    for (const command of [
+      // A process started from an interpreter, with its directory as an
+      // option of the call.
+      `node -e "execSync('git push --no-verify', { cwd: '/other' })"`,
+      `python3 -c "subprocess.run(['git','push','--no-verify'], cwd='/other')"`,
+      // A tool with a flag for it.
+      'yarn --cwd /other exec git push --no-verify',
+      'uv --directory /other run git push --no-verify',
+      'find /other -maxdepth 1 -execdir git push --no-verify ;',
+      'tmux new-window -c /other "git push --no-verify"',
+      'tmux new-session -d -c /other git push --no-verify',
+    ]) {
+      expect(isBypassOutOfReach(command), command).toBe(true);
+    }
+  });
+
+  it('does not take a word that only contains one of those for it', () => {
+    for (const command of [
+      // `-c` is git's own option, and a shell's: only tmux's is a directory.
+      'env git -c a=b push --no-verify',
+      `sh -c 'git push --no-verify'`,
+      // tmux in an earlier command of the line says nothing about this one.
+      'tmux ls; env git -c a=b push --no-verify',
+      'tmux ls | env git -c a=b push --no-verify',
+      'env git push --no-verify --cwdx',
+      'env git push --no-verify mycwd',
+      'env git push --no-verify -cx',
+    ]) {
+      expect(isBypassOutOfReach(command), command).toBe(false);
+    }
+  });
+
   it('does not take a wrapper that moves nothing for one that does', () => {
     for (const command of [
       'env git push --no-verify',

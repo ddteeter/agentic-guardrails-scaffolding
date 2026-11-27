@@ -244,11 +244,21 @@ export function isAssembledBypass(command: string): boolean {
  * What moves a command, or git itself, off the directory the shell starts in:
  * the shell's own `cd`, git's `-C` and its location options and variables, a
  * wrapper told where to run (`env --chdir`, `env -C`, `sudo --chdir`,
- * `sudo -D`), and an interpreter that changes directory itself, which every
- * one of them spells with `chdir`.
+ * `sudo -D`), an interpreter that changes directory itself, which every one
+ * of them spells with `chdir`, and a program handed a directory to work in:
+ * a `cwd` option of a process call or of a tool (`--cwd`), `--directory`,
+ * and `find -execdir`.
  */
 const MOVES =
-  /\b(?:cd|pushd|popd)\b|chdir|\s-[CD]|--git-dir|--work-tree|GIT_DIR|GIT_WORK_TREE/;
+  /\b(?:cd|pushd|popd|cwd)\b|chdir|execdir|--directory|\s-[CD]|--git-dir|--work-tree|GIT_DIR|GIT_WORK_TREE/;
+
+/**
+ * tmux's start directory, `-c <dir>` on the command that opens a window or a
+ * session. Its own pattern, tied to tmux and to the one command it is on,
+ * because `-c` is git's config option and a shell's script flag everywhere
+ * else.
+ */
+const TMUX_START_DIRECTORY = /\btmux\b[^\n;&|]*\s-c\b/;
 
 /**
  * Is this a bypassing command whose repository cannot be known?
@@ -263,7 +273,7 @@ const MOVES =
 export function isBypassOutOfReach(command: string): boolean {
   return (
     isBypassingGit(command) &&
-    MOVES.test(command) &&
+    (MOVES.test(command) || TMUX_START_DIRECTORY.test(command)) &&
     command.matchAll(/\bgit\b/g).toArray().length > placedGitCommands(command)
   );
 }
