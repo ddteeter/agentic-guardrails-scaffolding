@@ -864,6 +864,22 @@ function commandText(input: ShellCall): string {
 }
 
 /**
+ * Does `pattern` find its git write in what this call runs -- read as it is
+ * written, or read again with the quote marks gone?
+ *
+ * The second reading is for a script put together from adjacent quoted
+ * pieces (`bash -c 'true'';'" git commit"`): the shell joins them into one
+ * word, so the `;` and the `git` are side by side to it and have quote marks
+ * between them to the pattern. Either reading is enough. It over-matches -- a
+ * search that names a separator and a commit as two patterns reads as a
+ * write -- which is the direction to be wrong in.
+ */
+function hasWrite(pattern: RegExp, call: ShellCall): boolean {
+  const text = commandText(call);
+  return pattern.test(text) || pattern.test(text.replaceAll(/['"]/g, ''));
+}
+
+/**
  * The one tool whose strings are read with bash quoting.
  *
  * `SHELL_TOOLS` admits `powershell` and a bare `shell` to this gate as well,
@@ -896,7 +912,7 @@ function writeScope(call: ShellCall): 'staged' | 'branch' {
   // A bypassing write git is not in command position for has no `git push`
   // for the pattern to find; the word is taken for it.
   const isPush =
-    GIT_PUSH.test(commandText(call)) ||
+    hasWrite(GIT_PUSH, call) ||
     (isBypassingGit(call.command) && PUSH_ANYWHERE.test(call.command));
   return isPush ? 'branch' : 'staged';
 }
@@ -906,7 +922,7 @@ function writeScope(call: ShellCall): 'staged' | 'branch' {
  * so that the pre-push hook is the gate it will meet?
  */
 function isPlainPush(call: ShellCall): boolean {
-  return !GIT_COMMIT.test(commandText(call)) && !hasHookBypass(call.command);
+  return !hasWrite(GIT_COMMIT, call) && !hasHookBypass(call.command);
 }
 
 /**
@@ -923,8 +939,7 @@ function isShellGitWrite(input: HookInput): boolean {
     SHELL_TOOLS.test(input.toolName) &&
     // Stryker disable next-line ConditionalExpression
     input.command !== undefined &&
-    (GIT_WRITE.test(commandText(shellCall(input))) ||
-      isBypassingGit(input.command))
+    (hasWrite(GIT_WRITE, shellCall(input)) || isBypassingGit(input.command))
   );
 }
 

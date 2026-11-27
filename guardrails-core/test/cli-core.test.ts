@@ -1211,6 +1211,12 @@ describe('pretooluse commit gate scope', () => {
     expect(lines).not.toContain(STAGED_FILES);
   });
 
+  it('judges a push put together from adjacent quoted pieces over the branch', async () => {
+    const lines = await preToolUseGitLines(`bash -c 'true'';'" git push"`);
+    expect(lines).toContain('git ls-files --others --exclude-standard');
+    expect(lines).not.toContain(STAGED_FILES);
+  });
+
   it('judges a bypassing push it cannot place over the whole branch', async () => {
     const lines = await preToolUseGitLines('env git push --no-verify');
     expect(lines).toContain('git ls-files --others --exclude-standard');
@@ -1414,6 +1420,50 @@ describe('pretooluse gate trigger conditions', () => {
         `should gate: ${JSON.stringify(command)}`,
       ).toContain('deny');
     }
+  });
+
+  it('reads a script put together from adjacent quoted pieces', async () => {
+    // The shell joins adjacent pieces into one word before anything runs,
+    // so the separator in one piece and the `git` in the next are side by
+    // side to it, and had quote marks between them to the pattern. An old
+    // miss, older than the reading of strings.
+    for (const command of [
+      `bash -c 'true'';'" git commit -m x"`,
+      `bash -c "true;"' git push'`,
+      `sh -c 'cd packages''&&'"git commit -m x"`,
+      `bash -c 'true;'git' commit -m x'`,
+    ]) {
+      out.length = 0;
+      expect(
+        await runPreToolUse(preToolUseStdin('bash', command)),
+        `should gate: ${command}`,
+      ).toContain('deny');
+    }
+  });
+
+  it('reads a command both as written and with its quote marks gone', async () => {
+    // Either reading is enough. The first of these is a git write only as
+    // written, the second only with the marks gone; a search that names a
+    // separator and a commit as two patterns is the price of the second.
+    for (const command of [
+      "make; git commit'x' -m y",
+      `rg -e ';' "git commit" src`,
+    ]) {
+      out.length = 0;
+      expect(
+        await runPreToolUse(preToolUseStdin('bash', command)),
+        `is gated: ${command}`,
+      ).toContain('deny');
+    }
+  });
+
+  it('does not join the strings of a program that only reads them', async () => {
+    out.length = 0;
+    expect(
+      await runPreToolUse(
+        preToolUseStdin('bash', `echo "a" ";" "git commit -m x"`),
+      ),
+    ).toBe('');
   });
 
   it('reads only the bash tool with bash quoting: another shell keeps its strings', async () => {
@@ -6580,6 +6630,8 @@ describe('pretooluse leaves a push to the pre-push hook that gates it', () => {
     'git --config-env=core.hookspath=NOWHERE push',
     // In a quoted heredoc fed to a shell, whose body is no longer dropped.
     "bash <<'EOF'\ngit push --no-verify\nEOF",
+    // With a commit beside it that only shows once the quote marks are gone.
+    `git push && bash -c 'true'';'" git commit -m x"`,
     // Where the hooks path can be in a file the command points git at.
     'GIT_CONFIG_GLOBAL=/tmp/other.gitconfig git push',
     'HOME=/tmp/elsewhere git push',
