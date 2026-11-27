@@ -282,3 +282,6 @@ b` over two string variables still becomes `a - b`, and `.first` on a
   the gate exited 0), then built test-first:
   `test/verify/staged-differs.test.ts` and a real-git case in
   `test/parity.test.ts`. The diff of `test/parity/goldens/` is empty.
+- Baseline (`QUESTIONS.md` entry 3): the 0.14.2 CLI, built from tag
+  `v0.14.2` in a scratch directory, was run over all 20 fixtures and four
+  commands. 80 of 80 results are identical to the 0.19.0 goldens.

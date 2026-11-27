@@ -27,17 +27,24 @@ nothing calls it until the runner exists.
 reserved id would parse and then block every rung as an unsupported stack.
 Java rows in the auditor apply exactly as before.
 
-## 3. GR-01's baseline version
+## 3. GR-01's baseline version — DECIDED, and compared with 0.14.2
 
-**What.** The goldens are recorded at the branch base (0.19.0, `53b24da`),
-not at the plan's 0.14.2.
+**Decision (the owner, 2026-11-27): the 0.19.0 goldens stand, and 0.14.2 is
+compared once, as information.**
 
-**Cost.** None; recording at 0.14.2 would compare today's code with behaviour
-five releases old.
+**Result: no difference.** The 0.14.2 tree (tag `v0.14.2`, `65a4570`) was
+built in a scratch directory and its CLI run against all 20 fixtures, four
+commands each, installed inside each fixture as a consumer would have it.
+All 80 results (exit code, stdout, stderr and violations manifest) are
+identical to the goldens recorded at 0.19.0.
 
-**Recommendation.** Confirm 0.19.0.
-
-**Meanwhile.** Recorded at `53b24da`, before any change under `src/`.
+**What that does and does not show.** It shows that, for these fixtures, a
+consumer's verdicts did not change between 0.14.2 and 0.19.0, so the plan's
+baseline and this branch's are the same in effect. It was run with today's
+analyzer versions (this repository's current lockfile), not 0.14.2's, and
+`guardrails-core` is not on the npm registry, so the old version was built
+from its tag with today's build tools rather than installed as published.
+The comparison is a one-off script and is not part of the suite.
 
 ## 4. A real Stryker run in the goldens, and what the suite costs — DECIDED
 
