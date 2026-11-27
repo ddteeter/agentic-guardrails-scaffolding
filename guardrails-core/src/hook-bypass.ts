@@ -39,9 +39,15 @@ import { withoutQuotedText } from './foreground-wait.js';
  * `command-target.ts` knows. `-c` and `-C` were the only two read this way,
  * so `git --namespace x commit` had `x` taken for its subcommand and the
  * commit behind it was not seen, even in command position.
+ *
+ * Every one git has had, checked against git and not only its usage line,
+ * which prints most of them with an `=`: `--attr-source` takes a tree as its
+ * next word, and `--super-prefix` took a path until git dropped it. A value
+ * read as the subcommand is worse than a miss when it happens to be one `-n`
+ * is harmless on, because that is what clears the command.
  */
 const SEPARATE_VALUE_OPTIONS =
-  '(?:-[cC]|--namespace|--config-env|--git-dir|--work-tree)';
+  '(?:-[cC]|--namespace|--config-env|--git-dir|--work-tree|--attr-source|--super-prefix)';
 export const GIT_GLOBAL_OPTIONS = String.raw`(?:[ \t]+(?:${SEPARATE_VALUE_OPTIONS}[ \t]+[^-\s][^ \t]*|-[^ \t]+))*`;
 
 /**

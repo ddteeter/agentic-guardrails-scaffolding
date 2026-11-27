@@ -114,6 +114,27 @@ describe('hasHookBypass: -n on a commit reached through an alias', () => {
     ).toEqual([]);
   });
 
+  it('finds the subcommand behind every global option git lets take a separate value', () => {
+    // `--attr-source <tree>` takes its value as the next word too. Read as
+    // a flag, the value was taken for the subcommand, and a value that
+    // happens to be a subcommand `-n` is harmless on hid the commit behind
+    // it. `--super-prefix` did the same on older gits.
+    expect(
+      missed([
+        'git --attr-source rm commit -n -m x',
+        'env git --attr-source rm ci -n',
+        'git --attr-source push --namespace log commit -an',
+        'git --super-prefix rm commit -n',
+      ]),
+    ).toEqual([]);
+    expect(
+      caught([
+        'git --attr-source commit rm -n x',
+        'git --super-prefix ci push -n',
+      ]),
+    ).toEqual([]);
+  });
+
   it('does not read an alias used without -n, or an n that is not that flag', () => {
     expect(
       caught([

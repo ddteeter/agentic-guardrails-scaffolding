@@ -199,6 +199,8 @@ describe('commandTarget: git directory options', () => {
     ['git -c core.editor=true -C /abs commit', '/abs'],
     ['git -c user.name=x commit', CWD],
     ['git --namespace n -C /abs push', '/abs'],
+    ['git --attr-source t -C /abs push', '/abs'],
+    ['git --super-prefix p -C /abs commit', '/abs'],
     ['git --config-env a=B -C /abs push', '/abs'],
     ['git --no-pager -C /abs commit', '/abs'],
     ['LANG=C git -C /abs commit', '/abs'],

@@ -529,6 +529,8 @@ const GIT_VALUE_OPTIONS = new Set([
   '--config-env',
   '--git-dir',
   '--work-tree',
+  '--attr-source',
+  '--super-prefix',
 ]);
 
 /**

@@ -1579,6 +1579,8 @@ describe('pretooluse gate trigger conditions', () => {
       'git --git-dir .git push',
       'git --config-env a.b=C commit -m y',
       'git --namespace x --work-tree . -c a=b commit -m y',
+      'git --attr-source HEAD commit -m y',
+      'git --super-prefix x push',
       'git --namespace x commit -n -m y',
     ]) {
       out.length = 0;
