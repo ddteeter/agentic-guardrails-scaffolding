@@ -388,7 +388,27 @@ describe('logShipRun, further', () => {
   });
 
   it('writes nothing, anywhere, without a gate lock', () => {
-    expect(ship({ lockPath: undefined })).toEqual([]);
+    // STRAY is one cwd-relative path that every test's afterEach deletes, and
+    // stryker's workers share one sandbox cwd: a sibling can delete a stray
+    // this test's mutant wrote before it is looked for. A row is never built
+    // without the clock, so an unread clock is the race-free proof.
+    const read: string[] = [];
+    const watched: RunClock = {
+      now: () => {
+        read.push('now');
+        return CLOCK.now();
+      },
+      sample: () => {
+        read.push('sample');
+        return CLOCK.sample();
+      },
+      cores: () => {
+        read.push('cores');
+        return CLOCK.cores();
+      },
+    };
+    expect(ship({ lockPath: undefined, clock: watched })).toEqual([]);
+    expect(read).toEqual([]);
     expect(existsSync(`${lockPath}.runs.jsonl`)).toBe(false);
     expect(existsSync(STRAY)).toBe(false);
   });
