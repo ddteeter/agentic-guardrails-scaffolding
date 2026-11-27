@@ -18,9 +18,9 @@ two kinds of commit:
 1. **A behaviour change**, in its own owner-approved pull request whose
    description names the change and shows the golden diff.
 2. **A tool upgrade** that rewords an analyzer's own message. Such a commit
-   changes `package-lock.json` and nothing under `guardrails-core/src/`.
-   (Whether this second kind stands is an open question for the owner; until
-   it is answered, treat it like the first.)
+   changes `package-lock.json` and nothing under `guardrails-core/src/`, and
+   that is the whole test: a commit that touches `src/` and a golden is the
+   first kind, whatever else it does.
 
 To re-record: `PARITY_RECORD=1 npx vitest run guardrails-core/test/parity.test.ts`.
 `PARITY_ONLY=<fixture>` limits a run to one fixture. Review the diff of

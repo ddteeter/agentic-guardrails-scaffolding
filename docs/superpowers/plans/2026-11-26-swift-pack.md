@@ -233,10 +233,11 @@ in `QUESTIONS.md`.
 b` over two string variables still becomes `a - b`, and `.first` on a
   `Set` still becomes `.last`; both fail to compile and would count toward
   the compile-error tripwire.
-- One thing to know when reading the mutation score: the six infix swap
-  tables are written as strings (`'== != === !=='`), and this repository
-  excludes `StringLiteral` mutants, so Stryker does not mutate the tables
-  themselves. Every pair in them is covered by a test. See `QUESTIONS.md`.
+- The six infix swap tables were first written as strings, which this
+  repository's Stryker config does not mutate. On the owner's decision they
+  are now data (`swap-tables.ts`, one `[from, to]` direction per entry): 29
+  array mutants and 6 block mutants there, all killed, and no clone reported,
+  so no `duplicates.ignore` entry was added.
 
 ### The branch as a whole (head of the lane)
 
@@ -256,3 +257,12 @@ b` over two string variables still becomes `a - b`, and `.first` on a
   four-core machine, one did. It passes alone and in a quiet full run. The
   parity suite now runs two fixtures at a time (`FIXTURES_AT_ONCE`).
 - Parity suite cost after that change: recorded in `QUESTIONS.md` entry 4.
+
+### Decisions taken with the owner after the first hand-off (2026-11-27)
+
+- `guardrails/stack-unsupported` is an error, not a warning (`41300b9`).
+- The Swift Testing trait rows stay scoped to test-target paths.
+- The parity suite stays in `npm test`.
+- A golden may change with `package-lock.json` alone
+  (`docs/releasing.md`).
+- The generator's swap tables are data, with no duplication ignore.

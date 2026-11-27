@@ -4,6 +4,14 @@ import { conditionalExpression, guardNegation } from './conditions.js';
 import { methodSwap } from './methods.js';
 import { stringLiteral } from './strings.js';
 import {
+  arithmeticSwaps,
+  assignmentSwaps,
+  equalitySwaps,
+  logicalSwaps,
+  relationalBoundarySwaps,
+  relationalNegationSwaps,
+} from './swap-tables.js';
+import {
   booleanLiteral,
   integerLiteral,
   isAppending,
@@ -53,15 +61,15 @@ export interface Operator {
 
 function mutators(): Record<OperatorName, Mutator> {
   return {
-    EqualityOperator: swapInfix('== != === !==', isTypeConstraint),
-    RelationalBoundary: swapInfix('< <= > >='),
-    RelationalNegation: swapInfix('< >= > <='),
-    LogicalOperator: swapInfix('&& ||'),
+    EqualityOperator: swapInfix(equalitySwaps(), isTypeConstraint),
+    RelationalBoundary: swapInfix(relationalBoundarySwaps()),
+    RelationalNegation: swapInfix(relationalNegationSwaps()),
+    LogicalOperator: swapInfix(logicalSwaps()),
     ConditionalExpression: conditionalExpression,
     BooleanLiteral: booleanLiteral,
-    ArithmeticOperator: swapInfix('+ - * / % *', isConcatenation),
+    ArithmeticOperator: swapInfix(arithmeticSwaps(), isConcatenation),
     UnaryOperator: unaryOperator,
-    AssignmentOperator: swapInfix('+= -= *= /=', isAppending),
+    AssignmentOperator: swapInfix(assignmentSwaps(), isAppending),
     BlockStatement: blockStatement,
     StringLiteral: stringLiteral,
     IntegerLiteral: integerLiteral,

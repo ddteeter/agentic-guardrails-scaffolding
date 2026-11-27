@@ -47,26 +47,16 @@ five releases old.
 
 **Meanwhile.** Recorded at `53b24da`, before any change under `src/`.
 
-## 4. A real Stryker run in the goldens, and what the suite costs
+## 4. A real Stryker run in the goldens, and what the suite costs — DECIDED
 
-**What.** The parity suite runs the real analyzers. Stryker runs in one
-fixture, four times (commit, push, ci, `verify`).
+**Decision (the owner, 2026-11-27): the parity suite stays in `npm test`.**
 
-**Cost.** Measured on the cloud machine (four cores): the parity file takes
-about 67 s of wall-clock time on its own. That is two passes over the 20
-fixtures (the goldens, and the same fixtures with an explicit TypeScript-only
-`stacks` block), four commands each, the real Stryker run included, two
-fixtures at a time. At five at a time it was faster but starved a
-timing-sensitive drift guard elsewhere in the suite. It runs in `npm test`,
-`test:coverage` (so at every push) and CI; the full suite's wall-clock time
-on that machine went from about 80 s on `main` to about 130 s.
-
-**Recommendation.** Keep the real run; it is the only golden that would have
-caught a change to how Stryker is invoked or read. If the time is unwelcome
-at push, move the parity suite behind its own script that CI and
-`guardrails ship` run, and leave `npm test` without it.
-
-**Meanwhile.** It runs in `npm test`.
+For the record, measured on the cloud machine (four cores): the parity file
+takes about 67 s of wall-clock time on its own. That is two passes over the
+20 fixtures (the goldens, and the same fixtures with an explicit
+TypeScript-only `stacks` block), four commands each, the real Stryker run
+included, two fixtures at a time. The full suite's wall-clock time on that
+machine went from about 80 s on `main` to about 130 s.
 
 ## 5. ast-grep's Swift support and suppression syntax
 
@@ -114,22 +104,14 @@ changes, outside this lane's scope.
 **Meanwhile.** Nothing in the branch changes these tests. The lane ran every
 command through a wrapper that drops the capability and unsets `NODE_PATH`.
 
-## 8. Goldens contain tool output
+## 8. Goldens contain tool output — DECIDED
 
-**What.** A golden is the real analyzers' output. An ESLint, TypeScript, knip,
-dependency-cruiser, Stryker or fallow upgrade that rewords a message changes a
-golden with no guardrails behaviour change, which collides with "no later
-change may edit a golden".
-
-**Cost.** Either dependency bumps need the owner-approved golden pull request
-too, or the rule gets a second, narrower exception.
-
-**Recommendation.** Allow a golden edit in a commit that changes
-`package-lock.json` and nothing under `guardrails-core/src/`, and say so in
-`docs/releasing.md`. Masking tool text instead would hide exactly the adapter
-changes the goldens exist to catch.
-
-**Meanwhile.** Goldens hold tool text verbatim, at the lockfile's versions.
+**Decision (the owner, 2026-11-27): a narrow exception.** A golden may change
+in a commit that changes `package-lock.json` and nothing under
+`guardrails-core/src/` (a tool upgrade that rewords an analyzer's own
+message). Every other golden change still needs its own owner-approved pull
+request naming the behaviour change. `guardrails-core/docs/releasing.md`
+states this as the rule.
 
 ## 9. A configured stack whose pack is not implemented yet — DECIDED
 
@@ -174,22 +156,13 @@ would honour that comment too, so the finding is true.
 **Meanwhile.** Un-anchored for these two; `periphery:ignore` stays anchored,
 as its parser is.
 
-## 12. `.disabled(…)` and `.enabled(if:)` are audited under test targets only
+## 12. `.disabled(…)` and `.enabled(if:)` are audited under test targets only — DECIDED
 
-**What.** The plan's `skipped-test` row for Swift Testing traits is
-`\.disabled\s*\(` on any Swift line. `.disabled(` is also SwiftUI's view
-modifier (`Button(…).disabled(!isValid)`). The branch applies the two trait
-rows only to a file with a path segment ending in `Tests`.
-
-**Cost.** A Swift Testing trait written outside such a path (a test helper in
-a support target, say) is not flagged. Unscoped, every form in the app would
-need a sanction.
-
-**Recommendation.** Keep the scope. When the adapters lane has
+**Decision (the owner, 2026-11-27): keep the scope.** The two trait rows
+apply only to a file with a path segment ending in `Tests`; SwiftUI's
+`.disabled(…)` in app code is never flagged. When the adapters lane has
 `swift package dump-package`, replace the path rule with the real test
 targets.
-
-**Meanwhile.** Scoped by path.
 
 ## 13. Where the Swift rows live
 
@@ -223,28 +196,18 @@ line and no existing row a `.swift` line.
 - **The parity run on the consumer** before the seam release is tagged
   (`guardrails-core/docs/releasing.md`).
 
-## 15. A rule table reads as duplicated code
+## 15. A rule table reads as duplicated code — DECIDED, and no ignore was needed
 
-**What.** `fallow dupes` in semantic mode ignores identifier names and
-literal values, so a table of rows with one shape (the auditor's Swift rows,
-as first written) is reported as clones of itself and of the existing
-signature table. The repository's `.fallowrc.jsonc` already carries one
-`duplicates.ignore` entry for exactly this class (`state-store.ts`, "shapes
-rhyme"). This lane did not add one: an ignore is a weakened check, and that
-is the owner's to grant.
+**Decision (the owner, 2026-11-27):** an ignore was offered for the mutant
+generator's tables so they could be written as data (entry 17). It turned
+out not to be needed: as data, one small function per table in
+`src/swift-mutate/swap-tables.ts`, they report no clone, so
+`.fallowrc.jsonc` is unchanged and nothing is exempt from the check.
 
-**Cost.** The rows are modelled as one row per kind holding its patterns,
-which is a fair model and reports no clone. But the absence of a finding
-depends on no two long runs of rows having the same shape, so adding a few
-single-pattern rows in a block could bring it back.
-
-**Recommendation.** If it comes back, grant `guardrails-core/src/audit-swift.ts`
-a `duplicates.ignore` entry with the reason recorded, as was done for
-`state-store.ts`; and consider having the dupes adapter drop a clone group
-whose every instance lies inside one array or object literal (a behaviour
-change for TypeScript consumers, so not this lane's).
-
-**Meanwhile.** No ignore; no finding.
+**Still true.** The auditor's Swift rows (`audit-swift.ts`) are one row per
+kind for the same reason, and report no clone. A long run of same-shaped rows
+added later could bring a finding back; if it does, the choice is the
+owner's again.
 
 ## 16. The commit rung passed what the PreToolUse rung refused
 
@@ -262,20 +225,12 @@ staged, and compare the file lists the two rungs hand the dupes adapter.
 **Meanwhile.** The branch does not depend on the answer: the tables were
 restructured in `3b2f3fa`.
 
-## 17. The generator's operator tables are strings, which Stryker does not mutate
+## 17. The generator's operator tables were strings — DECIDED, and changed
 
-**What.** In `src/swift-mutate/` the infix swap tables are written as strings
-(`'== != === !=='`) and split at run time. This repository's Stryker config
-excludes `StringLiteral` mutants, so the tables themselves are not mutated.
-The delegated agent chose this to avoid clone groups between six tables of
-pairs (question 15's problem again). Every pair is asserted by a test in
-both directions.
-
-**Cost.** The 100% score on `src/swift-mutate/**` is over the code, not over
-the table contents. A wrong entry in a table would be caught by its test,
-not by a mutant.
-
-**Recommendation.** Accept it, or decide question 15 (a `duplicates.ignore`
-for rule tables) and have the tables written as data again.
-
-**Meanwhile.** Strings, with a test per pair.
+**Decision (the owner, 2026-11-27): write them as data.** The six infix swap
+tables are now lists of `[from, to]` directions in
+`src/swift-mutate/swap-tables.ts`. Each direction is its own array literal,
+so Stryker empties them one at a time: 29 array mutants and 6 block mutants
+in that file, all killed. (The operator strings themselves are still
+`StringLiteral`s, which this repository's Stryker config excludes
+everywhere.)

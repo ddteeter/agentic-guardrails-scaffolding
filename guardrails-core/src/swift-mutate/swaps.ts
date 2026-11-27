@@ -1,5 +1,6 @@
 import type { SwiftToken } from '../swift-lexer/index.js';
 import { textAt, type SwiftDocument } from './document.js';
+import type { Swap } from './swap-tables.js';
 import {
   expressionStart,
   isCaseValue,
@@ -14,25 +15,12 @@ import {
 type Guard = (document: SwiftDocument, index: number) => boolean;
 
 /**
-The operator an infix operator swaps with, by a list of pairs written side by
-side: `'== != === !=='` is two pairs, and each operator swaps with the other
-of its pair. An operator listed twice swaps as its first listing says, which
-is how `'% *'` after `'* /'` sends `%` to `*` and not back.
+An operator that swaps one infix operator for another, by the table given
+(see `swap-tables.ts`), unless the guard says the place is not safe.
 */
-function swapOf(pairs: string, text: string): string | undefined {
-  const listed = pairs.split(' ');
-  // A pair sits at indexes 2n and 2n + 1, so the other of a pair is index ^ 1.
-  // A text that is not listed is at -1, and at -2 there is nothing.
-  return listed[listed.indexOf(text) ^ 1];
-}
-
-/**
-An operator that swaps one infix operator for another, by the pairs given,
-unless the guard says the place is not safe.
-*/
-export function swapInfix(pairs: string, isUnsafe?: Guard): Mutator {
+export function swapInfix(swaps: readonly Swap[], isUnsafe?: Guard): Mutator {
   return (document, index, token) => {
-    const replacement = swapOf(pairs, token.text);
+    const replacement = swaps.find(([from]) => from === token.text)?.[1];
     return replacement === undefined ||
       !isInfix(document, index, token) ||
       isUnsafe?.(document, index)
