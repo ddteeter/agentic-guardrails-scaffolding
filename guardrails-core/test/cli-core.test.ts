@@ -1211,6 +1211,24 @@ describe('pretooluse commit gate scope', () => {
     expect(lines).not.toContain(STAGED_FILES);
   });
 
+  it('judges a bypassing push it cannot place over the whole branch', async () => {
+    const lines = await preToolUseGitLines('env git push --no-verify');
+    expect(lines).toContain('git ls-files --others --exclude-standard');
+    expect(lines).not.toContain(STAGED_FILES);
+  });
+
+  it('judges a bypassing commit it cannot place over the staged files', async () => {
+    expect(
+      await preToolUseGitLines('command git commit --no-verify -m x'),
+    ).toContain(STAGED_FILES);
+  });
+
+  it('does not take a word that only contains push for a push', async () => {
+    expect(
+      await preToolUseGitLines('command git commit --no-verify -m pushed'),
+    ).toContain(STAGED_FILES);
+  });
+
   it('does not take a push named in the commit message for a push', async () => {
     // Branch scope re-mutates everything the branch touched; a message that
     // mentions a push after a `;` must not buy that.
@@ -1543,6 +1561,176 @@ describe('pretooluse gate trigger conditions', () => {
         await runPreToolUse(preToolUseStdin('bash', command)),
         `is gated: ${JSON.stringify(command)}`,
       ).toContain('deny');
+    }
+  });
+
+  /**
+   * Owner-approved (2026-11-27). The gate fires on a git write in COMMAND
+   * POSITION, and a write that is not there was an accepted miss "because the
+   * git hooks still run". With a bypass on it they do not, so each of these
+   * landed with no check at either rung. A command that names a bypass and
+   * runs git at all is now gated wherever git stands.
+   */
+  it('gates a bypassing write wherever git stands in the command', async () => {
+    for (const command of [
+      // After a reserved word.
+      'if git commit --no-verify -m x; then echo ok; fi',
+      '! git push --no-verify',
+      'for i in 1; do git commit --no-verify -m x; done',
+      'while true; do git push --no-veri; done',
+      'time git commit --no-verify -m x',
+      // After a wrapper, a path or a backslash.
+      'command git commit --no-verify -m x',
+      'env git push --no-verify',
+      'xargs git commit --no-verify -m x',
+      String.raw`\git commit --no-verify -m x`,
+      '/usr/bin/git push --no-verify',
+      // Across a line continuation.
+      'git \\\n commit --no-verify -m x',
+      // The other spellings, in the same places.
+      'env git commit -n -m x',
+      'git \\\n commit -n -m x',
+      'if git -c core.hookspath=/dev/null commit -m x; then echo ok; fi',
+      'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hookspath GIT_CONFIG_VALUE_0=/dev/null git push',
+      // Inside a string, with nothing before git to separate it.
+      'tmux send-keys "git commit --no-verify -m x" Enter',
+      `sh -c 'git commit -n -m x'`,
+      // The word alone is enough: what runs it is not this gate's to parse.
+      'G=git; $G commit --no-verify -m x',
+    ]) {
+      out.length = 0;
+      expect(
+        await runPreToolUse(preToolUseStdin('bash', command)),
+        `should gate: ${JSON.stringify(command)}`,
+      ).toContain('deny');
+    }
+  });
+
+  it('still leaves the same shapes to the git hooks when they name no bypass', async () => {
+    // The accepted miss stays a miss: these meet the pre-commit and pre-push
+    // hooks, which is the floor the command-position test relies on.
+    for (const command of [
+      'if git commit -m x; then echo ok; fi',
+      'command git commit -m x',
+      'env git push',
+      '/usr/bin/git push origin HEAD',
+      'git \\\n commit -m x',
+    ]) {
+      out.length = 0;
+      expect(
+        await runPreToolUse(preToolUseStdin('bash', command)),
+        `should not gate: ${JSON.stringify(command)}`,
+      ).toBe('');
+    }
+  });
+
+  it('gates a harmless command that names a bypass and git: the price of that rule', async () => {
+    // None of these writes anything. Each names a bypass and has the word
+    // `git` in it, and the rule does not model the shell to tell them from
+    // the commands above. Pinned so the cost is a decision, not a surprise.
+    for (const command of [
+      'git grep hooksPath',
+      'git config --get core.hooksPath',
+      'git log --grep=--no-verify',
+      'gh pr create --body "never run git commit --no-verify"',
+      'echo "git commit -n"',
+      'grep -n hookspath .git/config',
+      "cat > notes.md <<'EOF'\nNever pass --no-verify to git.\nEOF",
+    ]) {
+      out.length = 0;
+      expect(
+        await runPreToolUse(preToolUseStdin('bash', command)),
+        `is gated: ${JSON.stringify(command)}`,
+      ).toContain('deny');
+    }
+  });
+
+  it('does not gate a command that names a bypass and runs no git', async () => {
+    for (const command of [
+      'echo "--no-verify is forbidden here"',
+      'grep -rn hooksPath guardrails-core/src',
+      'npm run release -- --no-verify',
+      // `git` as part of another word is not git.
+      'legit --no-verify',
+      'grep -rn hookspath .github/workflows',
+      'cat .gitignore --no-verify',
+    ]) {
+      out.length = 0;
+      expect(
+        await runPreToolUse(preToolUseStdin('bash', command)),
+        `should not gate: ${JSON.stringify(command)}`,
+      ).toBe('');
+    }
+  });
+
+  it('refuses a bypassing write it cannot place when the command also changes directory', async () => {
+    // Gating is only worth something over the repository the write lands
+    // in. Where git stands out of the reader's sight AND the command moves,
+    // that repository is not knowable, and checking this one would be a pass
+    // for a push somewhere else.
+    for (const command of [
+      'env git -C ../other push --no-verify',
+      `sh -c 'cd ../other && git push --no-verify'`,
+      "bash <<'EOF'\ncd ../other\ngit commit --no-verify -m x\nEOF",
+      'GIT_DIR=../other/.git command git commit --no-verify -m x',
+      'command git --git-dir=../other/.git commit -n',
+      'command git --work-tree=../other commit -n',
+      'GIT_WORK_TREE=../other xargs git commit --no-verify',
+      'pushd ../other; env git push --no-verify',
+      'env git push --no-verify; popd',
+      // Unreadable to the placing reader as well: nothing in it is placed.
+      'env git -C ../other push --no-verify "unclosed',
+      // A second git, out of sight, beside one that is placed.
+      'git commit -m x; env git -C ../other push --no-verify',
+      // The price again: the word git in a message counts as one.
+      'cd packages && git commit --no-verify -m "about git"',
+    ]) {
+      out.length = 0;
+      const output = await runPreToolUse(preToolUseStdin('bash', command));
+      expect(output, JSON.stringify(command)).toContain(
+        'names a way past the git hooks, runs git where this gate cannot ' +
+          'read it',
+      );
+      expect(output, JSON.stringify(command)).not.toContain(
+        'added suppression(s)',
+      );
+    }
+  });
+
+  it('gates, in the repository it lands in, a bypassing write it can place', async () => {
+    // Placed means the reader that resolves the directory read every git in
+    // the command, reserved words included; the gate then runs as it always
+    // did, here over a subdirectory of this repository.
+    for (const command of [
+      'cd packages && git commit --no-verify -m x',
+      'git -C packages commit --no-verify -m x',
+      'cd packages && if git commit --no-verify -m x; then echo ok; fi',
+      String.raw`cd packages && \git commit -n -m x`,
+      'cd packages && FOO=1 git commit -n -m x',
+      // A command that is only an assignment runs nothing, git included.
+      'cd packages && FOO=1 && git commit -n -m x',
+    ]) {
+      out.length = 0;
+      expect(
+        await runPreToolUse(preToolUseStdin('bash', command)),
+        JSON.stringify(command),
+      ).toContain('added suppression(s)');
+    }
+  });
+
+  it('gates a bypassing write it cannot place when nothing moves it', async () => {
+    for (const command of [
+      'env git push --no-verify',
+      `sh -c 'git commit -n -m x'`,
+      // Words that only resemble the ones that move a command.
+      'env git push --no-verify abcd',
+      'env git push --no-verify x-C',
+    ]) {
+      out.length = 0;
+      expect(
+        await runPreToolUse(preToolUseStdin('bash', command)),
+        JSON.stringify(command),
+      ).toContain('added suppression(s)');
     }
   });
 
@@ -6081,6 +6269,10 @@ describe('pretooluse leaves a push to the pre-push hook that gates it', () => {
     'git --config-env=core.hookspath=NOWHERE push',
     // In a quoted heredoc fed to a shell, whose body is no longer dropped.
     "bash <<'EOF'\ngit push --no-verify\nEOF",
+    // Where git is not in command position.
+    'env git push --no-verify',
+    '! git push --no-verif',
+    'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hookspath GIT_CONFIG_VALUE_0=/dev/null git push',
   ])('never leaves %s to the pre-push hook it skips', async (command) => {
     // These were classed as a PLAIN push and left to the hook: the one
     // check they had was the one they were written to avoid.

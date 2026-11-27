@@ -55,6 +55,32 @@ supersedes:
   dropped.** A quoted heredoc fed to a shell (`bash <<'EOF'`, with
   `git commit --no-verify` in its body) used to have its body dropped before
   the check ran. A command that names a bypass anywhere is now read whole.
+- **A bypassing write is gated wherever git stands in the command.** The
+  gate fires on a git write in command position; a write behind a reserved
+  word, a wrapper, a path, a backslash or a line continuation
+  (`if git commit ...`, `env git push`, `/usr/bin/git ...`), or inside a
+  string handed to another program, is still left to the git hooks. With a
+  bypass on it those hooks do not run, so a command that names a bypass and
+  has the word `git` in it is now gated whatever its shape. A push among
+  them is judged over the branch.
+- **That rule gates some commands that write nothing.** It does not model
+  the shell, so these now run the commit gate over the staged files, and are
+  denied if it finds something: `git grep hooksPath`,
+  `git config --get core.hooksPath`, `git log --grep=--no-verify`,
+  `gh pr create --body "never run git commit --no-verify"`,
+  `echo "git commit -n"`, `grep -n hookspath .git/config`, and a heredoc or a
+  script that writes text naming both a bypass and git. A command that names
+  a bypass and no git (`grep -rn hooksPath src`) is not gated. To read or
+  search for these words without the gate, use a tool that is not a shell
+  command, or put the text in a file first.
+- **A bypassing write the gate cannot place is refused if the command also
+  moves.** Where git stands out of the gate's reading (behind a wrapper, in
+  a string, a heredoc or a substitution) and the command also says `cd`,
+  `pushd`, `popd`, `-C`, `--git-dir`, `--work-tree`, `GIT_DIR` or
+  `GIT_WORK_TREE`, the repository it writes to cannot be known, so it is
+  denied instead of being checked against the wrong one. This also denies
+  `cd packages && git commit --no-verify -m "about git"`: the word in the
+  message counts as a git the gate did not place.
 - **`git commit -n` is read as the hook bypass it is.** `-n` is the short
   form of `--no-verify` for `git commit`, alone or in a cluster (`-nm "x"`,
   `-an`). A command that names it anywhere keeps the wider reading the

@@ -1418,6 +1418,25 @@ core/src/audit.ts`) surfaced that it was a context-free text scan: it flagged
       command, before anything is dropped, and a command that names one is
       read whole. The price, pinned by a test: a note that quotes a
       bypassing commit on a line of its own, or in backticks, is gated too.
+    - **A bypass where git is not in command position.** After a reserved
+      word, a wrapper, a path or a backslash, across a line continuation, or
+      in a string handed to another program, a git write was an accepted
+      miss, "because the git hooks still run". With a bypass on it they do
+      not. A command that names a bypass and has the word `git` in it is now
+      gated whatever its shape, with a push among them judged over the
+      branch. It models no shell and over-matches on purpose: a search for
+      `hooksPath` with `git grep` is gated, and so is a note that names both.
+      Where such a
+      command also moves (`cd`, `-C`, `GIT_DIR` and the like) and holds a git
+      the directory reader could not place, it is refused, because gating
+      this repository would be a pass for a push into another.
+    - **The rule caught its own author within the hour.** The Bash command
+      that wrote these tests, a heredoc holding the test text, was denied by
+      this session's PreToolUse gate: it named a bypass and git. Nothing was
+      staged; the gate ran over the branch because the text also said push,
+      and found one violation in the hook's own environment. The tests were
+      written through a file instead. That is the cost in the upgrade notes,
+      met in the first place it could be.
   - **Autofix traded one lint error for another (fixed 2026-11-27, in this
     repo's own config).** PostToolUse `eslint --fix` rewrote
     `readSource: () => undefined` to `readSource: () => {}`:

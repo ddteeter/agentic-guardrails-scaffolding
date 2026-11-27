@@ -566,11 +566,18 @@ function gitOptions(
 }
 
 /**
+The index of the word a simple command RUNS: the first past its assignments.
+*/
+function commandWord(words: readonly Word[]): number {
+  return words.findIndex((word) => !ASSIGNMENT.test(word.text));
+}
+
+/**
 Is this simple command a `git commit` or `git push`, and how is it pointed?
 */
 function gitWrite(command: SimpleCommand): GitWrite | undefined {
   const words = [command.name, ...command.parameters];
-  const first = words.findIndex((word) => !ASSIGNMENT.test(word.text));
+  const first = commandWord(words);
   if (words[first]?.text !== 'git') {
     return undefined;
   }
@@ -684,5 +691,27 @@ export function commandTarget(
     // Every error, not only the scanner's own: a bug here must deny the
     // write, never let it through ungated.
     return unknown(`the command could not be read (${String(error)})`);
+  }
+}
+
+/**
+ * How many of `command`'s simple commands run git, as THIS reader places
+ * them: `git` as the word a command runs, past any assignments and reserved
+ * words. None when the command cannot be read.
+ *
+ * For a caller that has to know whether every git in a command is one whose
+ * directory `commandTarget` resolved. A git this does not count -- behind a
+ * wrapper (`env git`), named by a path, or inside a string, a heredoc or a
+ * substitution -- runs somewhere this reader never followed.
+ */
+export function placedGitCommands(command: string): number {
+  try {
+    const tokens = scanTokens(cursorOver(command), false);
+    return simpleCommands(tokens).filter((simple) => {
+      const words = [simple.name, ...simple.parameters];
+      return words[commandWord(words)]?.text === 'git';
+    }).length;
+  } catch {
+    return 0;
   }
 }

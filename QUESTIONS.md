@@ -201,3 +201,30 @@ nothing else) and the `hooksPath` key in any letter case, which covers `-c`,
 `--config-env` and the `GIT_CONFIG_*` variables. Each was checked against git
 2.43 in a throwaway repository and bare remote whose hooks always fail. A
 push carrying any of them is no longer a plain push.
+
+## 9. Four hook-bypass holes, closed on the owner's approval
+
+**What.** Relayed by the sprint coordinator (2026-11-27): four ways a commit
+or push could land with no check at either rung, all on `main`. Each is its
+own commit with its own tests, and every spelling was confirmed against git
+2.43 in a throwaway repository and bare remote whose hooks always fail.
+
+**What is now caught.**
+
+- Every spelling git accepts for skipping its hooks: any prefix of
+  `--no-verify`, on a commit or a push; `-n` on a commit; and the
+  `hooksPath` key in any letter case, through `-c`, `--config-env` or the
+  `GIT_CONFIG_*` variables. A push carrying one is never a plain push.
+- A script that reaches a shell on its stdin, piped or as a here-string.
+- A quoted heredoc fed to a shell: the bypass is looked for in the raw
+  command, before any body or string is dropped.
+- A bypassing write wherever git stands: after a reserved word, a wrapper, a
+  path or a backslash, across a line continuation, inside a string.
+
+**Cost.** The last rule over-matches by design. A command that only names a
+bypass and git (`git grep hooksPath`, a note about `--no-verify`) now runs
+the commit gate and is denied if the gate finds something; the upgrade notes
+list them and a test pins each. A bypassing command that also changes
+directory, with a git the gate cannot place, is refused outright.
+
+**Open.** One open item, ask the coordinator.

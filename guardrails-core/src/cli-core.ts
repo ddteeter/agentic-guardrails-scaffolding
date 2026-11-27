@@ -88,7 +88,7 @@ import {
 } from './mutation-lock.js';
 import { foregroundWait, foregroundWaitDenial } from './foreground-wait.js';
 import { lockCommand } from './command-lock.js';
-import { commandTarget } from './command-target.js';
+import { commandTarget, placedGitCommands } from './command-target.js';
 import { isPushGatedByHook, PUSH_GATE_ARGS } from './push-hook.js';
 import {
   COMMAND_START,
@@ -870,13 +870,73 @@ const COMMIT_NO_VERIFY = new RegExp(
 );
 
 /**
-Does this command name a way past the git hooks, anywhere in it?
-*/
-function hasHookBypass(text: string): boolean {
+ * Does this command name a way past the git hooks, anywhere in it?
+ *
+ * Asked of the raw command, with its line continuations joined: the shell
+ * joins them before git sees anything, so `git \<newline> commit -n` is one
+ * command to it.
+ */
+function hasHookBypass(command: string): boolean {
+  const text = command.replaceAll('\\\n', '');
   return (
     NO_VERIFY.test(text) || HOOKS_PATH.test(text) || COMMIT_NO_VERIFY.test(text)
   );
 }
+
+/**
+The word `git`, wherever it stands: after a wrapper, a path, a backslash.
+*/
+const GIT_ANYWHERE = /\bgit\b/;
+const PUSH_ANYWHERE = /\bpush\b/;
+
+/**
+ * Does this command name a hook bypass and run git AT ALL?
+ *
+ * The gate fires on a git write in command position, and a write that is not
+ * there -- `if git commit ...`, `env git push`, `/usr/bin/git ...`, a string
+ * handed to another program -- was an accepted miss, "because the git hooks
+ * still run". With a bypass on it they do not: each such write landed with no
+ * check at either rung.
+ *
+ * So this over-matches on purpose and models no shell: a bypass named, and
+ * the word `git`. `git grep hooksPath` is gated by it, and so is a note that
+ * mentions `--no-verify`; that is the price, and it is pinned by a test. The
+ * other direction is the one that cannot be afforded.
+ */
+function isBypassingGit(command: string): boolean {
+  return hasHookBypass(command) && GIT_ANYWHERE.test(command);
+}
+
+/**
+What moves a command, or git itself, off the directory the shell starts in.
+*/
+const MOVES =
+  /\b(?:cd|pushd|popd)\b|\s-C|--git-dir|--work-tree|GIT_DIR|GIT_WORK_TREE/;
+
+/**
+ * Is this a bypassing command whose repository cannot be known?
+ *
+ * Gating is worth something only over the repository the write lands in, and
+ * `commandTarget` resolves that for the git commands it can PLACE. A git it
+ * cannot place -- more `git` words in the text than commands it read -- runs
+ * wherever the wrapper, string or script around it takes it. If the command
+ * also says anything that moves, checking this repository would be a pass
+ * for a push into another one; so it is refused instead.
+ */
+function isBypassOutOfReach(command: string): boolean {
+  return (
+    isBypassingGit(command) &&
+    MOVES.test(command) &&
+    command.matchAll(/\bgit\b/g).toArray().length > placedGitCommands(command)
+  );
+}
+
+const OUT_OF_REACH =
+  'guardrails: this command names a way past the git hooks, runs git where ' +
+  'this gate cannot read it (after a wrapper or a path, or inside a string, ' +
+  'a heredoc or a substitution), and changes directory, so the repository ' +
+  'it writes to could not be checked. Run the git write as its own command ' +
+  '(`git -C <dir> ...`), without the bypass.';
 
 /**
  * The part of a command the git-write patterns are matched against: what the
@@ -903,7 +963,12 @@ function commandText(command: string): string {
  * in it is judged over the whole branch, as the push rung is.
  */
 function writeScope(command: string): 'staged' | 'branch' {
-  return GIT_PUSH.test(commandText(command)) ? 'branch' : 'staged';
+  // A bypassing write git is not in command position for has no `git push`
+  // for the pattern to find; the word is taken for it.
+  const isPush =
+    GIT_PUSH.test(commandText(command)) ||
+    (isBypassingGit(command) && PUSH_ANYWHERE.test(command));
+  return isPush ? 'branch' : 'staged';
 }
 
 /**
@@ -928,7 +993,8 @@ function isShellGitWrite(input: HookInput): boolean {
     SHELL_TOOLS.test(input.toolName) &&
     // Stryker disable next-line ConditionalExpression
     input.command !== undefined &&
-    GIT_WRITE.test(commandText(input.command))
+    (GIT_WRITE.test(commandText(input.command)) ||
+      isBypassingGit(input.command))
   );
 }
 
@@ -995,8 +1061,13 @@ async function writeRepoRoot(
   input: HookInput,
   dialect: Dialect,
 ): Promise<string | undefined> {
+  const command = input.command ?? '';
+  if (isBypassOutOfReach(command)) {
+    denyPreToolUse(dependencies, OUT_OF_REACH, dialect);
+    return undefined;
+  }
   const target = commandTarget(
-    input.command ?? '',
+    command,
     input.cwd ?? dependencies.cwd,
     homedir(),
   );
