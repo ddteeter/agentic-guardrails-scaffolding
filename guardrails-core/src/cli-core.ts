@@ -829,15 +829,27 @@ const GIT_PUSH = new RegExp(
 );
 
 /**
- * What takes a push out of reach of its pre-push hook: the flag that skips it,
- * or a hooks path chosen on the command line. A push carrying either is gated
- * here as it always was, whatever the hook says.
+ * What takes a write out of reach of its git hook: the flag that skips it, or
+ * a hooks path chosen for the one command. A push carrying either is gated
+ * here, whatever the hook says.
+ *
+ * Spelled the way GIT reads them, not the way the manual prints them. A long
+ * option may be cut to any unambiguous prefix, so `--no-veri` and
+ * `--no-verif` skip the hooks exactly as `--no-verify` does; the shorter
+ * prefixes are refused as ambiguous today and are prefixes of nothing else,
+ * so they are here too. A config key is case-insensitive, and reaches git
+ * through `-c`, `--config-env` and the `GIT_CONFIG_*` variables, every one of
+ * which names the key. Each checked against git, in a repository whose hooks
+ * always fail. Before this the pattern was `--no-verify` and `hooksPath`,
+ * exactly so, and a `git push --no-verif` was a plain push, left to the hook
+ * it skips.
  */
-const HOOK_BYPASS = /--no-verify\b|hooksPath/;
+const NO_VERIFY = /--no-(?:verify|verif|veri|ver|ve|v)(?!\w)/;
+const HOOKS_PATH = /hookspath/i;
 
 /**
- * `git commit -n`: the short form of `--no-verify`, which `HOOK_BYPASS` did
- * not know.
+ * `git commit -n`: the short form of `--no-verify`, which the long forms did
+ * not cover.
  *
  * Tied to `commit`, and to the one command it is written on, because `-n` is
  * something else nearly everywhere: a dry run for `git push`, `git clean` and
@@ -861,7 +873,9 @@ const COMMIT_NO_VERIFY = new RegExp(
 Does this command name a way past the git hooks, anywhere in it?
 */
 function hasHookBypass(text: string): boolean {
-  return HOOK_BYPASS.test(text) || COMMIT_NO_VERIFY.test(text);
+  return (
+    NO_VERIFY.test(text) || HOOKS_PATH.test(text) || COMMIT_NO_VERIFY.test(text)
+  );
 }
 
 /**

@@ -1392,7 +1392,19 @@ core/src/audit.ts`) surfaced that it was a context-free text scan: it flagged
     (`-nm`, `-an`), and only on a commit: `git push -n` is a dry run and
     `git commit -mn` is a message. Checked against git itself, which also
     showed that an abbreviated `--no-veri` skips the hook and is not
-    recognised; that one is entry 8, open.
+    recognised; that one is entry 8, built the same day with the rest of the
+    bypass spellings (next sub-entry).
+  - **Four hook-bypass holes in the PreToolUse gate, on `main` until now
+    (closed 2026-11-27, owner-approved, one commit each).** Each let a commit
+    or push land with no check at either rung: the git hook was skipped, and
+    the gate either did not fire or left the write to that hook.
+    - **Spellings.** The bypass check knew `--no-verify` and `hooksPath`,
+      exactly so. git takes any unambiguous prefix of a long option
+      (`--no-veri`, `--no-verif`) and a config key in any letter case, through
+      `-c`, `--config-env` and the `GIT_CONFIG_*` variables. A push spelled
+      that way was classed as a plain push and left to the hook it skipped.
+      The check now reads all of them, each confirmed against git 2.43 in a
+      repository whose hooks always fail.
   - **Autofix traded one lint error for another (fixed 2026-11-27, in this
     repo's own config).** PostToolUse `eslint --fix` rewrote
     `readSource: () => undefined` to `readSource: () => {}`:

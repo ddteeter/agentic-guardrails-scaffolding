@@ -1444,6 +1444,53 @@ describe('pretooluse gate trigger conditions', () => {
     }
   });
 
+  /**
+   * Owner-approved (2026-11-27): the spellings GIT accepts, not the one the
+   * manual prints. Checked against git 2.43 in a throwaway repository whose
+   * hooks always fail: `--no-veri` and `--no-verif` skip the pre-commit and
+   * the pre-push hook alike (a long option may be cut to any unambiguous
+   * prefix), and `core.hooksPath` is honoured in any letter case, through
+   * `-c`, `--config-env` and the `GIT_CONFIG_*` variables. The check knew
+   * `--no-verify` and `hooksPath`, spelled exactly so.
+   */
+  it('reads every prefix of --no-verify, and hooksPath in any case, as a bypass', async () => {
+    for (const command of [
+      'tmux send-keys "true; git commit --no-verif -m x" Enter',
+      'tmux send-keys "true; git commit --no-veri -m x" Enter',
+      'tmux send-keys "true; git push --no-verif" Enter',
+      // Shorter than git accepts today, and a prefix of nothing else.
+      'tmux send-keys "true; git commit --no-ver -m x" Enter',
+      'tmux send-keys "true; git commit --no-ve -m x" Enter',
+      'tmux send-keys "true; git commit --no-v" Enter',
+      // The config key, in the cases git folds together.
+      `watch 'true; git -c core.hookspath=/dev/null commit -m x'`,
+      `watch 'true; git -c CORE.HOOKSPATH=/dev/null push'`,
+      // And by another route a config value reaches git.
+      `watch 'true; git --config-env=core.hookspath=NOWHERE commit -m x'`,
+    ]) {
+      out.length = 0;
+      expect(
+        await runPreToolUse(preToolUseStdin('bash', command)),
+        `should gate: ${command}`,
+      ).toContain('deny');
+    }
+  });
+
+  it('does not take a longer or a different long option for --no-verify', async () => {
+    for (const command of [
+      'echo "x; git commit --no-verbose"',
+      'echo "x; git commit --no-verifying"',
+      'echo "x; git commit --no-vx"',
+      'echo "x; git commit --no-edit"',
+    ]) {
+      out.length = 0;
+      expect(
+        await runPreToolUse(preToolUseStdin('bash', command)),
+        `should not gate: ${JSON.stringify(command)}`,
+      ).toBe('');
+    }
+  });
+
   it('finds no bypass in a long run of commits in time that grows with it', async () => {
     // The scan from each `git commit` runs to the end of its command, so a
     // command that never ends one is the costly shape.
@@ -5953,6 +6000,21 @@ describe('pretooluse leaves a push to the pre-push hook that gates it', () => {
         'git push && tmux send-keys "true; git commit -n -m x" Enter',
         hookedExec('.githooks/pre-push'),
       ),
+    ).toContain('deny');
+  });
+
+  it.each([
+    'git push --no-verif',
+    'git push --no-veri origin HEAD',
+    'git -c core.hookspath=/dev/null push',
+    'git -c CORE.HOOKSPATH=/dev/null push',
+    'git --config-env=core.hookspath=NOWHERE push',
+  ])('never leaves %s to the pre-push hook it skips', async (command) => {
+    // These were classed as a PLAIN push and left to the hook: the one
+    // check they had was the one they were written to avoid.
+    writeHook('.githooks/pre-push', GATED_HOOK);
+    expect(
+      await pushVerdict(command, hookedExec('.githooks/pre-push')),
     ).toContain('deny');
   });
 

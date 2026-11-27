@@ -192,3 +192,12 @@ one-line pattern change with its own tests, and it was not in the ruling,
 so I did not make it.
 
 **Meanwhile.** Nothing; recorded here and in `plan.md`.
+
+**Decided (owner, 2026-11-27, relayed by the sprint coordinator): build it,
+with the other bypass spellings.** Done. The bypass check now reads every
+prefix of `--no-verify` (git accepts `--no-veri` and `--no-verif` for commit
+and for push; the shorter ones it refuses are matched too, being prefixes of
+nothing else) and the `hooksPath` key in any letter case, which covers `-c`,
+`--config-env` and the `GIT_CONFIG_*` variables. Each was checked against git
+2.43 in a throwaway repository and bare remote whose hooks always fail. A
+push carrying any of them is no longer a plain push.

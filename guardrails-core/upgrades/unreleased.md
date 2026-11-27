@@ -39,10 +39,18 @@ supersedes:
   A real write is matched as before, and anything the reader of quotes does
   not model is too: an unterminated string, `$'...'`, a command substitution
   inside double quotes, any heredoc, a string handed to a shell (`sh -c`,
-  `eval`, `git rebase --exec`), and any command that names `--no-verify`,
-  `hooksPath`, or `-n` on a `git commit`. A commit typed into another program as a plain string (through
+  `eval`, `git rebase --exec`), and any command that names a hook bypass
+  (below). A commit typed into another program as a plain string (through
   `tmux send-keys`, say) used to match by accident and no longer does; the
   git hook still runs for it.
+- **A hook bypass is recognised in every spelling git accepts.** git takes
+  any unambiguous prefix of a long option and reads a config key in any
+  letter case, so `git commit --no-verif`, `git push --no-veri` and
+  `git -c core.hookspath=/dev/null push` skip the hooks exactly as the
+  documented spellings do. They are now bypasses to the gate as well: a push
+  that carries one is gated at PreToolUse and is never left to the pre-push
+  hook it skips. The config key is matched wherever it is written, which
+  covers `-c`, `--config-env` and the `GIT_CONFIG_*` variables.
 - **`git commit -n` is read as the hook bypass it is.** `-n` is the short
   form of `--no-verify` for `git commit`, alone or in a cluster (`-nm "x"`,
   `-an`). A command that names it anywhere keeps the wider reading the
