@@ -224,3 +224,42 @@ line and no existing row a `.swift` line.
   the auditor (test targets, debug targets) with `dump-package` facts.
 - **The parity run on the consumer** before the seam release is tagged
   (`guardrails-core/docs/releasing.md`).
+
+## 15. A rule table reads as duplicated code
+
+**What.** `fallow dupes` in semantic mode ignores identifier names and
+literal values, so a table of rows with one shape (the auditor's Swift rows,
+as first written) is reported as clones of itself and of the existing
+signature table. The repository's `.fallowrc.jsonc` already carries one
+`duplicates.ignore` entry for exactly this class (`state-store.ts`, "shapes
+rhyme"). This lane did not add one: an ignore is a weakened check, and that
+is the owner's to grant.
+
+**Cost.** The rows are modelled as one row per kind holding its patterns,
+which is a fair model and reports no clone. But the absence of a finding
+depends on no two long runs of rows having the same shape, so adding a few
+single-pattern rows in a block could bring it back.
+
+**Recommendation.** If it comes back, grant `guardrails-core/src/audit-swift.ts`
+a `duplicates.ignore` entry with the reason recorded, as was done for
+`state-store.ts`; and consider having the dupes adapter drop a clone group
+whose every instance lies inside one array or object literal (a behaviour
+change for TypeScript consumers, so not this lane's).
+
+**Meanwhile.** No ignore; no finding.
+
+## 16. The commit rung passed what the PreToolUse rung refused
+
+**What.** Recorded in `plan.md` ("Roadmap: fixer-loop hardening"): the same
+staged change was refused by `gate --mode=pretooluse` for duplication and
+passed by the husky pre-commit gate minutes later. Not diagnosed in this
+lane.
+
+**Cost.** Unknown until diagnosed: either the commit rung under-reports
+`dupes` for some staged sets, or the PreToolUse rung over-reports.
+
+**Recommendation.** Reproduce at `345093f^` with that commit's change
+staged, and compare the file lists the two rungs hand the dupes adapter.
+
+**Meanwhile.** The branch does not depend on the answer: the tables were
+restructured in `3b2f3fa`.
