@@ -4790,7 +4790,7 @@ describe('session-start: fixer agents the build has not written', () => {
   });
 
   it('says it to a session that starts in a subdirectory of the repository', async () => {
-    // counts-and-leases-3: the source and the generated copies are named
+    // The source and the generated copies are named
     // from the repository's root, and a session opened below it was told
     // nothing.
     generatesFixerAgents();
@@ -5017,7 +5017,7 @@ describe('a gate that names a fixer this checkout has not built', () => {
   });
 
   /**
-   * counts-and-leases-1. "Do NOT spawn a fixer yet ... wait for that one to
+   * "Do NOT spawn a fixer yet ... wait for that one to
    * report" and "resolve the violations yourself" cannot both be said: the
    * second sends the agent into files the first says a fixer is editing.
    */
@@ -6272,7 +6272,7 @@ describe('a blocked commit while the mutation lock is busy', () => {
   });
 
   /**
-   * counts-and-leases-2. A warning is in neither the manifest nor the count,
+   * A warning is in neither the manifest nor the count,
    * and a blocked PreToolUse prints nothing but its pointer, so an advisory
    * raised on a blocked iteration was seen by nobody.
    */
