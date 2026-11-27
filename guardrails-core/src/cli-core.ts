@@ -91,8 +91,14 @@ import {
   machineLock,
 } from './mutation-lock.js';
 import { foregroundWait, foregroundWaitDenial } from './foreground-wait.js';
+import {
+  GIT_GLOBAL_OPTIONS,
+  hasHookBypass,
+  isBypassingGit,
+  isBypassOutOfReach,
+} from './hook-bypass.js';
 import { lockCommand } from './command-lock.js';
-import { commandTarget, placedGitCommands } from './command-target.js';
+import { commandTarget } from './command-target.js';
 import { isPushGatedByHook, PUSH_GATE_ARGS } from './push-hook.js';
 import {
   COMMAND_START,
@@ -813,28 +819,6 @@ const SHELL_TOOLS = /^(?:bash|shell|powershell)$/i;
  * `xargs git commit` remain misses, for the reason already recorded -- neither
  * skips the git hooks, so the git-native floor still catches them.
  */
-/**
- * git's global options: a flag token, or `-c`/`-C` plus its separate value.
- *
- * The value alternative requires a NON-`-` first character, and that is what
- * keeps the run linear. Without it the two alternatives can tile the same token
- * sequence two ways -- `-c -c` as one flag-plus-value, or as two flags -- so a
- * run of k flags has Fibonacci(k) equivalent partitions, every one of which a
- * failing overall match must exhaust. That is the textbook `(a|aa)*`
- * catastrophic-backtracking shape, and it was real here: measured 5.69s at 40
- * tokens and 51s at 64, on `input.command` from the Bash PreToolUse hook --
- * the agent's highest-frequency tool, so a long enough command would have hung
- * the session. With the constraint, a token beginning `-` can only be read as
- * a flag and a token that does not can only be a value: exactly one parse.
- *
- * `sonarjs/regex-complexity` cannot see this. Assembling the pattern from
- * `String.raw` fragments -- done to get the literal under the complexity
- * ceiling -- also takes it out of static analysis, which is how this shipped
- * past a lint that had caught the same class before. `cli-core.test.ts` pins
- * the property by TIMING instead: the guarantee is "no exponential path
- * exists", which no example input can assert on its own.
- */
-const GIT_GLOBAL_OPTIONS = String.raw`(?:[ \t]+(?:-[cC][ \t]+[^-\s][^ \t]*|-[^ \t]+))*`;
 const GIT_WRITE = new RegExp(
   `${COMMAND_START}git${GIT_GLOBAL_OPTIONS}[ \t]+(?:commit|push)\\b`,
 );
@@ -845,108 +829,7 @@ const GIT_PUSH = new RegExp(
   `${COMMAND_START}git${GIT_GLOBAL_OPTIONS}[ \t]+push\\b`,
 );
 
-/**
- * What takes a write out of reach of its git hook: the flag that skips it, or
- * a hooks path chosen for the one command. A push carrying either is gated
- * here, whatever the hook says.
- *
- * Spelled the way GIT reads them, not the way the manual prints them. A long
- * option may be cut to any unambiguous prefix, so `--no-veri` and
- * `--no-verif` skip the hooks exactly as `--no-verify` does; the shorter
- * prefixes are refused as ambiguous today and are prefixes of nothing else,
- * so they are here too. A config key is case-insensitive, and reaches git
- * through `-c`, `--config-env` and the `GIT_CONFIG_*` variables, every one of
- * which names the key. Each checked against git, in a repository whose hooks
- * always fail. Before this the pattern was `--no-verify` and `hooksPath`,
- * exactly so, and a `git push --no-verif` was a plain push, left to the hook
- * it skips.
- */
-const NO_VERIFY = /--no-(?:verify|verif|veri|ver|ve|v)(?!\w)/;
-const HOOKS_PATH = /hookspath/i;
-
-/**
- * `git commit -n`: the short form of `--no-verify`, which the long forms did
- * not cover.
- *
- * Tied to `commit`, and to the one command it is written on, because `-n` is
- * something else nearly everywhere: a dry run for `git push`, `git clean` and
- * `git add`, a count for `git log` and `head`. So the scan starts at a `git
- * ... commit` and stops at the first separator.
- *
- * The letters allowed before the `n` are commit's short flags that take no
- * value (`-a`, `-e`, `-i`, `-o`, `-p`, `-q`, `-s`, `-v`, `-z`), so `-an` and
- * `-anm "x"` are bypasses and `-mn` is not: that is `-m` with the message
- * "n", and git runs the hook for it. Checked against git, not its manual.
- *
- * Wrong in the direction a bypass check may be wrong in: a commit message
- * that holds ` -n` reads as a bypass, which costs the old, wider reading of
- * that one command and nothing else.
- */
-const COMMIT_NO_VERIFY = new RegExp(
-  `git${GIT_GLOBAL_OPTIONS}[ \t]+commit\\b[^\n;&|]*[ \t]-[aeiopqsvz]*n`,
-);
-
-/**
- * Does this command name a way past the git hooks, anywhere in it?
- *
- * Asked of the raw command, with its line continuations joined: the shell
- * joins them before git sees anything, so `git \<newline> commit -n` is one
- * command to it.
- */
-function hasHookBypass(command: string): boolean {
-  const text = command.replaceAll('\\\n', '');
-  return (
-    NO_VERIFY.test(text) || HOOKS_PATH.test(text) || COMMIT_NO_VERIFY.test(text)
-  );
-}
-
-/**
-The word `git`, wherever it stands: after a wrapper, a path, a backslash.
-*/
-const GIT_ANYWHERE = /\bgit\b/;
 const PUSH_ANYWHERE = /\bpush\b/;
-
-/**
- * Does this command name a hook bypass and run git AT ALL?
- *
- * The gate fires on a git write in command position, and a write that is not
- * there -- `if git commit ...`, `env git push`, `/usr/bin/git ...`, a string
- * handed to another program -- was an accepted miss, "because the git hooks
- * still run". With a bypass on it they do not: each such write landed with no
- * check at either rung.
- *
- * So this over-matches on purpose and models no shell: a bypass named, and
- * the word `git`. `git grep hooksPath` is gated by it, and so is a note that
- * mentions `--no-verify`; that is the price, and it is pinned by a test. The
- * other direction is the one that cannot be afforded.
- */
-function isBypassingGit(command: string): boolean {
-  return hasHookBypass(command) && GIT_ANYWHERE.test(command);
-}
-
-/**
-What moves a command, or git itself, off the directory the shell starts in.
-*/
-const MOVES =
-  /\b(?:cd|pushd|popd)\b|\s-C|--git-dir|--work-tree|GIT_DIR|GIT_WORK_TREE/;
-
-/**
- * Is this a bypassing command whose repository cannot be known?
- *
- * Gating is worth something only over the repository the write lands in, and
- * `commandTarget` resolves that for the git commands it can PLACE. A git it
- * cannot place -- more `git` words in the text than commands it read -- runs
- * wherever the wrapper, string or script around it takes it. If the command
- * also says anything that moves, checking this repository would be a pass
- * for a push into another one; so it is refused instead.
- */
-function isBypassOutOfReach(command: string): boolean {
-  return (
-    isBypassingGit(command) &&
-    MOVES.test(command) &&
-    command.matchAll(/\bgit\b/g).toArray().length > placedGitCommands(command)
-  );
-}
 
 const OUT_OF_REACH =
   'guardrails: this command names a way past the git hooks, runs git where ' +
