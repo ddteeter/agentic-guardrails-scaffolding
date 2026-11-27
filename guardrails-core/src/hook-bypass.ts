@@ -210,10 +210,14 @@ export function isBypassingGit(command: string): boolean {
 }
 
 /**
-What moves a command, or git itself, off the directory the shell starts in.
-*/
+ * What moves a command, or git itself, off the directory the shell starts in:
+ * the shell's own `cd`, git's `-C` and its location options and variables, a
+ * wrapper told where to run (`env --chdir`, `env -C`, `sudo --chdir`,
+ * `sudo -D`), and an interpreter that changes directory itself, which every
+ * one of them spells with `chdir`.
+ */
 const MOVES =
-  /\b(?:cd|pushd|popd)\b|\s-C|--git-dir|--work-tree|GIT_DIR|GIT_WORK_TREE/;
+  /\b(?:cd|pushd|popd)\b|chdir|\s-[CD]|--git-dir|--work-tree|GIT_DIR|GIT_WORK_TREE/;
 
 /**
  * Is this a bypassing command whose repository cannot be known?

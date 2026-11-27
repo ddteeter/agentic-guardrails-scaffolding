@@ -6,7 +6,7 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { hasHookBypass } from '../src/hook-bypass.js';
+import { hasHookBypass, isBypassOutOfReach } from '../src/hook-bypass.js';
 
 /**
 The commands of `commands` that are NOT read as naming a bypass.
@@ -220,5 +220,47 @@ describe('hasHookBypass: a config file the command points git at', () => {
         'git push origin HOME',
       ]),
     ).toEqual([]);
+  });
+});
+
+/**
+ * A bypassing write the gate cannot place is gated over THIS repository
+ * unless the command says it moves; then nobody can say where it lands, and
+ * it is refused. So every way a command can move has to be known as one.
+ */
+describe('isBypassOutOfReach: a wrapper or an interpreter that changes directory', () => {
+  it('knows a wrapper that is told where to run', () => {
+    for (const command of [
+      'env --chdir=/other git push --no-verify',
+      'env --chdir /other git push --no-verify',
+      'env -C /other git push --no-verify',
+      'sudo --chdir /other git push --no-verify',
+      'sudo -D /other git push --no-verify',
+    ]) {
+      expect(isBypassOutOfReach(command), command).toBe(true);
+    }
+  });
+
+  it('knows an interpreter that changes directory itself', () => {
+    for (const command of [
+      `python3 -c "import os; os.chdir('/other'); os.system('git push --no-verify')"`,
+      `node -e "process.chdir('/other'); run('git push --no-verify')"`,
+      `ruby -e "Dir.chdir('/other') { system('git push --no-verify') }"`,
+    ]) {
+      expect(isBypassOutOfReach(command), command).toBe(true);
+    }
+  });
+
+  it('does not take a wrapper that moves nothing for one that does', () => {
+    for (const command of [
+      'env git push --no-verify',
+      'sudo git push --no-verify',
+      'sudo -u me git push --no-verify',
+      // A dash that does not start a word, and a lower-case flag.
+      'env git push --no-verify x-D',
+      'env -d git push --no-verify',
+    ]) {
+      expect(isBypassOutOfReach(command), command).toBe(false);
+    }
   });
 });
