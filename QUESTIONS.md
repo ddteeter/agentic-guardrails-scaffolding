@@ -52,10 +52,14 @@ five releases old.
 **What.** The parity suite runs the real analyzers. Stryker runs in one
 fixture, four times (commit, push, ci, `verify`).
 
-**Cost.** Measured on the cloud machine: the whole parity suite (20
-fixtures, four commands each, the real Stryker run included) takes about 23 s
-of wall-clock time and about 60 s of CPU. It runs in `npm test`,
-`test:coverage` (so at every push) and CI.
+**Cost.** Measured on the cloud machine (four cores): the parity file takes
+about 67 s of wall-clock time on its own. That is two passes over the 20
+fixtures (the goldens, and the same fixtures with an explicit TypeScript-only
+`stacks` block), four commands each, the real Stryker run included, two
+fixtures at a time. At five at a time it was faster but starved a
+timing-sensitive drift guard elsewhere in the suite. It runs in `npm test`,
+`test:coverage` (so at every push) and CI; the full suite's wall-clock time
+on that machine went from about 80 s on `main` to about 130 s.
 
 **Recommendation.** Keep the real run; it is the only golden that would have
 caught a change to how Stryker is invoked or read. If the time is unwelcome

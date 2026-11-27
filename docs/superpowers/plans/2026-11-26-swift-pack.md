@@ -237,3 +237,22 @@ b` over two string variables still becomes `a - b`, and `.first` on a
   tables are written as strings (`'== != === !=='`), and this repository
   excludes `StringLiteral` mutants, so Stryker does not mutate the tables
   themselves. Every pair in them is covered by a test. See `QUESTIONS.md`.
+
+### The branch as a whole (head of the lane)
+
+- `npm run typecheck`, `npm run lint`, knip, `npm run depcruise`: clean.
+- The pre-push hook's three steps, run by hand because the remote refused
+  the push itself (see the hand-off):
+  - `gate --mode=push`: passed. 3,294 mutants on the branch's changed lines,
+    none surviving; a handful of timeouts, each re-tested alone and kept as
+    killed, as the gate does.
+  - `npm run test:coverage`: 128 files, 6,061 tests, 99.7% of statements and
+    lines.
+  - `npm run check:graph`: 0 above threshold.
+- One flake seen, twice in four full-suite runs:
+  `drift/stryker-timeout.test.ts` ("blocks nothing, cold or seeded") asserts
+  that no mutant of its fixture needs a timeout retest, with a one-second
+  `timeoutMS`. With five parity fixtures running real tools at once on a
+  four-core machine, one did. It passes alone and in a quiet full run. The
+  parity suite now runs two fixtures at a time (`FIXTURES_AT_ONCE`).
+- Parity suite cost after that change: recorded in `QUESTIONS.md` entry 4.

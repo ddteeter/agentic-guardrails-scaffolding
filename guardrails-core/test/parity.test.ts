@@ -73,6 +73,36 @@ function readGolden(name: string): Golden {
 }
 
 /**
+ * How many fixtures run their tools at once. Each fixture spawns real
+ * analyzers (one of them a whole Stryker run), and the rest of the suite
+ * holds timing-sensitive guards of its own: five fixtures at once on a
+ * four-core machine starved `drift/stryker-timeout.test.ts` into a retest
+ * it asserts does not happen.
+ */
+const FIXTURES_AT_ONCE = 2;
+
+let running = 0;
+const waiting: (() => void)[] = [];
+
+/**
+`run`, once fewer than `FIXTURES_AT_ONCE` others are running.
+*/
+async function inTurn<Result>(run: () => Promise<Result>): Promise<Result> {
+  while (running >= FIXTURES_AT_ONCE) {
+    await new Promise<void>((resolve) => {
+      waiting.push(resolve);
+    });
+  }
+  running += 1;
+  try {
+    return await run();
+  } finally {
+    running -= 1;
+    waiting.shift()?.();
+  }
+}
+
+/**
  * Every command against a fresh copy of the fixture, so no rung reads state
  * another wrote: the push rung remembers a passing tree, and a blocked gate
  * leaves a manifest behind.
@@ -82,17 +112,19 @@ async function runFixture(
   configure: (fixture: ParityFixture) => ParityFixture = (fixture) => fixture,
 ): Promise<Golden> {
   const fixture = configure(loadFixture(name));
-  const outcomes: Golden = {};
-  // In order, never at once: the four share one mutation lock.
-  for (const argv of PARITY_COMMANDS) {
-    const root = materialise(fixture);
-    try {
-      outcomes[commandKey(argv)] = await runParityCommand(root, argv);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
+  return inTurn(async () => {
+    const outcomes: Golden = {};
+    // In order, never at once: the four share one mutation lock.
+    for (const argv of PARITY_COMMANDS) {
+      const root = materialise(fixture);
+      try {
+        outcomes[commandKey(argv)] = await runParityCommand(root, argv);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
     }
-  }
-  return outcomes;
+    return outcomes;
+  });
 }
 
 const names = fixtureNames().filter(
