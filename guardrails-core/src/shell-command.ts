@@ -68,65 +68,98 @@ export function withoutQuotedHeredocBodies(command: string): string {
 }
 
 /**
- * How much of the text before a string is read to tell whether a shell is
- * being handed that string to run. The longest spelling looked for is
- * `--exec=`; the rest of the command, however long, says nothing about it.
+ * The programs whose quoted arguments can only be DATA: they read their
+ * strings, or print them, and have no way to be told to run one.
+ *
+ * Short on purpose, and a program earns its place by what it CANNOT do.
+ * `rg` reads like `grep` and runs a command for `--pre`; `sort` has
+ * `--compress-program`; `sed` has an `e` flag; `awk`, `find` and `xargs` run
+ * things by design. None of them is here. A name is matched exactly, so a
+ * path (`/bin/echo`), a wrapper (`time echo`) or a quoted name is not on it
+ * either.
  */
-const SCRIPT_WORD_WINDOW = 16;
+const PLAIN_DATA_PROGRAMS = new Set([
+  'grep',
+  'egrep',
+  'fgrep',
+  'echo',
+  'printf',
+  'cat',
+  'head',
+  'tail',
+  'wc',
+  'uniq',
+  'cut',
+  'tr',
+  'ls',
+  'ps',
+  'pgrep',
+  'cd',
+  'pwd',
+  'true',
+  'false',
+  'tee',
+]);
 
 /**
- * The word that hands the NEXT string to a shell: `-c` in any flag cluster
- * (`sh -c`, `bash -lc`), `eval`, and git's `--exec` -- which the first
- * alternative already matches, since it too is a dash, word characters and a
- * `c`. Wider than it needs to be (`grep -c` is here as well), and that is the
- * direction to be wrong in: a string kept is a gate run, a script emptied is a
- * commit nobody checked.
+ * The `>&1` of a file-descriptor duplication (`2>&1`, `>&2`): the one `&` in
+ * a command that separates nothing. Anything else after `>&` is a file name,
+ * and is left to read as the separator it looks like.
  */
-const HANDS_OVER_A_SCRIPT = /(?:-\w*c|eval)[ \t=]+$/;
+const DESCRIPTOR_DUPLICATION = />&\d/g;
 
 /**
- * Is the string opened at `index` one a shell is handed to run? Read from the
- * command itself, a few characters back, and not from the text kept so far:
- * slicing a string that is still being built costs its whole length each
- * time, which made this quadratic.
+Where one simple command ends and the next begins.
+*/
+const COMMAND_SEPARATOR = /[\n;&|(){}]/;
+
+/**
+ * Is every simple command in this text -- a command with its strings already
+ * emptied -- one of the programs that only read their strings?
+ *
+ * ALL of them, not the one a string belongs to: `echo '...' | sh` is an
+ * `echo` that only prints, into a shell that runs what it printed.
  */
-function isScript(command: string, index: number): boolean {
-  return HANDS_OVER_A_SCRIPT.test(
-    command.slice(Math.max(0, index - SCRIPT_WORD_WINDOW), index),
-  );
+function isPlainData(emptied: string): boolean {
+  return emptied
+    .replaceAll(DESCRIPTOR_DUPLICATION, ' ')
+    .split(COMMAND_SEPARATOR)
+    .every((simple) => {
+      const [program = ''] = simple.trim().split(/\s/, 1);
+      return program === '' || PLAIN_DATA_PROGRAMS.has(program);
+    });
 }
 
 /**
- * Where a `#` starts a comment: at the start of a word, which is the start of
- * the command or just past whitespace or a shell metacharacter. Elsewhere it
- * is an ordinary character (`a#b`, `$#`).
+ * Any heredoc, by its operator alone and not by a delimiter this would have
+ * to recognise: `<<.` and `<<''` are heredocs too. A here-string, `<<<`, is
+ * not one.
  */
-const ENDS_A_WORD = /[\s;&|()<>`]/;
+const ANY_HEREDOC = /(?<!<)<<(?!<)/;
+
+/**
+ * Where a `#` starts a comment: at the start of a word, just past whitespace
+ * or a shell metacharacter. Elsewhere it is an ordinary character (`a#b`).
+ *
+ * The very start of the command needs no case of its own: a `#` there is
+ * read as a character, which makes it the first word of the first command,
+ * and no program that only reads its strings is called that.
+ */
+const ENDS_A_WORD = /[\s;&|()<>]/;
 
 function isCommentStart(command: string, index: number): boolean {
-  return index === 0 || ENDS_A_WORD.test(command.charAt(index - 1));
-}
-
-/**
- * The index of the quote that closes the single-quoted string opened at
- * `open`, or `undefined` when there is none -- and for `$'...'`, which takes
- * backslash escapes this does not follow.
- */
-function closingSingleQuote(command: string, open: number): number | undefined {
-  const close = command.indexOf("'", open + 1);
-  return close === -1 || command.charAt(open - 1) === '$' ? undefined : close;
+  return ENDS_A_WORD.test(command.charAt(index - 1));
 }
 
 /**
  * The index of the quote that closes the double-quoted string opened at
- * `open`. `undefined` when there is none, and when the string holds a command
- * substitution: that text RUNS, and the quotes inside it pair with each other
- * rather than with the ones around it.
+ * `open`. `undefined` when there is none, and when the string holds anything
+ * the shell expands: a `$` or a backtick.
  */
 function closingDoubleQuote(command: string, open: number): number | undefined {
   // The characters that decide it: the closing quote, a backslash (which
-  // takes the next character with it), and the two ways a substitution opens.
-  const decisive = /["`\\]|\$\(/g;
+  // takes the next character with it), and the two that start an expansion.
+  const decisive = /["`\\$]/g;
   decisive.lastIndex = open + 1;
   for (
     let match = decisive.exec(command);
@@ -145,12 +178,6 @@ function closingDoubleQuote(command: string, open: number): number | undefined {
 }
 
 /**
- * `HEREDOC_OPENER` without its `g` flag, for a yes-or-no answer: a global
- * pattern remembers where its last match ended.
- */
-const ANY_HEREDOC = new RegExp(HEREDOC_OPENER.source);
-
-/**
 One step of the scan: what it keeps, and where the next step starts.
 */
 interface Piece {
@@ -159,52 +186,69 @@ interface Piece {
 }
 
 /**
- * The string opened at `index`: emptied, or kept whole when it is handed to a
- * shell to run. `undefined` when where it closes cannot be told.
+ * The string opened at `index`, emptied. `undefined` when where it closes
+ * cannot be told. A single-quoted string ends at the next single quote,
+ * whatever is in it.
  */
-function stringPiece(command: string, index: number): Piece | undefined {
+function emptiedString(command: string, index: number): Piece | undefined {
   const quote = command.charAt(index);
-  const close =
+  const found =
     quote === "'"
-      ? closingSingleQuote(command, index)
+      ? command.indexOf("'", index + 1)
       : closingDoubleQuote(command, index);
-  if (close === undefined) {
-    return undefined;
-  }
-  const end = close + 1;
-  return {
-    text: isScript(command, index) ? command.slice(index, end) : quote + quote,
-    end,
-  };
+  return found === undefined || found === -1
+    ? undefined
+    : { text: quote + quote, end: found + 1 };
 }
 
 /**
- * The piece that starts at one of the characters the scan stops on: a string,
- * an escaped character with its backslash, a comment up to the end of its
- * line, or a `#` that is only a character.
+ * The piece that starts at one of the characters the scan stops on, or
+ * `undefined` for one it does not model: an expansion, a comment, a string
+ * that does not close.
  */
 function pieceAt(command: string, index: number): Piece | undefined {
   const char = command.charAt(index);
   if (char === '\\') {
-    return plain(command, index, index + 2);
+    return { text: command.slice(index, index + 2), end: index + 2 };
   }
-  if (char !== '#') {
-    return stringPiece(command, index);
+  if (char === "'" || char === '"') {
+    return emptiedString(command, index);
   }
-  if (!isCommentStart(command, index)) {
-    return plain(command, index, index + 1);
-  }
-  const newline = command.indexOf('\n', index);
-  return plain(command, index, newline === -1 ? command.length : newline);
+  return char === '#' && !isCommentStart(command, index)
+    ? { text: char, end: index + 1 }
+    : undefined;
 }
 
-function plain(command: string, index: number, end: number): Piece {
-  return { text: command.slice(index, end), end };
+/**
+ * The command with every quoted string emptied -- the quotes stay -- or
+ * `undefined` when it holds something this does not model.
+ */
+function withStringsEmptied(command: string): string | undefined {
+  // Everything between two of these is kept as it is.
+  const stop = /['"\\#$`]/g;
+  let kept = '';
+  let from = 0;
+  for (
+    let match = stop.exec(command);
+    match !== null;
+    match = stop.exec(command)
+  ) {
+    const piece = pieceAt(command, match.index);
+    if (piece === undefined) {
+      return undefined;
+    }
+    kept += command.slice(from, match.index) + piece.text;
+    from = piece.end;
+    stop.lastIndex = from;
+  }
+  return kept + command.slice(from);
 }
 
 /**
  * The command with the text of its quoted strings removed -- the quotes stay
  * -- so a separator inside a string no longer reads as the start of a command.
+ * Only for a command in which every string is provably DATA; any other
+ * command comes back untouched.
  *
  * Found dogfooding: a process listing piped into
  * `grep -E "eslint|tsc|...|git commit"` ran the whole commit gate, stryker
@@ -212,14 +256,22 @@ function plain(command: string, index: number, end: number): Piece {
  * The alternation puts `git commit` right after a `|`, which is where
  * `COMMAND_START` says a pipeline stage begins.
  *
- * Not a parser, so it is exact about ONE thing: the direction it is wrong in.
- * Text that stays costs a spurious gate run; text that goes could be a commit
- * nobody checked. So a string a shell is handed to run is kept (`isScript`),
- * and anything this does not model returns the command UNTOUCHED: an
- * unterminated string, a `$'...'` string, a command substitution inside
- * double quotes, and any heredoc, whose body is text where a quote opens
- * nothing. A comment is skipped for the same reason -- `# don't` would
- * otherwise open a string that swallows the commit on the next line.
+ * The first version of this emptied every string it could not show to be a
+ * script, and was wrong seven ways, each a commit that lost this gate: a
+ * script piped or here-stringed to a shell; `-c` in the middle of a flag
+ * group; a script in two adjacent quoted pieces; a script assigned to a
+ * variable; a program other than a shell that runs its argument; a shell
+ * with other quoting rules; a heredoc whose delimiter is not a word. Every
+ * one is the same mistake -- listing what is dangerous -- so this lists what
+ * is safe instead, and is exact about ONE thing: the direction it is wrong
+ * in. Text that stays costs a spurious gate run; text that goes could be a
+ * commit nobody checked.
+ *
+ * So strings are emptied only when EVERY simple command in the line is a
+ * program that can only read them (`PLAIN_DATA_PROGRAMS`), and the line
+ * holds nothing this does not model: no heredoc, no expansion (`$`, a
+ * backtick) outside single quotes, no comment, no string left open. It reads
+ * bash quoting; the caller keeps it away from any other shell.
  *
  * `foreground-wait.ts` has a `withoutQuotedText` that looks like this one and
  * is its opposite: there a wrong guess may only MISS a denial, so it drops
@@ -230,23 +282,6 @@ export function withoutInertStrings(command: string): string {
   if (ANY_HEREDOC.test(command)) {
     return command;
   }
-  // Everything between two of these is kept as it is.
-  const stop = /['"\\#]/g;
-  let kept = '';
-  let from = 0;
-  for (
-    let match = stop.exec(command);
-    match !== null;
-    match = stop.exec(command)
-  ) {
-    kept += command.slice(from, match.index);
-    const piece = pieceAt(command, match.index);
-    if (piece === undefined) {
-      return command;
-    }
-    kept += piece.text;
-    from = piece.end;
-    stop.lastIndex = from;
-  }
-  return kept + command.slice(from);
+  const emptied = withStringsEmptied(command);
+  return emptied !== undefined && isPlainData(emptied) ? emptied : command;
 }

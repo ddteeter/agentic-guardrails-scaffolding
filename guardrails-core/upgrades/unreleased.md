@@ -34,15 +34,17 @@ supersedes:
   the PreToolUse deny now say how many files were deferred and to run
   `guardrails gate --mode=push` in the background before reporting done. The
   deferral is still a warning and still does not block.
-- **The PreToolUse commit gate ignores a git write inside a quoted string.**
-  `ps aux | grep -E "eslint|tsc|git commit"` no longer runs the commit gate.
-  A real write is matched as before, and anything the reader of quotes does
-  not model is too: an unterminated string, `$'...'`, a command substitution
-  inside double quotes, any heredoc, a string handed to a shell (`sh -c`,
-  `eval`, `git rebase --exec`), and any command that names a hook bypass
-  (below). A commit typed into another program as a plain string (through
-  `tmux send-keys`, say) used to match by accident and no longer does; the
-  git hook still runs for it.
+- **The PreToolUse commit gate ignores a git write inside a string that is
+  only data.** `ps aux | grep -E "eslint|tsc|git commit"` no longer runs the
+  commit gate. That is all that changed: a string is set aside only where
+  every program on the line can do nothing with its strings but read them
+  (`grep`, `egrep`, `fgrep`, `echo`, `printf`, `cat`, `head`, `tail`, `wc`,
+  `uniq`, `cut`, `tr`, `ls`, `ps`, `pgrep`, `cd`, `pwd`, `true`, `false`,
+  `tee`, each by its plain name), and the line has no heredoc, no `$` or
+  backtick outside single quotes, no comment and no unclosed string. Every
+  other command is read exactly as it was before, strings and all: a script
+  piped to a shell, `sh -c`, `eval`, a variable, `git rebase -x`, `node -e`,
+  a string typed into another program.
 - **A hook bypass is recognised in every spelling git accepts.** git takes
   any unambiguous prefix of a long option and reads a config key in any
   letter case, so `git commit --no-verif`, `git push --no-veri` and

@@ -1229,12 +1229,13 @@ describe('pretooluse commit gate scope', () => {
     ).toContain(STAGED_FILES);
   });
 
-  it('does not take a push named in the commit message for a push', async () => {
-    // Branch scope re-mutates everything the branch touched; a message that
-    // mentions a push after a `;` must not buy that.
+  it('judges a commit whose message names a push over the branch, as it did', async () => {
+    // The wider reading is the price of failing closed: git is not a program
+    // that only reads its strings, so this command keeps them, and the push
+    // named after a `;` in the message reads as a push.
     expect(
       await preToolUseGitLines('git commit -m "wip; git push later"'),
-    ).toContain(STAGED_FILES);
+    ).not.toContain(STAGED_FILES);
   });
 
   it('checks only the staged files, like the git pre-commit hook', async () => {
@@ -1359,14 +1360,59 @@ describe('pretooluse gate trigger conditions', () => {
       // The other kind of quote, and an escaped one, are text inside a string.
       `echo 'say "hi"; git commit' ; ls`,
       String.raw`echo "a \" | git commit" ; ls`,
-      // A dollar that opens no substitution.
-      'echo "$HOME; git commit"',
+      // A redirection of one descriptor onto another separates nothing.
+      'ps aux 2>&1 | grep -E "eslint|git commit"',
     ]) {
       out.length = 0;
       expect(
         await runPreToolUse(preToolUseStdin('bash', command)),
         `should not gate: ${JSON.stringify(command)}`,
       ).toBe('');
+    }
+  });
+
+  /**
+   * The first reading of quoted strings emptied every string it could not
+   * show to be a script. Each shape here was gated before that change and
+   * passed after it: a PLAIN commit, which still met the git hook, and lost
+   * this rung. A string is now emptied only where every program on the line
+   * can do nothing with it but read it.
+   */
+  it('keeps the PreToolUse rung for a commit inside a string that is run', async () => {
+    for (const command of [
+      // 1. A script piped or here-stringed to a shell.
+      `echo 'true; git commit -m x' | sh`,
+      `bash <<< 'true; git commit -m x'`,
+      // 2. `-c` that is not last in its flag group, or has an option after.
+      `bash -ce 'true; git commit -m x'`,
+      `bash -c -e 'true; git commit -m x'`,
+      `bash -c -- 'true; git commit -m x'`,
+      `zsh -cf 'true; git commit -m x'`,
+      // 3. A script in adjacent quoted pieces.
+      `bash -c 'cd packages'"; git commit -m x"`,
+      `bash -c 'cd packages'' && git push'`,
+      // 4. A script held in a variable.
+      `S='true; git commit -m x'; eval "$S"`,
+      `S='true; git commit -m x'; bash -c "$S"`,
+      `S='true; git commit -m x'; eval $S`,
+      // 5. Other programs that run their string.
+      `git rebase -x 'true; git commit --amend'`,
+      `git submodule foreach 'true; git commit -m y'`,
+      `git -c alias.x='!f(){ true; git commit -m y; }; f' x`,
+      `node -e 'x(); git commit'`,
+      `perl -e 'system("true; git commit -m x")'`,
+      `awk 'BEGIN{system("true; git commit -m x")}'`,
+      // 7. A heredoc whose delimiter is not a word.
+      "cat <<.\nit's\n.\ngit commit -m x # it's ok",
+      "cat <<''\nit's\n\ngit commit -m x # it's ok",
+      // And a string the shell expands something in.
+      'echo "$HOME; git commit"',
+    ]) {
+      out.length = 0;
+      expect(
+        await runPreToolUse(preToolUseStdin('bash', command)),
+        `should gate: ${JSON.stringify(command)}`,
+      ).toContain('deny');
     }
   });
 
@@ -6229,35 +6275,24 @@ describe('pretooluse leaves a push to the pre-push hook that gates it', () => {
     ).toBe('');
   });
 
-  it('leaves a push to its hook when a commit is only named in a string', async () => {
+  it.each([
+    // Failing closed: a line with git in it keeps its strings, so the commit
+    // named in the echo counts and this is not a plain push.
+    ['names a commit', 'git push && echo "pushed; git commit next"'],
+    // Whatever shell that string is typed into, the push gate must not be
+    // left to a hook the string says to skip.
+    [
+      'carries a hook bypass',
+      'git push && tmux send-keys "true; git push --no-verify" Enter',
+    ],
+    [
+      'carries a commit with -n',
+      'git push && tmux send-keys "true; git commit -n -m x" Enter',
+    ],
+  ])('gates a push here when a string beside it %s', async (_what, command) => {
     writeHook('.githooks/pre-push', GATED_HOOK);
     expect(
-      await pushVerdict(
-        'git push && echo "pushed; git commit next"',
-        hookedExec('.githooks/pre-push'),
-      ),
-    ).toBe('');
-  });
-
-  it('gates a push here when a string carries a hook bypass', async () => {
-    // Read the old way: whatever shell that string is typed into, the push
-    // gate must not be left to a hook the string says to skip.
-    writeHook('.githooks/pre-push', GATED_HOOK);
-    expect(
-      await pushVerdict(
-        'git push && tmux send-keys "true; git push --no-verify" Enter',
-        hookedExec('.githooks/pre-push'),
-      ),
-    ).toContain('deny');
-  });
-
-  it('gates a push here when a string carries a commit with -n', async () => {
-    writeHook('.githooks/pre-push', GATED_HOOK);
-    expect(
-      await pushVerdict(
-        'git push && tmux send-keys "true; git commit -n -m x" Enter',
-        hookedExec('.githooks/pre-push'),
-      ),
+      await pushVerdict(command, hookedExec('.githooks/pre-push')),
     ).toContain('deny');
   });
 

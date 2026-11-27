@@ -1394,6 +1394,23 @@ core/src/audit.ts`) surfaced that it was a context-free text scan: it flagged
     showed that an abbreviated `--no-veri` skips the hook and is not
     recognised; that one is entry 8, built the same day with the rest of the
     bypass spellings (next sub-entry).
+  - **The quoted-string fix above was wrong seven ways, and was rebuilt to
+    fail closed (2026-11-27, found by review).** It emptied every string it
+    could not show to be a script, so each shape it had not thought of lost
+    the PreToolUse rung for a plain commit: a script piped or here-stringed to
+    a shell; `-c` in the middle of a flag group; a script in two adjacent
+    quoted pieces; a script assigned to a variable; a program other than a
+    shell that runs its argument (`git rebase -x`, `node -e`, `awk`); a shell
+    with other quoting rules; a heredoc whose delimiter is not a word. All
+    seven are one mistake, listing what is dangerous. `withoutInertStrings`
+    now lists what is safe: a string is emptied only when every simple
+    command on the line is one of twenty programs that can only read their
+    strings, named plainly, and the line holds no heredoc, no expansion
+    outside single quotes, no comment and no open string. Everything else is
+    read as it was before the fix existed, so the original finding (a
+    `grep -E` pattern) stays fixed and nothing else moved. Two things the
+    first version bought are given back: a push named in a commit message is
+    a push again, and a string beside a `git push` counts.
   - **Four hook-bypass holes in the PreToolUse gate, on `main` until now
     (closed 2026-11-27, owner-approved, one commit each).** Each let a commit
     or push land with no check at either rung: the git hook was skipped, and

@@ -159,6 +159,13 @@ the gate fires on a git write in command position, so a bypass written
 straight after an opening quote, with no separator before `git`, is still
 not a command to it (`tmux send-keys "git commit -n"`).
 
+**Superseded the same day.** A review found seven shapes where the first
+reading of quoted strings let a plain commit past the PreToolUse rung, and
+the reader was rebuilt to fail closed: it empties a string only where every
+program on the line can only read it. So the catch this entry gave up is
+back. A string typed into another program is read as it always was, and
+`tmux send-keys "cd x; git commit -m y" Enter` is gated again.
+
 ## 7. Upgrade notes were not asked for; I wrote them
 
 **What.** The repository's convention is that a change an agent can see adds
