@@ -1405,6 +1405,12 @@ core/src/audit.ts`) surfaced that it was a context-free text scan: it flagged
       that way was classed as a plain push and left to the hook it skipped.
       The check now reads all of them, each confirmed against git 2.43 in a
       repository whose hooks always fail.
+    - **A script piped or here-stringed to a shell.** A string that reaches a
+      shell on its stdin (`echo '…' | sh`, `bash <<< '…'`) has no `-c` before
+      it, so the reader of quotes empties it unless the command names a
+      bypass. Written with a spelling the check did not know, it was emptied,
+      and ran. Closed by the spellings above; a test holds the two inputs,
+      and fails when that pattern is put back.
   - **Autofix traded one lint error for another (fixed 2026-11-27, in this
     repo's own config).** PostToolUse `eslint --fix` rewrote
     `readSource: () => undefined` to `readSource: () => {}`:

@@ -1476,6 +1476,28 @@ describe('pretooluse gate trigger conditions', () => {
     }
   });
 
+  it('gates a script piped or here-stringed to a shell, however its bypass is spelled', async () => {
+    // A string handed to a shell on its stdin has no `-c` before it, so it
+    // is text to the reader of quotes -- unless the command names a bypass,
+    // in which case its strings are kept and the git write in them is read.
+    // These two named one in a spelling the check did not know, so each was
+    // emptied, and ran: a commit with no hook and no gate.
+    for (const command of [
+      `echo 'true; git commit --no-verif -m x' | sh`,
+      `bash <<< 'true; git -c core.hookspath=/dev/null commit -m x'`,
+      // The documented spellings, which were caught before and still are.
+      `echo 'true; git commit --no-verify -m x' | sh`,
+      `bash <<< 'true; git -c core.hooksPath=/dev/null commit -m x'`,
+      `printf '%s\n' 'true; git push --no-veri' | bash`,
+    ]) {
+      out.length = 0;
+      expect(
+        await runPreToolUse(preToolUseStdin('bash', command)),
+        `should gate: ${command}`,
+      ).toContain('deny');
+    }
+  });
+
   it('does not take a longer or a different long option for --no-verify', async () => {
     for (const command of [
       'echo "x; git commit --no-verbose"',
