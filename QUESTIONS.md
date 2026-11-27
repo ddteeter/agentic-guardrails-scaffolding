@@ -188,21 +188,20 @@ kind for the same reason, and report no clone. A long run of same-shaped rows
 added later could bring a finding back; if it does, the choice is the
 owner's again.
 
-## 16. The commit rung passed what the PreToolUse rung refused
+## 16. The commit rung passed what the PreToolUse rung refused — DECIDED, diagnosed and fixed
 
-**What.** Recorded in `plan.md` ("Roadmap: fixer-loop hardening"): the same
-staged change was refused by `gate --mode=pretooluse` for duplication and
-passed by the husky pre-commit gate minutes later. Not diagnosed in this
-lane.
+**Cause.** The commit rung takes its file list from the index and every
+analyzer reads the file from disk. The staged file had been edited on disk
+while the gate ran, so the gate judged content the commit did not hold. The
+PreToolUse rung had run earlier, on the unedited file, and was right.
 
-**Cost.** Unknown until diagnosed: either the commit rung under-reports
-`dupes` for some staged sets, or the PreToolUse rung over-reports.
-
-**Recommendation.** Reproduce at `345093f^` with that commit's change
-staged, and compare the file lists the two rungs hand the dupes adapter.
-
-**Meanwhile.** The branch does not depend on the answer: the tables were
-restructured in `3b2f3fa`.
+**Decision (the owner, 2026-11-27): block when they differ.** At the commit
+rung a staged file whose working copy differs from the index is an
+error-severity `guardrails/staged-differs` violation naming the file,
+checked before the analyzers (which are then not spawned) and again after
+them. No golden changed. This is the one change on the branch that alters a
+verdict for a TypeScript consumer: a partially staged file (`git add -p`)
+is refused until the rest is staged or stashed. It is in the upgrade notes.
 
 ## 17. The generator's operator tables were strings — DECIDED, and changed
 

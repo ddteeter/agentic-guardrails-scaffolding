@@ -227,3 +227,38 @@ describeUnlessMutating(here)(
     }, 600_000);
   },
 );
+
+describeUnlessMutating(here)(
+  'the commit rung judges what is committed, not what is on disk',
+  () => {
+    it('refuses a staged file whose working copy was edited, where it used to pass', async () => {
+      // The `dupes` fixture stages two files holding the same function, which
+      // blocks. Editing one working copy (unstaged) used to make the gate
+      // pass: the clone detector reads the file on disk, and the clone there
+      // was gone, while the commit still held it.
+      const root = materialise(loadFixture('dupes'));
+      try {
+        writeFileSync(
+          path.join(root, 'src', 'sum-b.ts'),
+          'export function sumB(): number {\n  return 1;\n}\n',
+        );
+        const outcome = await inTurn(() =>
+          runParityCommand(root, ['gate', '--mode=commit']),
+        );
+        expect(outcome.exitCode).toBe(1);
+        expect(outcome.stderr[0]).toBe(
+          'src/sum-b.ts:? [guardrails/staged-differs] src/sum-b.ts is ' +
+            'staged, and the file on disk has changes that are not staged. ' +
+            'The gate reads files from disk, so it would be judging content ' +
+            'this commit does not hold. Stage the rest (`git add ' +
+            'src/sum-b.ts`) or set it aside (`git stash --keep-index`), ' +
+            'then commit again. (guardrails)',
+        );
+        // Refused before any analyzer ran: the clone finding is not there.
+        expect(outcome.stderr.join('\n')).not.toContain('code-duplication');
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    }, 600_000);
+  },
+);

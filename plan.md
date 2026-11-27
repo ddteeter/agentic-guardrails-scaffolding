@@ -440,17 +440,23 @@ directories in one command. Unchanged, and still outside the matcher:
   other direction, an over-match that costs minutes and a confusing denial.
   Candidate: skip a `git` that sits inside a quoted string (track `'` and
   `"` while scanning for separators), which needs no parser.
-- **The commit rung and the PreToolUse rung disagreed about the same change
-  (2026-11-27, open; same lane).** The denial above listed 32 violations for
-  the staged GR-04 change. The husky pre-commit gate, run on the same index
-  minutes later, passed it. `fallow dupes` run by hand on that tree reported
-  six clone groups among the Swift row tables, so the PreToolUse answer was
-  the right one and the commit rung under-reported. Not diagnosed: the two
-  differ in scope (`staged` at the hook, the session's write scope at
-  PreToolUse), and the dupes adapter keeps a clone group only when it touches
-  a changed file, so the staged listing is the first place to look. The
-  tables were restructured in the next commit, so the branch does not depend
-  on the answer.
+- **The commit rung judged the file on disk, not the staged content
+  (2026-11-27, fixed on the Swift-pack lane as `guardrails/staged-differs`).**
+  Found as a disagreement: `gate --mode=pretooluse` refused a staged change
+  for 17 duplication findings, and the husky pre-commit gate passed the same
+  index minutes later. Cause: the commit rung takes its file list from the
+  index (`git diff --cached`), and every analyzer then reads the file from
+  the working tree. The working copy had been edited while the gate ran, so
+  the clone detector saw the edited file and the commit kept the staged one.
+  The same gap is open to ordinary partial staging (`git add -p`).
+  Reproduced with the `dupes` parity fixture: its staged clone pair blocks;
+  with one working copy edited and not staged, the gate exited 0. Now a
+  staged file that differs on disk is an error at the commit rung, checked
+  before the analyzers run (they are not spawned) and again after them (an
+  edit that lands mid-run). The push and ci rungs judge the branch as it
+  stands on disk and are unchanged. Cost, accepted by the owner: a partially
+  staged file is refused until the rest is staged or stashed
+  (`git stash --keep-index`).
 - **A session that starts before the first build cannot spawn the fixer the
   gate names (2026-11-26, open; found on the Swift-pack lane).** The fixer
   agents are generated into `.claude/agents/` by `npm run build`, and that

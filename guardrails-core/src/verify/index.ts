@@ -2924,6 +2924,78 @@ interface RunnableStack {
 }
 
 /**
+ * A staged file whose content on disk is not what is staged.
+ *
+ * The commit rung takes its file list from the index and then every analyzer
+ * reads the file from disk, so such a file is judged on content the commit
+ * does not hold: staged half-way with `git add -p`, or edited while the gate
+ * was running. An error, and nothing softer: the alternative is a pass about
+ * some other content than the one being committed. Found by dogfooding (a
+ * staged clone pair passed the commit gate because the working copy had been
+ * edited meanwhile; plan.md, "Roadmap: fixer-loop hardening").
+ */
+function stagedDiffersViolation(file: string): Violation {
+  return {
+    ruleId: 'guardrails/staged-differs',
+    file,
+    message:
+      `${file} is staged, and the file on disk has changes that are not ` +
+      `staged. The gate reads files from disk, so it would be judging ` +
+      `content this commit does not hold. Stage the rest (\`git add ` +
+      `${file}\`) or set it aside (\`git stash --keep-index\`), then ` +
+      `commit again.`,
+    severity: 'error',
+    fixable: false,
+    tool: 'guardrails',
+  };
+}
+
+/**
+ * The staged files that differ on disk, each as a violation; or git's own
+ * failure, when it cannot say. `git ls-files --modified` lists the tracked
+ * files whose working copy differs from the index, a deleted one included.
+ */
+async function stagedFilesEditedOnDisk(
+  options: VerifyOptions,
+  staged: readonly string[],
+): Promise<Violation[]> {
+  const modified = await options.exec('git', ['ls-files', '--modified'], {
+    cwd: options.repoRoot,
+  });
+  if (didGitCallFail(modified)) {
+    return [analyzerFailedViolation('git', modified)];
+  }
+  return parseFileList(modified.stdout)
+    .filter((file) => staged.includes(file))
+    .map((file) => stagedDiffersViolation(file));
+}
+
+/**
+ * `run`'s findings, with the commit rung's guard around it: at that rung a
+ * staged file that differs on disk refuses the commit before any analyzer is
+ * spawned, and one that comes to differ while they run refuses it after. The
+ * push and ci rungs judge the branch as it stands on disk, so there is
+ * nothing to guard.
+ */
+async function withStagedGuard(
+  options: VerifyOptions,
+  staged: readonly string[],
+  run: () => Promise<Violation[]>,
+): Promise<Violation[]> {
+  // Nothing staged (or git could not list it, which is already reported):
+  // there is no staged content to compare the disk with.
+  if (options.changedScope !== 'staged' || staged.length === 0) {
+    return run();
+  }
+  const before = await stagedFilesEditedOnDisk(options, staged);
+  if (before.length > 0) {
+    return before;
+  }
+  const found = await run();
+  return [...found, ...(await stagedFilesEditedOnDisk(options, staged))];
+}
+
+/**
  * Which stacks this run gates: those whose pack `only` names (all of them
  * when it names none), each with its pack. A stack whose pack this version
  * does not have is reported, and so is an `only` that matches no stack.
@@ -3089,14 +3161,20 @@ export async function runVerify(options: VerifyOptions): Promise<VerifyResult> {
     declared,
     profile,
   };
-  for (const entry of selection.runnable) {
-    const found = await runStack(entry, pass);
-    violations.push(
-      ...(options.stacks === undefined
-        ? found
-        : stampedWith(found, entry.stack)),
-    );
-  }
+  violations.push(
+    ...(await withStagedGuard(options, changed, async () => {
+      const found: Violation[] = [];
+      for (const entry of selection.runnable) {
+        const fromStack = await runStack(entry, pass);
+        found.push(
+          ...(options.stacks === undefined
+            ? fromStack
+            : stampedWith(fromStack, entry.stack)),
+        );
+      }
+      return found;
+    })),
+  );
   // A nested worktree is a whole second checkout of this repository, and every
   // analyzer that walks the tree reports it. Filtering HERE rather than inside
   // each adapter means one rule covers all of them -- including any analyzer

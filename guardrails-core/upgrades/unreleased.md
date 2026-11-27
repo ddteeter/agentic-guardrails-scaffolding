@@ -6,7 +6,17 @@ version: unreleased
 
 ## Behaviour that changed
 
-- **Nothing, for a repository with no `stacks` key: no action.** guardrails
+- **The commit gate refuses a staged file that differs on disk.** The commit
+  rung chooses its files from the index, and every analyzer reads the file
+  from disk; a staged file with unstaged changes (partial staging with
+  `git add -p`, or an edit made while the gate was running) was therefore
+  judged on content the commit did not hold, and could pass. It is now an
+  error-severity `guardrails/staged-differs` violation naming the file,
+  raised before any analyzer runs and checked again after they finish.
+  Resolve it by staging the rest (`git add <file>`) or setting it aside
+  (`git stash --keep-index`). The push and ci rungs are unchanged. No fixer
+  can resolve this one: it is about the index, which a fixer cannot touch.
+- **Otherwise nothing changes for a repository with no `stacks` key.** guardrails
   now reaches everything TypeScript-specific through a language **pack**
   (which files are source, which analyzers gate them, how a tool is
   installed, who owns a file, which tests cover it). A repository that
@@ -71,7 +81,11 @@ version: unreleased
 
 ## Instructions this supersedes
 
-- None.
+- **Any instruction to commit part of a file** (`git add -p`, "stage only
+  the hunks that belong to this change") in a repository whose commit gate
+  is guardrails: the gate now refuses the commit while the rest of that file
+  is unstaged. Stash the rest with `git stash --keep-index`, commit, then
+  `git stash pop`.
 
 ## What to wire
 

@@ -547,6 +547,17 @@ the generator's tests.
    goldens.
 4. The consumer parity run before a tag (not this lane).
 
+## Beyond the plan: one verdict change, by the owner's decision
+
+Dogfooding this lane found that the commit rung judged the file on disk
+rather than the staged content (`plan.md`, "Roadmap: fixer-loop hardening").
+The owner chose to fix it here: at the commit rung, a staged file that
+differs on disk is `guardrails/staged-differs`, an error, raised before the
+analyzers run and checked again after. It is the only change in this branch
+that alters what a TypeScript consumer sees, it changes no golden (every
+fixture's working tree matches its index), and it is in the upgrade notes
+with the instruction it supersedes.
+
 ## Risks
 
 - **Mutation cost at push.** Every changed line under `guardrails-core/src/`

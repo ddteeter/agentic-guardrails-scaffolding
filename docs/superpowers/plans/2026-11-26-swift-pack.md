@@ -276,3 +276,9 @@ b` over two string variables still becomes `a - b`, and `.first` on a
 - `'java'` is not reserved as a pack id; the un-anchored SwiftLint and
   SwiftFormat rows, the split of the Swift rows into their own file, and the
   deferral of the import-rules and runner-config escape rules all stand.
+- `guardrails/staged-differs` (`QUESTIONS.md` entry 16): the commit rung
+  refuses a staged file that differs on disk. Reproduced first with the
+  `dupes` fixture (staged clone pair blocks; with one working copy edited,
+  the gate exited 0), then built test-first:
+  `test/verify/staged-differs.test.ts` and a real-git case in
+  `test/parity.test.ts`. The diff of `test/parity/goldens/` is empty.
