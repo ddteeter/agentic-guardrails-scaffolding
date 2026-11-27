@@ -1446,9 +1446,31 @@ core/src/audit.ts`) surfaced that it was a context-free text scan: it flagged
     against a copied file. The seeded `exclude` now names the sandbox at any
     depth. SEED-ONCE, so a config already seeded is not rewritten: the
     unreleased upgrade notes tell an adopter to add it. This repo's own
-    `.dependency-cruiser.cjs` is not the seed and was left alone; its rules
-    are anchored at `^guardrails-core/src`, which a sandbox path does not
-    match.
+    `.dependency-cruiser.cjs` is not the seed and was left alone: its two
+    path rules are anchored at `^guardrails-core/src`, which a sandbox path
+    does not match, and a copy has no cycle its source lacks.
+  - **Seen while running this lane, and not fixed (2026-11-27, open).**
+    - **A duplicate export name passed every commit-rung check and failed
+      only `check:graph`, at the end of the pre-push script.** Item 3 first
+      named its function `withoutQuotedText`, which `foreground-wait.ts`
+      already exports. tsc, eslint and knip were content at the commit
+      rung; fallow's duplicate-exports check runs after the push gate's
+      mutation run and the coverage run, so one name cost a 17-minute push.
+      Candidate: fallow's dead-code pass at the commit rung, where it takes
+      a fraction of a second.
+    - **The hook surface named a fixer the session could not spawn, twice.**
+      A cloud session has the agent types its harness defines and no
+      `guardrail-fixer-thorough`; both blocks (surviving mutants) were worked
+      from the printed lines. Item 5 covers a checkout that has not built
+      its agents, not a host that never loads them.
+    - **The suite assumes it is not root and that `NODE_PATH` is unset.**
+      Eleven tests fail on untouched `main` in a container that is both
+      (QUESTIONS.md, entry 1).
+    - **A cost test found a real quadratic.** Item 3's scanner sliced the
+      string it was still building, which costs that string's whole length
+      each time; the timing test written to pin "linear" failed on the
+      first honest input, at 1.9s for 360KB. It reads the command instead
+      and takes 12ms.
 
 ## Roadmap: analyzer opt-in (pack composition, not all-or-nothing) — shipped
 
