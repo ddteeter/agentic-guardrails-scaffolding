@@ -205,3 +205,35 @@ in `QUESTIONS.md`.
   boundary. By hand: a probe file in `src/swift-lexer/` importing `../exec.js`
   made `npm run depcruise` fail with
   `error swift-mutate-is-standalone: …/zz-probe.ts → …/exec.ts`; removed.
+
+### GR-14
+
+- Built by the same delegated agent on its lexer, against a written brief
+  (the API, the seventeen operators, the rules that keep a mutant
+  well-formed, the test matrix), then copied in and checked here: `tsc`,
+  ESLint, knip, dependency-cruiser (both boundary rules) and `fallow dupes`
+  clean; 645 tests in `test/swift-mutate.test.ts` and
+  `test/swift-mutate-structure.test.ts`.
+- Its Stryker run over `src/swift-mutate/**`: 1,026 mutants, 824 killed, 1
+  timeout, 0 survived, 0 without coverage, 201 ignored (`StringLiteral`). No
+  suppression. The lexer was not changed.
+- Spot check by hand: a 19-line Swift file through `generateMutants`, each
+  mutant applied and read. 35 mutants; none in the doc comment or in string
+  text; the interpolation mutated; `Array<Int>` untouched; the
+  comma-separated `guard` left alone by `GuardNegation`; the
+  `disable-next-line` directive marking exactly its operator `Ignored`.
+- Rules the agent added beyond the brief, each tested: `==` between two
+  capitalised names is a generic constraint and is skipped; an infix swap
+  directly after `func` or `operator` is a declaration and is skipped; `+`
+  and `+=` with a string literal or `[` operand are concatenation and are
+  skipped; `repeat … while` is skipped; macro lines and macro arguments are
+  excluded with compiler directives. `.first(where:)` ↔ `.last(where:)` is
+  not built (`last(where:)` needs a bidirectional collection).
+- Known limits, in `swift-mutate/index.ts` and the tests: with no types, `a +
+b` over two string variables still becomes `a - b`, and `.first` on a
+  `Set` still becomes `.last`; both fail to compile and would count toward
+  the compile-error tripwire.
+- One thing to know when reading the mutation score: the six infix swap
+  tables are written as strings (`'== != === !=='`), and this repository
+  excludes `StringLiteral` mutants, so Stryker does not mutate the tables
+  themselves. Every pair in them is covered by a test. See `QUESTIONS.md`.

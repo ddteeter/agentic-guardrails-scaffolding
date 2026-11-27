@@ -62,6 +62,11 @@ version: unreleased
   `.swiftformat`, `.periphery.yml` and `guardrails-imports.json` join
   `package.json` and `guardrails.config.json` on the scope-lock denylist.
 
+- **Nothing to do for the Swift mutation generator.** `src/swift-mutate/`
+  (a lexer-based mutant generator with seventeen operators) is in the
+  package and nothing calls it yet: the runner that builds and tests each
+  mutant needs a Swift toolchain and arrives with a later release.
+
 ## Instructions this supersedes
 
 - None.

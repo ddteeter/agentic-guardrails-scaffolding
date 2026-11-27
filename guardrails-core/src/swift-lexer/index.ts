@@ -55,4 +55,4 @@ at a `>` that `!` or `?` follows, so `Set<Int>!` ends in a lone `!` too.
 export { lexSwiftLine, type SwiftLineLex } from './line.js';
 export { lexSwift, swiftStateAtLine } from './source.js';
 export { SWIFT_INITIAL_STATE, type SwiftLexState } from './state.js';
-export type { SwiftToken } from './tokens.js';
+export type { SwiftToken, SwiftTokenKind } from './tokens.js';

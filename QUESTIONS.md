@@ -263,3 +263,21 @@ staged, and compare the file lists the two rungs hand the dupes adapter.
 
 **Meanwhile.** The branch does not depend on the answer: the tables were
 restructured in `3b2f3fa`.
+
+## 17. The generator's operator tables are strings, which Stryker does not mutate
+
+**What.** In `src/swift-mutate/` the infix swap tables are written as strings
+(`'== != === !=='`) and split at run time. This repository's Stryker config
+excludes `StringLiteral` mutants, so the tables themselves are not mutated.
+The delegated agent chose this to avoid clone groups between six tables of
+pairs (question 15's problem again). Every pair is asserted by a test in
+both directions.
+
+**Cost.** The 100% score on `src/swift-mutate/**` is over the code, not over
+the table contents. A wrong entry in a table would be caught by its test,
+not by a mutant.
+
+**Recommendation.** Accept it, or decide question 15 (a `duplicates.ignore`
+for rule tables) and have the tables written as data again.
+
+**Meanwhile.** Strings, with a test per pair.
