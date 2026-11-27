@@ -1645,6 +1645,67 @@ describe('fixer leases across the two rungs', () => {
 });
 
 /**
+ * #216. `.husky/pre-commit` runs the commit gate with no hook payload, so its
+ * block belongs to no session and nobody is known to have spawned the fixer it
+ * names. It used to claim the files anyway. The session's next commit through
+ * the PreToolUse gate then read that claim as a fixer at work and said "wait
+ * for it to report" -- for a fixer that did not exist, or after the agent had
+ * fixed the findings itself. The only way through was to delete the manifest.
+ */
+async function hookBlocks(): Promise<void> {
+  const { sessionId: _omitted, ...noSession } = blockedOptions();
+  await runCommitGate(noSession);
+}
+
+describe('a commit gate run with no session claims no files (#216)', () => {
+  it('leaves no claim behind when a git hook blocks', async () => {
+    await hookBlocks();
+
+    expect(leases()).toEqual([]);
+  });
+
+  it('lets the session that commits next be told to spawn, not to wait', async () => {
+    await hookBlocks();
+    const result = await runCommitGate(blockedOptions());
+
+    expect(result.delegation?.waitFor).toBeUndefined();
+    expect(leases().map((lease) => lease.owner)).toEqual(['commit:sid-commit']);
+  });
+
+  it("drops a claim an earlier version left under the hook's name", async () => {
+    const directory = stateDirectory(root);
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(
+      leasesFile(directory),
+      JSON.stringify([
+        {
+          owner: 'commit:nosession-commit',
+          manifestPath: '.guardrails/state/nosession-commit.last.json',
+          fixerAgent: 'guardrail-fixer',
+          files: ['src/foo.ts'],
+          grantedAt: Date.now(),
+          deferrals: 0,
+        },
+      ]),
+    );
+
+    await hookBlocks();
+
+    expect(leases()).toEqual([]);
+  });
+
+  it("still tells a hook run when a session's fixer holds the files", async () => {
+    // Observing is not claiming: the hook's block reports the overlap it
+    // finds, it just takes no claim of its own.
+    await runCommitGate(blockedOptions());
+    const { sessionId: _omitted, ...noSession } = blockedOptions();
+    const result = await runCommitGate(noSession);
+
+    expect(result.delegation?.waitFor?.owner).toBe('commit:sid-commit');
+  });
+});
+
+/**
  * A clean repo whose fingerprint is whatever `tree.current` holds, counting
  * every eslint spawn. `rev-parse --git-path index` names a file that does
  * not exist, so the fingerprint starts from an empty throwaway index.

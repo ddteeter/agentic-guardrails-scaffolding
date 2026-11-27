@@ -1114,7 +1114,17 @@ async function commitGate(
   // The same cycle the stop gate runs, so the guard is symmetric: whichever
   // rung fires second is the observer and is the one told to wait.
   const cycle = openLeaseCycle(directory, owner, manifestPath, combined);
-  settleLeaseCycle(cycle, fixerAgent);
+  // Only a session's block claims the files (#216). A git hook's block has no
+  // session: it names a fixer for whoever reads the terminal, and nobody is
+  // known to have spawned one. Its claim used to make the session's next
+  // commit wait for a fixer that did not exist -- after the agent had fixed
+  // the findings itself, the only way through was deleting the manifest. So
+  // it settles as a rung that named nobody, which also releases any claim an
+  // earlier version left under the hook's name.
+  settleLeaseCycle(
+    cycle,
+    options.sessionId === undefined ? undefined : fixerAgent,
+  );
 
   return {
     violations: guided,

@@ -452,6 +452,9 @@ directories in one command. Unchanged, and still outside the matcher:
   Seen again on #176 (2026-11-19), worse: no fixer had been spawned for the
   `nosession` manifest at all, so "wait for that one" could never end. The
   main agent spawned one against its own session manifest instead.
+  Fixed 2026-11-27 with #216, the other way round from the candidates above:
+  a commit-gate run with no session takes no lease at all (see the hardening
+  lane entry below).
 - **A fixer games the clone detector (2026-11-19, open; found on #176).**
   Given `fallow/code-duplication` findings on four small parsers, one fixer
   extracted a helper. The next, given the clones that were left, rewrote the
@@ -1304,7 +1307,7 @@ core/src/audit.ts`) surfaced that it was a context-free text scan: it flagged
   - **#216, a stale manifest read as a fixer in progress.** After husky's
     pre-commit blocked, the PreToolUse commit gate refused the next commit
     saying a fixer was already working the manifest, though none had been
-    spawned.
+    spawned. Fixed 2026-11-27 (hardening lane entry below).
   - **#217, fixers can't run the check they fix.** No shell, so every fix
     is blind; two fixes would have failed unchecked, each costing a gate
     round.
@@ -1420,6 +1423,21 @@ core/src/audit.ts`) surfaced that it was a context-free text scan: it flagged
     prompt, which still does not tell a fixer to report such a finding back
     instead of forcing it into a named file. #108 is the neighbouring case (a
     finding on a file no fixer may edit) and is not touched.
+  - **#216: a manifest left by a blocked hook run was read as a fixer
+    already in progress (fixed 2026-11-27).** `.husky/pre-commit` runs the
+    commit gate with no session, and its block claimed the files it named
+    (a lease owned by `commit:nosession-commit`) although nobody is known to
+    have spawned the fixer it suggests. The session's next commit through the
+    PreToolUse gate read that claim as a fixer at work and said to wait for
+    it; after an inline fix the only way through was deleting the manifest.
+    Done as the issue's second proposal, in one change: a commit-gate run
+    with no session settles its lease cycle as a rung that named nobody, so
+    it takes no claim and releases any an earlier version left. It still
+    reports an overlap it OBSERVES. The cost, accepted: when an agent does
+    spawn a fixer against the hook's manifest, the Stop rung no longer knows
+    those files are held, so the two-fixers-in-one-file guard (#76) does not
+    cover that fixer. Recording a spawn when it happens (the issue's first
+    proposal) is what would close that, and nothing here records one.
 
 ## Roadmap: analyzer opt-in (pack composition, not all-or-nothing) — shipped
 
