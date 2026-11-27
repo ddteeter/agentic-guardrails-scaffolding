@@ -113,7 +113,13 @@ import {
 } from './preflight.js';
 import { type PushGate, ship, shipSummary, writeShipStatus } from './ship.js';
 import { withHeartbeat } from './state.js';
-import { hasErrors, isViolation, type Violation } from './violation.js';
+import {
+  blockingViolations,
+  hasErrors,
+  isViolation,
+  MUTATION_DEFERRED_RULE,
+  type Violation,
+} from './violation.js';
 import type { Rung } from './verify/analyzer-policy.js';
 import {
   runVerify,
@@ -568,15 +574,21 @@ async function gateStopCommand(
  * when a Stop-rung fixer already holds some of these files, this surface is
  * where the instruction to put a SECOND one in them would otherwise be given.
  * The wording mirrors the stop gate's — same facts, this rung's next move.
+ *
+ * The count is of what BLOCKS, which is also all the manifest holds: a
+ * warning is not a violation to fix, and counting seven "Nothing to do"
+ * deferrals beside two errors sent a fixer after nine.
  */
 function commitPointer(
-  violationCount: number,
+  violations: readonly Violation[],
   findingCount: number,
   delegation: CommitDelegation,
 ): string {
   const counts =
-    `guardrails: ${violationCount} violation(s), ` +
+    `guardrails: ${blockingViolations(violations).length} violation(s), ` +
     `${findingCount} added suppression(s). `;
+  const deferred = deferredMutationNote(violations);
+  const after = deferred === undefined ? '' : ` Also, ${deferred}`;
   if (delegation.waitFor !== undefined) {
     return (
       `${counts}Written to ${delegation.manifestPath}, but ` +
@@ -584,14 +596,39 @@ function commitPointer(
       `do NOT spawn a fixer yet: two fixers editing one file lose each ` +
       `other's work, and a dead-code or unused-import finding computed ` +
       `against a file another fixer is changing is not a finding. Wait for ` +
-      `that ${delegation.waitFor.fixerAgent} to report, then commit again.`
+      `that ${delegation.waitFor.fixerAgent} to report, then commit again.` +
+      after
     );
   }
   return (
     `${counts}Written to ${delegation.manifestPath}. Do NOT read it. Spawn ` +
     `the ${delegation.fixerAgent} subagent and give it that path to fix, then ` +
-    `commit again.`
+    `commit again.${after}`
   );
+}
+
+/**
+ * What to do about a commit rung that deferred its mutation run (#229), or
+ * `undefined` when nothing was deferred.
+ *
+ * A busy lock defers by design and the push rung re-mutates the whole branch,
+ * so nothing escapes. But a lane that commits and stops leaves its first
+ * sight of the survivors to its pre-push: on one lane, 46 of them. The
+ * per-file advisory says "Nothing to do", which is true of the commit; this
+ * says what is left to do before the work is called done.
+ */
+function deferredMutationNote(
+  violations: readonly Violation[],
+): string | undefined {
+  const deferred = violations.filter(
+    (violation) => violation.ruleId === MUTATION_DEFERRED_RULE,
+  ).length;
+  return deferred === 0
+    ? undefined
+    : `mutation testing was deferred for ${deferred} file(s) because the ` +
+        `mutation lock is busy, so this rung did not measure them: before ` +
+        `you report done, run \`guardrails gate --mode=push\` in the ` +
+        `background.`;
 }
 
 async function gateCommitCommand(
@@ -632,6 +669,10 @@ async function gateCommitCommand(
   // Before the pass/block decision, because it qualifies either one: a gate
   // that blocked still checked less than the adopter thinks it did.
   warnAboutSilentSkips(dependencies, skippedAnalyzers);
+  const deferred = deferredMutationNote(violations);
+  if (deferred !== undefined) {
+    dependencies.stderr(`guardrails: ${deferred}\n`);
+  }
   if (unreadable !== undefined) {
     // Deliberately ABOVE the `enforcement === 'warn'` softening below, and
     // returning 1 unconditionally: `warn` trades a block for a report on
@@ -664,9 +705,10 @@ async function gateCommitCommand(
   // PreToolUse gate before reaching here. So this surface gains the pointer
   // rather than trading the detail for it (#49).
   dependencies.stderr(
-    `guardrails: the above is also written to ${delegation.manifestPath} — ` +
-      `an agent can spawn the ${delegation.fixerAgent} subagent against that ` +
-      `path instead of working through it inline.\n`,
+    `guardrails: the blocking findings above are also written to ` +
+      `${delegation.manifestPath} — an agent can spawn the ` +
+      `${delegation.fixerAgent} subagent against that path instead of ` +
+      `working through it inline.\n`,
   );
   // `enforcement` governs the commit and preToolUse gates only; the Claude Code
   // Stop loop is deliberately never softened (see RepoConfig.enforcement). Under
@@ -1072,7 +1114,7 @@ async function gatePreToolUseCommand(
   // so the compiler already knows a block carries one. That is the point of the
   // union -- the guard it replaces was unreachable code the tests could never
   // reach and a mutant could therefore never be killed on.
-  const reason = commitPointer(violations.length, findings.length, delegation);
+  const reason = commitPointer(violations, findings.length, delegation);
   // Under `warn` the gate reports and allows. stderr rather than a deny payload,
   // because both hook dialects treat a deny payload as the block itself — there
   // is no "allow, but say this" channel — and stderr still surfaces in the

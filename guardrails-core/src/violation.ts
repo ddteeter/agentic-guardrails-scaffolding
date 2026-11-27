@@ -73,6 +73,14 @@ export interface Violation {
  */
 export const ADDED_SUPPRESSION_RULE = 'guardrails/added-suppression';
 
+/**
+ * Rule id of the advisory a rung raises for a changed file it did NOT mutate
+ * because the machine-wide mutation lock was busy. `verify` emits it and the
+ * commit gate counts it to say what was left unmeasured (#229), so it is named
+ * once here for the same reason `ADDED_SUPPRESSION_RULE` is.
+ */
+export const MUTATION_DEFERRED_RULE = 'guardrails/mutation-deferred';
+
 const SEVERITIES = new Set<Severity>(['error', 'warn']);
 
 function isSeverity(value: unknown): value is Severity {
@@ -158,6 +166,17 @@ export function withDerived(
 
 export function hasErrors(violations: readonly Violation[]): boolean {
   return violations.some((v) => v.severity === 'error');
+}
+
+/**
+ * The violations that BLOCK: the error-severity ones. A warning is printed
+ * for whoever is reading, and is neither counted in a block's pointer nor
+ * written to the manifest a fixer is handed -- there is nothing in it to fix.
+ */
+export function blockingViolations(
+  violations: readonly Violation[],
+): Violation[] {
+  return violations.filter((violation) => violation.severity === 'error');
 }
 
 /**

@@ -70,7 +70,7 @@ import {
 } from '../lock-holder.js';
 import { repoSourceReader } from '../repo-source.js';
 import { sanctionIntegrity, toIntegrityViolations } from '../sanctions.js';
-import type { Violation } from '../violation.js';
+import { MUTATION_DEFERRED_RULE, type Violation } from '../violation.js';
 import { loadWorkspaceResolver, withPackages } from '../workspaces.js';
 import {
   type AnalyzerMode,
@@ -1204,7 +1204,7 @@ function mutationDeferredViolation(
   holding: string,
 ): Violation {
   return {
-    ruleId: 'guardrails/mutation-deferred',
+    ruleId: MUTATION_DEFERRED_RULE,
     file,
     message:
       `mutation testing deferred: the machine-wide mutation lock is busy ` +

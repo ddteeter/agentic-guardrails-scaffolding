@@ -78,7 +78,7 @@ import {
 } from './state.js';
 import {
   ADDED_SUPPRESSION_RULE,
-  hasErrors,
+  blockingViolations,
   type Violation,
 } from './violation.js';
 import { parseFileList } from './verify/git.js';
@@ -1052,7 +1052,12 @@ async function commitGate(
     options.sanctionedFiles,
   );
   const guided = withGuidance(violations);
-  const isBlocked = hasErrors(guided) || findings.length > 0;
+  // What blocks is what a fixer is handed and what the pointer counts. With
+  // the mutation lock busy, a commit with two errors went out as "9
+  // violation(s)" and a nine-entry manifest, seven of them
+  // `guardrails/mutation-deferred` warnings that say "Nothing to do".
+  const blocking = blockingViolations(guided);
+  const isBlocked = blocking.length > 0 || findings.length > 0;
   // Delegation for the commit rung (#49). The manifest carries the same shape
   // the stop rung writes -- violations plus the audit findings, guidance
   // attached -- so `guardrail-fixer` needs no second format to understand.
@@ -1082,7 +1087,7 @@ async function commitGate(
   }
 
   const combined = forTheFixer(
-    [...guided, ...findings.map((finding) => toViolation(finding))],
+    [...blocking, ...findings.map((finding) => toViolation(finding))],
     options.repoRoot,
   );
   writeViolations(directory, manifestId, combined);

@@ -4911,6 +4911,270 @@ describe('gate --mode=push: a push that never gets the mutation lock', () => {
 });
 
 /**
+ * The dogfooding finding behind this block: with the mutation lock busy, a
+ * commit that had two real errors was reported as "9 violation(s)" and all
+ * nine were handed to a fixer, seven of them `guardrails/mutation-deferred`
+ * warnings whose own text is "Nothing to do". A pointer counts, and a manifest
+ * holds, what blocks.
+ */
+/**
+One eslint error on `src/feature.ts`, and a lock that never frees.
+*/
+function busyLockWithAnError(): Exec {
+  const eslintJson = JSON.stringify([
+    {
+      filePath: path.join(root, 'src/feature.ts'),
+      messages: [
+        {
+          ruleId: 'no-console',
+          severity: 2,
+          message: 'Unexpected console.',
+          line: 1,
+        },
+      ],
+    },
+  ]);
+  const inner = lockHeldExec('src/feature.ts\nsrc/other.ts');
+  return (command, args, options) =>
+    [command, ...args].join(' ').includes('eslint')
+      ? Promise.resolve(ok(eslintJson))
+      : inner(command, args, options);
+}
+
+/**
+A repo with stryker and eslint declared, and `analyzers` over the defaults.
+*/
+function configureBusyLockRepo(analyzers: Record<string, string>): void {
+  writeFileSync(
+    path.join(root, 'package.json'),
+    JSON.stringify({
+      devDependencies: { '@stryker-mutator/core': '*', eslint: '*' },
+    }),
+  );
+  writeFileSync(
+    path.join(root, 'guardrails.config.json'),
+    JSON.stringify({
+      enforcement: 'block',
+      analyzers: {
+        tsc: 'off',
+        knip: 'off',
+        'dependency-cruiser': 'off',
+        dupes: 'off',
+        ...analyzers,
+      },
+    }),
+  );
+  mkdirSync(path.join(root, 'src'), { recursive: true });
+  writeFileSync(path.join(root, 'src', 'feature.ts'), 'export {};\n');
+  writeFileSync(path.join(root, 'src', 'other.ts'), 'export {};\n');
+}
+
+/**
+The deny reason a Claude Code `git commit` through Bash is given.
+*/
+async function commitThroughBash(exec: Exec): Promise<string> {
+  const stdin = JSON.stringify({
+    cwd: root,
+    session_id: 'sid',
+    tool_name: 'Bash',
+    tool_input: { command: 'git commit -m x' },
+  });
+  await runCommand(
+    'gate',
+    ['--mode=pretooluse'],
+    dependencies({ exec, readStdin: () => Promise.resolve(stdin) }),
+  );
+  const printed = JSON.parse(out.join('')) as {
+    hookSpecificOutput: { permissionDecisionReason: string };
+  };
+  return printed.hookSpecificOutput.permissionDecisionReason;
+}
+
+/**
+The manifest a block wrote under `id`.
+*/
+function manifestOf(id: string): Violation[] {
+  return JSON.parse(
+    readFileSync(path.join(stateDirectory(root), `${id}.last.json`), 'utf8'),
+  ) as Violation[];
+}
+
+describe('a blocked commit while the mutation lock is busy', () => {
+  beforeEach(() => {
+    vi.stubEnv('GUARDRAILS_GATE_LOCK', path.join(root, 'gate.lock'));
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('counts the error and not the two deferrals in the deny', async () => {
+    configureBusyLockRepo({});
+    const reason = await commitThroughBash(busyLockWithAnError());
+    expect(reason).toContain(
+      'guardrails: 1 violation(s), 0 added suppression(s). ',
+    );
+  });
+
+  it('hands the fixer the error and not the deferrals', async () => {
+    configureBusyLockRepo({});
+    await commitThroughBash(busyLockWithAnError());
+    expect(
+      manifestOf('sid-commit').map((violation) => [
+        violation.ruleId,
+        violation.file,
+      ]),
+    ).toEqual([['no-console', 'src/feature.ts']]);
+  });
+
+  it('routes on what blocks: a warning in a loose class does not pick the thorough fixer', async () => {
+    // `guardrails/mutation-deferred` is not loose, so the loose warning here
+    // is an eslint one, at severity 1, beside the blocking no-console error.
+    configureBusyLockRepo({ stryker: 'off' });
+    const eslintJson = JSON.stringify([
+      {
+        filePath: path.join(root, 'src/feature.ts'),
+        messages: [
+          { ruleId: 'no-console', severity: 2, message: 'x', line: 1 },
+          {
+            ruleId: 'vitest/expect-expect',
+            severity: 1,
+            message: 'y',
+            line: 2,
+          },
+        ],
+      },
+    ]);
+    const inner = changedExec('src/feature.ts');
+    const reason = await commitThroughBash((command, args, options) =>
+      [command, ...args].join(' ').includes('eslint')
+        ? Promise.resolve(ok(eslintJson))
+        : inner(command, args, options),
+    );
+    expect(reason).toContain('Spawn the guardrail-fixer subagent');
+  });
+
+  it('says in the deny to run the push rung before reporting done (#229)', async () => {
+    configureBusyLockRepo({});
+    expect(await commitThroughBash(busyLockWithAnError())).toContain(
+      'then commit again. Also, mutation testing was deferred for 2 file(s) because the mutation ' +
+        'lock is busy, so this rung did not measure them: before you report ' +
+        'done, run `guardrails gate --mode=push` in the background.',
+    );
+  });
+
+  it('says it after a wait too, when a Stop-rung fixer holds the file', async () => {
+    configureBusyLockRepo({});
+    const directory = stateDirectory(root);
+    mkdirSync(directory, { recursive: true });
+    saveLeases(directory, [
+      {
+        owner: 'stop:sid',
+        manifestPath: '.guardrails/state/sid.last.json',
+        fixerAgent: 'guardrail-fixer',
+        files: ['src/feature.ts'],
+        grantedAt: Date.now(),
+        deferrals: 0,
+      },
+    ]);
+    const reason = await commitThroughBash(busyLockWithAnError());
+    expect(reason).toContain('guardrails: 1 violation(s), ');
+    expect(reason).toContain(
+      'Wait for that guardrail-fixer to report, then commit again. Also, ' +
+        'mutation testing was deferred for 2 file(s)',
+    );
+  });
+
+  it('ends a wait with no deferral on the instruction to commit again', async () => {
+    configureBusyLockRepo({ stryker: 'off' });
+    const directory = stateDirectory(root);
+    mkdirSync(directory, { recursive: true });
+    saveLeases(directory, [
+      {
+        owner: 'stop:sid',
+        manifestPath: '.guardrails/state/sid.last.json',
+        fixerAgent: 'guardrail-fixer',
+        files: ['src/feature.ts'],
+        grantedAt: Date.now(),
+        deferrals: 0,
+      },
+    ]);
+    const reason = await commitThroughBash(busyLockWithAnError());
+    expect(
+      reason.endsWith('guardrail-fixer to report, then commit again.'),
+    ).toBe(true);
+  });
+
+  it('says nothing about the push rung in a deny with no deferral', async () => {
+    configureBusyLockRepo({ stryker: 'off' });
+    const reason = await commitThroughBash(busyLockWithAnError());
+    expect(reason).toContain('1 violation(s)');
+    expect(reason).not.toContain('gate --mode=push');
+    expect(reason.endsWith('then commit again.')).toBe(true);
+  });
+
+  it('says it on the hook surface too, where the commit is blocked', async () => {
+    configureBusyLockRepo({});
+    expect(
+      await runCommand(
+        'gate',
+        ['--mode=commit'],
+        dependencies({ exec: busyLockWithAnError() }),
+      ),
+    ).toBe(1);
+    const said = errors.join('');
+    expect(said).toContain(
+      'guardrails: mutation testing was deferred for 2 file(s) because the ' +
+        'mutation lock is busy, so this rung did not measure them: before ' +
+        'you report done, run `guardrails gate --mode=push` in the ' +
+        'background.\n',
+    );
+    // The warnings stay in a developer's terminal; only the manifest drops
+    // them, and the line that names it says which part it holds.
+    expect(said).toContain('[guardrails/mutation-deferred]');
+    expect(said).toContain(
+      'guardrails: the blocking findings above are also written to ' +
+        '.guardrails/state/nosession-commit.last.json',
+    );
+    expect(manifestOf('nosession-commit')).toHaveLength(1);
+  });
+
+  it('says it when the deferral is all there is and the commit passes (#229)', async () => {
+    configureBusyLockRepo({ eslint: 'off' });
+    expect(
+      await runCommand(
+        'gate',
+        ['--mode=commit'],
+        dependencies({ exec: lockHeldExec('src/feature.ts') }),
+      ),
+    ).toBe(0);
+    expect(errors.join('')).toContain(
+      'guardrails: mutation testing was deferred for 1 file(s) because the ' +
+        'mutation lock is busy',
+    );
+  });
+
+  it('is silent about the push rung on a commit that deferred nothing', async () => {
+    configureBusyLockRepo({ stryker: 'off' });
+    expect(
+      await runCommand(
+        'gate',
+        ['--mode=commit'],
+        dependencies({ exec: busyLockWithAnError() }),
+      ),
+    ).toBe(1);
+    // Every line, so a note printed with nothing to say is seen too.
+    expect(errors).toEqual([
+      'src/feature.ts:1 [no-console] Unexpected console. (eslint)\n',
+      'guardrails: the blocking findings above are also written to ' +
+        '.guardrails/state/nosession-commit.last.json — an agent can spawn ' +
+        'the guardrail-fixer subagent against that path instead of working ' +
+        'through it inline.\n',
+    ]);
+  });
+});
+
+/**
  * A machine with `lockf`, whose lock is busy or free, and whose `ps` lists
  * lockf 400 holding the lock for stryker 500 with `waiting` others queued.
  */

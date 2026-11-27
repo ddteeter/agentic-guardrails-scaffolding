@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  blockingViolations,
   hasErrors,
   isViolation,
   recurrenceKey,
@@ -85,6 +86,19 @@ describe('hasErrors', () => {
 
   it('is false for an empty set', () => {
     expect(hasErrors([])).toBe(false);
+  });
+});
+
+describe('blockingViolations', () => {
+  it('keeps the errors, in order, and drops the warnings', () => {
+    const first = { ...base, file: 'src/a.ts' };
+    const advisory: Violation = { ...base, severity: 'warn' };
+    const last = { ...base, file: 'src/b.ts' };
+    expect(blockingViolations([first, advisory, last])).toEqual([first, last]);
+  });
+
+  it('is empty when nothing blocks', () => {
+    expect(blockingViolations([{ ...base, severity: 'warn' }])).toEqual([]);
   });
 });
 

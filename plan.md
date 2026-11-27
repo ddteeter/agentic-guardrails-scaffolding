@@ -1332,6 +1332,21 @@ core/src/audit.ts`) surfaced that it was a context-free text scan: it flagged
   - The feature ran on its own development: one push gate re-tested 2
     timed-out mutants under load (load1 15–21), and both were re-scored, not
     confirmed as hangs.
+- **Hardening lane (2026-11-27): small findings from two days of building a
+  Swift pack here with the loop switched on.** One sub-entry per fix, each
+  landed with a test that failed first.
+  - **A blocked commit counted advisory deferrals as violations (fixed
+    2026-11-27; #229's wording with it).** With the mutation lock busy, a
+    commit with two real errors and seven `guardrails/mutation-deferred`
+    warnings was denied as "9 violation(s) … spawn the fixer", and all nine
+    went into the manifest, seven of them saying "Nothing to do". The commit
+    rung now counts, routes on, leases and writes only what blocks
+    (`blockingViolations`); the hook surface still prints the warnings for
+    whoever is reading the terminal. When a commit rung deferred its mutation
+    run, the deny and the hook output now say so in a sentence an agent acts
+    on: run `guardrails gate --mode=push` in the background before reporting
+    done (#229). Not changed: the Stop rung's pointer and manifest still
+    include warnings; same shape, left open.
 
 ## Roadmap: analyzer opt-in (pack composition, not all-or-nothing) — shipped
 
