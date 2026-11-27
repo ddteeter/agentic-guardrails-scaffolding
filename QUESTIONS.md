@@ -1,24 +1,21 @@
-# Open questions — the Swift pack, first half
+# Questions — the Swift pack, first half
 
-Branch `sprint/swift-pack`. Each entry: what is asked, what it costs, a
-recommendation, and what the branch does meanwhile. The design is
+Branch `sprint/swift-pack`. Each entry: what was asked, what it costs, a
+recommendation, and what the branch does. The design is
 `docs/superpowers/specs/2026-11-26-swift-pack-design.md`.
 
-## 1. Release numbering for the pack
+Entries marked DECIDED were answered by the owner on 2026-11-27 and the
+branch reflects the answer. **Still open:** 5 (ast-grep's syntax, to verify
+with the tool at GR-07), 6 and 14 (owner-only items for the later lanes).
 
-**What.** The plan numbered the pack's releases 0.15.0 to 0.19.0. Those are
-taken; `main` is 0.19.0.
+## 1. Release numbering for the pack — DECIDED
 
-**Cost.** None to decide late. The documents name releases by content.
-
-**Recommendation.** Minor releases, in order: the seam release (GR-01 to
-GR-03) as 0.20.0, the Swift lexer release (GR-04) as 0.21.0, the adapters
-release (GR-07 to GR-11) as 0.22.0, the runner release (GR-14 to GR-16) as
-0.23.0. GR-14's generator ships dark in whichever release follows it, since
-nothing calls it until the runner exists.
-
-**Meanwhile.** No version is bumped, no tag cut; notes accumulate in
-`guardrails-core/upgrades/unreleased.md`.
+**Decision (the owner, 2026-11-27): names only for now.** The plan's 0.15.0
+to 0.19.0 are taken. The documents keep naming releases by content (the seam
+release, the Swift lexer release, the adapters release, the runner release),
+and the owner assigns numbers when cutting each, which also settles whether
+this branch ships as one release or several. No version is bumped and no tag
+cut on this branch.
 
 ## 2. Should `StackPackId` reserve `'java'` now? — DECIDED
 
