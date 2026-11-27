@@ -1,4 +1,5 @@
 import {
+  appendFileSync,
   chmodSync,
   existsSync,
   mkdtempSync,
@@ -2497,6 +2498,37 @@ function logFile(): string {
   return path.join(root, 'gate.lock.runs.jsonl');
 }
 
+/**
+A push gate's row in the run log, `seconds` long, carrying ship id `ship`.
+*/
+function gateRowOf(ship: string, seconds: number): string {
+  return JSON.stringify({
+    v: 1,
+    kind: 'gate',
+    rung: 'push',
+    repo: 'r',
+    ship,
+    startedAt: '2026-11-19T10:00:00.000Z',
+    finishedAt: new Date(
+      Date.parse('2026-11-19T10:00:00.000Z') + seconds * 1000,
+    ).toISOString(),
+    outcome: 'pass',
+  });
+}
+
+/**
+`base`, whose push gate appends `row` to the run log while the ship runs, as
+a real gate does.
+*/
+function gateLogging(base: Exec, row: string): Exec {
+  return (command, args, execOptions) => {
+    if (command === PUSH_GATE.command) {
+      appendFileSync(logFile(), `${row}\n`);
+    }
+    return base(command, args, execOptions);
+  };
+}
+
 describe('ship: its row in the run log (#176)', () => {
   it('hands its id to the push, for the gate’s row to carry', async () => {
     const pushes: (string | undefined)[] = [];
@@ -2525,23 +2557,11 @@ describe('ship: its row in the run log (#176)', () => {
   });
 
   it('appends a row with its push, gate and CI times', async () => {
-    writeFileSync(
-      logFile(),
-      `${JSON.stringify({
-        v: 1,
-        kind: 'gate',
-        rung: 'push',
-        repo: 'r',
-        ship: 'ship-42',
-        startedAt: '2026-11-19T10:00:00.000Z',
-        finishedAt: '2026-11-19T10:00:30.000Z',
-        outcome: 'pass',
-      })}\n`,
-    );
-    const { exec } = fakeExec({
+    const { exec: base } = fakeExec({
       ...HAPPY,
       'git rev-parse --git-common-dir': ok('/dev/app-clone/.git\n'),
     });
+    const exec = gateLogging(base, gateRowOf('ship-42', 30));
     const status = await ship(
       options(exec, {
         shipId: 'ship-42',
@@ -2571,6 +2591,23 @@ describe('ship: its row in the run log (#176)', () => {
         end: { load1: 4, freeMb: 3000 },
       },
     });
+  });
+
+  it('reads its gate time only from the log it appended to, not the history before it started', async () => {
+    // The log is machine-wide and never trimmed: a ship must not pay for
+    // reading every row it holds. Any row with its id written before it
+    // started cannot be its gate's.
+    writeFileSync(logFile(), `${gateRowOf('ship-42', 99)}\n`);
+    const { exec: base } = fakeExec(HAPPY);
+    const exec = gateLogging(base, gateRowOf('ship-42', 30));
+    await ship(
+      options(exec, {
+        shipId: 'ship-42',
+        lockPath: path.join(root, 'gate.lock'),
+      }),
+    );
+    const rows = parseRuns(readFileSync(logFile(), 'utf8'));
+    expect(rows.at(-1)).toMatchObject({ kind: 'ship', gateMs: 30_000 });
   });
 
   it('times the push from the start of its gate to the end of the push (#204)', async () => {

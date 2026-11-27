@@ -1,4 +1,5 @@
 import {
+  appendFileSync,
   chmodSync,
   existsSync,
   mkdtempSync,
@@ -18,6 +19,7 @@ import {
   logLockRun,
   logShipRun,
   projectName,
+  runLogSize,
   type RunClock,
   startRun,
 } from '../src/gate-run-log.js';
@@ -412,6 +414,32 @@ describe('logShipRun, further', () => {
     writeFileSync(`${lockPath}.runs.jsonl`, `${gateRow('ship-2', 99)}\n`);
     ship();
     expect(rows().at(-1)).not.toHaveProperty('gateMs');
+  });
+
+  it('reads its gate time only from rows appended since logOffset', () => {
+    const file = `${lockPath}.runs.jsonl`;
+    writeFileSync(file, `${gateRow('ship-1', 99)}\n`);
+    const logOffset = runLogSize(lockPath);
+    appendFileSync(file, `${gateRow('ship-1', 40)}\n`);
+    ship({ logOffset });
+    expect(rows().at(-1)).toMatchObject({ kind: 'ship', gateMs: 40_000 });
+  });
+
+  it('reads the whole log when it is shorter than logOffset, as a replaced one is', () => {
+    writeFileSync(`${lockPath}.runs.jsonl`, `${gateRow('ship-1', 40)}\n`);
+    ship({ logOffset: 1_000_000 });
+    expect(rows().at(-1)).toMatchObject({ kind: 'ship', gateMs: 40_000 });
+  });
+});
+
+describe('runLogSize', () => {
+  it('is the byte length of the run log beside the lock', () => {
+    writeFileSync(`${lockPath}.runs.jsonl`, 'twelve bytes');
+    expect(runLogSize(lockPath)).toBe(12);
+  });
+
+  it('is 0 when there is no run log yet', () => {
+    expect(runLogSize(lockPath)).toBe(0);
   });
 });
 

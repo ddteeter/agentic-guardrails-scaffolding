@@ -40,6 +40,7 @@ import { parseJsonText } from './json-file.js';
 import {
   logShipRun,
   projectName,
+  runLogSize,
   type RunClock,
   startRun,
 } from './gate-run-log.js';
@@ -1904,6 +1905,9 @@ Ship the current branch, and say how it went.
 export async function ship(given: ShipOptions): Promise<ShipStatus> {
   const options = { ...given, shipId: given.shipId ?? randomUUID() };
   const start = startRun(options.runClock);
+  // Before anything can run a gate: its row lands after this offset.
+  const logOffset =
+    options.lockPath === undefined ? 0 : runLogSize(options.lockPath);
   const times: ShipTimes = {};
   const status = await shipStatus(options, times);
   // No lock, no log: git is asked for the clone only when there is a row.
@@ -1915,6 +1919,7 @@ export async function ship(given: ShipOptions): Promise<ShipStatus> {
     repoRoot: options.repoRoot,
     project: await projectName(options.exec, options.repoRoot),
     shipId: options.shipId,
+    logOffset,
     start,
     status,
     pushMs: times.pushMs,

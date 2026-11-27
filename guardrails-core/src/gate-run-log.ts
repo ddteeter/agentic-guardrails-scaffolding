@@ -12,7 +12,7 @@ import { availableParallelism } from 'node:os';
 import path from 'node:path';
 
 import type { Exec } from './exec.js';
-import { readFileSync } from 'node:fs';
+import { closeSync, fstatSync, openSync, readSync, statSync } from 'node:fs';
 
 import {
   appendRun,
@@ -228,6 +228,12 @@ export interface ShipRunInput {
   */
   project: string;
   shipId: string;
+  /**
+   * `runLogSize` when the ship started: its gates' rows can only follow it,
+   * so the rows before it -- the machine's whole history -- are never read.
+   * 0, the default, reads the whole log.
+   */
+  logOffset?: number | undefined;
   start: RunStart;
   status: { state: string; branch: string; pr: number | null };
   pushMs: number | undefined;
@@ -237,17 +243,55 @@ export interface ShipRunInput {
 }
 
 /**
+ * The run log beside `lockPath` in bytes, 0 when there is none yet: where a
+ * ship starting now finds the rows written after it (`logOffset`).
+ */
+export function runLogSize(lockPath: string): number {
+  try {
+    return statSync(runLogPath(lockPath)).size;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * The log's text from byte `offset` on -- or all of it, when it is shorter
+ * than `offset`, as a log replaced since is. `undefined` when it cannot be
+ * read. Rows are appended whole, so `offset` falls between two.
+ */
+function textFrom(file: string, offset: number): string | undefined {
+  let descriptor: number;
+  try {
+    descriptor = openSync(file, 'r');
+  } catch {
+    return undefined;
+  }
+  try {
+    const { size } = fstatSync(descriptor);
+    const start = size < offset ? 0 : offset;
+    const buffer = Buffer.alloc(size - start);
+    const read = readSync(descriptor, buffer, 0, buffer.length, start);
+    return buffer.toString('utf8', 0, read);
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
+/**
  * How long this ship's gates took, together: every gate row stamped with its
  * id -- the gate ship runs before the push, and the hook's, which is quick
  * when it finds that gate's pass and runs in full when it does not (#204).
  * `undefined` when no gate wrote a row (no stryker lock, an older hook, a
- * ship that never reached a gate).
+ * ship that never reached a gate). Only the rows from `offset` on are read:
+ * the log is machine-wide and never trimmed.
  */
-function gateMsOf(file: string, shipId: string): number | undefined {
-  let text: string;
-  try {
-    text = readFileSync(file, 'utf8');
-  } catch {
+function gateMsOf(
+  file: string,
+  shipId: string,
+  offset: number,
+): number | undefined {
+  const text = textFrom(file, offset);
+  if (text === undefined) {
     return undefined;
   }
   const times = parseRuns(text)
@@ -280,7 +324,7 @@ export function logShipRun(input: ShipRunInput): void {
     pr: input.status.pr,
     state: input.status.state,
     pushMs: input.pushMs ?? 0,
-    gateMs: gateMsOf(file, input.shipId),
+    gateMs: gateMsOf(file, input.shipId, input.logOffset ?? 0),
     ciMs: input.ciMs,
     machine: {
       cores: clock.cores(),
