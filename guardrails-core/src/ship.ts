@@ -1906,8 +1906,7 @@ export async function ship(given: ShipOptions): Promise<ShipStatus> {
   const options = { ...given, shipId: given.shipId ?? randomUUID() };
   const start = startRun(options.runClock);
   // Before anything can run a gate: its row lands after this offset.
-  const logOffset =
-    options.lockPath === undefined ? 0 : runLogSize(options.lockPath);
+  const logOffset = runLogSize(options.lockPath);
   const times: ShipTimes = {};
   const status = await shipStatus(options, times);
   // No lock, no log: git is asked for the clone only when there is a row.

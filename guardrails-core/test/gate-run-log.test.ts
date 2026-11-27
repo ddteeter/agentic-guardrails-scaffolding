@@ -3,6 +3,7 @@ import {
   chmodSync,
   existsSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -19,6 +20,7 @@ import {
   logLockRun,
   logShipRun,
   projectName,
+  readRunLogFrom,
   runLogSize,
   type RunClock,
   startRun,
@@ -440,6 +442,44 @@ describe('runLogSize', () => {
 
   it('is 0 when there is no run log yet', () => {
     expect(runLogSize(lockPath)).toBe(0);
+  });
+
+  it('is 0 without a lock, never the size of a log built from "undefined"', () => {
+    writeFileSync(STRAY, 'twelve bytes');
+    expect(runLogSize(undefined)).toBe(0);
+  });
+});
+
+function file(): string {
+  return `${lockPath}.runs.jsonl`;
+}
+
+describe('readRunLogFrom', () => {
+  it('is exactly the text appended after the offset', () => {
+    writeFileSync(file(), 'old row\n');
+    appendFileSync(file(), 'new row\n');
+    expect(readRunLogFrom(file(), 'old row\n'.length)).toBe('new row\n');
+  });
+
+  it('is empty when nothing was appended after the offset', () => {
+    writeFileSync(file(), 'old row\n');
+    expect(readRunLogFrom(file(), 'old row\n'.length)).toBe('');
+  });
+
+  it('is the whole log when it is shorter than the offset', () => {
+    writeFileSync(file(), 'row\n');
+    expect(readRunLogFrom(file(), 100)).toBe('row\n');
+  });
+
+  it('is undefined when there is no log', () => {
+    expect(readRunLogFrom(file(), 0)).toBeUndefined();
+  });
+
+  it('closes the log it opened', () => {
+    writeFileSync(file(), 'row\n');
+    const before = readdirSync('/dev/fd').length;
+    readRunLogFrom(file(), 0);
+    expect(readdirSync('/dev/fd')).toHaveLength(before);
   });
 });
 

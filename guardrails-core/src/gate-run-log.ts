@@ -243,10 +243,14 @@ export interface ShipRunInput {
 }
 
 /**
- * The run log beside `lockPath` in bytes, 0 when there is none yet: where a
- * ship starting now finds the rows written after it (`logOffset`).
+ * The run log beside `lockPath` in bytes, 0 when there is none yet or no
+ * lock: where a ship starting now finds the rows written after it
+ * (`logOffset`).
  */
-export function runLogSize(lockPath: string): number {
+export function runLogSize(lockPath: string | undefined): number {
+  if (lockPath === undefined) {
+    return 0;
+  }
   try {
     return statSync(runLogPath(lockPath)).size;
   } catch {
@@ -259,7 +263,10 @@ export function runLogSize(lockPath: string): number {
  * than `offset`, as a log replaced since is. `undefined` when it cannot be
  * read. Rows are appended whole, so `offset` falls between two.
  */
-function textFrom(file: string, offset: number): string | undefined {
+export function readRunLogFrom(
+  file: string,
+  offset: number,
+): string | undefined {
   let descriptor: number;
   try {
     descriptor = openSync(file, 'r');
@@ -270,8 +277,8 @@ function textFrom(file: string, offset: number): string | undefined {
     const { size } = fstatSync(descriptor);
     const start = size < offset ? 0 : offset;
     const buffer = Buffer.alloc(size - start);
-    const read = readSync(descriptor, buffer, 0, buffer.length, start);
-    return buffer.toString('utf8', 0, read);
+    readSync(descriptor, buffer, 0, buffer.length, start);
+    return buffer.toString('utf8');
   } finally {
     closeSync(descriptor);
   }
@@ -290,7 +297,7 @@ function gateMsOf(
   shipId: string,
   offset: number,
 ): number | undefined {
-  const text = textFrom(file, offset);
+  const text = readRunLogFrom(file, offset);
   if (text === undefined) {
     return undefined;
   }
