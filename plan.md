@@ -427,6 +427,30 @@ directories in one command. Unchanged, and still outside the matcher:
 
 ## Roadmap: fixer-loop hardening (from the dogfooding live proof)
 
+- **The PreToolUse commit gate ran on a `ps | grep` whose pattern named a
+  git write (2026-11-27, open; found on the Swift-pack lane).** The command
+  was a process listing piped into `grep -E "eslint|tsc|…|git commit"`: the
+  alternation puts `git commit` directly after a `|`, which the
+  command-position test reads as the start of a pipeline stage, though it is
+  inside a quoted argument. The whole commit gate ran (Stryker included, and
+  it took the mutation lock, so a real commit running in the background
+  waited behind it), and the tool call was denied with "32 violation(s)" for
+  a commit nobody had asked for. The matcher is deliberately not a shell
+  parser, and the miss direction it accepts is the safe one; this is the
+  other direction, an over-match that costs minutes and a confusing denial.
+  Candidate: skip a `git` that sits inside a quoted string (track `'` and
+  `"` while scanning for separators), which needs no parser.
+- **The commit rung and the PreToolUse rung disagreed about the same change
+  (2026-11-27, open; same lane).** The denial above listed 32 violations for
+  the staged GR-04 change. The husky pre-commit gate, run on the same index
+  minutes later, passed it. `fallow dupes` run by hand on that tree reported
+  six clone groups among the Swift row tables, so the PreToolUse answer was
+  the right one and the commit rung under-reported. Not diagnosed: the two
+  differ in scope (`staged` at the hook, the session's write scope at
+  PreToolUse), and the dupes adapter keeps a clone group only when it touches
+  a changed file, so the staged listing is the first place to look. The
+  tables were restructured in the next commit, so the branch does not depend
+  on the answer.
 - **A session that starts before the first build cannot spawn the fixer the
   gate names (2026-11-26, open; found on the Swift-pack lane).** The fixer
   agents are generated into `.claude/agents/` by `npm run build`, and that
