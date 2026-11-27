@@ -11,10 +11,10 @@ this doc is wrong until it is updated to match, not the other way around.
 `guardrails-core` ships as a GitHub Release tarball, not from npm:
 
 ```bash
-npm i -D https://github.com/ddteeter/agentic-guardrails-scaffolding/releases/download/v0.19.0/guardrails-core-0.19.0.tgz
+npm i -D https://github.com/ddteeter/agentic-guardrails-scaffolding/releases/download/v0.19.1/guardrails-core-0.19.1.tgz
 ```
 
-That URL resolves once `v0.19.0`'s release workflow has run — a release is a
+That URL resolves once `v0.19.1`'s release workflow has run — a release is a
 pushed `v*` tag, which packs the tarball and attaches it. A later version is a
 new tag, a new release asset, and a hand-edited URL — see the cost note below.
 
@@ -1226,7 +1226,9 @@ far` rather than `another checkout holds it`. The command runs with
   Every row has `repo`, the checkout's folder name, and `project`, the clone
   the checkout belongs to (from `git rev-parse --git-common-dir`). Every
   lane worktree of one clone has the same `project`, but each has its own
-  `repo`. Separate clones of one remote are separate projects. A gate row's
+  `repo`. Separate clones of one remote are separate projects, and two
+  unrelated clones with the same folder name count as one, because only the
+  name is logged, never its path. A gate row's
   cache part has `seedWhy` when the seed was `skipped` or `off`. It names
   the cause, such as no per-test coverage, no import graph, or
   `mutationCache.seedFrom` not set, and never a file. Rows written before
