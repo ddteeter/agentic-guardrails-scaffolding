@@ -135,3 +135,39 @@ describe('hasHookBypass: -n on a commit reached through an alias', () => {
     ).toEqual([]);
   });
 });
+
+/**
+ * The scan for `-n` stops at the first separator, so that the `-n` of the
+ * NEXT command is not taken for this one's. A separator inside a quoted
+ * message is not one, and stopping there hid the flag written after it.
+ */
+describe('hasHookBypass: -n after a separator that is inside quotes', () => {
+  it('reads -n written after a quoted ; | or &', () => {
+    expect(
+      missed([
+        "env git commit -m 'a;b' -n",
+        'git commit -m "a|b" -n',
+        "git commit -m 'a & b' -n",
+        'git ci -m "x; y" -an',
+        `git commit -m 'one' -m "two; three" -n`,
+        "git commit -m 'a\nb' -n",
+      ]),
+    ).toEqual([]);
+  });
+
+  it('still stops at a separator that is one', () => {
+    expect(
+      caught([
+        "git ci -m 'a;b' ; head -n 3",
+        'git ci -m "a|b" | head -n 3',
+        "git ci -m 'a' && tail -n 1 f",
+      ]),
+    ).toEqual([]);
+  });
+
+  it('still reads -n where the quotes do not pair up', () => {
+    // An open quote drops the rest of what the second reading sees, so the
+    // first reading, of the text as written, has to stand on its own.
+    expect(missed(["git commit -n -m 'unclosed"])).toEqual([]);
+  });
+});

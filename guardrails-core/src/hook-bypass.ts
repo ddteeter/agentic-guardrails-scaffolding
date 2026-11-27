@@ -11,6 +11,7 @@
  * bypass than model a shell well enough to tell the two apart.
  */
 import { placedGitCommands } from './command-target.js';
+import { withoutQuotedText } from './foreground-wait.js';
 
 /**
  * git's global options: a flag token, or an option plus its separate value.
@@ -159,7 +160,11 @@ export function hasHookBypass(command: string): boolean {
     NO_VERIFY.test(text) ||
     HOOKS_PATH.test(text) ||
     DEFINES_AN_ALIAS.test(text) ||
-    hasShortNoVerify(text)
+    hasShortNoVerify(text) ||
+    // And again with the strings emptied: `-m 'a;b' -n` has a separator in
+    // its message that is not one, and the scan above stops at it. Both
+    // readings, because this one drops whatever follows an unclosed quote.
+    hasShortNoVerify(withoutQuotedText(text))
   );
 }
 
