@@ -68,13 +68,19 @@ module.exports = {
   ],
   options: {
     doNotFollow: { path: 'node_modules' },
+    // dependency-cruiser does not read .gitignore, so everything that is on
+    // disk and is not your module graph has to be named here.
+    //
+    // \`.stryker-tmp/\` is stryker's sandbox: a copy of your sources that an
+    // interrupted mutation run leaves behind. Cruised, it reports your own
+    // rules against the copied files.
+    //
     // The trailing alternative excludes nested git worktrees. A worktree
-    // checked out inside the repository is a whole second checkout of it, and
-    // dependency-cruiser does not read .gitignore, so without this it cruises
-    // every one of them. \`.claude/worktrees/\` is where Claude Code puts them
-    // by default; add your own vendored or generated trees here too.
+    // checked out inside the repository is a whole second checkout of it.
+    // \`.claude/worktrees/\` is where Claude Code puts them by default; add
+    // your own vendored or generated trees here too.
     exclude: {
-      path: '(^|/)(dist|build|coverage|node_modules)/|^\\\\.claude/worktrees/',
+      path: '(^|/)(dist|build|coverage|node_modules|\\\\.stryker-tmp)/|^\\\\.claude/worktrees/',
     },
   },
 };

@@ -1438,6 +1438,17 @@ core/src/audit.ts`) surfaced that it was a context-free text scan: it flagged
     those files are held, so the two-fixers-in-one-file guard (#76) does not
     cover that fixer. Recording a spawn when it happens (the issue's first
     proposal) is what would close that, and nothing here records one.
+  - **#55: the dependency-cruiser seed did not exclude `.stryker-tmp/`
+    (fixed 2026-11-27).** `init` seeds both that config and
+    `stryker.conf.json`, so it knows a mutation run leaves a sandbox, and an
+    interrupted one leaves it behind; `.gitignore` hides it from git only. An
+    adopter's commit gate then failed on its own architecture rule, reported
+    against a copied file. The seeded `exclude` now names the sandbox at any
+    depth. SEED-ONCE, so a config already seeded is not rewritten: the
+    unreleased upgrade notes tell an adopter to add it. This repo's own
+    `.dependency-cruiser.cjs` is not the seed and was left alone; its rules
+    are anchored at `^guardrails-core/src`, which a sandbox path does not
+    match.
 
 ## Roadmap: analyzer opt-in (pack composition, not all-or-nothing) — shipped
 

@@ -913,4 +913,41 @@ describe('SEED_ONCE_ANALYZERS', () => {
     // silences the consumer's own sources too.
     expect(new RegExp(pattern).test('src/a.ts')).toBe(false);
   });
+
+  it('seeds a dependency-cruiser config that excludes a leftover stryker sandbox (#55)', () => {
+    // `init` seeds this file AND `stryker.conf.json`, so it knows stryker
+    // exists and that a run -- an interrupted one above all -- leaves
+    // `.stryker-tmp/sandbox-*/` behind: a copy of the sources. `.gitignore`
+    // hides it from git and from nothing else, so the next commit gate
+    // reported the adopter's own architecture rule against a copied file:
+    //   .stryker-tmp/sandbox-6Wppq6/src/env/index.ts → cloudflare:workers
+    // Loaded the way dependency-cruiser loads it, like the test above.
+    const seed = SEED_ONCE_ANALYZERS.find(
+      (analyzer) => analyzer.tool === 'dependency-cruiser',
+    );
+    const directory = mkdtempSync(path.join(tmpdir(), 'guardrails-seed-'));
+    const seedPath = path.join(directory, '.dependency-cruiser.cjs');
+    writeFileSync(seedPath, seed?.seed ?? '');
+    const loaded = createRequire(import.meta.url)(seedPath) as {
+      options?: { exclude?: { path?: string } };
+    };
+    rmSync(directory, { recursive: true, force: true });
+    const excluded = new RegExp(loaded.options?.exclude?.path ?? '^$');
+    expect(excluded.test('.stryker-tmp/sandbox-6Wppq6/src/env/index.ts')).toBe(
+      true,
+    );
+    // A workspace package's own sandbox, where stryker ran from that package.
+    expect(excluded.test('packages/web/.stryker-tmp/sandbox-1/src/a.ts')).toBe(
+      true,
+    );
+    // Exactly that directory: a name that only resembles it is still source.
+    expect(excluded.test('src/stryker-tmp/a.ts')).toBe(false);
+    expect(excluded.test('src/x.stryker-tmp/a.ts')).toBe(false);
+    expect(excluded.test('src/.stryker-tmpl/a.ts')).toBe(false);
+    expect(excluded.test('src/astryker-tmp/a.ts')).toBe(false);
+    // And what it excluded before, it still does.
+    expect(excluded.test('.claude/worktrees/wt/src/a.ts')).toBe(true);
+    expect(excluded.test('packages/web/dist/a.js')).toBe(true);
+    expect(excluded.test('src/a.ts')).toBe(false);
+  });
 });
