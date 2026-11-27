@@ -23,6 +23,22 @@ const HEREDOC_OPENER =
   /(?<!<)<<(?!<)(-?)[ \t]*(?:'([^'\n]+)'|"([^"\n]+)"|\\(\w+)|(\w+))/g;
 
 /**
+ * A shell, by its plain name or by a path to it.
+ */
+const A_SHELL = /(?:^|\/)(?:sh|bash|zsh|dash|ksh|fish)$/;
+
+/**
+ * Does this line run a shell? Asked of the line a heredoc opens on: a quoted
+ * heredoc fed to one is a script, whatever its quoting says about expansion.
+ * Any word of the line counts, so a wrapper in front (`sudo bash`) does not
+ * hide it, and a file that is only NAMED after a shell (`install.sh`) is not
+ * one.
+ */
+function isFedToAShell(line: string): boolean {
+  return line.split(/[\s<|;&()]/).some((word) => A_SHELL.test(word));
+}
+
+/**
  * The command with the bodies of its QUOTED heredocs removed.
  *
  * A quoted heredoc is literal text -- the shell expands nothing inside it --
@@ -31,6 +47,11 @@ const HEREDOC_OPENER =
  * gate. Unquoted heredocs DO expand `$(...)` and backticks, so their bodies are
  * kept. Every opener on a line queues its body in order, quoted or not, so an
  * unquoted body is never mistaken for a quoted one's.
+ *
+ * Literal to the OUTER shell, that is. A quoted heredoc fed to a shell
+ * (`bash <<'EOF'`) is a script, and a commit on one of its lines runs; its
+ * body is kept too. Only a shell: another interpreter's source is not read
+ * as commands, because a line of Python that mentions a git write is not one.
  *
  * Fails toward gating: if any body is left unterminated the command is
  * returned untouched, because a wrong guess here must cost a spurious gate
@@ -50,7 +71,8 @@ export function withoutQuotedHeredocBodies(command: string): string {
         pending.push({
           word: quoted ?? bare ?? '',
           isIndented: dash === '-',
-          isQuoted: quoted !== undefined,
+          // A body a shell is fed is kept like an unquoted one: it runs.
+          isQuoted: quoted !== undefined && !isFedToAShell(line),
         });
       }
       continue;

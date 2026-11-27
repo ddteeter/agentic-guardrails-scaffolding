@@ -1987,6 +1987,51 @@ describe('pretooluse gate trigger conditions', () => {
     expect(Number(process.hrtime.bigint() - started) / 1e6).toBeLessThan(2000);
   });
 
+  it('reads a quoted heredoc as a script when it is fed to a shell', async () => {
+    // Quoting a heredoc's delimiter stops the OUTER shell expanding its
+    // body; it says nothing about who reads it. Fed to a shell it is a
+    // script, and its body used to be dropped like a note's, so a plain
+    // commit on one of its lines skipped this rung.
+    for (const command of [
+      "bash <<'EOF'\ngit commit -m x\nEOF",
+      'sh <<"EOF"\n  git push\nEOF',
+      "/bin/bash -s <<'EOF'\nset -e\ngit commit -m x\nEOF",
+      'sudo zsh <<\\EOF\ngit commit -m x\nEOF',
+      "cat setup | bash<<'EOF'\ngit commit -m x\nEOF",
+      "dash <<'EOF'\ngit commit -m x\nEOF",
+      "ksh <<'EOF'\ngit commit -m x\nEOF",
+      "fish <<'EOF'\ngit commit -m x\nEOF",
+      "env FOO=1 /usr/bin/env bash <<-'EOF'\n\tgit commit -m x\n\tEOF",
+    ]) {
+      out.length = 0;
+      expect(
+        await runPreToolUse(preToolUseStdin('bash', command)),
+        `should gate: ${JSON.stringify(command)}`,
+      ).toContain('deny');
+    }
+  });
+
+  it('still drops a quoted heredoc that is written to a file or read as data', async () => {
+    for (const command of [
+      // A file whose name ends in a shell's name is not a shell.
+      "cat > install.sh <<'EOF'\ngit commit -m x\nEOF",
+      "cat > notes-on-bash.md <<'EOF'\ngit commit -m x\nEOF",
+      "tee crash.log <<'EOF'\ngit commit -m x\nEOF",
+      // Nor is a program whose name only begins like one.
+      "shasum <<'EOF'\ngit commit -m x\nEOF",
+      // Another interpreter's source is not shell: a line of it that looks
+      // like a command is not one.
+      "python3 - <<'EOF'\nprint('x')  # then `git push`\nEOF",
+      "node <<'EOF'\n// `git commit -m x`\nEOF",
+    ]) {
+      out.length = 0;
+      expect(
+        await runPreToolUse(preToolUseStdin('bash', command)),
+        `should not gate: ${JSON.stringify(command)}`,
+      ).toBe('');
+    }
+  });
+
   it('cannot be made to backtrack catastrophically by a run of flags', async () => {
     // ReDoS regression. The first version of the global-option run was
     // `(?:-[cC][ \t]+[^ \t]+|-[^ \t]+)*`, whose two alternatives could tile the
