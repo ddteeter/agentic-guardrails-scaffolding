@@ -27,8 +27,10 @@ version: unreleased
   stderr; a block with no usable entry falls back to the implicit TypeScript
   stack, so a broken block never turns the TypeScript gates off.
 - **Only `typescript` has a pack in this version.** `"pack": "swift"` is
-  accepted, and reported as one `warn`-severity
-  `guardrails/stack-unsupported` violation: none of its analyzers exist yet.
+  parsed, and reported as one **error**-severity
+  `guardrails/stack-unsupported` violation at every rung: none of its
+  analyzers exist yet, and a stack that ran nothing is a failed gate. Do not
+  add a Swift stack until a release ships its pack.
 - **`--stack=<id>`** on `verify` and `gate --mode=ci` runs only the stacks of
   that pack, so two CI jobs can each run their own tools. An id that is not
   a pack exits 2; one no configured stack uses is an error-severity

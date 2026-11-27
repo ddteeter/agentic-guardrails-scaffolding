@@ -442,7 +442,7 @@ describe('--stack', () => {
 });
 
 describe('a stack whose pack this version does not have', () => {
-  it('is one warning against the config file, and runs nothing', async () => {
+  it('is one error against the config file, and runs nothing of that stack', async () => {
     const runs: Run[] = [];
     const result = await runVerify({
       repoRoot: '/repo',
@@ -464,8 +464,9 @@ describe('a stack whose pack this version does not have', () => {
           'the "swift" stack at "ios" is configured, but this version of ' +
           'guardrails-core has no swift pack, so none of its analyzers ran. ' +
           'The diff auditor still reads its files. Upgrade guardrails-core ' +
-          'to a version that ships the pack, or remove the entry until then.',
-        severity: 'warn',
+          'to a version that ships the pack, or remove the entry until ' +
+          'then. A stack that ran nothing is a failed gate, not a clean one.',
+        severity: 'error',
         fixable: false,
         tool: 'guardrails',
         package: 'typescript@.:guardrails.config.json',

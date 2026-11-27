@@ -131,22 +131,16 @@ changes the goldens exist to catch.
 
 **Meanwhile.** Goldens hold tool text verbatim, at the lockfile's versions.
 
-## 9. A configured stack whose pack is not implemented yet
+## 9. A configured stack whose pack is not implemented yet — DECIDED
 
-**What.** Until the adapters release, `"pack": "swift"` parses but has no
-analyzers. The branch reports one `warn`-severity
-`guardrails/stack-unsupported` violation per such stack and does not block.
+**Decision (the owner, 2026-11-27): error.** Until the adapters release,
+`"pack": "swift"` yields one error-severity `guardrails/stack-unsupported`
+violation and blocks at every rung. The branch first shipped it as a warning.
 
-**Cost.** `warn` means a consumer who configures a Swift stack early (to get
-the `debugTargets` exemption for the auditor rows, which do work) is not
-blocked, and also means a Swift stack silently runs no analyzer apart from
-that warning. `error` is the house rule for a guard that could not run, and
-would make the early configuration impossible.
-
-**Recommendation.** Keep `warn` until the adapters release, then delete the
-path: once `packs/swift.ts` exists every known id has a pack.
-
-**Meanwhile.** `warn`.
+**What follows from it.** A Swift stack cannot be configured early, so the
+auditor's `debugTargets` exemption is not reachable until `packs/swift.ts`
+exists; `#if DEBUG` in a debug target needs a sanction meanwhile. Once every
+known id has a pack, the path can be deleted.
 
 ## 10. `tool-config-escape`: the import-rules file and the runner's config
 

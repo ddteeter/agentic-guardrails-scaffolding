@@ -2874,10 +2874,10 @@ export function isAnalyzerSelected(
 }
 
 /**
- * A configured stack whose pack this version does not have. `warn`, on the
- * footing of `guardrails/analyzer-unknown`: the entry has no effect and the
- * run says so. (The diff auditor is keyed by file extension, not by stack, so
- * the stack's files are still audited.)
+ * A configured stack whose pack this version does not have. An error: a
+ * stack that was asked for and ran nothing must not read as a pass, the same
+ * rule a missing analyzer is held to. (The diff auditor is keyed by file
+ * extension, not by stack, so the stack's files are still audited.)
  */
 function unsupportedStackViolation(stack: StackConfig): Violation {
   return {
@@ -2888,8 +2888,8 @@ function unsupportedStackViolation(stack: StackConfig): Violation {
       `version of guardrails-core has no ${stack.pack} pack, so none of its ` +
       `analyzers ran. The diff auditor still reads its files. Upgrade ` +
       `guardrails-core to a version that ships the pack, or remove the entry ` +
-      `until then.`,
-    severity: 'warn',
+      `until then. A stack that ran nothing is a failed gate, not a clean one.`,
+    severity: 'error',
     fixable: false,
     tool: 'guardrails',
   };

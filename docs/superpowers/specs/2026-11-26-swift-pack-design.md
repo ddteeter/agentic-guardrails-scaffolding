@@ -341,10 +341,13 @@ Each is forced by something in the code as it stands at 0.19.0.
    ever. The commit and push rungs refuse the flag (exit 2) rather than gate
    less than they were asked to.
 6. A configured stack whose pack has no implementation in the running version
-   (`swift`, until the adapters release) yields one `warn`-severity
-   `guardrails/stack-unsupported` violation against `guardrails.config.json`,
-   the same footing as `guardrails/analyzer-unknown`: the entry has no effect
-   and the run says so. The owner may prefer `error`; see `QUESTIONS.md`.
+   (`swift`, until the adapters release) yields one **error**-severity
+   `guardrails/stack-unsupported` violation against `guardrails.config.json`:
+   a stack that was asked for and ran nothing must not read as a pass. (The
+   owner's decision, 2026-11-27; the branch first shipped it as a warning.)
+   The consequence is accepted: a Swift stack cannot be configured before the
+   adapters release, so until then the auditor's `debugTargets` exemption is
+   not reachable and `#if DEBUG` in a debug target needs a sanction.
 7. Every violation an analyzer returns is stamped with `stack` (the pack id)
    **only when the config has a `stacks` key**, so the goldens, which have
    none, do not change. A TypeScript-only `stacks` block therefore reproduces
