@@ -157,7 +157,9 @@ not bypasses. The shapes were checked against git in a throwaway repository
 whose pre-commit hook always fails. One limit, the same for both spellings:
 the gate fires on a git write in command position, so a bypass written
 straight after an opening quote, with no separator before `git`, is still
-not a command to it (`tmux send-keys "git commit -n"`).
+not a command to it (`tmux send-keys "git commit -n"`). That limit was closed later the same
+day (entry 9): a command that names a bypass and git is gated wherever git
+stands.
 
 **Superseded the same day.** A review found seven shapes where the first
 reading of quoted strings let a plain commit past the PreToolUse rung, and
@@ -234,4 +236,44 @@ the commit gate and is denied if the gate finds something; the upgrade notes
 list them and a test pins each. A bypassing command that also changes
 directory, with a git the gate cannot place, is refused outright.
 
-**Open.** One open item, ask the coordinator.
+**Open.** Nothing. What was open here was ruled on the same day: the
+shapes that could be closed were (entry 10), and the rest are stated as
+limits of a text gate in the upgrade notes, by class.
+
+## 10. A second round of bypass shapes, and what I decided against
+
+**What.** Relayed by the sprint coordinator, owner-approved (2026-11-27):
+more shapes on `main`, and seven places where my own reading of quoted
+strings had let a plain commit past the PreToolUse rung.
+
+**Done.** The reading of strings was rebuilt to fail closed: a string is set
+aside only where every program on the line can only read it. The bypass
+detection moved to `hook-bypass.ts` and gained aliases, global options with
+separate values, `-n` behind a quoted separator, config files the command
+points git at, more ways a command moves, and an outright refusal for a
+bypass spelled through quotes or backslashes. The upgrade notes say what is
+caught, which harmless commands are now gated, and what a text gate cannot
+stop.
+
+**Decided against, and why.**
+
+- **A list of git's own subcommands, to tell an alias from a built-in.** I
+  listed the 25 subcommands where `-n` is known to mean something else
+  instead. The other list is 163 names long on git 2.43 and grows with git;
+  a subcommand missing from the short list is only gated more often.
+- **Reading a heredoc fed to any interpreter as a script.** Only a shell's
+  is. A Python or Node heredoc is how agents edit files here, and reading
+  its lines as shell commands would gate every one that mentions a commit.
+  A commit made from inside such a script still meets the git hook.
+- **Modelling PowerShell.** Its quoting differs and there is no pwsh here to
+  test against, so a PowerShell call is read the way every call was before
+  strings were set aside: nothing is emptied.
+- **`sweepStale` at session start still works from the starting directory.**
+  The two warnings beside it now ask from the repository root. The sweep was
+  not in what I was asked to change, and where it should run for a session
+  started in a subdirectory is its own question.
+
+**Cost.** The gate now refuses or gates commands that write nothing, listed
+in the upgrade notes. This session met that cost itself: a command that only
+wrote test text naming a bypass was denied, and the text went through a file
+instead.

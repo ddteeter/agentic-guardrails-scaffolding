@@ -1458,6 +1458,21 @@ core/src/audit.ts`) surfaced that it was a context-free text scan: it flagged
       and found one violation in the hook's own environment. The tests were
       written through a file instead. That is the cost in the upgrade notes,
       met in the first place it could be.
+  - **A second round of bypass shapes, also on `main` (closed 2026-11-27,
+    owner-approved).** The detection moved to `hook-bypass.ts`, where it is
+    tested directly. Now read as a bypass: `-n` on a commit reached through
+    an alias, or on any subcommand it is not known to mean something else
+    for; `-n` written after a separator inside a quoted message; an alias
+    defined in the command; a config file the command points git at
+    (`GIT_CONFIG_GLOBAL`, `GIT_CONFIG_SYSTEM`, `HOME`, `XDG_CONFIG_HOME`,
+    `include.path`, `includeIf`). Now seen in command position: a write
+    behind a global option with a separate value, a script assembled from
+    adjacent quoted pieces, a quoted heredoc fed to a shell. `chdir` in any
+    form and `sudo -D` count as a move. A bypass that only reads as one with
+    its quotes and backslashes removed is refused outright. Every shape was
+    confirmed against git 2.43 first. What a text gate cannot stop (a word
+    built by shell expansion, hook-less plumbing, a script in a file) is
+    stated as a limit in the upgrade notes, by class.
   - **Autofix traded one lint error for another (fixed 2026-11-27, in this
     repo's own config).** PostToolUse `eslint --fix` rewrote
     `readSource: () => undefined` to `readSource: () => {}`:

@@ -51,51 +51,74 @@ supersedes:
   other command is read exactly as it was before, strings and all: a script
   piped to a shell, `sh -c`, `eval`, a variable, `git rebase -x`, `node -e`,
   a string typed into another program.
-- **A hook bypass is recognised in every spelling git accepts.** git takes
-  any unambiguous prefix of a long option and reads a config key in any
-  letter case, so `git commit --no-verif`, `git push --no-veri` and
-  `git -c core.hookspath=/dev/null push` skip the hooks exactly as the
-  documented spellings do. They are now bypasses to the gate as well: a push
-  that carries one is gated at PreToolUse and is never left to the pre-push
-  hook it skips. The config key is matched wherever it is written, which
-  covers `-c`, `--config-env` and the `GIT_CONFIG_*` variables.
-- **A bypass is looked for in the whole command, before anything is
-  dropped.** A quoted heredoc fed to a shell (`bash <<'EOF'`, with
-  `git commit --no-verify` in its body) used to have its body dropped before
-  the check ran. A command that names a bypass anywhere is now read whole.
-- **A bypassing write is gated wherever git stands in the command.** The
-  gate fires on a git write in command position; a write behind a reserved
-  word, a wrapper, a path, a backslash or a line continuation
-  (`if git commit ...`, `env git push`, `/usr/bin/git ...`), or inside a
-  string handed to another program, is still left to the git hooks. With a
-  bypass on it those hooks do not run, so a command that names a bypass and
-  has the word `git` in it is now gated whatever its shape. A push among
-  them is judged over the branch.
+- **A hook bypass is recognised in every spelling git accepts.** The
+  PreToolUse gate leans on the git hooks for any git write it does not
+  recognise, so a command that skips them is the one thing it must see.
+  It now reads as a bypass:
+  - any prefix of `--no-verify` that git accepts, on a commit or a push;
+  - `-n` on `git commit`, alone or in a cluster (`-nm "x"`, `-an`), also
+    after a quoted `;`, `|` or `&` in the same command, and on any
+    subcommand `-n` is not known to mean something else for, since git
+    expands an alias before it reads the flag;
+  - an alias defined in the command (`-c alias.x=...`);
+  - the `hooksPath` key in any letter case, through `-c`, `--config-env` or
+    the `GIT_CONFIG_*` variables;
+  - a config file the command points git at: `GIT_CONFIG_GLOBAL`,
+    `GIT_CONFIG_SYSTEM`, `HOME` or `XDG_CONFIG_HOME` set for the command, or
+    an `include.path` / `includeIf` key.
+
+  `-n` on `git push`, `clean`, `add`, `log`, `fetch` and twenty more of
+  git's own subcommands is not a bypass, and neither is `git commit -mn`,
+  which is a message. A push that names a bypass is never left to the
+  pre-push hook it skips.
+
+- **A bypassing write is gated wherever git stands in the command.** A
+  command that names a bypass and has the word `git` in it is gated whatever
+  its shape: after a reserved word, a wrapper, a path or a backslash, across
+  a line continuation, inside a string, a heredoc or a script piped to a
+  shell. The bypass is looked for in the raw command, before any heredoc
+  body or string is set aside.
 - **That rule gates some commands that write nothing.** It does not model
   the shell, so these now run the commit gate over the staged files, and are
   denied if it finds something: `git grep hooksPath`,
   `git config --get core.hooksPath`, `git log --grep=--no-verify`,
   `gh pr create --body "never run git commit --no-verify"`,
-  `echo "git commit -n"`, `grep -n hookspath .git/config`, and a heredoc or a
-  script that writes text naming both a bypass and git. A command that names
-  a bypass and no git (`grep -rn hooksPath src`) is not gated. To read or
-  search for these words without the gate, use a tool that is not a shell
-  command, or put the text in a file first.
+  `echo "git commit -n"`, `grep -n hookspath .git/config`,
+  `git config alias.co checkout`, `git config --global include.path <file>`,
+  any git command run with `HOME=` set, and a heredoc or a script that
+  writes text naming both a bypass and git. A command that names a bypass
+  and no git (`grep -rn hooksPath src`) is not gated. To read or search for
+  these words without the gate, use a tool that is not a shell command, or
+  put the text in a file first.
 - **A bypassing write the gate cannot place is refused if the command also
   moves.** Where git stands out of the gate's reading (behind a wrapper, in
   a string, a heredoc or a substitution) and the command also says `cd`,
-  `pushd`, `popd`, `-C`, `--git-dir`, `--work-tree`, `GIT_DIR` or
-  `GIT_WORK_TREE`, the repository it writes to cannot be known, so it is
-  denied instead of being checked against the wrong one. This also denies
-  `cd packages && git commit --no-verify -m "about git"`: the word in the
-  message counts as a git the gate did not place.
-- **`git commit -n` is read as the hook bypass it is.** `-n` is the short
-  form of `--no-verify` for `git commit`, alone or in a cluster (`-nm "x"`,
-  `-an`). A command that names it anywhere keeps the wider reading the
-  bypass check gives `--no-verify`, and a push that carries one is gated at
-  PreToolUse instead of being left to its hook. `-n` on any other command
-  (`git push -n`, `git clean -n`, `git add -n`, `head -n`) is not a bypass,
-  and neither is `git commit -mn`, which is a message.
+  `pushd`, `popd`, `chdir`, `-C`, `-D`, `--git-dir`, `--work-tree`,
+  `GIT_DIR` or `GIT_WORK_TREE`, the repository it writes to cannot be known,
+  so it is denied instead of being checked against the wrong one. This also
+  denies `cd packages && git commit --no-verify -m "about git"`: the word in
+  the message counts as a git the gate did not place.
+- **A bypass spelled through quotes or backslashes is refused.** A shell
+  command that names a bypass and git only once its quotes and backslashes
+  are taken out is denied outright, with a message that says why. A commit
+  whose whole message is a quoted flag (`-m '-n'`) is refused by the same
+  rule.
+- **More git writes are seen in command position.** A write behind a global
+  option that takes a separate value (`git --namespace x commit`), a script
+  put together from adjacent quoted pieces, and a quoted heredoc fed to a
+  shell (`bash <<'EOF'`) are gated like any other commit or push.
+- **What this gate does not stop.** It reads the text of a command, so it
+  cannot see what the shell builds or what a file holds. These are limits,
+  not oversights:
+  - a bypass word, or the word `git`, built by shell expansion: a variable,
+    a command substitution, an escape sequence;
+  - git plumbing that transfers objects without running the pre-push hook;
+  - a script run from a file, or a package script, that commits or pushes.
+
+  The git hooks still run for all but the first two, and CI runs on every
+  push. Instructions that forbid a bypass should say so in words, not rely
+  on this gate to catch every way of writing one.
+
 - **A duplication pointer says who extracts.** When a manifest holds
   `fallow/code-duplication` findings, a pointer that says to spawn a fixer
   adds that extraction into a NEW module is the main agent's to do. The
