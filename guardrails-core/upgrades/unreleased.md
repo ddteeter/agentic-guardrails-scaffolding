@@ -1,3 +1,65 @@
 ---
 version: unreleased
+supersedes:
+  - search: 'nosession-commit'
+    because: 'if it tells agents to delete `.guardrails/state/nosession-commit.last.json` when a commit is refused for a fixer that is "already working", a commit gate run from a git hook no longer claims the files it names, so that refusal no longer happens and the file should be left alone'
+  - search: '.stryker-tmp'
+    because: 'if it tells agents to remove `.stryker-tmp/` before committing because dependency-cruiser reports the copied files, add the sandbox to the `exclude` in `.dependency-cruiser.cjs` instead (see "What to wire")'
 ---
+
+# Unreleased — what changed for an agent
+
+## Behaviour that changed
+
+- **A blocked commit counts, and hands a fixer, only what blocks.** The
+  commit-gate pointer (`N violation(s), M added suppression(s)`) counts
+  error-severity violations, and the manifest it names holds those and the
+  added suppressions. Warnings are still printed by `gate --mode=commit`, and
+  are in neither the count nor the manifest. Before, seven "Nothing to do"
+  mutation deferrals beside two errors read as nine violations to fix.
+- **A commit rung that deferred mutation testing says what to do (#229).**
+  When the mutation lock is busy and the commit rung defers, its output and
+  the PreToolUse deny now say how many files were deferred and to run
+  `guardrails gate --mode=push` in the background before reporting done. The
+  deferral is still a warning and still does not block.
+- **The PreToolUse commit gate ignores a git write inside a quoted string.**
+  `ps aux | grep -E "eslint|tsc|git commit"` no longer runs the commit gate.
+  A real write is matched as before, and anything the reader of quotes does
+  not model is too: an unterminated string, `$'...'`, a command substitution
+  inside double quotes, any heredoc, a string handed to a shell (`sh -c`,
+  `eval`, `git rebase --exec`), and any command that names `--no-verify` or
+  `hooksPath`. A commit typed into another program as a plain string (through
+  `tmux send-keys`, say) used to match by accident and no longer does; the
+  git hook still runs for it.
+- **A duplication pointer says who extracts.** When a manifest holds
+  `fallow/code-duplication` findings, a pointer that says to spawn a fixer
+  adds that extraction into a NEW module is the main agent's to do. The
+  fixer's scope is unchanged: it may edit only the files the manifest names.
+- **A commit gate run from a git hook claims no files (#216).** It has no
+  session and spawns no fixer, so it no longer leaves a lease that made the
+  session's next commit wait for one.
+- **A CLI that resolved from outside the repository says what to do.** Where
+  the checkout has no guardrails-core: `npm ci`. Where it has one the command
+  did not reach: `npm rebuild guardrails-core`, or `node <path>`.
+
+## Instructions this supersedes
+
+- **Deleting a state file to get a commit through.** If an instruction says
+  to remove `.guardrails/state/nosession-commit.last.json` (or `leases.json`)
+  when the gate says a fixer is already working, drop it.
+- **Removing `.stryker-tmp/` before a commit**, where the reason was
+  dependency-cruiser. Exclude it in the config instead.
+
+## What to wire
+
+`guardrails init` seeds `.dependency-cruiser.cjs` once and never rewrites it,
+so a config seeded before this release still cruises a leftover stryker
+sandbox (#55). Add `\\.stryker-tmp` to its `exclude`:
+
+```js
+exclude: {
+  path: '(^|/)(dist|build|coverage|node_modules|\\.stryker-tmp)/|^\\.claude/worktrees/',
+},
+```
+
+Nothing else.

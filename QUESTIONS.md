@@ -28,9 +28,10 @@ exactly those three things and changes nothing in the repository.
 
 ## 2. Two things the brief points at are not on `main`
 
-**What.** `docs/superpowers/specs/2026-11-27-hardening-design.md` does not
-exist, and nothing in the repository is called a parity golden (no test, no
-fixture, no mention outside old plans).
+**What.** `docs/superpowers/specs/2026-11-27-hardening-design.md` and
+`guardrails-core/docs/releasing.md` do not exist, and nothing in the
+repository is called a parity golden (no test, no fixture, no mention outside
+old plans).
 
 **Cost.** I could not read the design notes, and "keep the parity goldens
 green" had nothing specific to bind to.
@@ -84,3 +85,56 @@ CLI, which the code avoids on purpose today, so it is your call.
 
 **Meanwhile.** Shipped the two disk checks, limited to a checkout that has
 `guardrails-plugin/agents/` so that no consumer sees a new line.
+
+## 5. Item 1 stops at the commit rung; the Stop rung has the same shape
+
+**What.** The Stop gate also counts warnings in its pointer ("N guardrail
+violation(s)") and writes them to the manifest its fixer reads. It also
+tallies them into the recurrence counts, so a deferral present on three
+blocked turns would be reported as a rule that "has failed verification in 3
+separate turns".
+
+**Cost.** With the lock busy at the Stop rung, a fixer is still handed
+"Nothing to do" entries, and the recurrence memory can be told about a rule
+nobody broke.
+
+**Recommend.** Apply the same filter where the Stop gate builds its manifest.
+It is a few lines, but it changes the digest and the tallies the fix loop is
+measured by, which is why I did not fold it into a commit titled for the
+commit rung.
+
+**Meanwhile.** Fixed the commit rung only, as the item says, and noted the
+Stop rung as open in `plan.md`.
+
+## 6. Item 3 gives up one accidental catch
+
+**What.** Before, a commit inside any quoted string was gated whenever a
+separator happened to precede `git` in it. Now a quoted string is text unless
+a shell is handed it (`-c`, `eval`, `--exec`) or the command names a hook
+bypass anywhere. So `tmux send-keys "cd x; git commit -m y" Enter` is no
+longer gated at PreToolUse.
+
+**Cost.** That commit still meets the git hook, so nothing is unchecked. The
+one flag that would skip the hook and is not recognised is `git commit -n`,
+the short form of `--no-verify`: the existing bypass pattern does not know it
+either, with or without quotes.
+
+**Recommend.** Teach the bypass pattern `-n` for `commit` in its own change,
+with its own tests; it is a gap on `main` today, in unquoted commands too.
+
+**Meanwhile.** Kept every command that names `--no-verify` or `hooksPath`
+on the old reading, so no bypass the gate caught before is missed now.
+
+## 7. Upgrade notes were not asked for; I wrote them
+
+**What.** The repository's convention is that a change an agent can see adds
+to `guardrails-core/upgrades/unreleased.md`, and item 8 changes a seed that
+is never rewritten, so an existing adopter only gets it by being told.
+
+**Cost.** One more file touched on this branch, which the throughput session
+may also be editing.
+
+**Recommend.** Keep them; drop the commit if you would rather write them at
+release time.
+
+**Meanwhile.** They are in their own commit, last on the branch.
