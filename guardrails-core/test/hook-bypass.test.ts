@@ -180,6 +180,19 @@ describe('hasHookBypass: -n after a separator that is inside quotes', () => {
     ).toEqual([]);
   });
 
+  it('reads -n written after a separator escaped with a backslash', () => {
+    // `a\;b` is one word to the shell: the backslash makes the `;` a
+    // character. The scan stopped at it all the same.
+    expect(
+      missed([
+        String.raw`env git commit -m a\;b -n`,
+        String.raw`git ci -m a\|b -n`,
+        String.raw`git commit -m a\&b -n`,
+        String.raw`git commit -m a\;b\|c -m "d; e" -n`,
+      ]),
+    ).toEqual([]);
+  });
+
   it('still stops at a separator that is one', () => {
     expect(
       caught([

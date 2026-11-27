@@ -178,17 +178,21 @@ const INCLUDES_A_CONFIG_FILE = /\binclude(?:if)?\./i;
  */
 export function hasHookBypass(command: string): boolean {
   const text = command.replaceAll('\\\n', '');
+  // The scan for `-n` stops at a separator, and a separator escaped with a
+  // backslash is not one: `a\;b` is a single word to the shell. Those are
+  // taken out first, so the scan runs on to the flag written after them.
+  const scanned = text.replaceAll(/\\[;&|]/g, '');
   return (
     NO_VERIFY.test(text) ||
     HOOKS_PATH.test(text) ||
     DEFINES_AN_ALIAS.test(text) ||
     NAMES_A_CONFIG_FILE.test(text) ||
     INCLUDES_A_CONFIG_FILE.test(text) ||
-    hasShortNoVerify(text) ||
+    hasShortNoVerify(scanned) ||
     // And again with the strings emptied: `-m 'a;b' -n` has a separator in
     // its message that is not one, and the scan above stops at it. Both
     // readings, because this one drops whatever follows an unclosed quote.
-    hasShortNoVerify(withoutQuotedText(text))
+    hasShortNoVerify(withoutQuotedText(scanned))
   );
 }
 
