@@ -3,8 +3,10 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   statSync,
+  symlinkSync,
   utimesSync,
   writeFileSync,
 } from 'node:fs';
@@ -3453,6 +3455,36 @@ describe('sanctions-check placement guard', () => {
   });
 });
 
+/**
+A CLI path that is in no test's repository.
+*/
+const ELSEWHERE_CLI = path.join(
+  tmpdir(),
+  'guardrails-elsewhere',
+  'node_modules',
+  'guardrails-core',
+  'dist',
+  'cli.mjs',
+);
+
+/**
+ * A guardrails-core under `nodeModules` that resolves the way the hook command
+ * imports it, and the real path its `./cli` export lands on.
+ */
+function writeOwnInstall(nodeModules: string): string {
+  const packageRoot = path.join(nodeModules, 'guardrails-core');
+  mkdirSync(path.join(packageRoot, 'dist'), { recursive: true });
+  writeFileSync(
+    path.join(packageRoot, 'package.json'),
+    JSON.stringify({
+      name: 'guardrails-core',
+      exports: { './cli': './dist/cli.mjs' },
+    }),
+  );
+  writeFileSync(path.join(packageRoot, 'dist', 'cli.mjs'), '');
+  return realpathSync(path.join(packageRoot, 'dist', 'cli.mjs'));
+}
+
 describe('out-of-repo self-check', () => {
   it('refuses to run when resolved from outside the repository', async () => {
     // Node's node_modules walk does not stop at the repo, so an install in an
@@ -3476,6 +3508,60 @@ describe('out-of-repo self-check', () => {
     expect(code).not.toBe(0);
     expect(errors.join('')).toContain(outside);
     expect(errors.join('')).toContain(root);
+  });
+
+  /**
+   * The dogfooding finding: in a fresh worktree `npx guardrails-core` ran an
+   * enclosing checkout's build, and the refusal said only "npm install" -- in
+   * a checkout that HAD its own install and lacked nothing but the bin link.
+   */
+  it('says to install when this checkout has no guardrails-core', async () => {
+    mkdirSync(path.join(root, '.git'));
+
+    await runCommand('verify', [], dependencies({ selfPath: ELSEWHERE_CLI }));
+
+    const said = errors.join('');
+    expect(said).toContain(
+      `pointing outside the repo. Run \`npm ci\` in ${root} to install it ` +
+        `there, then retry.\n`,
+    );
+    expect(said).not.toContain('npm rebuild');
+  });
+
+  it('says how to reach the copy this checkout already has', async () => {
+    mkdirSync(path.join(root, '.git'));
+    const own = writeOwnInstall(path.join(root, 'node_modules'));
+
+    await runCommand('verify', [], dependencies({ selfPath: ELSEWHERE_CLI }));
+
+    const said = errors.join('');
+    expect(said).toContain(
+      `pointing outside the repo. ${root} has its own copy, at ${own}, ` +
+        'which this command did not reach: `npx guardrails-core` walks up ' +
+        'to an enclosing directory when node_modules/.bin/guardrails-core ' +
+        `is missing. Run \`npm rebuild guardrails-core\` in ${root} to ` +
+        `create that link, or run \`node ${own}\` directly.\n`,
+    );
+    expect(said).not.toContain('npm ci');
+  });
+
+  it('does not count a linked install that points outside as its own', async () => {
+    mkdirSync(path.join(root, '.git'));
+    const elsewhere = mkdtempSync(path.join(tmpdir(), 'guardrails-linked-'));
+    try {
+      writeOwnInstall(elsewhere);
+      mkdirSync(path.join(root, 'node_modules'));
+      symlinkSync(
+        path.join(elsewhere, 'guardrails-core'),
+        path.join(root, 'node_modules', 'guardrails-core'),
+      );
+
+      await runCommand('verify', [], dependencies({ selfPath: ELSEWHERE_CLI }));
+
+      expect(errors.join('')).toContain(`Run \`npm ci\` in ${root}`);
+    } finally {
+      rmSync(elsewhere, { recursive: true, force: true });
+    }
   });
 
   it('runs normally when resolved from inside the repository', async () => {

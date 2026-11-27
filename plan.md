@@ -1347,6 +1347,19 @@ core/src/audit.ts`) surfaced that it was a context-free text scan: it flagged
     on: run `guardrails gate --mode=push` in the background before reporting
     done (#229). Not changed: the Stop rung's pointer and manifest still
     include warnings; same shape, left open.
+  - **A fresh install had no `node_modules/.bin/guardrails-core` (fixed
+    2026-11-27).** The workspace's `bin` points at `dist/cli.mjs`, which only
+    `prepare` builds, after npm has linked bins; npm skips a bin whose target
+    is missing. In a new worktree `npx guardrails-core …` then walked up to an
+    enclosing checkout's build and was refused as "resolved from … which is
+    outside". `prepare` now ends with `npm rebuild guardrails-core
+--ignore-scripts`, which is npm's own bin-linking pass (0.7s, and the
+    right shims on every platform), so one `npm ci` is enough;
+    `fresh-install-bin.test.ts` drives it through real npm in a throwaway
+    workspace, with a control that reproduces the missing link. The refusal
+    now says what to do: `npm ci` where the checkout has no copy, and
+    `npm rebuild guardrails-core` (or `node <path>`) where it has one that the
+    command did not reach.
 
 ## Roadmap: analyzer opt-in (pack composition, not all-or-nothing) — shipped
 

@@ -27,7 +27,7 @@
     "check:graph:full": "fallow --coverage coverage/coverage-final.json",
     "depcruise": "depcruise --output-type err .",
     "smoke:tarball": "node scripts/smoke-tarball.mjs",
-    "prepare": "husky && npm run build"
+    "prepare": "husky && npm run build && npm rebuild guardrails-core --ignore-scripts"
   },
   "lint-staged": {
     "*.{ts,tsx}": [

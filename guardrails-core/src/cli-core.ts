@@ -958,6 +958,18 @@ function resolveCliFrom(repoRoot: string): { cli?: string } {
 }
 
 /**
+ * `repoRoot`'s OWN guardrails-core CLI: the one that resolves from it and
+ * lives inside it. `undefined` when nothing resolves, and when what resolves
+ * belongs to an enclosing directory or a link pointing outside.
+ */
+function ownCli(repoRoot: string): string | undefined {
+  const { cli } = resolveCliFrom(repoRoot);
+  return cli !== undefined && isWithinRepo(realpathSync(repoRoot), cli)
+    ? cli
+    : undefined;
+}
+
+/**
  * The deny for a write into a repository that adopted guardrails but has no
  * guardrails-core of its own (#115's remedy, naming the target).
  */
@@ -986,8 +998,7 @@ async function delegateToTarget(
   repoRoot: string,
   dialect: Dialect,
 ): Promise<void> {
-  const { cli } = resolveCliFrom(repoRoot);
-  if (cli === undefined || !isWithinRepo(realpathSync(repoRoot), cli)) {
+  if (ownCli(repoRoot) === undefined) {
     if (existsSync(path.join(repoRoot, CONFIG_FILE_NAME))) {
       denyPreToolUse(dependencies, targetInstallRemedy(repoRoot), dialect);
     }
@@ -2066,7 +2077,32 @@ function outsideRepoMessage(dependencies: CliDependencies): string | undefined {
     `${repoRoot}. This happens when guardrails-core comes from an ` +
     `ancestor directory's node_modules, or from a linked install ` +
     `(npm link, or a file: dependency) pointing outside the repo. ` +
-    `Install guardrails-core in this repository (npm install) instead.\n`
+    `${outsideRemedy(repoRoot)}\n`
+  );
+}
+
+/**
+ * What to do about a CLI that resolved from outside `repoRoot`.
+ *
+ * Two different situations used to get one answer, "npm install". A checkout
+ * with no guardrails-core needs exactly that. But a fresh clone of a repo
+ * whose bin target is BUILT (this one) has its own copy and no
+ * `node_modules/.bin` link to it -- npm links bins before `prepare` builds the
+ * target, and skips a bin whose target is missing -- so `npx guardrails-core`
+ * walks up to an enclosing checkout. Installing again is not what that needs;
+ * the link is, and the copy can be run by path meanwhile.
+ */
+function outsideRemedy(repoRoot: string): string {
+  const own = ownCli(repoRoot);
+  if (own === undefined) {
+    return `Run \`npm ci\` in ${repoRoot} to install it there, then retry.`;
+  }
+  return (
+    `${repoRoot} has its own copy, at ${own}, which this command did not ` +
+    `reach: \`npx guardrails-core\` walks up to an enclosing directory when ` +
+    `node_modules/.bin/guardrails-core is missing. Run ` +
+    `\`npm rebuild guardrails-core\` in ${repoRoot} to create that link, or ` +
+    `run \`node ${own}\` directly.`
   );
 }
 
