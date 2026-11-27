@@ -148,6 +148,22 @@ function hasShortNoVerify(text: string): boolean {
 const DEFINES_AN_ALIAS = /\balias\./i;
 
 /**
+ * A config file the command points git at: by a variable that names one
+ * (`GIT_CONFIG_GLOBAL`, `GIT_CONFIG_SYSTEM`), by moving the directory git
+ * looks for one in (`HOME`, `XDG_CONFIG_HOME`), or by an `include` key.
+ *
+ * `core.hooksPath` can be in that file, and then the command's text names no
+ * bypass at all. The gate cannot read the file -- it may not exist yet -- and
+ * its own question to git about which hook will run is asked without the
+ * command's environment. So pointing git at another config is itself taken
+ * for a way past the hooks. Variables are matched as assignments and by
+ * their exact names; a config key is case-insensitive to git, so here too.
+ */
+const NAMES_A_CONFIG_FILE =
+  /\b(?:GIT_CONFIG_(?:GLOBAL|SYSTEM)|(?:XDG_CONFIG_)?HOME)=/;
+const INCLUDES_A_CONFIG_FILE = /\binclude(?:if)?\./i;
+
+/**
  * Does this command name a way past the git hooks, anywhere in it?
  *
  * Asked of the raw command, with its line continuations joined: the shell
@@ -160,6 +176,8 @@ export function hasHookBypass(command: string): boolean {
     NO_VERIFY.test(text) ||
     HOOKS_PATH.test(text) ||
     DEFINES_AN_ALIAS.test(text) ||
+    NAMES_A_CONFIG_FILE.test(text) ||
+    INCLUDES_A_CONFIG_FILE.test(text) ||
     hasShortNoVerify(text) ||
     // And again with the strings emptied: `-m 'a;b' -n` has a separator in
     // its message that is not one, and the scan above stops at it. Both

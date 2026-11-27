@@ -6527,6 +6527,10 @@ describe('pretooluse leaves a push to the pre-push hook that gates it', () => {
     'git --config-env=core.hookspath=NOWHERE push',
     // In a quoted heredoc fed to a shell, whose body is no longer dropped.
     "bash <<'EOF'\ngit push --no-verify\nEOF",
+    // Where the hooks path can be in a file the command points git at.
+    'GIT_CONFIG_GLOBAL=/tmp/other.gitconfig git push',
+    'HOME=/tmp/elsewhere git push',
+    'git -c include.path=/tmp/other.gitconfig push',
     // Where git is not in command position.
     'env git push --no-verify',
     '! git push --no-verif',

@@ -171,3 +171,54 @@ describe('hasHookBypass: -n after a separator that is inside quotes', () => {
     expect(missed(["git commit -n -m 'unclosed"])).toEqual([]);
   });
 });
+
+/**
+ * `core.hooksPath` does not have to be in the command. It can be in a config
+ * file the command points git at, and then the text names no bypass at all:
+ * the gate's own question to git ("which pre-push hook will run?") is asked
+ * without the command's environment and gets the ordinary answer.
+ */
+describe('hasHookBypass: a config file the command points git at', () => {
+  it('reads a variable that names git a config file, or moves its home', () => {
+    expect(
+      missed([
+        'GIT_CONFIG_GLOBAL=/tmp/other.gitconfig git push',
+        'GIT_CONFIG_SYSTEM=/tmp/other.gitconfig git commit -m x',
+        'HOME=/tmp/elsewhere git push',
+        'XDG_CONFIG_HOME=/tmp/elsewhere git push',
+        'env HOME=/tmp/elsewhere git push',
+        'export GIT_CONFIG_GLOBAL=/tmp/other.gitconfig; git push',
+        'HOME= git push',
+      ]),
+    ).toEqual([]);
+  });
+
+  it('reads an include, in any letter case, by any route', () => {
+    expect(
+      missed([
+        'git -c include.path=/tmp/other.gitconfig push',
+        'git -c INCLUDE.PATH=/tmp/other.gitconfig push',
+        'git -c includeIf.gitdir:/r/.path=/tmp/other.gitconfig commit -m x',
+        'git -c includeif.onbranch:main.path=/tmp/x push',
+        'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=include.path GIT_CONFIG_VALUE_0=/tmp/x git push',
+        // The price: writing an include into the config names one too.
+        'git config --global include.path ~/.gitconfig.local',
+      ]),
+    ).toEqual([]);
+  });
+
+  it('does not read a variable or a word that only resembles those', () => {
+    expect(
+      caught([
+        'cd $HOME && git status',
+        'echo "$HOME" && git push',
+        'MYHOME=/tmp/x git push',
+        'GIT_CONFIG_NOSYSTEM=1 git push',
+        'GIT_CONFIG_GLOBALS=/tmp/x git push',
+        'git log --grep=include',
+        'git log --grep=includes.',
+        'git push origin HOME',
+      ]),
+    ).toEqual([]);
+  });
+});
