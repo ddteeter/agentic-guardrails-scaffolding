@@ -188,6 +188,17 @@ export function blockingViolations(
 }
 
 /**
+ * The violations that do NOT block: the advisories. Printed where there is a
+ * terminal to print them to; where there is only a pointer, counted in it, so
+ * that a warning set aside from the manifest is not set aside from view.
+ */
+export function advisoryViolations(
+  violations: readonly Violation[],
+): Violation[] {
+  return violations.filter((violation) => violation.severity !== 'error');
+}
+
+/**
  * Recurrence memory keys on `package:ruleId` in workspace layouts so a
  * recurring mistake in one package isn't diluted across the repo; on the
  * bare `ruleId` in single-repo layouts.

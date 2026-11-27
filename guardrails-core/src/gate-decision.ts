@@ -393,7 +393,7 @@ function countByRule(violations: readonly Violation[]): Record<string, number> {
   return counts;
 }
 
-function ruleBreakdown(violations: readonly Violation[]): string {
+export function ruleBreakdown(violations: readonly Violation[]): string {
   const ordered = Object.entries(countByRule(violations)).toSorted(
     (left, right) => {
       const byCount = right[1] - left[1];

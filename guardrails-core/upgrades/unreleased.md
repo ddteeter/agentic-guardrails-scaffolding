@@ -29,6 +29,11 @@ supersedes:
   same way, so a `guardrails report` taken across this version compares
   rows counted two ways. Whether a turn is blocked is unchanged: a turn with
   only warnings ended before and ends now.
+- **A blocked pointer counts the warnings it set aside.** Warnings are in
+  neither the manifest nor the count, and a blocked PreToolUse or Stop
+  prints nothing but its pointer, so an advisory raised on a blocked
+  iteration was seen by nobody. The pointer now ends
+  `N warning(s) did not block and are not in the manifest: <rule> ×n, …`.
 - **A commit rung that deferred mutation testing says what to do (#229).**
   When the mutation lock is busy and the commit rung defers, its output and
   the PreToolUse deny now say how many files were deferred and to run

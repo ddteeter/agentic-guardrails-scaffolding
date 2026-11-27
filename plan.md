@@ -1493,6 +1493,17 @@ core/src/audit.ts`) surfaced that it was a context-free text scan: it flagged
     also builds the fixer agents. No marker is written, because that refusal
     runs in a copy of the CLI the code does not trust; so a later gate in
     that session still names the fixer plainly.
+  - **Three message findings from review of the two entries above (fixed
+    2026-11-27).** A pointer that said to WAIT for another rung's fixer also
+    got the missing-fixer note's "resolve the violations yourself", which is
+    an instruction to edit under a fixer that holds the files (#76); the
+    note is now withheld from a wait, and names its manifest by path instead
+    of "that manifest". Warnings set aside from the manifest were also set
+    aside from view on a blocked PreToolUse or Stop, which prints only its
+    pointer; the pointer now counts them by rule. And `session-start` asked
+    about unbuilt fixers from the directory the session started in, so one
+    opened below the repository's root was told nothing; it asks from the
+    root.
   - **A duplication fix needed a new file, and the fixer may not create one
     (pointer fixed 2026-11-27; the scope-lock is unchanged).** Four
     `fallow/code-duplication` findings between two new adapters wanted a

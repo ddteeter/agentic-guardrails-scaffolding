@@ -4690,17 +4690,31 @@ describe('session-start: fixer agents the build has not written', () => {
     await runCommand('session-start', [], dependencies());
     expect(out.join('') + errors.join('')).toBe('');
   });
+
+  it('says it to a session that starts in a subdirectory of the repository', async () => {
+    // counts-and-leases-3: the source and the generated copies are named
+    // from the repository's root, and a session opened below it was told
+    // nothing.
+    generatesFixerAgents();
+    mkdirSync(path.join(root, '.git'));
+    const below = path.join(root, 'guardrails-core', 'src');
+    mkdirSync(below, { recursive: true });
+    await runCommand('session-start', [], dependencies({ cwd: below }));
+    expect(errors.join('')).toContain(
+      'guardrails-plugin/agents/ (guardrail-fixer, guardrail-fixer-thorough). ',
+    );
+  });
 });
 
 /**
 The note a pointer carries when the fixer it names has no definition here.
 */
-const noDefinitionFor = (fixer: string): string =>
+const noDefinitionFor = (fixer: string, manifest: string): string =>
   ` NOTE: this checkout has no definition for ${fixer} ` +
   `(.claude/agents/${fixer}.md is missing: \`npm run build\` generates it, ` +
   'and a session loads its agents when it starts). If you cannot spawn it, ' +
-  'read that manifest and resolve the violations yourself; then build and ' +
-  'start a new session.';
+  `read .guardrails/state/${manifest}.last.json and resolve the violations ` +
+  'yourself; then build and start a new session.';
 
 /**
  * A commit blocked by `rules`, one finding each on `src/foo.ts`. The eslint
@@ -4807,12 +4821,66 @@ async function deniedCommitReason(...dialect: string[]): Promise<string> {
   );
 }
 
+/**
+An eslint run with one error and two warnings, for a Stop to be blocked by.
+*/
+function errorAndWarningsExec(): Exec {
+  const eslintJson = JSON.stringify([
+    {
+      filePath: path.join(root, 'src/foo.ts'),
+      messages: [
+        { ruleId: 'no-console', severity: 2, message: 'x', line: 2 },
+        { ruleId: 'prefer-const', severity: 1, message: 'y', line: 3 },
+        { ruleId: 'prefer-const', severity: 1, message: 'y', line: 4 },
+      ],
+    },
+  ]);
+  const inner = failingVerifyExec();
+  return (command, args, options) =>
+    [command, ...args].join(' ').includes('eslint')
+      ? Promise.resolve(ok(eslintJson))
+      : inner(command, args, options);
+}
+
+/**
+What a Stop over `exec` prints.
+*/
+async function stopOn(exec: Exec): Promise<string> {
+  await runCommand(
+    'gate',
+    ['--mode=stop'],
+    dependencies({
+      exec,
+      readStdin: () => Promise.resolve(JSON.stringify({ cwd: root })),
+    }),
+  );
+  return out.join('');
+}
+
+describe('a blocked Stop that also raised warnings', () => {
+  it('says how many warnings did not block, after the pointer', async () => {
+    const printed = JSON.parse(await stopOn(errorAndWarningsExec())) as {
+      reason: string;
+    };
+    expect(
+      printed.reason.endsWith(
+        'Then try to stop again. 2 warning(s) did not block and are not in ' +
+          'the manifest: prefer-const ×2.',
+      ),
+    ).toBe(true);
+  });
+
+  it('says nothing about warnings when the turn raised none', async () => {
+    expect(await stopOn(failingVerifyExec())).not.toContain('warning(s)');
+  });
+});
+
 describe('a gate that names a fixer this checkout has not built', () => {
   it('tells a blocked Stop what to do when the fixer cannot be spawned', async () => {
     generatesFixerAgents();
     const reason = await blockedStopReason();
     expect(reason).toContain(
-      `Then try to stop again.${noDefinitionFor('guardrail-fixer')}`,
+      `Then try to stop again.${noDefinitionFor('guardrail-fixer', 'default')}`,
     );
     expect(reason.endsWith('start a new session.')).toBe(true);
   });
@@ -4833,7 +4901,7 @@ describe('a gate that names a fixer this checkout has not built', () => {
     generatesFixerAgents();
     const reason = await deniedCommitReason();
     expect(reason).toContain(
-      `then commit again.${noDefinitionFor('guardrail-fixer')}`,
+      `then commit again.${noDefinitionFor('guardrail-fixer', 'nosession-commit')}`,
     );
     expect(reason.endsWith('start a new session.')).toBe(true);
   });
@@ -4850,6 +4918,49 @@ describe('a gate that names a fixer this checkout has not built', () => {
     expect(reason.endsWith('then commit again.')).toBe(true);
   });
 
+  /**
+   * counts-and-leases-1. "Do NOT spawn a fixer yet ... wait for that one to
+   * report" and "resolve the violations yourself" cannot both be said: the
+   * second sends the agent into files the first says a fixer is editing.
+   */
+  it('does not tell a denied commit to resolve them itself while it is told to wait', async () => {
+    generatesFixerAgents();
+    const directory = stateDirectory(root);
+    mkdirSync(directory, { recursive: true });
+    saveLeases(directory, [
+      {
+        owner: 'stop:sid',
+        manifestPath: '.guardrails/state/sid.last.json',
+        fixerAgent: 'guardrail-fixer-thorough',
+        files: ['src/foo.ts'],
+        grantedAt: Date.now(),
+        deferrals: 0,
+      },
+    ]);
+    const reason = await deniedCommitReason();
+    expect(reason).toContain('do NOT spawn a fixer yet');
+    expect(reason.endsWith('to report, then commit again.')).toBe(true);
+  });
+
+  it('does not tell a blocked Stop to resolve them itself while it is told to wait', async () => {
+    generatesFixerAgents();
+    const directory = stateDirectory(root);
+    mkdirSync(directory, { recursive: true });
+    saveLeases(directory, [
+      {
+        owner: 'commit:default-commit',
+        manifestPath: '.guardrails/state/default-commit.last.json',
+        fixerAgent: 'guardrail-fixer-thorough',
+        files: ['src/foo.ts'],
+        grantedAt: Date.now(),
+        deferrals: 0,
+      },
+    ]);
+    const reason = await blockedStopReason();
+    expect(reason).toContain('do NOT spawn a fixer yet');
+    expect(reason.endsWith('to report, then try to stop again.')).toBe(true);
+  });
+
   it('says it under the findings a git hook prints', async () => {
     generatesFixerAgents();
     await runCommand(
@@ -4858,7 +4969,7 @@ describe('a gate that names a fixer this checkout has not built', () => {
       blockingCommitDependencies('block'),
     );
     expect(errors.at(-1)).toBe(
-      `guardrails:${noDefinitionFor('guardrail-fixer')}\n`,
+      `guardrails:${noDefinitionFor('guardrail-fixer', 'nosession-commit')}\n`,
     );
   });
 
@@ -6060,6 +6171,26 @@ describe('a blocked commit while the mutation lock is busy', () => {
     expect(
       reason.endsWith('guardrail-fixer to report, then commit again.'),
     ).toBe(true);
+  });
+
+  /**
+   * counts-and-leases-2. A warning is in neither the manifest nor the count,
+   * and a blocked PreToolUse prints nothing but its pointer, so an advisory
+   * raised on a blocked iteration was seen by nobody.
+   */
+  it('says in the deny how many warnings did not block, and which rules', async () => {
+    configureBusyLockRepo({});
+    expect(await commitThroughBash(busyLockWithAnError())).toContain(
+      ' 2 warning(s) did not block and are not in the manifest: ' +
+        'guardrails/mutation-deferred ×2.',
+    );
+  });
+
+  it('says nothing about warnings in a deny that has none', async () => {
+    configureBusyLockRepo({ stryker: 'off' });
+    expect(await commitThroughBash(busyLockWithAnError())).not.toContain(
+      'warning(s)',
+    );
   });
 
   it('says nothing about the push rung in a deny with no deferral', async () => {

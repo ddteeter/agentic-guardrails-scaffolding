@@ -78,6 +78,7 @@ import {
 } from './state.js';
 import {
   ADDED_SUPPRESSION_RULE,
+  advisoryViolations,
   blockingViolations,
   type Violation,
 } from './violation.js';
@@ -173,6 +174,22 @@ export interface StopGateOptions extends ForwardedVerifyOptions {
 export interface StopGateResult {
   decision: GateDecision;
   auditFindings: AuditFinding[];
+  /**
+   * The warnings this turn's verify raised. They are in neither the manifest
+   * nor the pointer's count, so the caller says how many there were: a
+   * blocked turn must not be the one place an advisory is never seen.
+   */
+  advisories: Violation[];
+  /**
+   * The claim another rung's fixer holds on files this block names (#76), as
+   * the pointer was told of it. The caller must not add "resolve them
+   * yourself" to a pointer that says to wait for that fixer.
+   */
+  waitFor: LeaseOverlap | undefined;
+  /**
+  Repo-relative manifest this rung wrote, for a note that has to name it.
+  */
+  manifestPath: string;
 }
 
 export interface CommitGateOptions extends ForwardedVerifyOptions {
@@ -726,6 +743,10 @@ async function stopGate(
   const snapshotPath = snapshotFile(directory, sessionId);
   const isHadSnapshot = existsSync(snapshotPath);
   const baseline = readSnapshot(snapshotPath);
+  const manifestPath = path.relative(
+    repoRoot,
+    manifestFile(directory, sessionId),
+  );
 
   const diff = await workingDiff(options);
   if (diff.unreadable !== undefined) {
@@ -751,6 +772,9 @@ async function stopGate(
         log,
       },
       auditFindings: [],
+      advisories: [],
+      waitFor: undefined,
+      manifestPath,
     };
   }
   const present = auditDiff(diff.diff);
@@ -785,9 +809,11 @@ async function stopGate(
   // fixer reads, claimed as a file somebody is editing, allowed to pick the
   // fixer's tier, and tallied as a rule that keeps failing -- so a deferral
   // seen on three blocked turns was reported as a recurring mistake.
-  const verified = isUnchanged ? undefined : await runVerify(verifyOptions);
-  const violations =
-    verified === undefined ? [] : blockingViolations(verified.violations);
+  const { violations: found } = isUnchanged
+    ? { violations: [] }
+    : await runVerify(verifyOptions);
+  const violations = blockingViolations(found);
+  const advisories = advisoryViolations(found);
   // Guidance rides on the violation so it reaches the fixer through the
   // manifest — the one channel every runtime reads. `runVerify`'s violations
   // are already attributed; `withPackages` is idempotent, so re-applying is a
@@ -799,10 +825,6 @@ async function stopGate(
   );
 
   writeViolations(directory, sessionId, combined);
-  const manifestPath = path.relative(
-    repoRoot,
-    manifestFile(directory, sessionId),
-  );
 
   // Resolved BEFORE the decision, because the overlap is one of its inputs: a
   // commit-rung fixer already editing these files is the one fact that turns
@@ -860,7 +882,13 @@ async function stopGate(
     rmSync(snapshotPath, { force: true });
   }
 
-  return { decision, auditFindings };
+  return {
+    decision,
+    auditFindings,
+    advisories,
+    waitFor: cycle.overlap,
+    manifestPath,
+  };
 }
 
 /** Diff of the branch vs its merge-base with the base branch, so suppressions

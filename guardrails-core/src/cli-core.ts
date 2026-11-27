@@ -34,7 +34,11 @@ import {
   type CommitDelegation,
   type CommitGateOptions,
 } from './gate.js';
-import { duplicationNote, leaseWaitNote } from './gate-decision.js';
+import {
+  duplicationNote,
+  leaseWaitNote,
+  ruleBreakdown,
+} from './gate-decision.js';
 import { findGitRoot, resolveRepoRoot } from './repo-root.js';
 import { isFixerAgentMissing, unbuiltFixerAgents } from './fixer-agents.js';
 import { repoSourceReader } from './repo-source.js';
@@ -119,6 +123,7 @@ import {
 import { type PushGate, ship, shipSummary, writeShipStatus } from './ship.js';
 import { withHeartbeat } from './state.js';
 import {
+  advisoryViolations,
   blockingViolations,
   hasErrors,
   isViolation,
@@ -519,7 +524,7 @@ async function gateStopCommand(
   // Quiet, and cached: this runs on every turn, so it must cost at most one
   // host call per branch per TTL and must not add a line to the hook channel.
   const base = await resolveBase(dependencies, repoRoot, config);
-  const { decision } = await runStopGate({
+  const { decision, advisories, waitFor, manifestPath } = await runStopGate({
     repoRoot,
     sessionId,
     baseBranch: base.base,
@@ -541,9 +546,17 @@ async function gateStopCommand(
     ...decision,
     message:
       decision.message +
-      // A decision that names no fixer has no agent to be missing: the empty
-      // name has no source, so it adds nothing.
-      missingFixerNote(repoRoot, decision.fixerAgent ?? '', dialect),
+      // Read only when the turn is blocked: a turn that ends prints nothing.
+      advisoryNote(advisories) +
+      missingFixerNote({
+        repoRoot,
+        // A decision that names no fixer has no agent to be missing: the
+        // empty name has no source, so it adds nothing.
+        fixerAgent: decision.fixerAgent ?? '',
+        dialect,
+        manifestPath,
+        waitFor,
+      }),
   };
   const output =
     dialect === 'claude'
@@ -725,7 +738,11 @@ async function gateCommitCommand(
   );
   // A git hook cannot tell which host ran the commit, so it speaks to the one
   // whose agents can be missing.
-  const unbuilt = missingFixerNote(repoRoot, delegation.fixerAgent, 'claude');
+  const unbuilt = missingFixerNote({
+    repoRoot,
+    dialect: 'claude',
+    ...delegation,
+  });
   if (unbuilt !== '') {
     dependencies.stderr(`guardrails:${unbuilt}\n`);
   }
@@ -1299,7 +1316,8 @@ async function gatePreToolUseCommand(
   // reach and a mutant could therefore never be killed on.
   const reason =
     commitPointer(violations, findings.length, delegation) +
-    missingFixerNote(repoRoot, delegation.fixerAgent, dialect);
+    advisoryNote(advisoryViolations(violations)) +
+    missingFixerNote({ repoRoot, dialect, ...delegation });
   // Under `warn` the gate reports and allows. stderr rather than a deny payload,
   // because both hook dialects treat a deny payload as the block itself — there
   // is no "allow, but say this" channel — and stderr still surfaces in the
@@ -2383,15 +2401,27 @@ function warnAboutUnbuiltFixers(
  * because "resolve them yourself" is the instruction the pointer otherwise
  * exists to withhold. Claude Code only: `.claude/agents/` is its directory,
  * and the other hosts' agents are committed files.
+ *
+ * Never on a pointer that says to WAIT for another rung's fixer (`waitFor`).
+ * That fixer exists and holds some of these files; "resolve them yourself"
+ * beside "do not spawn a fixer yet" is an instruction to edit under it, the
+ * two-writers-in-one-file collision the wait is there to prevent (#76).
+ *
+ * The manifest is named, not pointed at: after "do NOT read it", "that
+ * manifest" is the one sentence in the message that must not be ambiguous.
  */
-function missingFixerNote(
-  repoRoot: string,
-  fixerAgent: string,
-  dialect: Dialect,
-): string {
+function missingFixerNote(asked: {
+  repoRoot: string;
+  fixerAgent: string;
+  dialect: Dialect;
+  manifestPath: string;
+  waitFor?: CommitDelegation['waitFor'];
+}): string {
+  const { fixerAgent } = asked;
   if (
-    dialect !== 'claude' ||
-    !isFixerAgentMissing(fixerAgent, repoSourceReader(repoRoot))
+    asked.dialect !== 'claude' ||
+    asked.waitFor !== undefined ||
+    !isFixerAgentMissing(fixerAgent, repoSourceReader(asked.repoRoot))
   ) {
     return '';
   }
@@ -2399,9 +2429,27 @@ function missingFixerNote(
     ` NOTE: this checkout has no definition for ${fixerAgent} ` +
     `(.claude/agents/${fixerAgent}.md is missing: \`npm run build\` ` +
     `generates it, and a session loads its agents when it starts). If you ` +
-    `cannot spawn it, read that manifest and resolve the violations ` +
+    `cannot spawn it, read ${asked.manifestPath} and resolve the violations ` +
     `yourself; then build and start a new session.`
   );
+}
+
+/**
+ * What a pointer adds when the gate also raised warnings, or nothing.
+ *
+ * A warning is not in the manifest and not in the pointer's count: it is not
+ * a violation to fix. On the hook surface it is printed in full. A blocked
+ * PreToolUse or Stop has no such surface -- the pointer is all the agent is
+ * given -- so without this an advisory raised on a blocked iteration
+ * (`guardrails/analyzer-unknown`, an out-of-scope file, a warn-level
+ * architecture rule) was seen by nobody. An aggregate, like the escalation's:
+ * what there is to know is that they exist and which rules they are.
+ */
+function advisoryNote(advisories: readonly Violation[]): string {
+  return advisories.length === 0
+    ? ''
+    : ` ${advisories.length} warning(s) did not block and are not in the ` +
+        `manifest: ${ruleBreakdown(advisories)}.`;
 }
 
 /**
@@ -2869,7 +2917,13 @@ export async function runCommand(
     case 'session-start': {
       sweepStale(stateDirectory(dependencies.cwd), SESSION_TTL_MS, Date.now());
       warnAboutStaleGuidance(dependencies, dependencies.cwd);
-      warnAboutUnbuiltFixers(dependencies, dependencies.cwd);
+      // From the repository's root, not from wherever the session started:
+      // the agents' source and their generated copies are both named from
+      // there, and a session opened in a subdirectory would be told nothing.
+      warnAboutUnbuiltFixers(
+        dependencies,
+        findGitRoot(dependencies.cwd) ?? dependencies.cwd,
+      );
       return 0;
     }
     case 'init': {

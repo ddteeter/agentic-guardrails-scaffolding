@@ -170,6 +170,21 @@ describe('runStopGate: a pointer counts, and a fixer is handed, what blocks', ()
     expect(decision.fixerAgent).toBe('guardrail-fixer');
   });
 
+  it('hands the warnings back to its caller, apart from what blocks', async () => {
+    const result = await runStopGate(stopOver(eslintErrorAndWarnings));
+
+    expect(
+      result.advisories.map((violation) => [violation.ruleId, violation.line]),
+    ).toEqual([
+      ['prefer-const', 1],
+      ['prefer-const', 4],
+    ]);
+    expect(result.manifestPath).toBe(
+      path.join('.guardrails', 'state', 'sid.last.json'),
+    );
+    expect(result.waitFor).toBeUndefined();
+  });
+
   it('lets a turn with only warnings end, with nothing in the manifest', async () => {
     const onlyWarnings = (): string =>
       JSON.stringify([
@@ -685,12 +700,15 @@ describe('runStopGate — the working diff could not be read', () => {
     // A fix loop is open, so a readable diff carrying a suppression would be
     // reported; an unreadable one must not read as "the fixer added nothing".
     writeSnapshot(JSON.stringify([]));
-    const { decision, auditFindings } = await runStopGate(
+    const { decision, auditFindings, advisories, waitFor } = await runStopGate(
       options(execKilling('git diff HEAD', 'SIGTERM')),
     );
     expect(decision.block).toBe(true);
     expect(decision.outcome).toBe('escalate');
     expect(auditFindings).toEqual([]);
+    // Nothing was verified, so nothing was set aside and nobody is waited on.
+    expect(advisories).toEqual([]);
+    expect(waitFor).toBeUndefined();
   });
 
   it('names the git call, the signal, and what the developer should do', async () => {
@@ -1847,6 +1865,8 @@ describe('runStopGate: an unchanged tree is not re-verified', () => {
 
     expect(eslintRuns()).toBe(1);
     expect(second.decision.outcome).toBe('clean');
+    // A run that was skipped found nothing, of either kind.
+    expect(second.advisories).toEqual([]);
   });
 
   it('remembers a clean tree, and only a clean one', async () => {
