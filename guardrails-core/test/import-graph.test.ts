@@ -27,6 +27,11 @@ import {
   createImportResolver,
   createImportTracer,
 } from '../src/import-graph.js';
+import { withoutGlobalModules } from './without-global-modules.js';
+
+// Some tests here need a repository with no `typescript` to find, which a
+// `NODE_PATH` that holds one would defeat.
+withoutGlobalModules();
 
 let root: string;
 

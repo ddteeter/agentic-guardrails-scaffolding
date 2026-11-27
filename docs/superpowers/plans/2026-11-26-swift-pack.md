@@ -11,11 +11,11 @@ suppression, no sanction, no golden edit after step 1.
 ## Environment notes for whoever runs this
 
 - Node 24 is required (`engines`, `engine-strict`).
-- The suite assumes an ordinary developer machine: run as root, eight
-  permission tests cannot fail closed (`chmod 000` is ignored), and a global
-  `NODE_PATH` that provides `typescript` breaks three "no typescript
-  installed" tests. Neither is a defect of `main`; both are recorded in
-  `QUESTIONS.md` as a finding about the suite's portability.
+- The suite used to assume an ordinary developer machine: run as root, seven
+  permission tests could not fail closed (`chmod` is ignored), and a global
+  `NODE_PATH` that provides `typescript` broke four "no typescript installed"
+  tests. Fixed on this branch on the owner's decision (see the verification
+  log and `QUESTIONS.md` entry 7); the suite now passes in both environments.
 
 ## 0. Documents
 
@@ -266,3 +266,13 @@ b` over two string variables still becomes `a - b`, and `.first` on a
 - A golden may change with `package-lock.json` alone
   (`docs/releasing.md`).
 - The generator's swap tables are data, with no duplication ignore.
+- The 11 environment-dependent tests are fixed on this branch (entry 7).
+  Existing test files changed for that, and for nothing else:
+  `test/gate-run-log.test.ts`, `test/run-log.test.ts`, `test/ship.test.ts`,
+  `test/repo-source.test.ts`, `test/typescript-loader.test.ts`,
+  `test/import-graph.test.ts`, `test/gate.test.ts`. Verified by running the
+  whole suite twice, as root with `NODE_PATH` set and through the
+  ordinary-user wrapper: 128 files, 6,061 tests, both green.
+- `'java'` is not reserved as a pack id; the un-anchored SwiftLint and
+  SwiftFormat rows, the split of the Swift rows into their own file, and the
+  deferral of the import-rules and runner-config escape rules all stand.

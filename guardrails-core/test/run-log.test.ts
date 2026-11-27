@@ -1,5 +1,5 @@
 import {
-  chmodSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -28,7 +28,6 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  chmodSync(directory, 0o700);
   rmSync(directory, { recursive: true, force: true });
 });
 
@@ -138,9 +137,11 @@ describe('appendRun and parseRuns', () => {
   });
 
   it('answers an error, rather than throwing, when the log cannot be written', () => {
-    chmodSync(directory, 0o500);
+    // A directory where the log should be: nobody can append to that, root
+    // included, which a read-only directory does not stop.
+    mkdirSync(path.join(directory, 'runs.jsonl'));
     const error = appendRun(path.join(directory, 'runs.jsonl'), GATE);
-    expect(error).toMatch(/EACCES|permission/i);
+    expect(error).toMatch(/EISDIR/);
   });
 
   it('skips a line that is malformed, of another version, or of no known kind', () => {

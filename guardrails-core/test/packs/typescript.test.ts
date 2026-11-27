@@ -8,6 +8,11 @@ import type { Exec, ExecResult } from '../../src/exec.js';
 import type { PackAnalyzer, StackContext } from '../../src/packs/pack.js';
 import { implicitStack } from '../../src/packs/stacks.js';
 import { npmInstallHint, typescriptPack } from '../../src/packs/typescript.js';
+import { withoutGlobalModules } from '../without-global-modules.js';
+
+// One test here needs a repository with no `typescript` to find, which a
+// `NODE_PATH` that holds one would defeat.
+withoutGlobalModules();
 
 const ok: ExecResult = { stdout: '', stderr: '', code: 0 };
 

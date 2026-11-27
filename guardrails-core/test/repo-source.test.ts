@@ -7,7 +7,7 @@
  */
 
 import {
-  chmodSync,
+  symlinkSync,
   mkdirSync,
   mkdtempSync,
   rmSync,
@@ -30,7 +30,6 @@ describe('repoSourceReader', () => {
   });
 
   afterEach(() => {
-    chmodSync(path.join(root, 'src'), 0o755);
     rmSync(root, { recursive: true, force: true });
   });
 
@@ -46,14 +45,17 @@ describe('repoSourceReader', () => {
     expect(repoSourceReader(root)('src/lib')).toBeUndefined();
   });
 
-  it('reads a file it may not open as undefined instead of throwing', () => {
-    chmodSync(path.join(root, 'src', 'a.ts'), 0o000);
-    expect(repoSourceReader(root)('src/a.ts')).toBeUndefined();
+  // The two below used to deny permission with `chmod 000`, which root
+  // ignores: the suite then read the file and failed on a green tree. Each
+  // now fails to open for every user.
+  it('reads a file it cannot open as undefined instead of throwing', () => {
+    // A symbolic link to itself: opening it is ELOOP for anyone.
+    symlinkSync('loop.ts', path.join(root, 'src', 'loop.ts'));
+    expect(repoSourceReader(root)('src/loop.ts')).toBeUndefined();
   });
 
-  it('reads a path under an unsearchable directory as undefined', () => {
-    chmodSync(path.join(root, 'src'), 0o000);
-    expect(repoSourceReader(root)('src/a.ts')).toBeUndefined();
+  it('reads a path through something that is not a directory as undefined', () => {
+    expect(repoSourceReader(root)('src/a.ts/inner.ts')).toBeUndefined();
   });
 
   it('reads a path escaping the repo as undefined', () => {

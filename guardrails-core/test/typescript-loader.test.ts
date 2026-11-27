@@ -11,6 +11,11 @@ import ts from 'typescript';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { loadTypescriptParser } from '../src/typescript-loader.js';
+import { withoutGlobalModules } from './without-global-modules.js';
+
+// Some tests here need a repository with no `typescript` to find, which a
+// `NODE_PATH` that holds one would defeat.
+withoutGlobalModules();
 
 let root = '';
 

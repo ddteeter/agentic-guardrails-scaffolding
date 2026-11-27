@@ -20,20 +20,12 @@ nothing calls it until the runner exists.
 **Meanwhile.** No version is bumped, no tag cut; notes accumulate in
 `guardrails-core/upgrades/unreleased.md`.
 
-## 2. Should `StackPackId` reserve `'java'` now?
+## 2. Should `StackPackId` reserve `'java'` now? — DECIDED
 
-**What.** `plan.md` lists a Java pack as Phase D, and `audit.ts` already has
-Java rows. The plan's `StackPack.id` is `'typescript' | 'swift'`.
-
-**Cost.** Adding a member later is a one-line, non-breaking change. Adding it
-now means `stacks` parsing accepts `"pack": "java"` for a pack that does not
-exist, which then needs the "unsupported pack" path (question 9) forever.
-
-**Recommendation.** Do not reserve it. The seam does not close the door: the
-id is a union, the registry is a list, and the auditor's `languages` field
-already distinguishes rows by language.
-
-**Meanwhile.** `'typescript' | 'swift'`. Java rows apply exactly as before.
+**Decision (the owner, 2026-11-27): no.** The id stays
+`'typescript' | 'swift'`. Adding a member later is a one-line change, and a
+reserved id would parse and then block every rung as an unsupported stack.
+Java rows in the auditor apply exactly as before.
 
 ## 3. GR-01's baseline version
 
@@ -84,25 +76,36 @@ known finding, suppressed, run through the real binary (the live-guard shape
 - The tripwire ceilings, shown again with real timings before the runner's
   release.
 
-## 7. The suite assumes a non-root user and no global `NODE_PATH`
+## 7. The suite assumed a non-root user and no global `NODE_PATH` — DECIDED, and fixed
 
-**What.** On the cloud machine this lane ran on, `npm test` on a clean `main`
-failed 11 tests. Eight are permission tests (`chmod 000`, then expect a read
-or write to fail); root ignores file modes, so they cannot fail closed. Three
-expect "no `typescript` installed" in a temporary repository; a global
-`NODE_PATH` made one resolvable. With the DAC-override capability dropped and
-`NODE_PATH` unset, all 4,264 tests pass on `main`.
+**Decision (the owner, 2026-11-27): fix the tests on this branch.**
 
-**Cost.** Any container that runs as root (many CI images, every cloud agent
-session) sees a red suite on a green tree.
+On a clean `main`, run as root with a global `NODE_PATH` that holds
+`typescript` (a cloud agent's container; many CI images run as root), 11
+tests failed. (An earlier version of this entry split them 8 and 3; the
+split is 7 and 4.)
 
-**Recommendation.** Have the eight tests skip when the process can read a
-mode-000 file it just wrote (a capability probe, not a user-name check), and
-have the three clear `NODE_PATH` for the loader they exercise. Both are test
-changes, outside this lane's scope.
+- **Seven expected a write or a read to be refused** after `chmod`, which
+  root ignores. Each now sets up a failure that holds for every user: a
+  directory where the run log should be (five tests in
+  `gate-run-log.test.ts`, `run-log.test.ts` and `ship.test.ts`; two of them
+  asserted `EACCES` by name and now assert `EISDIR`), and in
+  `repo-source.test.ts` a symbolic link to itself and a path through a file
+  in place of the two `chmod 000` cases.
+- **Four expected no `typescript` to be resolvable** from an empty temporary
+  repository (`typescript-loader.test.ts`, two in `import-graph.test.ts`, one
+  in `gate.test.ts`). `test/without-global-modules.ts` takes `NODE_PATH` out
+  of module resolution for those files and restores it afterwards.
 
-**Meanwhile.** Nothing in the branch changes these tests. The lane ran every
-command through a wrapper that drops the capability and unsets `NODE_PATH`.
+No test was removed and none is skipped: the suite is 128 files and 6,061
+tests either way, and passes both as root with `NODE_PATH` set and as an
+ordinary user.
+
+**What the fix does not cover.** The production loader still resolves a
+`typescript` that is only reachable through `NODE_PATH`, for a consumer that
+installed none. Whether the gate should refuse a globally installed
+TypeScript is a behaviour question for TypeScript consumers and was left
+alone.
 
 ## 8. Goldens contain tool output — DECIDED
 
@@ -124,37 +127,22 @@ auditor's `debugTargets` exemption is not reachable until `packs/swift.ts`
 exists; `#if DEBUG` in a debug target needs a sanction meanwhile. Once every
 known id has a pack, the path can be deleted.
 
-## 10. `tool-config-escape`: the import-rules file and the runner's config
+## 10. `tool-config-escape`: the import-rules file and the runner's config — DECIDED
 
-**What.** The plan flags "any added line" in the import-rules file and in the
-runner's `mutate`, `mutateExclude` and `operators` config. Neither the
-`swift-imports` analyzer (GR-08) nor the runner's config block (GR-15) exists
-yet, and "any added line" also flags a line that tightens a rule.
+**Decision (the owner, 2026-11-27): defer.** The rule for
+`guardrails-imports.json` is built with GR-08 and the rule for the runner's
+`mutate`, `mutateExclude` and `operators` config with GR-15, each where it
+can be tested against the real format, and where it can be decided whether a
+line that tightens a rule is exempt. Meanwhile `tool-config-escape` covers
+`.swiftlint.yml`, `.swiftformat` and `.periphery.yml`, and
+`guardrails-imports.json` is on the fixer denylist.
 
-**Cost.** Deferring means those two files are protected only by the fixer
-denylist until their packages land (the denylist is what stops a fixer; the
-auditor row is what stops the main agent).
+## 11. `swiftlint:disable` and `swiftformat:disable` anywhere in a comment — DECIDED
 
-**Recommendation.** Build each with its package, and decide then whether an
-added `forbidden` rule (a tightening) should be exempt.
-
-**Meanwhile.** `tool-config-escape` covers `.swiftlint.yml`, `.swiftformat`
-and `.periphery.yml`. `guardrails-imports.json` is on the fixer denylist.
-
-## 11. `swiftlint:disable` and `swiftformat:disable` anywhere in a comment
-
-**What.** The plan anchors both patterns to the start of the comment. Both
-tools' sources search the comment for their marker, so
-`// TODO swiftlint:disable:next force_cast` is a live suppression. The branch
-matches the directive anywhere in a comment for these two rows.
-
-**Cost.** A comment that merely names the full directive is flagged; the tool
-would honour that comment too, so the finding is true.
-
-**Recommendation.** Keep the un-anchored match.
-
-**Meanwhile.** Un-anchored for these two; `periphery:ignore` stays anchored,
-as its parser is.
+**Decision (the owner, 2026-11-27): keep the un-anchored match.** Both tools'
+sources search the comment for their marker, so a directive after other
+words in a comment is a live suppression and is flagged.
+`periphery:ignore` stays anchored, as its parser is.
 
 ## 12. `.disabled(…)` and `.enabled(if:)` are audited under test targets only — DECIDED
 
@@ -164,21 +152,12 @@ apply only to a file with a path segment ending in `Tests`; SwiftUI's
 `swift package dump-package`, replace the path rule with the real test
 targets.
 
-## 13. Where the Swift rows live
+## 13. Where the Swift rows live — DECIDED
 
-**What.** The plan adds the Swift rows to `SIGNATURES` in `audit.ts` with a
-`languages` field. The branch keeps them in `audit-swift.ts`, read by the
-Swift lexer, and `audit.ts` picks a reader per file. `auditKinds()` still
-knows every kind.
-
-**Cost.** Two tables instead of one. The existing table's matcher takes one
-line lexed alone and cannot run a Swift row at all, so one table would have
-needed two matchers behind one list.
-
-**Recommendation.** Keep the split; it is the same single auditor.
-
-**Meanwhile.** Split, with tests that no Swift row matches a `.ts` or `.java`
-line and no existing row a `.swift` line.
+**Decision (the owner, 2026-11-27): keep the split.** The Swift rows stay in
+`audit-swift.ts` with their own reader, and `audit.ts` picks a reader per
+file. The costs were named and accepted: two places to read what the auditor
+flags, and two matchers that a later fix has to be applied to separately.
 
 ## 14. What the later lanes need from the owner (this lane stopped at the Linux boundary)
 

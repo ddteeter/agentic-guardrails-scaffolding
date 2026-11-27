@@ -1,5 +1,5 @@
 import {
-  chmodSync,
+  mkdirSync,
   existsSync,
   mkdtempSync,
   readFileSync,
@@ -2646,7 +2646,9 @@ describe('ship: its row in the run log (#176)', () => {
   });
 
   it('says on stderr when its row cannot be written', async () => {
-    chmodSync(root, 0o500);
+    // A directory where the run log should be: nobody can append to that,
+    // root included, which a read-only directory does not stop.
+    mkdirSync(path.join(root, 'gate.lock.runs.jsonl'));
     const written: string[] = [];
     const spy = vi.spyOn(process.stderr, 'write').mockImplementation((text) => {
       written.push(String(text));
@@ -2657,7 +2659,6 @@ describe('ship: its row in the run log (#176)', () => {
       await ship(options(exec, { lockPath: path.join(root, 'gate.lock') }));
     } finally {
       spy.mockRestore();
-      chmodSync(root, 0o700);
     }
     expect(written).toEqual([
       expect.stringMatching(

@@ -1,5 +1,5 @@
 import {
-  chmodSync,
+  mkdirSync,
   existsSync,
   mkdtempSync,
   readFileSync,
@@ -20,7 +20,7 @@ import {
   type RunClock,
   startRun,
 } from '../src/gate-run-log.js';
-import { parseRuns } from '../src/run-log.js';
+import { parseRuns, runLogPath } from '../src/run-log.js';
 import type { MutationRunRecord } from '../src/verify/mutation-run.js';
 
 let directory: string;
@@ -37,7 +37,6 @@ Where a log path built from an undefined lock would land.
 const STRAY = path.resolve('undefined.runs.jsonl');
 
 afterEach(() => {
-  chmodSync(directory, 0o700);
   rmSync(directory, { recursive: true, force: true });
   rmSync(STRAY, { force: true });
 });
@@ -233,7 +232,9 @@ describe('logGateRun', () => {
   });
 
   it('warns, and does not throw, when the log cannot be written', async () => {
-    chmodSync(directory, 0o500);
+    // A directory where the log should be: nobody can append to that, root
+    // included, which a read-only directory does not stop.
+    mkdirSync(runLogPath(lockPath));
     const warnings: string[] = [];
     await logGateRun(
       input({
@@ -305,7 +306,9 @@ describe('logShipRun', () => {
   });
 
   it('warns, and does not throw, when the log cannot be written', () => {
-    chmodSync(directory, 0o500);
+    // A directory where the log should be: nobody can append to that, root
+    // included, which a read-only directory does not stop.
+    mkdirSync(runLogPath(lockPath));
     const warnings: string[] = [];
     logShipRun({
       lockPath,
@@ -465,7 +468,9 @@ describe('logLockRun (#201)', () => {
   });
 
   it('warns, and does not throw, when the log cannot be written', () => {
-    chmodSync(directory, 0o500);
+    // A directory where the log should be: nobody can append to that, root
+    // included, which a read-only directory does not stop.
+    mkdirSync(runLogPath(lockPath));
     const { warnings, warn } = collecting();
     logLockRun({
       lockPath,
@@ -479,7 +484,7 @@ describe('logLockRun (#201)', () => {
     });
     expect(warnings).toHaveLength(1);
     expect(warnings[0]).toMatch(
-      /^guardrails: could not write the run log \(.*(EACCES|permission).*\)\.$/i,
+      /^guardrails: could not write the run log \(.*EISDIR.*\)\.$/,
     );
   });
 });
