@@ -1519,6 +1519,31 @@ describe('pretooluse gate trigger conditions', () => {
     }
   });
 
+  it('gates -n on a subcommand that may be an alias for commit', async () => {
+    // git expands an alias before it reads the flag: in a repository whose
+    // config says `ci` is `commit`, this is a commit with no hook. The
+    // command does not say so, and the gate cannot ask.
+    for (const command of [
+      'git ci -n -m x',
+      'git -c alias.ci=commit ci -n -m x',
+      "git -c alias.ci='commit -n' ci -m x",
+      'npm test && git ci -anm x',
+    ]) {
+      out.length = 0;
+      expect(
+        await runPreToolUse(preToolUseStdin('bash', command)),
+        `should gate: ${command}`,
+      ).toContain('deny');
+    }
+  });
+
+  it('leaves an alias used without a bypass to the git hooks, as before', async () => {
+    out.length = 0;
+    expect(await runPreToolUse(preToolUseStdin('bash', 'git ci -m x'))).toBe(
+      '',
+    );
+  });
+
   it('does not take another -n, or another flag, for that bypass', async () => {
     // Each of these only MENTIONS a git write inside a string, so each is
     // text unless something in it names a bypass. None does: `-n` is a dry
@@ -1542,8 +1567,6 @@ describe('pretooluse gate trigger conditions', () => {
       'echo "x; git commit -Cnewer"',
       // A dash that does not start a word.
       'echo "x; git commit x-n"',
-      // Not a commit at all.
-      'echo "x; git commits -n"',
     ]) {
       out.length = 0;
       expect(

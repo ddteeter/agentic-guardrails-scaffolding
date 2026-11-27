@@ -55,26 +55,88 @@ const NO_VERIFY = /--no-(?:verify|verif|veri|ver|ve|v)(?!\w)/;
 const HOOKS_PATH = /hookspath/i;
 
 /**
- * `git commit -n`: the short form of `--no-verify`, which the long forms did
- * not cover.
+ * git's own subcommands on which `-n` is known to mean something else: a dry
+ * run (`push`, `clean`, `add`, `rm`, `mv`, `prune`), a count (`log`, `show`),
+ * no tags (`fetch`), no diffstat (`merge`, `pull`, `rebase`), no commit
+ * (`cherry-pick`, `revert`), and so on.
  *
- * Tied to `commit`, and to the one command it is written on, because `-n` is
- * something else nearly everywhere: a dry run for `git push`, `git clean` and
- * `git add`, a count for `git log` and `head`. So the scan starts at a `git
- * ... commit` and stops at the first separator.
- *
- * The letters allowed before the `n` are commit's short flags that take no
- * value (`-a`, `-e`, `-i`, `-o`, `-p`, `-q`, `-s`, `-v`, `-z`), so `-an` and
- * `-anm "x"` are bypasses and `-mn` is not: that is `-m` with the message
- * "n", and git runs the hook for it. Checked against git, not its manual.
- *
- * Wrong in the direction a bypass check may be wrong in: a commit message
- * that holds ` -n` reads as a bypass, which costs the old, wider reading of
- * that one command and nothing else.
+ * A list of where `-n` is SAFE, not of where it is a bypass, because the
+ * second list cannot be written: git expands an alias before it reads a
+ * flag, so `git ci -n` is `git commit -n` in a repository that says so, and
+ * nothing in the command does. A subcommand that is not here -- `commit`,
+ * `am`, an alias, one git has yet to add -- has its `-n` taken at its worst.
  */
-const COMMIT_NO_VERIFY = new RegExp(
-  `git${GIT_GLOBAL_OPTIONS}[ \t]+commit\\b[^\n;&|]*[ \t]-[aeiopqsvz]*n`,
+const N_MEANS_SOMETHING_ELSE = new Set([
+  'add',
+  'blame',
+  'cherry-pick',
+  'clean',
+  'fetch',
+  'format-patch',
+  'grep',
+  'log',
+  'merge',
+  'mv',
+  'prune',
+  'pull',
+  'push',
+  'rebase',
+  'reflog',
+  'remote',
+  'rev-list',
+  'revert',
+  'rm',
+  'shortlog',
+  'show',
+  'stash',
+  'tag',
+  'whatchanged',
+  'worktree',
+]);
+
+/**
+ * One git command: its subcommand, and the rest of it up to the first
+ * separator. The option run is greedy, so the word captured is the first one
+ * that is not a global option or its value.
+ */
+const GIT_COMMAND = new RegExp(
+  `\\bgit${GIT_GLOBAL_OPTIONS}[ \t]+([A-Za-z][\\w-]*)([^\n;&|]*)`,
+  'g',
 );
+
+/**
+ * `-n`, alone or in a cluster of short flags that take no value. The letters
+ * allowed before the `n` are commit's (`-a`, `-e`, `-i`, `-o`, `-p`, `-q`,
+ * `-s`, `-v`, `-z`), so `-an` and `-anm "x"` are bypasses and `-mn` is not:
+ * that is `-m` with the message "n", and git runs the hook for it. Checked
+ * against git, not its manual.
+ */
+const SHORT_NO_VERIFY = /[ \t]-[aeiopqsvz]*n/;
+
+/**
+ * `-n` as the short form of `--no-verify`: on `git commit`, and on any
+ * subcommand it is not known to mean something else for.
+ *
+ * Tied to the one command it is written on, because `-n` is something else
+ * nearly everywhere (`head -n`), so the scan stops at the first separator.
+ * Wrong in the direction a bypass check may be wrong in: a commit message
+ * that holds ` -n` reads as a bypass.
+ */
+function hasShortNoVerify(text: string): boolean {
+  return text
+    .matchAll(GIT_COMMAND)
+    .some(
+      ([, subcommand = '', rest = '']) =>
+        !N_MEANS_SOMETHING_ELSE.has(subcommand) && SHORT_NO_VERIFY.test(rest),
+    );
+}
+
+/**
+ * An alias defined where the command can see it: `-c alias.x=...`, or the
+ * same key through `GIT_CONFIG_*`. What it stands for is the command's to
+ * say, in a string this does not parse, so defining one at all counts.
+ */
+const DEFINES_AN_ALIAS = /\balias\./i;
 
 /**
  * Does this command name a way past the git hooks, anywhere in it?
@@ -86,7 +148,10 @@ const COMMIT_NO_VERIFY = new RegExp(
 export function hasHookBypass(command: string): boolean {
   const text = command.replaceAll('\\\n', '');
   return (
-    NO_VERIFY.test(text) || HOOKS_PATH.test(text) || COMMIT_NO_VERIFY.test(text)
+    NO_VERIFY.test(text) ||
+    HOOKS_PATH.test(text) ||
+    DEFINES_AN_ALIAS.test(text) ||
+    hasShortNoVerify(text)
   );
 }
 
