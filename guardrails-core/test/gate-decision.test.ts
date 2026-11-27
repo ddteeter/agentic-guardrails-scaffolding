@@ -108,6 +108,102 @@ describe('decideGate — delegate', () => {
   });
 });
 
+/**
+ * Found dogfooding: four `fallow/code-duplication` findings between two new
+ * adapters wanted a third file both import. The fixer is scope-locked to the
+ * files the manifest names, so it put the shared helper inside one adapter:
+ * green, and a dependency pointing the wrong way.
+ */
+describe('decideGate — a manifest with duplication findings', () => {
+  const EXTRACTION_IS_YOURS =
+    ' 2 of them are duplication findings (fallow/code-duplication): where ' +
+    'the fix is a NEW module that both copies import, that extraction is ' +
+    "yours to do, not the fixer's. It may edit only the files the manifest " +
+    'names, so it would put the shared code inside one of them, a ' +
+    'dependency pointing the wrong way.';
+
+  const duplicated = [
+    v({ ruleId: 'fallow/code-duplication', file: 'src/a.ts', line: 3 }),
+    v({ ruleId: 'no-console', file: 'src/a.ts', line: 9 }),
+    v({ ruleId: 'fallow/code-duplication', file: 'src/b.ts', line: 3 }),
+  ];
+
+  it("says the extraction is the main agent's, after the pointer", () => {
+    const decision = decideGate(input({ violations: duplicated }));
+    expect(decision.message).toBe(
+      `3 guardrail violation(s) written to ${manifestPath}. Do NOT read it. ` +
+        'Spawn the guardrail-fixer subagent and give it that path to fix. ' +
+        `Then try to stop again.${EXTRACTION_IS_YOURS}`,
+    );
+  });
+
+  it('adds nothing to a manifest with no duplication in it', () => {
+    const decision = decideGate(input());
+    expect(decision.message).toBe(
+      `1 guardrail violation(s) written to ${manifestPath}. Do NOT read it. ` +
+        'Spawn the guardrail-fixer subagent and give it that path to fix. ' +
+        'Then try to stop again.',
+    );
+  });
+
+  it('says it after a regression pointer too, which also orders a spawn', () => {
+    const before = [v({ ruleId: 'no-console', file: 'src/a.ts', line: 9 })];
+    const decision = decideGate(
+      input({
+        violations: duplicated,
+        isRetry: true,
+        session: {
+          attempts: 1,
+          ruleCounts: {},
+          corrected: [],
+          lastViolationDigest: violationDigest(before),
+          lastViolationKeys: violationKeys(before),
+        },
+      }),
+    );
+    expect(decision.message).toContain('its own regression');
+    expect(
+      decision.message.endsWith(
+        `Then try to stop again.${EXTRACTION_IS_YOURS}`,
+      ),
+    ).toBe(true);
+  });
+
+  it('adds nothing to a pointer that says to wait for the fixer already running', () => {
+    const decision = decideGate(
+      input({
+        violations: duplicated,
+        isRetry: true,
+        session: {
+          attempts: 1,
+          ruleCounts: {},
+          corrected: [],
+          lastViolationDigest: violationDigest(duplicated),
+          lastViolationKeys: violationKeys(duplicated),
+        },
+      }),
+    );
+    expect(decision.message).toContain('UNCHANGED since the last block');
+    expect(decision.message).not.toContain('duplication findings');
+  });
+
+  it("adds nothing to a pointer that says to wait for another rung's fixer", () => {
+    const decision = decideGate(
+      input({
+        violations: duplicated,
+        leaseOverlap: {
+          owner: 'commit:sid-commit',
+          manifestPath: '.guardrails/state/sid-commit.last.json',
+          fixerAgent: 'guardrail-fixer',
+          files: ['src/a.ts'],
+        },
+      }),
+    );
+    expect(decision.message).toContain('do NOT spawn a fixer yet');
+    expect(decision.message).not.toContain('duplication findings');
+  });
+});
+
 describe('decideGate — escalate', () => {
   it('hands the main agent an aggregate and the manifest path past MAX', () => {
     const decision = decideGate(

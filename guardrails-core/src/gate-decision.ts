@@ -29,7 +29,7 @@ import {
   violationKey,
   violationKeys,
 } from './state.js';
-import { hasErrors, type Violation } from './violation.js';
+import { DUPLICATION_RULE, hasErrors, type Violation } from './violation.js';
 
 export interface GateConfig {
   maxAttempts: number;
@@ -331,10 +331,41 @@ function delegatePointer(input: DelegatePointerInput): string {
   if (input.isStalled) {
     return unchangedPointer(violations.length, manifestPath, fixerAgent);
   }
-  if (regression !== undefined) {
-    return regressionPointer(violations, manifestPath, fixerAgent, regression);
+  const spawn =
+    regression === undefined
+      ? tersePointer(violations.length, manifestPath, fixerAgent)
+      : regressionPointer(violations, manifestPath, fixerAgent, regression);
+  return spawn + duplicationNote(violations);
+}
+
+/**
+ * What a pointer that orders a spawn adds when the manifest holds duplication
+ * findings, or nothing.
+ *
+ * Found dogfooding: four `fallow/code-duplication` findings between two new
+ * adapters wanted a third file that both import. The fixer is scope-locked to
+ * the files its manifest names, so it put the shared helper inside one
+ * adapter -- green, with the other now depending on its sibling. The lock is
+ * right and stays; what was missing is who does the part it rules out. So the
+ * pointer says it: a new module is the main agent's to create.
+ *
+ * Exported for the commit rung's pointer, which gives the same instruction.
+ * Not added to a pointer that says to wait: nothing is being handed over.
+ */
+export function duplicationNote(violations: readonly Violation[]): string {
+  const count = violations.filter(
+    (violation) => violation.ruleId === DUPLICATION_RULE,
+  ).length;
+  if (count === 0) {
+    return '';
   }
-  return tersePointer(violations.length, manifestPath, fixerAgent);
+  return (
+    ` ${count} of them are duplication findings (${DUPLICATION_RULE}): ` +
+    `where the fix is a NEW module that both copies import, that extraction ` +
+    `is yours to do, not the fixer's. It may edit only the files the ` +
+    `manifest names, so it would put the shared code inside one of them, a ` +
+    `dependency pointing the wrong way.`
+  );
 }
 
 /**

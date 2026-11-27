@@ -52,13 +52,13 @@
 
 import { parseJsonText } from '../json-file.js';
 import { isRecord } from './report-shape.js';
-import type { Violation } from '../violation.js';
+import { DUPLICATION_RULE, type Violation } from '../violation.js';
 
 /** fallow's own rule id for a clone group, verbatim from its published
  *  `issue-registry.json`. Pinned by the drift guard in
  *  `test/drift/registry.test.ts` so an upstream rename fails the build rather
  *  than silently routing findings nowhere. */
-const RULE_ID = 'fallow/code-duplication';
+const RULE_ID = DUPLICATION_RULE;
 
 /** How many sibling locations one violation's message names before it stops.
  *  A clone group is normally 2–4 sites; a runaway group (a generated file

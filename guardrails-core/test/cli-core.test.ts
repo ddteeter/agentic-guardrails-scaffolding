@@ -4243,6 +4243,76 @@ const noDefinitionFor = (fixer: string): string =>
   'start a new session.';
 
 /**
+ * A commit blocked by `rules`, one finding each on `src/foo.ts`. The eslint
+ * adapter passes a rule id through untouched, which is all the pointer
+ * reads; the `dupes` analyzer's own output is `fallow-adapter.test.ts`'s.
+ */
+function blockedBy(...rules: string[]): CliDependencies {
+  const base = blockingPreToolUseDependencies('block');
+  const eslintJson = JSON.stringify([
+    {
+      filePath: path.join(root, 'src/foo.ts'),
+      messages: rules.map((ruleId, index) => ({
+        ruleId,
+        severity: 2,
+        message: 'x',
+        line: index + 1,
+      })),
+    },
+  ]);
+  return {
+    ...base,
+    exec: (command, args, options) =>
+      [command, ...args].join(' ').includes('eslint')
+        ? Promise.resolve(ok(eslintJson))
+        : base.exec(command, args, options),
+  };
+}
+
+describe('a denied commit whose manifest holds duplication findings', () => {
+  it("says the extraction into a new module is the main agent's", async () => {
+    await runCommand(
+      'gate',
+      ['--mode=pretooluse'],
+      blockedBy('fallow/code-duplication', 'no-console'),
+    );
+    expect(out.join('')).toContain(
+      'then commit again. 1 of them are duplication findings ' +
+        '(fallow/code-duplication): where the fix is a NEW module that both ' +
+        'copies import, that extraction is yours to do',
+    );
+  });
+
+  it('says nothing about extraction when nothing is duplicated', async () => {
+    await runCommand('gate', ['--mode=pretooluse'], blockedBy('no-console'));
+    expect(out.join('')).toContain('then commit again.');
+    expect(out.join('')).not.toContain('duplication findings');
+  });
+
+  it('says nothing about extraction while another fixer holds the file', async () => {
+    const directory = stateDirectory(root);
+    mkdirSync(directory, { recursive: true });
+    saveLeases(directory, [
+      {
+        owner: 'stop:sid',
+        manifestPath: '.guardrails/state/sid.last.json',
+        fixerAgent: 'guardrail-fixer-thorough',
+        files: ['src/foo.ts'],
+        grantedAt: Date.now(),
+        deferrals: 0,
+      },
+    ]);
+    await runCommand(
+      'gate',
+      ['--mode=pretooluse'],
+      blockedBy('fallow/code-duplication'),
+    );
+    expect(out.join('')).toContain('do NOT spawn a fixer yet');
+    expect(out.join('')).not.toContain('duplication findings');
+  });
+});
+
+/**
 The reason a Stop is blocked with, on a failing verify.
 */
 async function blockedStopReason(...dialect: string[]): Promise<string> {

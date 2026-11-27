@@ -81,6 +81,14 @@ export const ADDED_SUPPRESSION_RULE = 'guardrails/added-suppression';
  */
 export const MUTATION_DEFERRED_RULE = 'guardrails/mutation-deferred';
 
+/**
+ * Rule id of a duplication finding: fallow's own id for a clone group, which
+ * the `dupes` analyzer emits verbatim. Named here because the gate's pointer
+ * reads it too -- a duplication fix is the one that can need a file the fixer
+ * may not create -- and the two must not drift apart.
+ */
+export const DUPLICATION_RULE = 'fallow/code-duplication';
+
 const SEVERITIES = new Set<Severity>(['error', 'warn']);
 
 function isSeverity(value: unknown): value is Severity {

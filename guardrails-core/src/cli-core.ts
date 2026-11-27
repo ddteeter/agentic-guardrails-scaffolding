@@ -34,7 +34,7 @@ import {
   type CommitDelegation,
   type CommitGateOptions,
 } from './gate.js';
-import { leaseWaitNote } from './gate-decision.js';
+import { duplicationNote, leaseWaitNote } from './gate-decision.js';
 import { findGitRoot, resolveRepoRoot } from './repo-root.js';
 import { isFixerAgentMissing, unbuiltFixerAgents } from './fixer-agents.js';
 import { repoSourceReader } from './repo-source.js';
@@ -616,7 +616,7 @@ function commitPointer(
   return (
     `${counts}Written to ${delegation.manifestPath}. Do NOT read it. Spawn ` +
     `the ${delegation.fixerAgent} subagent and give it that path to fix, then ` +
-    `commit again.${after}`
+    `commit again.${duplicationNote(violations)}${after}`
   );
 }
 

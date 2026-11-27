@@ -1408,6 +1408,18 @@ core/src/audit.ts`) surfaced that it was a context-free text scan: it flagged
     no CLI for the SessionStart hook to run, and once the session has built,
     the files exist, so the gate cannot tell that this session never loaded
     them. See QUESTIONS.md.
+  - **A duplication fix needed a new file, and the fixer may not create one
+    (pointer fixed 2026-11-27; the scope-lock is unchanged).** Four
+    `fallow/code-duplication` findings between two new adapters wanted a
+    third file both import. The fixer, scope-locked to the files the manifest
+    names, put the shared helper inside one adapter: green, and a dependency
+    pointing the wrong way. The smaller of the two candidates is done: a
+    pointer that orders a spawn (Stop and commit rungs) now says, when the
+    manifest holds duplication findings, that extraction into a new module is
+    the main agent's to do. Left as it was: the lock itself, and the fixer
+    prompt, which still does not tell a fixer to report such a finding back
+    instead of forcing it into a named file. #108 is the neighbouring case (a
+    finding on a file no fixer may edit) and is not touched.
 
 ## Roadmap: analyzer opt-in (pack composition, not all-or-nothing) — shipped
 
