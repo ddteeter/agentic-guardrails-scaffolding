@@ -41,7 +41,8 @@ supersedes:
   (`grep`, `egrep`, `fgrep`, `echo`, `printf`, `cat`, `head`, `tail`, `wc`,
   `uniq`, `cut`, `tr`, `ls`, `ps`, `pgrep`, `cd`, `pwd`, `true`, `false`,
   `tee`, each by its plain name), and the line has no heredoc, no `$` or
-  backtick outside single quotes, no comment and no unclosed string. Every
+  backtick outside single quotes, no comment and no unclosed string, and
+  the tool running it is `bash` (PowerShell quotes differently). Every
   other command is read exactly as it was before, strings and all: a script
   piped to a shell, `sh -c`, `eval`, a variable, `git rebase -x`, `node -e`,
   a string typed into another program.

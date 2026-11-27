@@ -1416,6 +1416,41 @@ describe('pretooluse gate trigger conditions', () => {
     }
   });
 
+  it('reads only the bash tool with bash quoting: another shell keeps its strings', async () => {
+    // PowerShell escapes with a backtick and reads `\` as a character, so a
+    // string bash would close here is still open there, and the other way
+    // round. Read with bash rules, each of these is one harmless string;
+    // in PowerShell each runs a commit. There is no pwsh to run them on, so
+    // the rule is the conservative one: only a tool called `bash` has its
+    // strings set aside, and any other shell is read as it always was.
+    for (const command of [
+      String.raw`echo "a\"; git commit -m x; echo \"b"`,
+      "echo `'; git commit -m x; echo `'",
+      // The finding the reading exists for stays gated on any other shell.
+      'ps aux | grep -E "eslint|tsc|git commit"',
+    ]) {
+      for (const tool of ['powershell', 'PowerShell', 'shell']) {
+        out.length = 0;
+        expect(
+          await runPreToolUse(preToolUseStdin(tool, command)),
+          `should gate on ${tool}: ${JSON.stringify(command)}`,
+        ).toContain('deny');
+      }
+    }
+  });
+
+  it('sets a data string aside for the bash tool, however its name is cased', async () => {
+    for (const tool of ['bash', 'Bash', 'BASH']) {
+      out.length = 0;
+      expect(
+        await runPreToolUse(
+          preToolUseStdin(tool, 'ps aux | grep -E "eslint|tsc|git commit"'),
+        ),
+        tool,
+      ).toBe('');
+    }
+  });
+
   it('still fires on a real git write beside, inside or after a quoted string', async () => {
     // The direction this must never be wrong in. Each of these RUNS a git
     // write; a reading of quotes that emptied any of them would let a commit

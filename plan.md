@@ -1411,6 +1411,10 @@ core/src/audit.ts`) surfaced that it was a context-free text scan: it flagged
     `grep -E` pattern) stays fixed and nothing else moved. Two things the
     first version bought are given back: a push named in a commit message is
     a push again, and a string beside a `git push` counts.
+    The seventh shape has its own commit: only a tool named `bash` is read
+    with bash quoting. PowerShell escapes with a backtick and reads a
+    backslash as a character, and there is no pwsh here to test against, so
+    it and a bare `shell` keep their strings.
   - **Four hook-bypass holes in the PreToolUse gate, on `main` until now
     (closed 2026-11-27, owner-approved, one commit each).** Each let a commit
     or push land with no check at either rung: the git hook was skipped, and

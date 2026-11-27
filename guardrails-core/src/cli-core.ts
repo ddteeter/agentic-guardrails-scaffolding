@@ -941,20 +941,43 @@ const OUT_OF_REACH =
 /**
  * The part of a command the git-write patterns are matched against: what the
  * shell RUNS, with what it merely holds as text taken out -- the bodies of
- * quoted heredocs, and the insides of quoted strings.
+ * quoted heredocs, and, for bash, the strings that can only be data.
  *
- * Unless the command names a hook bypass ANYWHERE in its raw text: then
- * nothing is taken out, and it is read whole. Every other git write this
- * misses still meets the git-native hooks; one carrying a bypass does not.
- * The bypass is looked for BEFORE anything is dropped, because the text that
- * is dropped is exactly where it hid: a quoted heredoc is a note when it is
- * written to a file and a script when it is fed to a shell (`bash <<'EOF'`),
- * and its body used to be gone by the time the check ran.
+ * What is taken out is exactly where a hook bypass can hide: a quoted heredoc
+ * is a note when it is written to a file and a script when it is fed to a
+ * shell. That is not this function's to guard. `isBypassingGit` asks the RAW
+ * command, before anything here is dropped, and a command that names a
+ * bypass is gated by it whatever this returns.
  */
-function commandText(command: string): string {
-  return hasHookBypass(command)
-    ? command
-    : withoutInertStrings(withoutQuotedHeredocBodies(command));
+function commandText(input: ShellCall): string {
+  const text = withoutQuotedHeredocBodies(input.command);
+  return input.toolName.toLowerCase() === BASH_TOOL
+    ? withoutInertStrings(text)
+    : text;
+}
+
+/**
+ * The one tool whose strings are read with bash quoting.
+ *
+ * `SHELL_TOOLS` admits `powershell` and a bare `shell` to this gate as well,
+ * and PowerShell quotes differently: a backtick escapes there and a
+ * backslash is a character, so a string bash would close is still open, and
+ * a commit bash sees inside a string is outside one. A tool this cannot name
+ * as bash keeps its strings, which is how every tool was read before strings
+ * were set aside at all.
+ */
+const BASH_TOOL = 'bash';
+
+/**
+A shell tool's call: the command, and which tool is running it.
+*/
+interface ShellCall {
+  command: string;
+  toolName: string;
+}
+
+function shellCall(input: HookInput): ShellCall {
+  return { command: input.command ?? '', toolName: input.toolName ?? '' };
 }
 
 /**
@@ -962,12 +985,12 @@ function commandText(command: string): string {
  * rung, which is staged-scoped like `.husky/pre-commit`; anything with a push
  * in it is judged over the whole branch, as the push rung is.
  */
-function writeScope(command: string): 'staged' | 'branch' {
+function writeScope(call: ShellCall): 'staged' | 'branch' {
   // A bypassing write git is not in command position for has no `git push`
   // for the pattern to find; the word is taken for it.
   const isPush =
-    GIT_PUSH.test(commandText(command)) ||
-    (isBypassingGit(command) && PUSH_ANYWHERE.test(command));
+    GIT_PUSH.test(commandText(call)) ||
+    (isBypassingGit(call.command) && PUSH_ANYWHERE.test(call.command));
   return isPush ? 'branch' : 'staged';
 }
 
@@ -975,8 +998,8 @@ function writeScope(command: string): 'staged' | 'branch' {
  * Is this a push and nothing else -- no commit riding along, no hook bypass --
  * so that the pre-push hook is the gate it will meet?
  */
-function isPlainPush(command: string): boolean {
-  return !GIT_COMMIT.test(commandText(command)) && !hasHookBypass(command);
+function isPlainPush(call: ShellCall): boolean {
+  return !GIT_COMMIT.test(commandText(call)) && !hasHookBypass(call.command);
 }
 
 /**
@@ -993,7 +1016,7 @@ function isShellGitWrite(input: HookInput): boolean {
     SHELL_TOOLS.test(input.toolName) &&
     // Stryker disable next-line ConditionalExpression
     input.command !== undefined &&
-    (GIT_WRITE.test(commandText(input.command)) ||
+    (GIT_WRITE.test(commandText(shellCall(input))) ||
       isBypassingGit(input.command))
   );
 }
@@ -1238,7 +1261,7 @@ async function gatePreToolUseCommand(
   // checks there, under the machine-wide lock. Pre-running them here bought an
   // unlocked, deadline-bounded duplicate. A commit is unchanged.
   if (
-    isPlainPush(input.command ?? '') &&
+    isPlainPush(shellCall(input)) &&
     (await isPushGatedByHook(dependencies.exec, repoRoot))
   ) {
     return; // allow (silent): the pre-push hook is the gate
@@ -1258,7 +1281,7 @@ async function gatePreToolUseCommand(
       // Staged for a commit, as `.husky/pre-commit` asks for: under branch
       // scope every agent commit re-mutated the whole branch -- untracked
       // files included -- until it outgrew the hook deadline.
-      changedScope: writeScope(input.command ?? ''),
+      changedScope: writeScope(shellCall(input)),
     });
   if (!blocked) {
     return; // allow (silent)
