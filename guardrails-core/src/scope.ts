@@ -45,6 +45,12 @@ import { isViolation, type Violation } from './violation.js';
  * `maxAttempts`, `analyzers` and `enforcement`, so a fixer could grant itself
  * an exemption of either kind, or switch a gate off.
  *
+ * The Swift tools' own configs are here for the same reason (GR-04):
+ * `.swiftlint.yml`, `.swiftformat` and `.periphery.yml` each hold the list of
+ * rules a tool does NOT apply, and `guardrails-imports.json` is the import
+ * policy. A finding filed against one of them must not make it editable; the
+ * auditor's `tool-config-escape` row is what holds the main agent.
+ *
  * Nothing legitimate is lost: the fixer's job is to fix code, and no honest fix
  * to either violation is an edit to these files — installing a dependency is
  * not something the fixer can do at all (it has no Bash). The correct outcome
@@ -53,6 +59,10 @@ import { isViolation, type Violation } from './violation.js';
 const DENIED_FILE_NAMES: ReadonlySet<string> = new Set([
   'package.json',
   'guardrails.config.json',
+  '.swiftlint.yml',
+  '.swiftformat',
+  '.periphery.yml',
+  'guardrails-imports.json',
 ]);
 
 function isDeniedFile(normalizedPath: string): boolean {

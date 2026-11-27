@@ -161,6 +161,26 @@ describe('collectManifestScope', () => {
     expect(collectManifestScope(directory).files.size).toBe(0);
   });
 
+  it.each([
+    'ios/.swiftlint.yml',
+    '.swiftlint.yml',
+    'ios/.swiftformat',
+    'ios/.periphery.yml',
+    'ios/guardrails-imports.json',
+    'ios/Packages/DialedDomain/.SwiftLint.yml',
+  ])(
+    'never makes the Swift tool config %s editable, whatever names it',
+    (file) => {
+      // A finding filed against a tool's own config (tool-config-escape, or
+      // an analyzer naming it) must not hand a fixer the file that switches
+      // the tool's rules off.
+      writeActiveViolations('s1', [v(file), v('ios/App/Model.swift')]);
+      expect([...collectManifestScope(directory).files]).toEqual([
+        'ios/App/Model.swift',
+      ]);
+    },
+  );
+
   it('reads only `.last.json` manifests, not other state files', () => {
     // The state directory also holds session tallies and recurrence counts, and
     // a consumer may leave anything else there. Without the suffix filter this

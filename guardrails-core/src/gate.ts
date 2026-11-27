@@ -37,7 +37,8 @@ import type { SanctionedFile, SanctionedSuppression } from './config.js';
 import type { Exec, ExecResult } from './exec.js';
 import { withRelatedTests } from './covering-tests.js';
 import type { StackConfig } from './packs/pack.js';
-import { implicitStacks, perPack } from './packs/stacks.js';
+import { debugTargetsOf, implicitStacks, perPack } from './packs/stacks.js';
+import { repoSourceReader } from './repo-source.js';
 import { withGuidance } from './guidance.js';
 import {
   decideGate,
@@ -658,6 +659,22 @@ function settleLeaseCycle(
 }
 
 /**
+ * The diff auditor, told what only the repository knows: each file as it
+ * stands after the change (a hunk can begin inside a multi-line Swift
+ * comment, or under a YAML key the diff does not show), and the targets
+ * where `#if DEBUG` is not an escape.
+ */
+function audited(
+  diff: string,
+  options: { repoRoot: string; stacks?: readonly StackConfig[] | undefined },
+): AuditFinding[] {
+  return auditDiff(diff, {
+    readSource: repoSourceReader(options.repoRoot),
+    debugTargets: debugTargetsOf(options.stacks),
+  });
+}
+
+/**
  * The manifest a fixer reads: each violation with its owning package, its
  * guidance and the tests that cover its file. Package and tests are asked of
  * the pack whose stack owns the file, so a Swift file is never answered by
@@ -776,7 +793,7 @@ async function stopGate(
       auditFindings: [],
     };
   }
-  const present = auditDiff(diff.diff);
+  const present = audited(diff.diff, options);
   // No snapshot means no fix loop is open, so there is no fixer whose work
   // this could be. See the module docstring.
   const auditFindings = isHadSnapshot
@@ -1071,7 +1088,7 @@ async function commitGate(
     };
   }
   const findings = spendBudget(
-    auditDiff(branch.diff),
+    audited(branch.diff, options),
     budget,
     options.sanctionedFiles,
   );

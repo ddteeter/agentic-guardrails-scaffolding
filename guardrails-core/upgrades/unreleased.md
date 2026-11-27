@@ -38,6 +38,30 @@ version: unreleased
   configures `stacks`, in the manifest a fixer reads. It is absent everywhere
   else.
 
+- **The diff auditor reads Swift.** A `.swift` file added or changed on a
+  branch is now audited, with a lexer that follows Swift's nested block
+  comments, multi-line and raw strings and string interpolation across
+  lines. New finding kinds: `swiftlint-disable`, `swiftformat-disable`,
+  `swift-format-ignore`, `periphery-ignore`, `ast-grep-ignore`,
+  `unchecked-sendable`, `unsafe-isolation`, `preconcurrency`,
+  `assume-isolated`, `unsafe-expression`, `force-try`, `force-cast`,
+  `force-unwrap`, `fatal-stub`, `test-time-limit`, `compile-escape`,
+  `underscored-attribute`, `unsafe-cast`, `retroactive`,
+  `availability-hide`, `build-setting-escape` (in `Package.swift` and
+  `project.yml`) and `tool-config-escape` (an added line under
+  `disabled_rules` or `excluded` in `.swiftlint.yml`, `--disable` or
+  `--exclude` in `.swiftformat`, `retain_*` in `.periphery.yml`). Swift
+  Testing's skips and `guardrails-mutate:disable` report under the existing
+  `skipped-test` and `mutation-suppress` kinds. Each can be named in
+  `sanctionedSuppressions`, and `guardrails sanction` says what granting it
+  costs. **A repository with no Swift files sees no change**: no Swift row is
+  ever tested against a `.ts`, `.js` or `.java` line.
+- **`debugTargets`** on a `stacks` entry names Swift targets whose files may
+  hold `#if DEBUG`; the `compile-escape` finding is not raised there.
+- **The fixer may never edit a Swift tool's config.** `.swiftlint.yml`,
+  `.swiftformat`, `.periphery.yml` and `guardrails-imports.json` join
+  `package.json` and `guardrails.config.json` on the scope-lock denylist.
+
 ## Instructions this supersedes
 
 - None.

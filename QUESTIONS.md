@@ -175,3 +175,52 @@ would honour that comment too, so the finding is true.
 
 **Meanwhile.** Un-anchored for these two; `periphery:ignore` stays anchored,
 as its parser is.
+
+## 12. `.disabled(…)` and `.enabled(if:)` are audited under test targets only
+
+**What.** The plan's `skipped-test` row for Swift Testing traits is
+`\.disabled\s*\(` on any Swift line. `.disabled(` is also SwiftUI's view
+modifier (`Button(…).disabled(!isValid)`). The branch applies the two trait
+rows only to a file with a path segment ending in `Tests`.
+
+**Cost.** A Swift Testing trait written outside such a path (a test helper in
+a support target, say) is not flagged. Unscoped, every form in the app would
+need a sanction.
+
+**Recommendation.** Keep the scope. When the adapters lane has
+`swift package dump-package`, replace the path rule with the real test
+targets.
+
+**Meanwhile.** Scoped by path.
+
+## 13. Where the Swift rows live
+
+**What.** The plan adds the Swift rows to `SIGNATURES` in `audit.ts` with a
+`languages` field. The branch keeps them in `audit-swift.ts`, read by the
+Swift lexer, and `audit.ts` picks a reader per file. `auditKinds()` still
+knows every kind.
+
+**Cost.** Two tables instead of one. The existing table's matcher takes one
+line lexed alone and cannot run a Swift row at all, so one table would have
+needed two matchers behind one list.
+
+**Recommendation.** Keep the split; it is the same single auditor.
+
+**Meanwhile.** Split, with tests that no Swift row matches a `.ts` or `.java`
+line and no existing row a `.swift` line.
+
+## 14. What the later lanes need from the owner (this lane stopped at the Linux boundary)
+
+- **A macOS machine with Xcode** for GR-07 onward: the adapters are written
+  against real tool output, and the plan asks for the tools' outputs to be
+  re-recorded as fixtures first (SwiftLint, SwiftFormat, `swift build`
+  diagnostics, Periphery, `dump-package`).
+- **The tool pins** for `swiftformat` and `ast-grep` (the plan has
+  `<pinned>`), and confirmation of SwiftLint 0.65.1, Periphery 3.8.0,
+  XcodeGen 2.46.0 and xcbeautify 3.2.1.
+- **A macOS CI runner decision** (usage and cost), since `--stack=swift`
+  exists so that job can run only its own tools.
+- **The consumer's Swift package layout**, to replace the two path rules in
+  the auditor (test targets, debug targets) with `dump-package` facts.
+- **The parity run on the consumer** before the seam release is tagged
+  (`guardrails-core/docs/releasing.md`).

@@ -148,3 +148,14 @@ export function perPack<Pack extends { id: StackPackId }, Answer>(
     return pack === undefined ? undefined : bind(pack, stack);
   });
 }
+
+/**
+ * Every configured stack's `debugTargets`: the targets whose files may hold
+ * `#if DEBUG`, as the diff auditor is told them. None when no stacks are
+ * configured.
+ */
+export function debugTargetsOf(
+  stacks: readonly StackConfig[] | undefined,
+): string[] {
+  return (stacks ?? []).flatMap((stack) => stack.debugTargets);
+}

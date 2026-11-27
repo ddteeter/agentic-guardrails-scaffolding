@@ -397,13 +397,15 @@ a miss. The limit is pinned by a test.
 
 ### Auditor rows
 
-Each Swift row joins `SIGNATURES` with a `languages: ['swift']` field, so no
-Swift row is ever tested against a `.ts` or `.java` line; rows without the
-field keep today's behaviour exactly, and are never tested against a `.swift`
-line. `.swift` joins the auditable extensions. `directive` rows must lead a
-comment; `code` rows must sit in a code span (which includes the code of a
-string interpolation); `pkg` rows are code rows applied only to
-`Package.swift` and `project.yml`.
+A `.swift` file is read by the Swift lexer against the Swift rows
+(`audit-swift.ts`); a Swift tool's own config is read by the file rule
+(`audit-tool-config.ts`); everything else is read as before. Which reader a
+file gets is decided by the file alone, per hunk, in `audit.ts`
+(`hunkAuditor`). `directive` rows are tested against the content of each
+comment; `code` rows against the line's code, which includes the code of a
+string interpolation and excludes string text, regex literals and backtick
+identifiers; `setting` rows (the plan's "pkg") against the code and the text
+of string literals, in `Package.swift` and `project.yml` only.
 
 The rows are the plan's table: `swiftlint-disable`, `swiftformat-disable`,
 `swift-format-ignore`, `periphery-ignore`, `mutation-suppress` (existing
@@ -412,11 +414,43 @@ kind), `ast-grep-ignore`, `unchecked-sendable`, `unsafe-isolation`,
 `force-cast`, `force-unwrap` (a token rule), `fatal-stub`, `skipped-test`
 (existing kind), `test-time-limit`, `compile-escape`, `underscored-attribute`,
 `unsafe-cast`, `retroactive`, `availability-hide`, `build-setting-escape`
-(pkg) and `tool-config-escape` (a file rule). `dupes-ignore` is left out until
+and `tool-config-escape` (a file rule). `dupes-ignore` is left out until
 a Swift duplication tool is approved.
 
 Adaptations:
 
+- **Dispatch by file instead of a `languages` field on one table.** The plan
+  adds `languages: ['swift']` to rows of the single `SIGNATURES` table. A
+  Swift line cannot be matched by that table's machinery at all: the table
+  is applied to one line lexed alone, and Swift needs state carried across
+  lines and a token rule. So the Swift rows are their own table, read by
+  their own reader, and `audit.ts` picks the reader from the file. The
+  guarantee the field was for holds by construction and is tested both ways:
+  no Swift row is tested against a `.ts` or `.java` line, and no existing row
+  against a `.swift` line. `.swift` is therefore not added to
+  `AUDITABLE_EXTENSIONS` (that set selects the existing reader), and
+  `isAuditableSourceFile`, which holds a sanctioned equivalent-mutant
+  directive, is untouched.
+- **Each pattern is written as small as it can be.** Where the plan's pattern
+  has a fragment no input can tell from its absence (the optional
+  `(?::next|:this|:previous)?` before a `\b`, `\w+` where `\w` decides the
+  match), the fragment is left out: it matches the same lines and leaves no
+  mutant that cannot be killed. Combined alternations are split into several
+  rows of one kind where the repository's regex-complexity rule asks.
+- **`.disabled(…)` and `.enabled(if:)` apply only under a test target** (a
+  path segment ending in `Tests`). The plan's row is unscoped, and
+  `.disabled(` is also SwiftUI's view modifier, on nearly every form: unscoped,
+  it would block ordinary view code with no way past but a sanction per call.
+  See `QUESTIONS.md`.
+- **`force-unwrap` also takes `>` as the previous token**, so `Set<Int>!` (an
+  implicitly unwrapped generic type) is caught; the lexer ends an operator at
+  a `>` that `!` follows for this purpose.
+- **`compile-escape` is two rows**: `#if DEBUG` (and `#if !DEBUG`), which a
+  debug target is exempt from, and the rest (`#if false`, `canImport`,
+  `…TEST…`), which nothing is.
+- **`swiftlint:enable` and `swiftformat:enable` are not findings**: they turn
+  checking back on. (`muter:enable` is, with `muter:disable`, as the plan's
+  pattern has it.)
 - **`swiftlint-disable` and `swiftformat-disable` are not anchored to the
   start of the comment.** The plan's patterns begin with `^`. Both tools'
   sources were read for this branch (SwiftLint `CommandVisitor.swift` and
@@ -448,7 +482,12 @@ Adaptations:
   graph, "under a target" is decided by path: a path segment equal to the
   target name (`…/Sources/DialedDebugHooks/…`, `…/DialedDebugHooks/…`).
 - New `AuditKind` values join `sanctions.ts` validation automatically:
-  `auditKinds()` is derived from the table.
+  `auditKinds()` is derived from the tables. `guardrails sanction` states
+  what granting each new kind costs (`sanction-proposal.ts` holds a total
+  record over the kinds, so a kind cannot be added without one).
+- The gates give the auditor the post-change file and the stacks'
+  `debugTargets`; `guardrails audit` and the sanction count re-derivation
+  read whole files or bare diffs and need neither.
 - `DENIED_FILE_NAMES` gains `.swiftlint.yml`, `.swiftformat`,
   `.periphery.yml` and `guardrails-imports.json`.
 

@@ -17,7 +17,24 @@
  * `fallow-ignore` (TS) and
  * `@SuppressWarnings`/`@Disabled`/casts (Java). New stacks add signatures here;
  * they never need a separate auditor.
+ *
+ * Swift (GR-04) is still this one auditor, but not this one table. A Swift
+ * line cannot be judged alone: its block comments nest and span lines, and
+ * so do its strings. So a `.swift` file is read by the Swift lexer, which
+ * carries its state from line to line, against the Swift rows in
+ * `audit-swift.ts`; and a Swift tool's own config file is read by the rule
+ * in `audit-tool-config.ts`. Which reader a file gets is decided by the file
+ * alone (`hunkAuditor`), so no Swift row is ever tested against a `.ts` or
+ * `.java` line and no row below against a `.swift` one.
  */
+
+import {
+  type SwiftAuditKind,
+  swiftAuditKinds,
+  swiftAuditor,
+  xcodegenAuditor,
+} from './audit-swift.js';
+import { toolConfigAuditor } from './audit-tool-config.js';
 
 export type AuditKind =
   | 'eslint-disable' // TS: eslint-disable[-next-line]
@@ -27,7 +44,9 @@ export type AuditKind =
   | 'disabled-test' // Java: @Disabled
   | 'skipped-test' // TS/JS: .skip / .only / xit / fit
   | 'mutation-suppress' // TS/JS: // Stryker disable | restore
-  | 'analyzer-ignore'; // TS/JS: // fallow-ignore[-next-line|-file]
+  | 'analyzer-ignore' // TS/JS: // fallow-ignore[-next-line|-file]
+  | SwiftAuditKind // Swift: see audit-swift.ts
+  | 'tool-config-escape'; // Swift tool configs: see audit-tool-config.ts
 
 export interface AuditFinding {
   file: string;
@@ -229,8 +248,17 @@ const SIGNATURES: readonly Signature[] = [
  * worth memoising.
  */
 export function auditKinds(): ReadonlySet<AuditKind> {
-  return new Set(SIGNATURES.map((signature) => signature.kind));
+  return new Set<AuditKind>([
+    ...SIGNATURES.map((signature) => signature.kind),
+    ...swiftAuditKinds(),
+    TOOL_CONFIG_ESCAPE,
+  ]);
 }
+
+/**
+The one kind the tool-config rule reports; it has no signature to derive from.
+*/
+const TOOL_CONFIG_ESCAPE = 'tool-config-escape';
 
 /**
  * Source extensions that can meaningfully contain a real suppression.
@@ -598,6 +626,76 @@ function matchSignature(text: string): AuditKind | undefined {
   return undefined;
 }
 
+/**
+What the auditor may be told beyond the diff itself. All of it is optional.
+*/
+export interface AuditOptions {
+  /**
+   * Repo-relative reader for a file as it stands AFTER the change. A hunk can
+   * begin inside a multi-line Swift comment or string, or under a YAML key,
+   * and the diff alone cannot say so; with the file, the lines above the hunk
+   * settle it. Without it (or when it answers nothing) such a hunk is read
+   * as if it began in code: an over-match rather than a miss.
+   */
+  readSource?: ((file: string) => string | undefined) | undefined;
+  /**
+   * The `debugTargets` of the repository's Swift stacks: `#if DEBUG` is not
+   * an escape in a file under one of them.
+   */
+  debugTargets?: readonly string[] | undefined;
+}
+
+/**
+ * One file's reader for the lines of one hunk, fed every post-change line in
+ * order and answering the kind of escape each holds. Only an added line's
+ * answer is a finding; a context line is fed all the same, because a reader
+ * that carries state (Swift's, a YAML file's) has to see it.
+ */
+interface LineAuditor {
+  line(text: string): AuditKind | undefined;
+}
+
+/**
+The JavaScript, TypeScript and Java reader: each line stands alone.
+*/
+const SOURCE_LINES: LineAuditor = { line: matchSignature };
+
+/**
+ * The reader for a hunk of `file` that starts at `firstLine`. The file
+ * alone decides which: a Swift tool's config, an XcodeGen project file, Swift
+ * source, the languages the signature table covers, or none at all for a
+ * file with nothing to audit.
+ */
+function hunkAuditor(
+  file: string,
+  firstLine: number,
+  options: AuditOptions,
+): LineAuditor | undefined {
+  // Asked for only by a reader that needs it, so a TypeScript hunk never
+  // costs a file read.
+  const above = (): string[] | undefined =>
+    options
+      .readSource?.(file)
+      ?.split('\n')
+      .slice(0, firstLine - 1);
+  const toolConfig = toolConfigAuditor(file, above);
+  if (toolConfig !== undefined) {
+    return {
+      line: (text) => (toolConfig.line(text) ? TOOL_CONFIG_ESCAPE : undefined),
+    };
+  }
+  if (file === 'project.yml' || file.endsWith('/project.yml')) {
+    return xcodegenAuditor();
+  }
+  if (file.toLowerCase().endsWith('.swift')) {
+    return swiftAuditor(file, {
+      above: above(),
+      debugTargets: options.debugTargets,
+    });
+  }
+  return isAuditableSourceFile(file) ? SOURCE_LINES : undefined;
+}
+
 const HUNK_HEADER = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/;
 
 /**
@@ -613,10 +711,14 @@ function headerPath(line: string): string {
 /**
 Scan the added lines of a unified diff for gate-cheating signatures.
 */
-export function auditDiff(diffText: string): AuditFinding[] {
+export function auditDiff(
+  diffText: string,
+  options: AuditOptions = {},
+): AuditFinding[] {
   const findings: AuditFinding[] = [];
   let file = '';
   let newLine = 0;
+  let auditor: LineAuditor | undefined;
 
   for (const raw of diffText.split('\n')) {
     // `--- ` and `diff --git` headers carry no added content. Checked first
@@ -640,18 +742,18 @@ export function auditDiff(diffText: string): AuditFinding[] {
       // without it fails typecheck.
       // Stryker disable next-line OptionalChaining
       newLine = Number(HUNK_HEADER.exec(raw)?.[1]);
-    } else if (raw.startsWith('+')) {
+      // A reader per hunk: what it knows of the lines above starts over.
+      auditor = hunkAuditor(file, newLine, options);
+    } else if (!raw.startsWith('-')) {
+      // An added line, a context line (leading space) or a blank separator:
+      // each is a line of the post-change file, so each is shown to the
+      // reader and advances the counter. Only an added line can be a finding.
+      // A removed (`-`) line is neither read nor counted.
       const text = raw.slice(1);
-      const kind = isAuditableSourceFile(file)
-        ? matchSignature(text)
-        : undefined;
-      if (kind) {
+      const kind = auditor?.line(text);
+      if (kind && raw.startsWith('+')) {
         findings.push({ file, line: newLine, kind, text: text.trim() });
       }
-      newLine += 1;
-    } else if (!raw.startsWith('-')) {
-      // Context line (leading space) or blank separator advances the counter;
-      // removed (`-`) lines do not and are never flagged.
       newLine += 1;
     }
   }
@@ -673,7 +775,11 @@ export function findingKey(finding: AuditFinding): string {
  * the gate enforces with, so a count taken here cannot drift from the count the
  * gate would produce. Line numbers are 1-indexed as usual.
  */
-export function auditSource(file: string, source: string): AuditFinding[] {
+export function auditSource(
+  file: string,
+  source: string,
+  options: AuditOptions = {},
+): AuditFinding[] {
   const lines = source.split('\n');
   return auditDiff(
     [
@@ -681,5 +787,6 @@ export function auditSource(file: string, source: string): AuditFinding[] {
       `@@ -0,0 +1,${lines.length} @@`,
       ...lines.map((line) => `+${line}`),
     ].join('\n'),
+    options,
   );
 }

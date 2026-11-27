@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { StackConfig } from '../../src/packs/pack.js';
 import {
   STACK_PACK_IDS,
+  debugTargetsOf,
   defaultTrigger,
   implicitStack,
   implicitStacks,
@@ -211,5 +212,21 @@ describe('perPack', () => {
     const answer = perPack([web, ios], packs.slice(0, 1), owned);
     expect(answer('ios/a.swift')).toBeUndefined();
     expect(answer('src/a.ts')).toBe('owned');
+  });
+});
+
+describe('debugTargetsOf', () => {
+  it('gathers every stack’s debug targets, in order', () => {
+    expect(
+      debugTargetsOf([
+        stack({}),
+        stack({ pack: 'swift', root: 'ios', debugTargets: ['Hooks', 'Menu'] }),
+        stack({ pack: 'swift', root: 'mac', debugTargets: ['MacHooks'] }),
+      ]),
+    ).toEqual(['Hooks', 'Menu', 'MacHooks']);
+  });
+
+  it('has none when no stacks are configured', () => {
+    expect(debugTargetsOf(undefined)).toEqual([]);
   });
 });

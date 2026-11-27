@@ -420,3 +420,70 @@ describe('the manifest a blocked commit gate writes, across stacks', () => {
     expect(written[1]).not.toHaveProperty('relatedTests');
   });
 });
+
+/**
+A hunk of `file` that adds `lines` starting at line `start`.
+*/
+function swiftHunk(
+  file: string,
+  start: number,
+  lines: readonly string[],
+): string {
+  return [
+    `diff --git a/${file} b/${file}`,
+    `--- a/${file}`,
+    `+++ b/${file}`,
+    `@@ -${String(start)},0 +${String(start)},${String(lines.length)} @@`,
+    ...lines.map((line) => `+${line}`),
+  ].join('\n');
+}
+
+describe('the commit gate audits Swift', () => {
+  const hooks = 'ios/Packages/Hooks/Sources/Hooks/Menu.swift';
+  const swiftStack: StackConfig = {
+    pack: 'swift',
+    root: 'ios',
+    exclude: [],
+    wholeProjectTrigger: 'stack-changes',
+    debugTargets: ['Hooks'],
+  };
+
+  async function kinds(
+    diff: string,
+    stacks?: readonly StackConfig[],
+  ): Promise<string[]> {
+    const result = await runCommitGate({
+      repoRoot: root,
+      config,
+      baseBranch: 'main',
+      exec: fakeExec(diff),
+      analyzers: NO_ANALYZERS,
+      stacks,
+    });
+    return result.findings.map((finding) => finding.kind);
+  }
+
+  it('reports a Swift escape added on the branch', async () => {
+    expect(
+      await kinds(
+        swiftHunk('ios/App/Model.swift', 1, ['let data = try! load()']),
+      ),
+    ).toEqual(['force-try']);
+  });
+
+  it('exempts #if DEBUG under a Swift stack’s debug target', async () => {
+    const diff = swiftHunk(hooks, 1, ['#if DEBUG']);
+    expect(await kinds(diff)).toEqual(['compile-escape']);
+    expect(await kinds(diff, [swiftStack])).toEqual([]);
+  });
+
+  it('reads the file to learn that a hunk begins inside a comment', async () => {
+    const file = 'ios/App/Model.swift';
+    const diff = swiftHunk(file, 2, [' let data = try! load()']);
+    // Unreadable: the line is taken for code.
+    expect(await kinds(diff)).toEqual(['force-try']);
+    mkdirSync(path.join(root, 'ios', 'App'), { recursive: true });
+    writeFileSync(path.join(root, file), '/*\n let data = try! load()\n */\n');
+    expect(await kinds(diff)).toEqual([]);
+  });
+});

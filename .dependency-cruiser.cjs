@@ -36,6 +36,33 @@ module.exports = {
         dependencyTypes: ['core'],
       },
     },
+    {
+      name: 'swift-mutate-is-standalone',
+      severity: 'error',
+      comment:
+        'The Swift lexer and the Swift mutation runner import only Node built-ins and each other. The runner has a narrow boundary on purpose (files and ranges in, a report out), so it can be split into its own project.',
+      from: {
+        path: '^guardrails-core/src/(swift-lexer|swift-mutate)/',
+      },
+      to: {
+        pathNot: '^guardrails-core/src/(swift-lexer|swift-mutate)/',
+        dependencyTypesNot: ['core'],
+      },
+    },
+    {
+      name: 'swift-mutate-entry-points',
+      severity: 'error',
+      comment:
+        'guardrails reaches the Swift mutation runner only through its request type and its run entry point. (The lexer is shared: the diff auditor reads Swift with it.)',
+      from: {
+        path: '^guardrails-core/src/',
+        pathNot: '^guardrails-core/src/(swift-lexer|swift-mutate)/',
+      },
+      to: {
+        path: '^guardrails-core/src/swift-mutate/',
+        pathNot: '^guardrails-core/src/swift-mutate/(request|run)\\.ts$',
+      },
+    },
   ],
   options: {
     doNotFollow: { path: 'node_modules' },

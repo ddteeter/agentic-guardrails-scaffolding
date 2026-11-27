@@ -140,3 +140,68 @@ in `QUESTIONS.md`.
   `verify/knip-adapter.ts`; `parity.test.ts` failed on the `knip` fixture,
   naming the changed message in both the printed line and the manifest;
   reverted.
+
+### GR-02 and GR-03 (commit `de1e2f7`)
+
+- One commit for both: their hunks interleave in `verify/index.ts`
+  (`selectAnalyzers` and `runVerify` are where the seam and the scoping
+  meet), and splitting them would have left an intermediate commit whose
+  `runVerify` was neither.
+- Full suite: 123 files, 4,470 tests. `tsc`, ESLint, knip, dependency-cruiser
+  clean.
+- Parity: all 20 goldens unchanged, and unchanged again with an explicit
+  TypeScript-only `stacks` block (the `stack` stamp aside; the test counts
+  the stamps).
+- Commit gate, first attempt: blocked. 15 surviving mutants out of 1,374 on
+  the changed lines, and four duplication findings. Fixed in code and tests,
+  none suppressed:
+  - `perPack` in `packs/stacks.ts` replaced three `packOf(…)?.method` call
+    sites whose optional chain no test distinguished;
+  - `noFiles()` replaced seven `{ files: [], … }` returns in `changedFiles`,
+    which had been killable only while the list was filtered at source;
+  - `repoRelative` was a copy of `timeout-meter.ts`'s: one shared module now;
+  - `verifySettingsOf` and `stackAwareContext` in `cli-core.ts` replaced
+    three field-by-field config mappings and two preambles;
+  - tests added for the default `resolveBin`, a missing pack in `autofix`,
+    package attribution of an audit finding through the gate, an empty
+    `stacks` list, a failed git listing, and a whole-project analyzer in
+    `isAnalyzerSelected`.
+- Commit gate, second attempt: passed (1,494 mutants in scope, none
+  surviving).
+- Two dogfooding findings recorded in `plan.md` ("Roadmap: fixer-loop
+  hardening"): the fixer agents are not loadable in a session that starts
+  before the first build, and `dupes` paired two unrelated interfaces.
+
+### GR-04
+
+- The lexer (`src/swift-lexer/`, eight files, about 740 lines) was built
+  test-first by a delegated agent in its own worktree against a written
+  contract, then reviewed and copied in: 312 tests, including a seeded
+  robustness run (3,000 pseudo-random lines threaded through the state,
+  asserting termination and that every character lands in exactly one
+  token). Its Stryker run over `src/swift-lexer/**`: 331 mutants, 262 killed,
+  19 timeouts (infinite-loop mutants of the main loop), 0 survived, 0
+  without coverage, 50 ignored (the repository's `StringLiteral` exclusion).
+  No suppression. Its documented limits are in `swift-lexer/index.ts` and
+  pinned by tests.
+- The rows: `test/audit-swift.test.ts` holds every code row to the matrix
+  (code and interpolation are findings; line comment, doc comment, nested and
+  multi-line block comment, string, multi-line string, raw string and
+  backtick identifier are not) and every directive row to its own; plus the
+  precision cases, the test-target and debug-target scopes, the settings
+  rows, the hunk-state cases and the two opt-in guarantees.
+- `audit-swift.ts`, `audit-tool-config.ts` and `audit.ts` under Stryker:
+  first run 37 survivors (whitespace variants of the patterns, and seven
+  structural mutants no input could tell apart). Samples added for the
+  first kind; the second kind redesigned away (rows carry a scope instead of
+  being spread conditionally; the readers take one argument, not a line and
+  an `isAdded` flag whose answer the caller discarded; the tool-config
+  lookup has no default branch to empty). Second run: 416 killed, 0
+  survived, 390 ignored (`StringLiteral`, and the JavaScript lexer's
+  sanctioned region, which was not moved or reworded).
+- Full suite: 126 files, 5,416 tests. Goldens unchanged.
+- `swift-mutate-is-standalone` and `swift-mutate-entry-points` added to
+  `.dependency-cruiser.cjs` with the lexer, since the lexer is inside the
+  boundary. By hand: a probe file in `src/swift-lexer/` importing `../exec.js`
+  made `npm run depcruise` fail with
+  `error swift-mutate-is-standalone: …/zz-probe.ts → …/exec.ts`; removed.

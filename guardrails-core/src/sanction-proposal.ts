@@ -136,6 +136,49 @@ const COST: Readonly<Record<AuditKind, string>> = {
     'every mutant this directive covers stops being generated, so the mutation score reads clean without them',
   'analyzer-ignore':
     'the analyzer finding this line names stops being reported here, and nothing re-checks that it is still the same finding',
+  'swiftlint-disable':
+    'the SwiftLint rule(s) this comment names stop being enforced for the lines it covers, for every future edit to them',
+  'swiftformat-disable':
+    'SwiftFormat stops applying the rule(s) or options this comment names, so the lines it covers can drift from the house format unreported',
+  'swift-format-ignore':
+    'swift-format stops formatting and linting what this comment covers',
+  'periphery-ignore':
+    'Periphery stops reporting this declaration as unused, so it can become dead code without anyone being told',
+  'ast-grep-ignore':
+    'the structural rule(s) this comment names stop being reported for the next line',
+  'unchecked-sendable':
+    'the compiler stops checking that this type is safe to share across concurrency domains; a data race in it is no longer a build error',
+  'unsafe-isolation':
+    'the compiler stops checking access to this variable across isolation domains; a data race on it is no longer a build error',
+  preconcurrency:
+    'Sendable and isolation diagnostics for this import or conformance are suppressed or downgraded, so a real violation there can pass the build',
+  'assume-isolated':
+    'isolation is asserted at runtime instead of proven at compile time; called from the wrong executor, this traps',
+  'unsafe-expression':
+    'strict memory safety is acknowledged here rather than satisfied; nothing checks that the unsafe operation is actually sound',
+  'force-try':
+    'an error thrown here crashes the process instead of being handled',
+  'force-cast':
+    'a value of another type here crashes the process instead of being handled',
+  'force-unwrap': 'a nil here crashes the process instead of being handled',
+  'fatal-stub':
+    'reaching this line crashes the process; nothing checks that it is really unreachable, or that the stub is ever filled in',
+  'test-time-limit':
+    'this test is cut off at a deadline rather than held to finishing; a time limit can hide a hang or turn a slow machine into a failure nobody investigates',
+  'compile-escape':
+    'the code under this condition is compiled, linted and tested only in some configurations, so the other configurations ship without it having been checked there',
+  'underscored-attribute':
+    'this relies on an unofficial compiler attribute with no stability guarantee, some of which widen visibility or switch off optimisation and checks',
+  'unsafe-cast':
+    'the type system and ARC stop checking this value; a wrong type or lifetime here is undefined behaviour, not a build error',
+  retroactive:
+    'this conformance is declared for a type and protocol this module owns neither of; a later release of either that adds its own conformance changes behaviour silently',
+  'availability-hide':
+    'callers of this declaration are refused or warned at compile time, which can hide code from checks and from callers rather than fixing or removing it',
+  'build-setting-escape':
+    'the compiler runs less strictly for the whole target: warnings stop failing the build, concurrency checking is reduced, or unsafe flags are let through',
+  'tool-config-escape':
+    'the tool stops checking the rule(s) or path(s) this line names, for every file the config covers, not for one line',
 };
 
 /**
