@@ -65,7 +65,10 @@ export type SwiftAuditKind =
 interface PatternRow {
   kind: SwiftAuditKind;
   class: 'directive' | 'code' | 'setting';
-  pattern: RegExp;
+  /**
+  Any one of these matching is the escape.
+  */
+  patterns: readonly RegExp[];
 }
 
 type Row = PatternRow | { kind: 'force-unwrap'; class: 'token' };
@@ -81,182 +84,16 @@ type Scope = 'tests' | 'outside-debug-targets' | 'manifest';
 
 type ScopedRow = Row & { scope?: Scope };
 
-function scoped(rows: readonly Row[], scope: Scope): ScopedRow[] {
-  return rows.map((row) => ({ ...row, scope }));
+function directive(kind: SwiftAuditKind, ...patterns: RegExp[]): PatternRow {
+  return { kind, class: 'directive', patterns };
 }
 
-/**
- * Comment directives. SwiftLint and SwiftFormat each search a comment for
- * their marker and read the command from there (their own sources:
- * `comment.range(of: "swiftlint:")`, `comment.range(of: "swiftformat:")`), so
- * `// see swiftlint:disable:next force_cast` is a live suppression and those
- * two rows are not anchored. Periphery only honours a command that starts
- * its comment, and the rest follow it.
- *
- * `swiftlint:enable` and `swiftformat:enable` turn checking back on and are
- * not escapes. `muter:enable` is listed with `muter:disable` as the two
- * halves of one region, the way the Stryker row treats `restore`.
- */
-function directiveRows(): Row[] {
-  return [
-    {
-      kind: 'swiftlint-disable',
-      class: 'directive',
-      pattern: /swiftlint:disable\b/,
-    },
-    {
-      kind: 'swiftformat-disable',
-      class: 'directive',
-      pattern: /swiftformat:(?:disable|options)\b/,
-    },
-    {
-      kind: 'swift-format-ignore',
-      class: 'directive',
-      pattern: /^swift-format-ignore\b/,
-    },
-    {
-      kind: 'periphery-ignore',
-      class: 'directive',
-      pattern: /^periphery:ignore\b/,
-    },
-    {
-      kind: 'mutation-suppress',
-      class: 'directive',
-      pattern: /^guardrails-mutate:disable\b/,
-    },
-    {
-      kind: 'mutation-suppress',
-      class: 'directive',
-      pattern: /^muter:(?:disable|enable)\b/,
-    },
-    {
-      kind: 'ast-grep-ignore',
-      class: 'directive',
-      pattern: /^ast-grep-ignore\b/,
-    },
-  ];
+function code(kind: SwiftAuditKind, ...patterns: RegExp[]): PatternRow {
+  return { kind, class: 'code', patterns };
 }
 
-/**
- * Concurrency and memory-safety acknowledgements the compiler accepts
- * without complaint, which is why the auditor has to see them.
- */
-function safetyRows(): Row[] {
-  return [
-    {
-      kind: 'unchecked-sendable',
-      class: 'code',
-      pattern: /@unchecked\s+Sendable\b/,
-    },
-    {
-      kind: 'unsafe-isolation',
-      class: 'code',
-      pattern: /\bnonisolated\s*\(\s*unsafe\s*\)/,
-    },
-    { kind: 'preconcurrency', class: 'code', pattern: /@preconcurrency\b/ },
-    { kind: 'assume-isolated', class: 'code', pattern: /\.assumeIsolated\b/ },
-    {
-      kind: 'assume-isolated',
-      class: 'code',
-      pattern: /\bassumeIsolated\s*\{/,
-    },
-    // `unsafe` the expression marker, not `unsafe` the name: something has to
-    // follow it, and nothing may qualify it (`x.unsafe`, `isUnsafe`).
-    {
-      kind: 'unsafe-expression',
-      class: 'code',
-      pattern: /(?<![\w.])unsafe\s+[\w(]/,
-    },
-    { kind: 'unsafe-expression', class: 'code', pattern: /@(?:un)?safe\b/ },
-  ];
-}
-
-/**
- * Crashes written as operators. `force-unwrap` is last so that the `!` of
- * `try!` and `as!` is named for what it is.
- */
-function forceRows(): Row[] {
-  return [
-    { kind: 'force-try', class: 'code', pattern: /\btry!/ },
-    { kind: 'force-cast', class: 'code', pattern: /\bas!/ },
-    { kind: 'force-unwrap', class: 'token' },
-    {
-      kind: 'fatal-stub',
-      class: 'code',
-      pattern: /\b(?:fatalError|preconditionFailure|unimplemented)\s*\(/,
-    },
-  ];
-}
-
-/**
-Tests that are skipped, expected to fail, or given a deadline.
-*/
-function testRows(): Row[] {
-  return [
-    {
-      kind: 'skipped-test',
-      class: 'code',
-      pattern: /\bXCTSkip(?:If|Unless)?\b/,
-    },
-    { kind: 'skipped-test', class: 'code', pattern: /\bXCTExpectFailure\b/ },
-    {
-      kind: 'skipped-test',
-      class: 'code',
-      pattern: /\bwithKnownIssue\s*[({]/,
-    },
-    { kind: 'test-time-limit', class: 'code', pattern: /\.timeLimit\s*\(/ },
-  ];
-}
-
-/**
- * Swift Testing's `.disabled(…)` and `.enabled(if:)` traits. Applied only
- * under a test target: `.disabled(` is also SwiftUI's view modifier, on
- * nearly every form, and a row that flagged it in a view would block ordinary
- * code with no way past but a sanction per call.
- */
-function testTraitRows(): Row[] {
-  return [
-    { kind: 'skipped-test', class: 'code', pattern: /\.disabled\s*\(/ },
-    { kind: 'skipped-test', class: 'code', pattern: /\.enabled\s*\(\s*if:/ },
-  ];
-}
-
-/**
-`#if DEBUG`: exempt in a file under one of the stack's `debugTargets`.
-*/
-function debugRow(): Row {
-  return {
-    kind: 'compile-escape',
-    class: 'code',
-    pattern: /#if\s+(?:!\s*)?DEBUG\b/,
-  };
-}
-
-function declarationRows(): Row[] {
-  return [
-    {
-      kind: 'compile-escape',
-      class: 'code',
-      pattern: /#if\s+(?:false\b|(?:!\s*)?canImport\b|\w*TEST)/,
-    },
-    { kind: 'underscored-attribute', class: 'code', pattern: /@_\w/ },
-    {
-      kind: 'unsafe-cast',
-      class: 'code',
-      pattern: /\bunsafe(?:BitCast|Downcast)\b/,
-    },
-    {
-      kind: 'unsafe-cast',
-      class: 'code',
-      pattern: /\b(?:Unmanaged|withoutActuallyEscaping)\b/,
-    },
-    { kind: 'retroactive', class: 'code', pattern: /@retroactive\b/ },
-    {
-      kind: 'availability-hide',
-      class: 'code',
-      pattern: /@available\s*\(\s*\*\s*,\s*(?:unavailable|deprecated)\b/,
-    },
-  ];
+function within(scope: Scope, row: Row): ScopedRow {
+  return { ...row, scope };
 }
 
 /**
@@ -264,8 +101,8 @@ function declarationRows(): Row[] {
  * of what the `swift-settings` analyzer will check semantically. Applied to
  * `Package.swift` and to an XcodeGen `project.yml`, and to nothing else.
  */
-function settingRows(): PatternRow[] {
-  const patterns = [
+function settingPatterns(): RegExp[] {
+  return [
     /\bunsafeFlags\b/,
     /-suppress-warnings\b/,
     /-no-warnings-as-errors\b/,
@@ -277,27 +114,96 @@ function settingRows(): PatternRow[] {
     /\bSWIFT_TREAT_WARNINGS_AS_ERRORS:\s*NO\b/,
     /\bSWIFT_STRICT_CONCURRENCY\b/,
   ];
-  return patterns.map((pattern) => ({
-    kind: 'build-setting-escape',
-    class: 'setting',
-    pattern,
-  }));
 }
 
 /**
  * Every Swift row, in the order a line is tested against them: the first
- * that matches names the line.
+ * that matches names the line. A row is one kind and every pattern that
+ * means it.
+ *
+ * COMMENT DIRECTIVES. SwiftLint and SwiftFormat each search a comment for
+ * their marker and read the command from there (their own sources:
+ * `comment.range(of: "swiftlint:")`, `comment.range(of: "swiftformat:")`), so
+ * `// see swiftlint:disable:next force_cast` is a live suppression and those
+ * two rows are not anchored. Periphery only honours a command that starts
+ * its comment, and the rest follow it. `swiftlint:enable` and
+ * `swiftformat:enable` turn checking back on and are not escapes;
+ * `muter:enable` is listed with `muter:disable` as the two halves of one
+ * region, the way the Stryker row treats `restore`.
+ *
+ * CONCURRENCY AND MEMORY SAFETY. Acknowledgements the compiler accepts
+ * without complaint, which is why the auditor has to see them. `unsafe` the
+ * expression marker is not `unsafe` the name: something has to follow it,
+ * and nothing may qualify it (`x.unsafe`, `isUnsafe`).
+ *
+ * CRASHES WRITTEN AS OPERATORS. `force-unwrap` comes after `try!` and `as!`
+ * so that their `!` is named for what it is.
+ *
+ * TESTS. Skipped, expected to fail, or given a deadline. Swift Testing's
+ * `.disabled(…)` and `.enabled(if:)` traits are held only under a test
+ * target: `.disabled(` is also SwiftUI's view modifier, on nearly every form,
+ * and a row that flagged it in a view would block ordinary code with no way
+ * past but a sanction per call.
+ *
+ * CONDITIONAL COMPILATION. `#if DEBUG` is exempt in a file under one of the
+ * stack's `debugTargets`; the other conditions never are.
  */
 function allRows(): ScopedRow[] {
   return [
-    ...directiveRows(),
-    ...safetyRows(),
-    ...forceRows(),
-    ...testRows(),
-    ...scoped(testTraitRows(), 'tests'),
-    ...scoped([debugRow()], 'outside-debug-targets'),
-    ...declarationRows(),
-    ...scoped(settingRows(), 'manifest'),
+    directive('swiftlint-disable', /swiftlint:disable\b/),
+    directive('swiftformat-disable', /swiftformat:(?:disable|options)\b/),
+    directive('swift-format-ignore', /^swift-format-ignore\b/),
+    directive('periphery-ignore', /^periphery:ignore\b/),
+    directive(
+      'mutation-suppress',
+      /^guardrails-mutate:disable\b/,
+      /^muter:(?:disable|enable)\b/,
+    ),
+    directive('ast-grep-ignore', /^ast-grep-ignore\b/),
+    code('unchecked-sendable', /@unchecked\s+Sendable\b/),
+    code('unsafe-isolation', /\bnonisolated\s*\(\s*unsafe\s*\)/),
+    code('preconcurrency', /@preconcurrency\b/),
+    code('assume-isolated', /\.assumeIsolated\b/, /\bassumeIsolated\s*\{/),
+    code('unsafe-expression', /(?<![\w.])unsafe\s+[\w(]/, /@(?:un)?safe\b/),
+    code('force-try', /\btry!/),
+    code('force-cast', /\bas!/),
+    { kind: 'force-unwrap', class: 'token' },
+    code(
+      'fatal-stub',
+      /\b(?:fatalError|preconditionFailure|unimplemented)\s*\(/,
+    ),
+    code(
+      'skipped-test',
+      /\bXCTSkip(?:If|Unless)?\b/,
+      /\bXCTExpectFailure\b/,
+      /\bwithKnownIssue\s*[({]/,
+    ),
+    code('test-time-limit', /\.timeLimit\s*\(/),
+    within(
+      'tests',
+      code('skipped-test', /\.disabled\s*\(/, /\.enabled\s*\(\s*if:/),
+    ),
+    within(
+      'outside-debug-targets',
+      code('compile-escape', /#if\s+(?:!\s*)?DEBUG\b/),
+    ),
+    code('compile-escape', /#if\s+(?:false\b|(?:!\s*)?canImport\b|\w*TEST)/),
+    code('underscored-attribute', /@_\w/),
+    code(
+      'unsafe-cast',
+      /\bunsafe(?:BitCast|Downcast)\b/,
+      /\b(?:Unmanaged|withoutActuallyEscaping)\b/,
+    ),
+    code('retroactive', /@retroactive\b/),
+    code(
+      'availability-hide',
+      /@available\s*\(\s*\*\s*,\s*(?:unavailable|deprecated)\b/,
+    ),
+    within('manifest', {
+      kind: 'build-setting-escape',
+      class: 'setting',
+      patterns: settingPatterns(),
+    }),
   ];
 }
 
@@ -375,19 +281,23 @@ function auditedCode(lexed: SwiftLineLex): string {
   return code;
 }
 
+function isAny(patterns: readonly RegExp[], text: string): boolean {
+  return patterns.some((pattern) => pattern.test(text));
+}
+
 function isMatch(row: Row, lexed: SwiftLineLex): boolean {
   switch (row.class) {
     case 'directive': {
-      return lexed.comments.some((comment) => row.pattern.test(comment));
+      return lexed.comments.some((comment) => isAny(row.patterns, comment));
     }
     case 'code': {
-      return row.pattern.test(auditedCode(lexed));
+      return isAny(row.patterns, auditedCode(lexed));
     }
     case 'setting': {
       return (
-        row.pattern.test(lexed.code) ||
+        isAny(row.patterns, lexed.code) ||
         lexed.tokens.some(
-          (token) => token.kind === 'string' && row.pattern.test(token.text),
+          (token) => token.kind === 'string' && isAny(row.patterns, token.text),
         )
       );
     }
@@ -464,11 +374,11 @@ export function swiftAuditor(file: string, hunk: SwiftHunk): SwiftLineAuditor {
  * line without its `#` comment. Every line stands alone.
  */
 export function xcodegenAuditor(): SwiftLineAuditor {
-  const rows = settingRows();
+  const patterns = settingPatterns();
   return {
-    line: (text) => {
-      const content = withoutComment(text);
-      return rows.find((row) => row.pattern.test(content))?.kind;
-    },
+    line: (text) =>
+      isAny(patterns, withoutComment(text))
+        ? 'build-setting-escape'
+        : undefined,
   };
 }
