@@ -1471,8 +1471,12 @@ core/src/audit.ts`) surfaced that it was a context-free text scan: it flagged
     form and `sudo -D` count as a move. A bypass that only reads as one with
     its quotes and backslashes removed is refused outright. Every shape was
     confirmed against git 2.43 first. What a text gate cannot stop (a word
-    built by shell expansion, hook-less plumbing, a script in a file) is
-    stated as a limit in the upgrade notes, by class.
+    built by shell expansion, hook-less plumbing, a script in a file, what
+    an earlier command stored) is stated as a limit in the upgrade notes, by
+    class. A last pass the same day added `--attr-source` and
+    `--super-prefix` to the options read with a separate value, took escaped
+    separators out of the scan for `-n`, and taught the list of moves a
+    `cwd` option, `find -execdir`, `--directory` and tmux's start directory.
   - **Autofix traded one lint error for another (fixed 2026-11-27, in this
     repo's own config).** PostToolUse `eslint --fix` rewrote
     `readSource: () => undefined` to `readSource: () => {}`:

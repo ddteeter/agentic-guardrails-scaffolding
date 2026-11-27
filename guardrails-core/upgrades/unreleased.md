@@ -57,7 +57,7 @@ supersedes:
   It now reads as a bypass:
   - any prefix of `--no-verify` that git accepts, on a commit or a push;
   - `-n` on `git commit`, alone or in a cluster (`-nm "x"`, `-an`), also
-    after a quoted `;`, `|` or `&` in the same command, and on any
+    after a quoted or escaped `;`, `|` or `&` in the same command, and on any
     subcommand `-n` is not known to mean something else for, since git
     expands an alias before it reads the flag;
   - an alias defined in the command (`-c alias.x=...`);
@@ -93,8 +93,9 @@ supersedes:
 - **A bypassing write the gate cannot place is refused if the command also
   moves.** Where git stands out of the gate's reading (behind a wrapper, in
   a string, a heredoc or a substitution) and the command also says `cd`,
-  `pushd`, `popd`, `chdir`, `-C`, `-D`, `--git-dir`, `--work-tree`,
-  `GIT_DIR` or `GIT_WORK_TREE`, the repository it writes to cannot be known,
+  `pushd`, `popd`, `chdir`, `cwd`, `execdir`, `--directory`, `-C`, `-D`,
+  `--git-dir`, `--work-tree`, `GIT_DIR` or `GIT_WORK_TREE`, or gives tmux a
+  start directory, the repository it writes to cannot be known,
   so it is denied instead of being checked against the wrong one. This also
   denies `cd packages && git commit --no-verify -m "about git"`: the word in
   the message counts as a git the gate did not place.
@@ -104,20 +105,25 @@ supersedes:
   whose whole message is a quoted flag (`-m '-n'`) is refused by the same
   rule.
 - **More git writes are seen in command position.** A write behind a global
-  option that takes a separate value (`git --namespace x commit`), a script
+  option that takes a separate value (`--namespace`, `--git-dir`,
+  `--work-tree`, `--config-env`, `--attr-source`), a script
   put together from adjacent quoted pieces, and a quoted heredoc fed to a
   shell (`bash <<'EOF'`) are gated like any other commit or push.
 - **What this gate does not stop.** It reads the text of a command, so it
   cannot see what the shell builds or what a file holds. These are limits,
   not oversights:
   - a bypass word, or the word `git`, built by shell expansion: a variable,
-    a command substitution, an escape sequence;
+    a command substitution, an escape sequence, a brace expansion;
   - git plumbing that transfers objects without running the pre-push hook;
-  - a script run from a file, or a package script, that commits or pushes.
+  - a script run from a file, or a package script, that commits or pushes;
+  - what an earlier command left behind. The gate reads one command at a
+    time. An alias or a hooks path stored in the repository's config by a
+    command that passed, in a tree that was clean when it ran, is not in
+    the text of the command that later uses it.
 
-  The git hooks still run for all but the first two, and CI runs on every
-  push. Instructions that forbid a bypass should say so in words, not rely
-  on this gate to catch every way of writing one.
+  The git hooks still run for a script in a file that names no bypass, and
+  CI runs on every push. Instructions that forbid a bypass should say so in
+  words, not rely on this gate to catch every way of writing one.
 
 - **A duplication pointer says who extracts.** When a manifest holds
   `fallow/code-duplication` findings, a pointer that says to spawn a fixer
