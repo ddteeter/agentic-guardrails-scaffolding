@@ -61,6 +61,10 @@ That changes what autofix does to consumer code, so it wants its own issue.
 **Meanwhile.** Reconciled the pair here (`checkArrowFunctionBody: false`) with
 a live probe that reproduces the trade when the option is taken away.
 
+**Decided (owner, 2026-11-27, relayed by the sprint coordinator): filed,
+nothing to build.** The re-lint-and-put-back behaviour is #253, to schedule
+after the release. Nothing on this branch changes for it.
+
 ## 4. Item 5 cannot see the session it was written for
 
 **What.** Both halves read the disk: `session-start` reports fixer agents
