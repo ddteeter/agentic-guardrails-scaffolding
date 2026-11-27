@@ -1379,6 +1379,80 @@ describe('pretooluse gate trigger conditions', () => {
     }
   });
 
+  /**
+   * The owner's ruling on the hardening lane's sixth question (2026-11-27).
+   * `-n` is `git commit`'s short form of `--no-verify`, and the bypass check
+   * did not know it: a string emptied because it "named no bypass" could
+   * carry one. Checked against git itself: `-n`, `-nm`, `-an` and `-anm` all
+   * skip the pre-commit hook, and `-mn` does not -- that is `-m` with the
+   * message "n".
+   */
+  it('reads `git commit -n` as a hook bypass wherever it is written', async () => {
+    for (const command of [
+      'tmux send-keys "true; git commit -n -m x" Enter',
+      'tmux send-keys "true; git commit -nm x" Enter',
+      'tmux send-keys "true; git commit -an" Enter',
+      'tmux send-keys "true; git commit -anm x" Enter',
+      // Flags before it, and git's own options before the subcommand.
+      `watch 'true; git commit --amend --no-edit -n'`,
+      'tmux send-keys "true; git  -c a=b  commit  -m x  -n" Enter',
+      // The last thing in the command.
+      `watch 'true; git commit -n`,
+      // And unquoted, where it was gated already and still is.
+      'git commit -n -m x',
+      'git commit -anm x',
+    ]) {
+      out.length = 0;
+      expect(
+        await runPreToolUse(preToolUseStdin('bash', command)),
+        `should gate: ${command}`,
+      ).toContain('deny');
+    }
+  });
+
+  it('does not take another -n, or another flag, for that bypass', async () => {
+    // Each of these only MENTIONS a git write inside a string, so each is
+    // text unless something in it names a bypass. None does: `-n` is a dry
+    // run for push, clean and add, and a count for log and head.
+    for (const command of [
+      'echo "x; git push -n"',
+      'echo "x; git clean -n"',
+      'echo "x; git add -n ."',
+      // `-n` belongs to the command before the commit, or after it.
+      'echo "x; git log -n 3 && git commit -m y"',
+      'echo "x; git commit -m y; head -n 3"',
+      'echo "x; git commit -m y | head -n 3"',
+      'echo "x; git commit -m y\nhead -n 3"',
+      // Not `-n`: a message that is "n", a long option, a word with an n.
+      'echo "x; git commit -mn"',
+      'echo "x; git commit -m n"',
+      'echo "x; git commit --no-edit"',
+      'echo "x; git commit -m no-nonsense"',
+      'echo "x; git commit -F notes"',
+      // A flag that takes its value attached, then letters that include n.
+      'echo "x; git commit -Cnewer"',
+      // A dash that does not start a word.
+      'echo "x; git commit x-n"',
+      // Not a commit at all.
+      'echo "x; git commits -n"',
+    ]) {
+      out.length = 0;
+      expect(
+        await runPreToolUse(preToolUseStdin('bash', command)),
+        `should not gate: ${JSON.stringify(command)}`,
+      ).toBe('');
+    }
+  });
+
+  it('finds no bypass in a long run of commits in time that grows with it', async () => {
+    // The scan from each `git commit` runs to the end of its command, so a
+    // command that never ends one is the costly shape.
+    const command = `echo "${'git commit -m x '.repeat(3000)}"`;
+    const started = process.hrtime.bigint();
+    await runPreToolUse(preToolUseStdin('bash', command));
+    expect(Number(process.hrtime.bigint() - started) / 1e6).toBeLessThan(2000);
+  });
+
   it('cannot be made to backtrack catastrophically by a run of flags', async () => {
     // ReDoS regression. The first version of the global-option run was
     // `(?:-[cC][ \t]+[^ \t]+|-[^ \t]+)*`, whose two alternatives could tile the
@@ -5787,6 +5861,23 @@ describe('pretooluse leaves a push to the pre-push hook that gates it', () => {
         hookedExec('.githooks/pre-push'),
       ),
     ).toContain('deny');
+  });
+
+  it('gates a push here when a string carries a commit with -n', async () => {
+    writeHook('.githooks/pre-push', GATED_HOOK);
+    expect(
+      await pushVerdict(
+        'git push && tmux send-keys "true; git commit -n -m x" Enter',
+        hookedExec('.githooks/pre-push'),
+      ),
+    ).toContain('deny');
+  });
+
+  it('leaves a dry-run push to its hook: -n is no bypass there', async () => {
+    writeHook('.githooks/pre-push', GATED_HOOK);
+    expect(
+      await pushVerdict('git push -n', hookedExec('.githooks/pre-push')),
+    ).toBe('');
   });
 
   it('reads an absolute hook path as git reports it', async () => {

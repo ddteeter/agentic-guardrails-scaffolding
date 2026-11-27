@@ -1386,7 +1386,13 @@ core/src/audit.ts`) surfaced that it was a context-free text scan: it flagged
     still runs for it. The foreground-wait matcher already had a quote
     stripper of its own (`withoutQuotedText`), wrong in the opposite direction
     on purpose: it may only miss a denial, so it drops what follows an
-    unterminated quote. The two stay separate for that reason.
+    unterminated quote. The two stay separate for that reason. The same day,
+    by the owner's ruling on QUESTIONS.md entry 6, the bypass check learned
+    `git commit -n`, the short form of `--no-verify`, alone or in a cluster
+    (`-nm`, `-an`), and only on a commit: `git push -n` is a dry run and
+    `git commit -mn` is a message. Checked against git itself, which also
+    showed that an abbreviated `--no-veri` skips the hook and is not
+    recognised; that one is entry 8, open.
   - **Autofix traded one lint error for another (fixed 2026-11-27, in this
     repo's own config).** PostToolUse `eslint --fix` rewrote
     `readSource: () => undefined` to `readSource: () => {}`:

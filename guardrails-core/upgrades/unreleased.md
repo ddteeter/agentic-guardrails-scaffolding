@@ -39,10 +39,17 @@ supersedes:
   A real write is matched as before, and anything the reader of quotes does
   not model is too: an unterminated string, `$'...'`, a command substitution
   inside double quotes, any heredoc, a string handed to a shell (`sh -c`,
-  `eval`, `git rebase --exec`), and any command that names `--no-verify` or
-  `hooksPath`. A commit typed into another program as a plain string (through
+  `eval`, `git rebase --exec`), and any command that names `--no-verify`,
+  `hooksPath`, or `-n` on a `git commit`. A commit typed into another program as a plain string (through
   `tmux send-keys`, say) used to match by accident and no longer does; the
   git hook still runs for it.
+- **`git commit -n` is read as the hook bypass it is.** `-n` is the short
+  form of `--no-verify` for `git commit`, alone or in a cluster (`-nm "x"`,
+  `-an`). A command that names it anywhere keeps the wider reading the
+  bypass check gives `--no-verify`, and a push that carries one is gated at
+  PreToolUse instead of being left to its hook. `-n` on any other command
+  (`git push -n`, `git clean -n`, `git add -n`, `head -n`) is not a bypass,
+  and neither is `git commit -mn`, which is a message.
 - **A duplication pointer says who extracts.** When a manifest holds
   `fallow/code-duplication` findings, a pointer that says to spawn a fixer
   adds that extraction into a NEW module is the main agent's to do. The

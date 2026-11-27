@@ -132,6 +132,18 @@ with its own tests; it is a gap on `main` today, in unquoted commands too.
 **Meanwhile.** Kept every command that names `--no-verify` or `hooksPath`
 on the old reading, so no bypass the gate caught before is missed now.
 
+**Decided (owner, 2026-11-27, relayed by the sprint coordinator): build it.**
+Done in its own commit. The bypass check reads `-n` on a `git commit` as
+`--no-verify`, alone or in a cluster of short flags that take no value
+(`-nm "x"`, `-an`, `-anm`), quoted or not, and on nothing else. A dry-run
+`-n` on push, clean or add, a `-n` on the command before or after the
+commit, and `git commit -mn` (a message, for which git runs the hook) are
+not bypasses. The shapes were checked against git in a throwaway repository
+whose pre-commit hook always fails. One limit, the same for both spellings:
+the gate fires on a git write in command position, so a bypass written
+straight after an opening quote, with no separator before `git`, is still
+not a command to it (`tmux send-keys "git commit -n"`).
+
 ## 7. Upgrade notes were not asked for; I wrote them
 
 **What.** The repository's convention is that a change an agent can see adds
@@ -145,3 +157,23 @@ may also be editing.
 release time.
 
 **Meanwhile.** They are in their own commit, last on the branch.
+
+## 8. An abbreviated `--no-verify` skips the hook and is not recognised
+
+**What.** git accepts any unambiguous prefix of a long option. In the same
+throwaway repository, `git commit --no-veri -m x` landed with the hook
+skipped (`--no-ver` and shorter are ambiguous with `--no-verbose` and are
+refused). The bypass pattern is `--no-verify\b`, so it does not match.
+
+**Cost.** For an unquoted commit, none at the gate: every commit in command
+position is gated whatever its flags. What it loses is the two places the
+bypass check decides something: a quoted string carrying it is emptied like
+any other text, and a push riding with it is read as a plain push. The
+scaffolded instructions forbid `--no-verify` by name, and this spelling walks
+past a search for that name.
+
+**Recommend.** Match `--no-verif?y?\b` for commit and push. It is a
+one-line pattern change with its own tests, and it was not in the ruling,
+so I did not make it.
+
+**Meanwhile.** Nothing; recorded here and in `plan.md`.

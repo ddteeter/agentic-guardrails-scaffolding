@@ -836,18 +836,47 @@ const GIT_PUSH = new RegExp(
 const HOOK_BYPASS = /--no-verify\b|hooksPath/;
 
 /**
+ * `git commit -n`: the short form of `--no-verify`, which `HOOK_BYPASS` did
+ * not know.
+ *
+ * Tied to `commit`, and to the one command it is written on, because `-n` is
+ * something else nearly everywhere: a dry run for `git push`, `git clean` and
+ * `git add`, a count for `git log` and `head`. So the scan starts at a `git
+ * ... commit` and stops at the first separator.
+ *
+ * The letters allowed before the `n` are commit's short flags that take no
+ * value (`-a`, `-e`, `-i`, `-o`, `-p`, `-q`, `-s`, `-v`, `-z`), so `-an` and
+ * `-anm "x"` are bypasses and `-mn` is not: that is `-m` with the message
+ * "n", and git runs the hook for it. Checked against git, not its manual.
+ *
+ * Wrong in the direction a bypass check may be wrong in: a commit message
+ * that holds ` -n` reads as a bypass, which costs the old, wider reading of
+ * that one command and nothing else.
+ */
+const COMMIT_NO_VERIFY = new RegExp(
+  `git${GIT_GLOBAL_OPTIONS}[ \t]+commit\\b[^\n;&|]*[ \t]-[aeiopqsvz]*n`,
+);
+
+/**
+Does this command name a way past the git hooks, anywhere in it?
+*/
+function hasHookBypass(text: string): boolean {
+  return HOOK_BYPASS.test(text) || COMMIT_NO_VERIFY.test(text);
+}
+
+/**
  * The part of a command the git-write patterns are matched against: what the
  * shell RUNS, with what it merely holds as text taken out -- the bodies of
  * quoted heredocs, and the insides of quoted strings.
  *
  * A command that names a hook bypass ANYWHERE keeps its strings. Every other
  * git write this misses still meets the git-native hooks; one carrying
- * `--no-verify` does not, so it is read exactly as it was before strings were
- * understood at all, wherever the flag is written.
+ * `--no-verify`, or `-n` on a commit, does not, so it is read exactly as it
+ * was before strings were understood at all, wherever the flag is written.
  */
 function commandText(command: string): string {
   const text = withoutQuotedHeredocBodies(command);
-  return HOOK_BYPASS.test(text) ? text : withoutInertStrings(text);
+  return hasHookBypass(text) ? text : withoutInertStrings(text);
 }
 
 /**
@@ -865,7 +894,7 @@ function writeScope(command: string): 'staged' | 'branch' {
  */
 function isPlainPush(command: string): boolean {
   const text = commandText(command);
-  return !GIT_COMMIT.test(text) && !HOOK_BYPASS.test(text);
+  return !GIT_COMMIT.test(text) && !hasHookBypass(text);
 }
 
 /**
