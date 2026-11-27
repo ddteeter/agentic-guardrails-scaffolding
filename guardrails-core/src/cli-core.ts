@@ -2811,14 +2811,12 @@ export async function runCommand(
     }
     case 'session-start': {
       sweepStale(stateDirectory(dependencies.cwd), SESSION_TTL_MS, Date.now());
-      warnAboutStaleGuidance(dependencies, dependencies.cwd);
-      // From the repository's root, not from wherever the session started:
-      // the agents' source and their generated copies are both named from
-      // there, and a session opened in a subdirectory would be told nothing.
-      warnAboutUnbuiltFixers(
-        dependencies,
-        findGitRoot(dependencies.cwd) ?? dependencies.cwd,
-      );
+      // Both warnings are about files named from the repository's root, so
+      // they are asked from there and not from wherever the session started:
+      // one opened in a subdirectory would be told nothing.
+      const root = findGitRoot(dependencies.cwd) ?? dependencies.cwd;
+      warnAboutStaleGuidance(dependencies, root);
+      warnAboutUnbuiltFixers(dependencies, root);
       return 0;
     }
     case 'init': {

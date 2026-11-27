@@ -4695,6 +4695,18 @@ describe('session-start guidance staleness', () => {
     expect(said).toContain(guidancePath);
   });
 
+  it('warns a session that starts in a subdirectory of the repository', async () => {
+    // The scaffold manifest and the vendored docs are named from the
+    // repository's root; asked from below it, both read as absent and a
+    // session opened there was told nothing.
+    scaffoldedAs('guidance as it was written at 0.1.0\n');
+    mkdirSync(path.join(root, '.git'));
+    const below = path.join(root, 'packages', 'web');
+    mkdirSync(below, { recursive: true });
+    await runCommand('session-start', [], dependencies({ cwd: below }));
+    expect(out.join('') + errors.join('')).toContain(guidancePath);
+  });
+
   it('says nothing in a repo that never scaffolded guidance', async () => {
     // The common case, on every session. It must not grow a line.
     expect(await runCommand('session-start', [], dependencies({}))).toBe(0);
