@@ -1352,14 +1352,34 @@ core/src/audit.ts`) surfaced that it was a context-free text scan: it flagged
     `prepare` builds, after npm has linked bins; npm skips a bin whose target
     is missing. In a new worktree `npx guardrails-core …` then walked up to an
     enclosing checkout's build and was refused as "resolved from … which is
-    outside". `prepare` now ends with `npm rebuild guardrails-core
---ignore-scripts`, which is npm's own bin-linking pass (0.7s, and the
-    right shims on every platform), so one `npm ci` is enough;
+    outside". `prepare` now ends with npm's own bin-linking pass, a
+    `rebuild` of the one workspace with scripts ignored (0.7s, and the right
+    shims on every platform), so one `npm ci` is enough;
     `fresh-install-bin.test.ts` drives it through real npm in a throwaway
     workspace, with a control that reproduces the missing link. The refusal
     now says what to do: `npm ci` where the checkout has no copy, and
     `npm rebuild guardrails-core` (or `node <path>`) where it has one that the
     command did not reach.
+  - **The PreToolUse commit gate ran on a `git commit` that was only text
+    in a quoted string (fixed 2026-11-27).** A process listing piped into
+    `grep -E "eslint|tsc|…|git commit"` ran the whole commit gate, stryker
+    included, and was denied with 32 violations for a commit nobody asked
+    for: the alternation puts `git commit` right after a `|`, which the
+    command-position test reads as the start of a pipeline stage.
+    `withoutInertStrings` (`shell-command.ts`) now empties quoted strings before
+    the git-write patterns are matched. It is not a parser, and it is wrong in
+    one direction only: whatever it does not model leaves the command
+    untouched (an unterminated string, `$'…'`, a command substitution inside
+    double quotes, any heredoc), a string handed to a shell to run is kept
+    (`-c`, `eval`, `--exec`), a comment opens no string, and a command naming
+    a hook bypass anywhere is read exactly as before. Known and accepted, in
+    the direction the matcher already accepts for `xargs git commit`: a commit
+    typed into another program as a plain string (through `tmux send-keys`,
+    say) used to match by accident and no longer does; the git-native hook
+    still runs for it. The foreground-wait matcher already had a quote
+    stripper of its own (`withoutQuotedText`), wrong in the opposite direction
+    on purpose: it may only miss a denial, so it drops what follows an
+    unterminated quote. The two stay separate for that reason.
 
 ## Roadmap: analyzer opt-in (pack composition, not all-or-nothing) — shipped
 

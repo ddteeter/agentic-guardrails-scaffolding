@@ -89,7 +89,11 @@ import { foregroundWait, foregroundWaitDenial } from './foreground-wait.js';
 import { lockCommand } from './command-lock.js';
 import { commandTarget } from './command-target.js';
 import { isPushGatedByHook, PUSH_GATE_ARGS } from './push-hook.js';
-import { COMMAND_START, withoutQuotedHeredocBodies } from './shell-command.js';
+import {
+  COMMAND_START,
+  withoutQuotedHeredocBodies,
+  withoutInertStrings,
+} from './shell-command.js';
 import { collectSessionScope, isWithinRepo } from './scope.js';
 import {
   baseReferenceCache,
@@ -810,17 +814,6 @@ const GIT_PUSH = new RegExp(
 );
 
 /**
- * Which change set this git write is judged over. A commit alone is the commit
- * rung, which is staged-scoped like `.husky/pre-commit`; anything with a push
- * in it is judged over the whole branch, as the push rung is.
- */
-function writeScope(command: string): 'staged' | 'branch' {
-  return GIT_PUSH.test(withoutQuotedHeredocBodies(command))
-    ? 'branch'
-    : 'staged';
-}
-
-/**
  * What takes a push out of reach of its pre-push hook: the flag that skips it,
  * or a hooks path chosen on the command line. A push carrying either is gated
  * here as it always was, whatever the hook says.
@@ -828,11 +821,35 @@ function writeScope(command: string): 'staged' | 'branch' {
 const HOOK_BYPASS = /--no-verify\b|hooksPath/;
 
 /**
+ * The part of a command the git-write patterns are matched against: what the
+ * shell RUNS, with what it merely holds as text taken out -- the bodies of
+ * quoted heredocs, and the insides of quoted strings.
+ *
+ * A command that names a hook bypass ANYWHERE keeps its strings. Every other
+ * git write this misses still meets the git-native hooks; one carrying
+ * `--no-verify` does not, so it is read exactly as it was before strings were
+ * understood at all, wherever the flag is written.
+ */
+function commandText(command: string): string {
+  const text = withoutQuotedHeredocBodies(command);
+  return HOOK_BYPASS.test(text) ? text : withoutInertStrings(text);
+}
+
+/**
+ * Which change set this git write is judged over. A commit alone is the commit
+ * rung, which is staged-scoped like `.husky/pre-commit`; anything with a push
+ * in it is judged over the whole branch, as the push rung is.
+ */
+function writeScope(command: string): 'staged' | 'branch' {
+  return GIT_PUSH.test(commandText(command)) ? 'branch' : 'staged';
+}
+
+/**
  * Is this a push and nothing else -- no commit riding along, no hook bypass --
  * so that the pre-push hook is the gate it will meet?
  */
 function isPlainPush(command: string): boolean {
-  const text = withoutQuotedHeredocBodies(command);
+  const text = commandText(command);
   return !GIT_COMMIT.test(text) && !HOOK_BYPASS.test(text);
 }
 
@@ -850,7 +867,7 @@ function isShellGitWrite(input: HookInput): boolean {
     SHELL_TOOLS.test(input.toolName) &&
     // Stryker disable next-line ConditionalExpression
     input.command !== undefined &&
-    GIT_WRITE.test(withoutQuotedHeredocBodies(input.command))
+    GIT_WRITE.test(commandText(input.command))
   );
 }
 
