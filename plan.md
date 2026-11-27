@@ -1420,7 +1420,13 @@ core/src/audit.ts`) surfaced that it was a context-free text scan: it flagged
     What that leaves, and why it is "partly": before the first build there is
     no CLI for the SessionStart hook to run, and once the session has built,
     the files exist, so the gate cannot tell that this session never loaded
-    them. See QUESTIONS.md.
+    them. See QUESTIONS.md. The owner's ruling on entry 4, the same day, was
+    message only: the "not installed in this checkout … run `npm ci`"
+    refusal, which is shown to exactly the session that predates its
+    install, now adds "afterwards, start a new session" where that install
+    also builds the fixer agents. No marker is written, because that refusal
+    runs in a copy of the CLI the code does not trust; so a later gate in
+    that session still names the fixer plainly.
   - **A duplication fix needed a new file, and the fixer may not create one
     (pointer fixed 2026-11-27; the scope-lock is unchanged).** Four
     `fallow/code-duplication` findings between two new adapters wanted a

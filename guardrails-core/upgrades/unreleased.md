@@ -57,6 +57,11 @@ supersedes:
 - **A commit gate run from a git hook claims no files (#216).** It has no
   session and spawns no fixer, so it no longer leaves a lease that made the
   session's next commit wait for one.
+- **The "not installed in this checkout" refusal can say to start a new
+  session.** Only in a checkout whose install also builds its fixer agents
+  (one with `guardrails-plugin/agents/`), and only while they are unbuilt: a
+  session that began before that install did not load them. Elsewhere the
+  refusal is unchanged.
 - **A CLI that resolved from outside the repository says what to do.** Where
   the checkout has no guardrails-core: `npm ci`. Where it has one the command
   did not reach: `npm rebuild guardrails-core`, or `node <path>`.

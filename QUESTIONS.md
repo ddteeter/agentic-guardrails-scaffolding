@@ -86,6 +86,17 @@ CLI, which the code avoids on purpose today, so it is your call.
 **Meanwhile.** Shipped the two disk checks, limited to a checkout that has
 `guardrails-plugin/agents/` so that no consumer sees a new line.
 
+**Decided (owner, 2026-11-27, relayed by the sprint coordinator): message
+only, no marker.** Done in its own commit. The install-remedy refusal now
+ends "Afterwards, start a new session", with the reason and the agents'
+names, and writes nothing; a test holds that the checkout is left without a
+`.guardrails/` directory. One thing I narrowed, and it is one condition to
+remove if you meant it wider: the sentence is added only where it is true,
+in a checkout that builds its fixer agents and has not built them yet. A
+consumer's agents are committed files that its session already loaded, and
+an unconditional "start a new session" would cost that session its context
+for nothing.
+
 ## 5. Item 1 stops at the commit rung; the Stop rung has the same shape
 
 **What.** The Stop gate also counts warnings in its pointer ("N guardrail

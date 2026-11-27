@@ -4690,6 +4690,89 @@ function shellStdin(command: string, extra: Record<string, unknown> = {}) {
   });
 }
 
+/**
+The reason an ancestor's copy of the CLI denies a `git commit` with.
+*/
+async function installRemedyOnCommit(): Promise<string> {
+  await runCommand(
+    'gate',
+    ['--mode=pretooluse'],
+    ancestorInstall(shellStdin('git commit -m x')),
+  );
+  const printed = JSON.parse(out.join('')) as {
+    hookSpecificOutput: { permissionDecisionReason: string };
+  };
+  return printed.hookSpecificOutput.permissionDecisionReason;
+}
+
+/**
+ * The owner's ruling on the hardening lane's fourth question (2026-11-27):
+ * message only. This refusal is shown to exactly the session that began
+ * before its checkout was installed, which in a checkout that BUILDS its
+ * fixer agents is a session that cannot have loaded them. So it says to start
+ * a new one -- and writes nothing: a copy of the CLI the code does not trust
+ * leaves no marker behind for a later gate to read.
+ */
+describe('the install remedy, where the install also builds the fixer agents', () => {
+  const NEW_SESSION =
+    ' Afterwards, start a new session: that install also builds this ' +
+    "checkout's fixer agents (guardrail-fixer, guardrail-fixer-thorough), " +
+    'and a session loads its agents when it starts, so this one cannot ' +
+    'spawn the fixer a gate names.';
+
+  it('tells a denied git write to start a new session after installing', async () => {
+    generatesFixerAgents();
+    expect(await installRemedyOnCommit()).toBe(
+      'guardrails: guardrails-core is not installed in this checkout ' +
+        `(${root}) -- the copy that ran belongs to an enclosing directory, ` +
+        'which is what a fresh worktree nested inside another checkout ' +
+        `resolves to. Run \`npm ci\` in ${root}, then retry.${NEW_SESSION}`,
+    );
+  });
+
+  it('tells a blocked stop the same', async () => {
+    generatesFixerAgents();
+    await runCommand(
+      'gate',
+      ['--mode=stop'],
+      ancestorInstall(JSON.stringify({ cwd: root })),
+    );
+    const decision = JSON.parse(out.join('')) as { reason: string };
+    expect(decision.reason.endsWith(`then retry.${NEW_SESSION}`)).toBe(true);
+  });
+
+  it('names only the agents the install has still to build', async () => {
+    generatesFixerAgents({ 'guardrail-fixer': '# guardrail-fixer\n' });
+    const reason = await installRemedyOnCommit();
+    expect(reason).toContain(
+      "checkout's fixer agents (guardrail-fixer-thorough), and a session",
+    );
+  });
+
+  it('says only to install and retry once the agents are built', async () => {
+    generatesFixerAgents(BOTH_FIXERS_BUILT);
+    const reason = await installRemedyOnCommit();
+    expect(reason.endsWith(`Run \`npm ci\` in ${root}, then retry.`)).toBe(
+      true,
+    );
+  });
+
+  it('says only to install and retry in a checkout that builds no agents', async () => {
+    // A consumer's agents are committed files: its session loaded them when
+    // it started, install or no install, and has no reason to end.
+    const reason = await installRemedyOnCommit();
+    expect(reason.endsWith(`Run \`npm ci\` in ${root}, then retry.`)).toBe(
+      true,
+    );
+  });
+
+  it('leaves nothing behind in the checkout', async () => {
+    generatesFixerAgents();
+    await installRemedyOnCommit();
+    expect(existsSync(path.join(root, '.guardrails'))).toBe(false);
+  });
+});
+
 describe('an untrusted install never fails open, and never denies everything', () => {
   it('denies a git write with the install remedy', async () => {
     // Exit 1 here used to be NON-blocking on Claude Code and Codex: the commit
