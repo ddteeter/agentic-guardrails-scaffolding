@@ -1411,6 +1411,13 @@ core/src/audit.ts`) surfaced that it was a context-free text scan: it flagged
       bypass. Written with a spelling the check did not know, it was emptied,
       and ran. Closed by the spellings above; a test holds the two inputs,
       and fails when that pattern is put back.
+    - **A quoted heredoc fed to a shell.** `bash <<'EOF'` with a bypassing
+      commit in its body: a quoted heredoc is a note when it is written to a
+      file and a script when it is fed to a shell, and its body was dropped
+      before the bypass check ran. The bypass is now looked for in the raw
+      command, before anything is dropped, and a command that names one is
+      read whole. The price, pinned by a test: a note that quotes a
+      bypassing commit on a line of its own, or in backticks, is gated too.
   - **Autofix traded one lint error for another (fixed 2026-11-27, in this
     repo's own config).** PostToolUse `eslint --fix` rewrote
     `readSource: () => undefined` to `readSource: () => {}`:

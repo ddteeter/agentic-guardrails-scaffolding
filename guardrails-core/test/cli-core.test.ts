@@ -1201,6 +1201,16 @@ describe('pretooluse commit gate scope', () => {
     ).not.toContain(STAGED_FILES);
   });
 
+  it('judges a push in a bypassing heredoc over the whole branch', async () => {
+    const lines = await preToolUseGitLines(
+      "bash <<'EOF'\ngit push --no-verify\nEOF",
+    );
+    // It ran, and over the branch: the untracked-file listing is branch
+    // scope's alone.
+    expect(lines).toContain('git ls-files --others --exclude-standard');
+    expect(lines).not.toContain(STAGED_FILES);
+  });
+
   it('does not take a push named in the commit message for a push', async () => {
     // Branch scope re-mutates everything the branch touched; a message that
     // mentions a push after a `;` must not buy that.
@@ -1494,6 +1504,44 @@ describe('pretooluse gate trigger conditions', () => {
       expect(
         await runPreToolUse(preToolUseStdin('bash', command)),
         `should gate: ${command}`,
+      ).toContain('deny');
+    }
+  });
+
+  it('reads a quoted heredoc body that names a bypass, instead of dropping it', async () => {
+    // A quoted heredoc is text when it is written to a file and a SCRIPT
+    // when it is fed to a shell, and nothing in its opener says which. Its
+    // body used to be dropped before the bypass check ran, so this ran a
+    // commit with no hook and no gate:
+    //   bash <<'EOF'
+    //   git commit --no-verify -m x
+    //   EOF
+    for (const command of [
+      "bash <<'EOF'\ngit commit --no-verify -m x\nEOF",
+      'sh <<"EOF"\ngit push --no-verif\nEOF',
+      'bash <<\\EOF\n  git -c core.hookspath=/dev/null commit -m x\nEOF',
+      "bash <<-'EOF'\n\tgit commit -n -m x\n\tEOF",
+      "bash -s <<'EOF'\nset -e\nnpm test && git commit --no-veri -m x\nEOF",
+    ]) {
+      out.length = 0;
+      expect(
+        await runPreToolUse(preToolUseStdin('bash', command)),
+        `should gate: ${JSON.stringify(command)}`,
+      ).toContain('deny');
+    }
+  });
+
+  it('gates a note that quotes a bypassing commit, which it cannot tell from a script', async () => {
+    // The price of the rule above, pinned: these run nothing, and are gated
+    // because a quoted heredoc that names a bypass is read whole.
+    for (const command of [
+      "cat > notes.md <<'EOF'\nNever run:\ngit commit --no-verify\nEOF",
+      "cat > notes.md <<'EOF'\nNever run `git push --no-verify`.\nEOF",
+    ]) {
+      out.length = 0;
+      expect(
+        await runPreToolUse(preToolUseStdin('bash', command)),
+        `is gated: ${JSON.stringify(command)}`,
       ).toContain('deny');
     }
   });
@@ -6031,6 +6079,8 @@ describe('pretooluse leaves a push to the pre-push hook that gates it', () => {
     'git -c core.hookspath=/dev/null push',
     'git -c CORE.HOOKSPATH=/dev/null push',
     'git --config-env=core.hookspath=NOWHERE push',
+    // In a quoted heredoc fed to a shell, whose body is no longer dropped.
+    "bash <<'EOF'\ngit push --no-verify\nEOF",
   ])('never leaves %s to the pre-push hook it skips', async (command) => {
     // These were classed as a PLAIN push and left to the hook: the one
     // check they had was the one they were written to avoid.

@@ -51,6 +51,10 @@ supersedes:
   that carries one is gated at PreToolUse and is never left to the pre-push
   hook it skips. The config key is matched wherever it is written, which
   covers `-c`, `--config-env` and the `GIT_CONFIG_*` variables.
+- **A bypass is looked for in the whole command, before anything is
+  dropped.** A quoted heredoc fed to a shell (`bash <<'EOF'`, with
+  `git commit --no-verify` in its body) used to have its body dropped before
+  the check ran. A command that names a bypass anywhere is now read whole.
 - **`git commit -n` is read as the hook bypass it is.** `-n` is the short
   form of `--no-verify` for `git commit`, alone or in a cluster (`-nm "x"`,
   `-an`). A command that names it anywhere keeps the wider reading the

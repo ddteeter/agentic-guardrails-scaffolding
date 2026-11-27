@@ -883,14 +883,18 @@ function hasHookBypass(text: string): boolean {
  * shell RUNS, with what it merely holds as text taken out -- the bodies of
  * quoted heredocs, and the insides of quoted strings.
  *
- * A command that names a hook bypass ANYWHERE keeps its strings. Every other
- * git write this misses still meets the git-native hooks; one carrying
- * `--no-verify`, or `-n` on a commit, does not, so it is read exactly as it
- * was before strings were understood at all, wherever the flag is written.
+ * Unless the command names a hook bypass ANYWHERE in its raw text: then
+ * nothing is taken out, and it is read whole. Every other git write this
+ * misses still meets the git-native hooks; one carrying a bypass does not.
+ * The bypass is looked for BEFORE anything is dropped, because the text that
+ * is dropped is exactly where it hid: a quoted heredoc is a note when it is
+ * written to a file and a script when it is fed to a shell (`bash <<'EOF'`),
+ * and its body used to be gone by the time the check ran.
  */
 function commandText(command: string): string {
-  const text = withoutQuotedHeredocBodies(command);
-  return hasHookBypass(text) ? text : withoutInertStrings(text);
+  return hasHookBypass(command)
+    ? command
+    : withoutInertStrings(withoutQuotedHeredocBodies(command));
 }
 
 /**
@@ -907,8 +911,7 @@ function writeScope(command: string): 'staged' | 'branch' {
  * so that the pre-push hook is the gate it will meet?
  */
 function isPlainPush(command: string): boolean {
-  const text = commandText(command);
-  return !GIT_COMMIT.test(text) && !hasHookBypass(text);
+  return !GIT_COMMIT.test(commandText(command)) && !hasHookBypass(command);
 }
 
 /**
