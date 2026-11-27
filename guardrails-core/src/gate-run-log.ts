@@ -92,6 +92,39 @@ export async function branchOf(
 }
 
 /**
+ * The clone a git common directory belongs to: the folder holding `.git`,
+ * or the directory's own name less a trailing `.git` -- a bare repository's
+ * `foo.git`, a submodule's `.git/modules/lib`.
+ */
+function cloneNameOf(commonDirectory: string): string {
+  const base = path.basename(commonDirectory);
+  if (base === '.git') {
+    return path.basename(path.dirname(commonDirectory));
+  }
+  return base.endsWith('.git') ? base.slice(0, -'.git'.length) : base;
+}
+
+/**
+ * The project a checkout belongs to (#236): one name for every worktree of a
+ * clone, where the folder name differs per lane. Always a basename, never a
+ * path; the folder's own name when git cannot say.
+ */
+export async function projectName(
+  exec: Exec,
+  repoRoot: string,
+): Promise<string> {
+  const result = await exec('git', ['rev-parse', '--git-common-dir'], {
+    cwd: repoRoot,
+  });
+  // An empty answer resolves to `repoRoot` itself, and so to its name.
+  const name =
+    result.code === 0
+      ? cloneNameOf(path.resolve(repoRoot, result.stdout.trim()))
+      : '';
+  return name === '' ? path.basename(repoRoot) : name;
+}
+
+/**
 Append this gate's row, when it should have one.
 */
 export async function logGateRun(input: GateRunInput): Promise<void> {
@@ -108,6 +141,7 @@ export async function logGateRun(input: GateRunInput): Promise<void> {
     kind: 'gate',
     rung: input.rung,
     repo: path.basename(input.repoRoot),
+    project: await projectName(input.exec, input.repoRoot),
     branch: await branchOf(input.exec, input.repoRoot),
     ship: ship === '' ? undefined : ship,
     startedAt: input.start.startedAt,
@@ -145,6 +179,10 @@ export interface LockRunInput {
   synchronously on its way out.
   */
   branch: string | undefined;
+  /**
+  `projectName`'s answer, read before the run for the same reason.
+  */
+  project: string;
   start: RunStart;
   run: LockRunResult;
   environment: Readonly<Record<string, string | undefined>>;
@@ -163,6 +201,7 @@ export function logLockRun(input: LockRunInput): void {
     v: 1,
     kind: 'lock',
     repo: path.basename(input.repoRoot),
+    project: input.project,
     branch: input.branch,
     ship: ship === '' ? undefined : ship,
     startedAt: input.start.startedAt,
@@ -184,6 +223,10 @@ export function logLockRun(input: LockRunInput): void {
 export interface ShipRunInput {
   lockPath: string | undefined;
   repoRoot: string;
+  /**
+  `projectName`'s answer: the writer is synchronous.
+  */
+  project: string;
   shipId: string;
   start: RunStart;
   status: { state: string; branch: string; pr: number | null };
@@ -229,6 +272,7 @@ export function logShipRun(input: ShipRunInput): void {
     v: 1,
     kind: 'ship',
     repo: path.basename(input.repoRoot),
+    project: input.project,
     branch: input.status.branch,
     ship: input.shipId,
     startedAt: input.start.startedAt,

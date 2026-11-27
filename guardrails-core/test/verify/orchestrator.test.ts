@@ -3314,7 +3314,11 @@ describe('stryker fails open twice (defect 3)', () => {
       didRun: true,
       stryker: {
         files: 1,
-        cache: { local: 'none', seed: 'off' },
+        cache: {
+          local: 'none',
+          seed: 'off',
+          seedWhy: 'mutationCache.seedFrom is not set',
+        },
         dryRunMs: 20,
         mutatingMs: 60,
         reused: 0,
@@ -3344,7 +3348,11 @@ describe('stryker fails open twice (defect 3)', () => {
       didRun: true,
       stryker: {
         files: 1,
-        cache: { local: 'none', seed: 'off' },
+        cache: {
+          local: 'none',
+          seed: 'off',
+          seedWhy: 'mutationCache.seedFrom is not set',
+        },
         report: 'missing',
       },
       concurrency: 'default',

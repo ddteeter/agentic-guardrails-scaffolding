@@ -668,6 +668,14 @@ describe('commandIdentity', () => {
 });
 
 /**
+A machine whose checkout belongs to the clone `app-clone` (#236).
+*/
+const inClone: Exec = (command, args, given) =>
+  command === 'git' && args.includes('--git-common-dir')
+    ? Promise.resolve({ stdout: '/dev/app-clone/.git\n', stderr: '', code: 0 })
+    : machine({}).exec(command, args, given);
+
+/**
 What `lockCommand` printed and logged, and how it exited.
 */
 function cli(exec: Exec, over: Partial<LockCommandDependencies> = {}) {
@@ -744,6 +752,38 @@ describe('lockCommand', () => {
       }),
     ]);
     expect(JSON.stringify(rows())).not.toContain('secret');
+  });
+
+  it('names the clone the checkout belongs to, on a run that ends and one that is killed (#236)', async () => {
+    const ended = cli(inClone);
+    await lockCommand(ended.dependencies, ['--', 'make']);
+    expect(ended.rows()).toMatchObject([{ project: 'app-clone' }]);
+
+    let stop: (signal: 'SIGINT' | 'SIGTERM') => void = ignore;
+    let isRunning = false;
+    const pending: Exec = (command, args, given) => {
+      if (command === 'lockf' && args.includes('make')) {
+        isRunning = true;
+        return new Promise(() => {
+          // Never settles: the run is stopped part-way.
+        });
+      }
+      return inClone(command, args, given);
+    };
+    const killed = cli(pending, {
+      exit: ignore,
+      onTermination: (handler) => {
+        stop = handler;
+        return ignore;
+      },
+    });
+    void lockCommand(killed.dependencies, ['--', 'make']);
+    await waitFor(() => isRunning);
+    stop('SIGTERM');
+    expect(killed.rows()).toMatchObject([
+      { project: 'app-clone' },
+      { outcome: 'killed', project: 'app-clone' },
+    ]);
   });
 
   it('waits the configured push wait by default, and --timeout when given', async () => {

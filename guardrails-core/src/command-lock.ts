@@ -24,6 +24,7 @@ import {
   branchOf,
   type LockRunResult,
   logLockRun,
+  projectName,
   startRun,
 } from './gate-run-log.js';
 import { type JsonFileResult, readJsonFile } from './json-file.js';
@@ -531,6 +532,7 @@ export async function lockCommand(
       lockPath: lock.path,
       repoRoot,
       branch,
+      project,
       start,
       run: { ...identity, ...run },
       environment,
@@ -540,6 +542,7 @@ export async function lockCommand(
     });
   };
   const branch = await branchOf(exec, repoRoot);
+  const project = await projectName(exec, repoRoot);
   const release = (dependencies.onTermination ?? onProcessTermination)(
     (signal) => {
       log({

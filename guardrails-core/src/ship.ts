@@ -37,7 +37,12 @@ import process from 'node:process';
 import type { Exec, ExecResult } from './exec.js';
 import { isRecord } from './is-record.js';
 import { parseJsonText } from './json-file.js';
-import { logShipRun, type RunClock, startRun } from './gate-run-log.js';
+import {
+  logShipRun,
+  projectName,
+  type RunClock,
+  startRun,
+} from './gate-run-log.js';
 import { LOCK_TIMEOUT_EXIT, LOCK_TIMEOUT_MARKER } from './mutation-lock.js';
 import {
   PREFLIGHT_FAILED_MARKER,
@@ -1901,9 +1906,14 @@ export async function ship(given: ShipOptions): Promise<ShipStatus> {
   const start = startRun(options.runClock);
   const times: ShipTimes = {};
   const status = await shipStatus(options, times);
+  // No lock, no log: git is asked for the clone only when there is a row.
+  if (options.lockPath === undefined) {
+    return status;
+  }
   logShipRun({
     lockPath: options.lockPath,
     repoRoot: options.repoRoot,
+    project: await projectName(options.exec, options.repoRoot),
     shipId: options.shipId,
     start,
     status,

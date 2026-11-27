@@ -8,7 +8,13 @@
  * stryker runs seeded and why it runs cold, where a ship's time goes, and
  * whether dry runs slow down as more runs queue or the machine loads up.
  */
-import type { GateRow, LockRow, RunRow, ShipRow } from './run-log.js';
+import {
+  type GateRow,
+  type LockRow,
+  projectOf,
+  type RunRow,
+  type ShipRow,
+} from './run-log.js';
 import {
   summarizeTimeouts,
   type TimeoutSummary,
@@ -40,6 +46,10 @@ interface RungSummary {
   */
   coldReasons: [string, number][];
   /**
+  Of the cold runs, those whose seed was skipped or off, and why (#236).
+  */
+  seedNotTried: SeedNotTried[];
+  /**
   What the runs' timeouts cost, when any run measured them (#236).
   */
   timeouts?: TimeoutSummary | undefined;
@@ -47,6 +57,15 @@ interface RungSummary {
   What the dry runs and mutant runs did, when any run says (#200).
   */
   work?: WorkSummary | undefined;
+}
+
+interface SeedNotTried {
+  seed: string;
+  runs: number;
+  /**
+  Why, most common first.
+  */
+  reasons: [string, number][];
 }
 
 interface ShipSummary {
@@ -92,12 +111,35 @@ export interface RunStats {
   Dry-run time by the 1-minute load per core at the start.
   */
   byLoad: Bucket[];
+  /**
+  Each project's runs and dry-run tables, most runs first (#236): a large
+  suite and a small one mixed in one table look like contention.
+  */
+  projects: ProjectSummary[];
+}
+
+interface ProjectSummary {
+  project: string;
+  runs: number;
+  /**
+  Of those, the rows from before projects, named by their folder.
+  */
+  legacy: number;
+  byDepth: Bucket[];
+  byLoad: Bucket[];
 }
 
 export interface StatsWindow {
   now: Date;
   sinceMs: number;
+  /**
+  A checkout's folder name: one lane worktree, not its whole clone.
+  */
   repo?: string | undefined;
+  /**
+  A clone, every lane of it (#236): `projectOf` each row.
+  */
+  project?: string | undefined;
 }
 
 /**
@@ -139,7 +181,29 @@ function coldReason({ cache }: StrykerPart): string {
   if (cache?.why !== undefined) {
     return cache.why;
   }
-  return `local cache ${cache?.local ?? 'unknown'}, seed ${cache?.seed ?? 'unknown'}`;
+  const states = `local cache ${cache?.local ?? 'unknown'}, seed ${cache?.seed ?? 'unknown'}`;
+  return cache?.seedWhy === undefined ? states : `${states}: ${cache.seedWhy}`;
+}
+
+/**
+The seed states that mean no seed was tried.
+*/
+const SEED_NOT_TRIED = ['skipped', 'off'];
+
+/**
+ * The cold runs whose seed was never tried, per seed state, with why (#236).
+ * A row from before the reason was recorded says so.
+ */
+function seedNotTried(cold: readonly StrykerPart[]): SeedNotTried[] {
+  const caches = present(cold.map((stryker) => stryker.cache));
+  return SEED_NOT_TRIED.flatMap((seed) => {
+    const reasons = caches
+      .filter((cache) => cache.seed === seed)
+      .map((cache) => cache.seedWhy ?? 'reason not recorded');
+    return reasons.length === 0
+      ? []
+      : [{ seed, runs: reasons.length, reasons: ranked(reasons) }];
+  }).toSorted((left, right) => right.runs - left.runs);
 }
 
 /**
@@ -176,6 +240,7 @@ function rungSummary(rows: readonly GateRow[]): RungSummary {
     mutated: mutated.length,
     warm: mutated.length - cold.length,
     coldReasons: ranked(cold.map((stryker) => coldReason(stryker))),
+    seedNotTried: seedNotTried(cold),
     timeouts: summarizeTimeouts(mutated),
     work: summarizeWork(rows),
   };
@@ -237,6 +302,46 @@ function buckets(
   });
 }
 
+function isGate(row: RunRow): row is GateRow {
+  return row.kind === 'gate';
+}
+
+/**
+Each project among `rows`, most runs first, then by name.
+*/
+function projectSummaries(
+  rows: readonly RunRow[],
+  gates: readonly GateRow[],
+): ProjectSummary[] {
+  const names = [...new Set(rows.map((row) => projectOf(row)))];
+  return names
+    .map((project) => {
+      const own = rows.filter((row) => projectOf(row) === project);
+      const ownGates = gates.filter((row) => projectOf(row) === project);
+      return {
+        project,
+        runs: own.length,
+        legacy: own.filter((row) => row.project === undefined).length,
+        byDepth: buckets(ownGates, DEPTHS, depthBucket),
+        byLoad: buckets(ownGates, LOADS, loadBucket),
+      };
+    })
+    .toSorted(
+      (left, right) =>
+        right.runs - left.runs || left.project.localeCompare(right.project),
+    );
+}
+
+/**
+Is `row` of the project and the folder the window names, if it names them?
+*/
+function isNamed(row: RunRow, window: StatsWindow): boolean {
+  return (
+    (window.repo === undefined || row.repo === window.repo) &&
+    (window.project === undefined || projectOf(row) === window.project)
+  );
+}
+
 /**
 What the rows inside the window say.
 */
@@ -248,13 +353,9 @@ export function summarizeRuns(
   const from = to - window.sinceMs;
   const inWindow = rows.filter((row) => {
     const at = Date.parse(row.startedAt);
-    return (
-      at >= from &&
-      at <= to &&
-      (window.repo === undefined || row.repo === window.repo)
-    );
+    return at >= from && at <= to && isNamed(row, window);
   });
-  const gates = inWindow.filter((row): row is GateRow => row.kind === 'gate');
+  const gates = inWindow.filter((row) => isGate(row));
   const ships = inWindow.filter((row): row is ShipRow => row.kind === 'ship');
   const locks = inWindow.filter((row): row is LockRow => row.kind === 'lock');
   const rungs: Record<string, RungSummary> = {};
@@ -271,6 +372,7 @@ export function summarizeRuns(
     locks: lockSummary(locks),
     byDepth: buckets(gates, DEPTHS, depthBucket),
     byLoad: buckets(gates, LOADS, loadBucket),
+    projects: projectSummaries(inWindow, gates),
   };
 }
 
@@ -315,6 +417,10 @@ function rungText(rung: string, summary: RungSummary): string[] {
           ...summary.coldReasons.map(
             ([why, count]) => `    cold ${String(count)}×: ${why}`,
           ),
+          ...summary.seedNotTried.map(
+            ({ seed, runs, reasons }) =>
+              `    seed ${seed} ${String(runs)}×: ${countsText(Object.fromEntries(reasons))}`,
+          ),
         ]),
     ...timeoutLines(summary.timeouts, duration),
   ];
@@ -332,6 +438,37 @@ function bucketText(title: string, rows: readonly Bucket[]): string[] {
 }
 
 /**
+Each project and its runs, and how many rows predate project identity.
+*/
+function projectsLine(projects: readonly ProjectSummary[]): string {
+  const counts = projects
+    .map(({ project, runs }) => `${project} ${String(runs)}`)
+    .join(', ');
+  const legacy = projects.reduce((total, { legacy }) => total + legacy, 0);
+  return legacy === 0
+    ? `projects: ${counts}`
+    : `projects: ${counts} (${String(legacy)} row(s) predate project identity)`;
+}
+
+/**
+ * The dry-run tables: one pair for the window with a single project in it,
+ * else one per project -- a mix of suites in one table reads as contention.
+ * `--json` keeps the mixed pair either way.
+ */
+function bucketTables(stats: RunStats): string[] {
+  if (stats.projects.length <= 1) {
+    return [
+      ...bucketText('dry run by queue depth on arrival:', stats.byDepth),
+      ...bucketText('dry run by load at start:', stats.byLoad),
+    ];
+  }
+  return stats.projects.flatMap(({ project, byDepth, byLoad }) => [
+    ...bucketText(`dry run by queue depth on arrival, ${project}:`, byDepth),
+    ...bucketText(`dry run by load at start, ${project}:`, byLoad),
+  ]);
+}
+
+/**
 The summary as the lines `guardrails stats` prints.
 */
 export function formatStats(stats: RunStats): string {
@@ -341,6 +478,7 @@ export function formatStats(stats: RunStats): string {
   const { ships, locks } = stats;
   const lines = [
     `guardrails stats: ${String(stats.rows)} run(s) from ${stats.from} to ${stats.to}`,
+    projectsLine(stats.projects),
     ...Object.entries(stats.rungs).flatMap(([rung, summary]) =>
       rungText(rung, summary),
     ),
@@ -360,8 +498,7 @@ export function formatStats(stats: RunStats): string {
           ...spreadText('held the lock', locks.heldMs),
           `  commands: ${countsText(Object.fromEntries(locks.commands))}`,
         ]),
-    ...bucketText('dry run by queue depth on arrival:', stats.byDepth),
-    ...bucketText('dry run by load at start:', stats.byLoad),
+    ...bucketTables(stats),
   ];
   return `${lines.join('\n')}\n`;
 }

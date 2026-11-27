@@ -6551,6 +6551,32 @@ describe('stats: the run log, summarized', () => {
     );
   });
 
+  it('narrows to one project, its lanes and its rows from before projects (#236)', async () => {
+    writeFileSync(
+      path.join(root, 'gate.lock.runs.jsonl'),
+      [
+        logRow('app'),
+        JSON.stringify({ ...JSON.parse(logRow('lane-1')), project: 'app' }),
+        JSON.stringify({ ...JSON.parse(logRow('lane-2')), project: 'other' }),
+        '',
+      ].join('\n'),
+    );
+    await runCommand(
+      'stats',
+      ['--project=app', '--json'],
+      dependencies({ env: lockEnvironment() }),
+    );
+    const stats = JSON.parse(out.join('')) as { rows: number };
+    expect(stats.rows).toBe(2);
+  });
+
+  it('lists --project in the usage', async () => {
+    await runCommand('no-such-command', [], dependencies());
+    expect(errors.join('')).toContain(
+      'stats [--since=7d|24h|90m] [--project=<name>] [--repo=<folder>] [--json]',
+    );
+  });
+
   it('leaves out runs older than the window', async () => {
     await runCommand(
       'stats',
